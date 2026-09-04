@@ -75,6 +75,7 @@ from slic3r_api_generated import (
 
 from slic3r_extrusion_views import ExtrusionEntity, MutableExtrusionEntity
 from slic3r_geometry_views import CPoint, ExPolygon, ExPolygonCollection
+from slic3r_abi import abi_requires_headers
 
 
 def _address(handle) -> int:
@@ -141,6 +142,7 @@ LayerAdhesionProperty = CLayerAdhesionProperty
 
 
 # Base for borrowed data-tree views. It never owns or frees the handle.
+@abi_requires_headers("slic3r_data_tree.h")
 class DataTreeView:
     def __init__(self, api, handle) -> None:
         self.api = api

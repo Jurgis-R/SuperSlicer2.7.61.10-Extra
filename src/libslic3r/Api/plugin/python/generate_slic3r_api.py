@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -679,11 +680,88 @@ def generate_abi_manifest() -> str:
     return "[abi]\n" + "".join(
         f"{name} = {major}.{minor}\n" for name, (major, minor) in sorted(versions.items()))
 
+
+def generate_abi_catalog() -> str:
+    """Describe generated Python symbols and the versioned headers that own them."""
+    root = HEADER_ROOT.resolve()
+    paths = [path.resolve() for path in header_paths() if path.is_file()]
+    path_by_name = {path.relative_to(root).as_posix(): path for path in paths}
+    versions = {}
+    direct_dependencies = {}
+
+    for name, path in path_by_name.items():
+        text = path.read_text(encoding="utf-8")
+        major = re.search(r"^#define SLIC3R_PLUGIN_API_\w+_MAJOR\s+(\d+)[uU]?\s*$", text, re.MULTILINE)
+        minor = re.search(r"^#define SLIC3R_PLUGIN_API_\w+_MINOR\s+(\d+)[uU]?\s*$", text, re.MULTILINE)
+        if major and minor:
+            versions[name] = [int(major[1]), int(minor[1])]
+
+        dependencies = []
+        for include in re.findall(r'^\s*#include\s+"([^"]+)"', text, re.MULTILINE):
+            dependency = (path.parent / include).resolve()
+            if dependency in paths:
+                dependency_name = dependency.relative_to(root).as_posix()
+                if dependency_name not in dependencies:
+                    dependencies.append(dependency_name)
+        direct_dependencies[name] = dependencies
+
+    def versioned_dependencies(name: str) -> list[str]:
+        pending = list(direct_dependencies.get(name, ()))
+        visited = set()
+        result = set()
+        while pending:
+            dependency = pending.pop()
+            if dependency in visited:
+                continue
+            visited.add(dependency)
+            if dependency in versions:
+                result.add(dependency)
+            pending.extend(direct_dependencies.get(dependency, ()))
+        return sorted(result)
+
+    symbols = {}
+    functions = {}
+
+    def add_symbol(table: dict, symbol: str, header: str) -> None:
+        if header not in versions:
+            return
+        owners = table.setdefault(symbol, [])
+        if header not in owners:
+            owners.append(header)
+
+    for name, path in path_by_name.items():
+        raw_text = path.read_text(encoding="utf-8")
+        text = join_continuations(strip_comments(raw_text))
+        for constant, _value in parse_constants(text):
+            add_symbol(symbols, constant, name)
+        for struct in parse_structs(text):
+            add_symbol(symbols, class_name(struct.c_name), name)
+        for callback in parse_callbacks(text):
+            add_symbol(symbols, callback_name(callback.c_name), name)
+        for function in parse_functions(text):
+            add_symbol(functions, function.c_name, name)
+
+    catalog = {
+        "format_version": 1,
+        "headers": {
+            name: {
+                "version": versions[name],
+                "dependencies": versioned_dependencies(name),
+            }
+            for name in sorted(versions)
+        },
+        "c_functions": {name: sorted(owners) for name, owners in sorted(functions.items())},
+        "python_symbols": {name: sorted(owners) for name, owners in sorted(symbols.items())},
+    }
+    return json.dumps(catalog, indent=2, sort_keys=True) + "\n"
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate Python ctypes bindings for the SuperSlicer C plugin ABI.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="generated Python output path")
     parser.add_argument("--check", action="store_true", help="fail if the output file is not up to date")
     parser.add_argument("--abi-output", type=Path, help="write the C ABI requirements used by these bindings")
+    parser.add_argument("--abi-catalog-output", type=Path,
+                        help="write the symbol-to-header catalogue used by Python plugin packaging")
     args = parser.parse_args()
 
     generated = generate()
@@ -697,12 +775,22 @@ def main() -> int:
             if current_abi != generate_abi_manifest():
                 print(f"{args.abi_output} is not up to date.")
                 return 1
+        if args.abi_catalog_output:
+            current_catalog = (args.abi_catalog_output.read_text(encoding="utf-8")
+                               if args.abi_catalog_output.exists() else "")
+            if current_catalog != generate_abi_catalog():
+                print(f"{args.abi_catalog_output} is not up to date.")
+                return 1
         return 0
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(generated, encoding="utf-8")
     if args.abi_output:
+        args.abi_output.parent.mkdir(parents=True, exist_ok=True)
         args.abi_output.write_text(generate_abi_manifest(), encoding="utf-8")
+    if args.abi_catalog_output:
+        args.abi_catalog_output.parent.mkdir(parents=True, exist_ok=True)
+        args.abi_catalog_output.write_text(generate_abi_catalog(), encoding="utf-8")
     return 0
 
 

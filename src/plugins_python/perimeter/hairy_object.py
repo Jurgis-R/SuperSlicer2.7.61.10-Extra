@@ -362,7 +362,7 @@ class HairyObjectPlugin(PluginBase):
         )
 
     def run(self, run_ctx_address: int) -> None:
-        ctx = self.api.post_perimeter(run_ctx_address)
+        ctx = self.api.post_perimeter_context(run_ctx_address)
         if ctx is None:
             return
 
@@ -373,7 +373,7 @@ class HairyObjectPlugin(PluginBase):
 
     def _run(self, ctx) -> None:
         storage = ctx.plugin_storage()
-        obj = ctx.object()
+        obj = ctx.post_perimeter_object()
         painted_by_layer = ctx.project_painting_to_polygons(PAINT_KEY, RAW_FACET_PAINTING_ENFORCER)
         try:
             for layer_idx, layer in enumerate(obj.layers()):
@@ -398,7 +398,7 @@ class HairyObjectPlugin(PluginBase):
         regions = list(island.regions())
         if not regions:
             return
-        settings = _hair_settings_from_region(ctx.print(), regions[0])
+        settings = _hair_settings_from_region(ctx.post_perimeter_print(), regions[0])
         if settings is None or settings.length_scaled <= 0 or settings.density_per_mm2 <= 0.0:
             return
 
@@ -424,7 +424,9 @@ class HairyObjectPlugin(PluginBase):
 
             root = None
             for region_island in island.region_islands():
-                root = ctx.mutable_extrusion(region_island, RAW_EXTRUSION_ROLE_PERIMETER)
+                root = ctx.post_perimeter_mutable_extrusion(
+                    region_island, RAW_EXTRUSION_ROLE_PERIMETER
+                )
                 if root is not None:
                     break
             if root is None:

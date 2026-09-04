@@ -242,7 +242,7 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
         )
 
     def run(self, run_ctx_address: int) -> None:
-        ctx = self.api.post_slicing(run_ctx_address)
+        ctx = self.api.post_slicing_context(run_ctx_address)
         if ctx is None:
             return
 
@@ -252,7 +252,7 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
             ctx.report_error(f"Python Polyholes high level failed: {exc}")
 
     def _run_polyholes(self, ctx) -> None:
-        obj = ctx.object()
+        obj = ctx.post_slicing_object()
         layer_count = obj.layer_count()
         layer_holes: list[list[HoleData]] = [[] for _ in range(layer_count)]
 
@@ -312,7 +312,7 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
             ctx.report_progress((layer_idx + 1) / max(1, layer_count), "Python Polyholes high level: searching holes")
 
         through_holes = self._group_holes(obj, layer_holes)
-        print_config = ctx.print().config()
+        print_config = ctx.post_slicing_print().config()
         modified_layers: set[int] = set()
 
         for hole_idx, through_hole in enumerate(through_holes):
@@ -331,7 +331,7 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
             for layer_hole in through_hole.layers:
                 mutable_layer = obj.layer_mutable(layer_hole.layer_idx)
                 mutable_region = mutable_layer.region_mutable(layer_hole.layer_region_idx)
-                mutable_slices = ctx.borrow_layer_region_slices(mutable_region)
+                mutable_slices = ctx.post_slicing_borrow_layer_region_slices(mutable_region)
                 replacement = replacements[layer_hole.layer_idx % len(replacements)]
                 modified = 0
                 for expolygon in mutable_slices.mutable_items():
@@ -349,7 +349,7 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
         for layer_idx in sorted(modified_layers):
             ctx.recompute_slices_and_islands_from_layer_region(obj.layer_mutable(layer_idx))
 
-        if ctx.storage_size() != 0:
+        if ctx.post_slicing_storage_size() != 0:
             ctx.clear_storage()
 
     def _group_holes(self, obj, layer_holes: list[list[HoleData]]) -> list[ThroughHole]:

@@ -15,12 +15,13 @@ Context contents
 
 SlicingContext exposes:
 
-* read-only print() and object() views for the object being sliced;
+* read-only slicing_print() and slicing_object() views for the object being
+  sliced;
 * layer_ranges(), each with scaled Z bounds, effective config, and
   volume_regions();
 * each volume-region entry exposes the model Volume, parent relation, target
   LayerRegion index, and bounding box;
-* borrow_layer_region_slices(), the mutable destination polygons for one
+* slicing_borrow_layer_region_slices(), the mutable destination polygons for one
   LayerRegion;
 * slice_volume_to_expolygons(), a convenience wrapper around the host mesh
   slicer for plugins that do not need a custom triangle slicer;
@@ -29,7 +30,7 @@ SlicingContext exposes:
 Typical use
 -----------
 
-    ctx = api.slicing(run_ctx_address)
+    ctx = api.slicing_context(run_ctx_address)
     if ctx is None:
         return
 
@@ -53,15 +54,14 @@ from typing import Iterable, Iterator
 
 from slic3r_api_generated import (
     CMeshSlicingParams,
-    PLUGIN_IS_CANCELLED,
-    PLUGIN_REPORT,
-    PLUGIN_REPORT_PROGRESS,
     PluginRunContext,
     RunCtxSlicing,
     STEP_SLICING,
 )
 from slic3r_datatree_views import Config, MutableLayerRegion, Object, Print, Volume
 from slic3r_geometry_views import MutableExPolygonCollection, StoredExPolygonCollection
+from slic3r_abi import abi_requires_headers
+from slic3r_run_context import PluginRunContextView
 
 
 def _address(handle) -> int:
@@ -76,14 +76,6 @@ def _address(handle) -> int:
 
 def _void_p(handle) -> ctypes.c_void_p:
     return ctypes.c_void_p(_address(handle))
-
-
-def _as_bytes(text: str) -> bytes:
-    return text.encode("utf-8")
-
-
-def _optional_bytes(text: str | None) -> bytes | None:
-    return None if text is None else text.encode("utf-8")
 
 
 class SlicingLayerRange:
@@ -155,7 +147,8 @@ class SlicingVolumeRegion:
         return self.ctx.payload.volume_region_bbox(self.c_handle())
 
 
-class SlicingContext:
+@abi_requires_headers("steps/slic3r_step_slicing.h")
+class SlicingContext(PluginRunContextView):
     """
     High-level wrapper around the STEP_SLICING payload.
 
@@ -165,12 +158,11 @@ class SlicingContext:
     """
 
     def __init__(self, api, common: PluginRunContext, payload: RunCtxSlicing) -> None:
-        self.api = api
-        self.common = common
+        super().__init__(api, common)
         self.payload = payload
 
     @classmethod
-    def from_run_context(cls, api, run_ctx_address: int) -> "SlicingContext | None":
+    def from_slicing_run_context(cls, api, run_ctx_address: int) -> "SlicingContext | None":
         if not run_ctx_address:
             return None
         common = PluginRunContext.from_address(int(run_ctx_address))
@@ -181,16 +173,13 @@ class SlicingContext:
             return None
         return cls(api, common, payload)
 
-    def plugin_storage(self) -> int:
-        return _address(self.common.plugin_storage)
-
-    def print(self) -> Print:
+    def slicing_print(self) -> Print:
         return Print(self.api, self.payload.print)
 
-    def object(self) -> Object:
+    def slicing_object(self) -> Object:
         return Object(self.api, self.payload.object)
 
-    def borrow_layer_region_slices(self, layer_region: MutableLayerRegion) -> MutableExPolygonCollection:
+    def slicing_borrow_layer_region_slices(self, layer_region: MutableLayerRegion) -> MutableExPolygonCollection:
         handle = self.payload.layer_region_borrow_mutable_slices(layer_region.c_handle())
         return MutableExPolygonCollection(self.api, handle)
 
@@ -245,26 +234,6 @@ class SlicingContext:
                 len(out),
             )
         return out
-
-    def is_cancelled(self) -> bool:
-        if not self.common.is_cancelled:
-            return False
-        return bool(PLUGIN_IS_CANCELLED(self.common.is_cancelled)(self.common.host_context))
-
-    def report_warning(self, message: str) -> None:
-        if self.common.report_warning:
-            PLUGIN_REPORT(self.common.report_warning)(self.common.host_context, _as_bytes(message))
-
-    def report_error(self, message: str) -> None:
-        if self.common.report_error:
-            PLUGIN_REPORT(self.common.report_error)(self.common.host_context, _as_bytes(message))
-
-    def report_progress(self, progress: float, message: str | None = None) -> None:
-        if self.common.report_progress:
-            PLUGIN_REPORT_PROGRESS(self.common.report_progress)(
-                self.common.host_context, float(progress), _optional_bytes(message)
-            )
-
 
 __all__ = [
     "SlicingContext",

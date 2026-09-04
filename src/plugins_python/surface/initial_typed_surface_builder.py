@@ -166,7 +166,7 @@ class PythonInitialTypedSurfaceBuilderPlugin(PluginBase):
         self.api = api
 
     def run(self, run_ctx_address: int) -> None:
-        ctx = self.api.surface_generation(run_ctx_address)
+        ctx = self.api.surface_generation_context(run_ctx_address)
         if ctx is None:
             return
 
@@ -177,7 +177,7 @@ class PythonInitialTypedSurfaceBuilderPlugin(PluginBase):
 
     def _run_surface_generation(self, ctx) -> None:
         storage = ctx.plugin_storage()
-        object_view = ctx.object()
+        object_view = ctx.surface_generation_object()
         for layer_idx, layer in enumerate(object_view.layers()):
             if ctx.is_cancelled():
                 return

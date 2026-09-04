@@ -25,17 +25,26 @@ if (TARGET Python3::Python)
     set(SLIC3R_PYTHON_API_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python")
     set(SLIC3R_PYTHON_API_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/slic3r_api_generated.py")
     set(SLIC3R_PYTHON_ABI_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/python-api-abi.ini")
+    set(SLIC3R_PYTHON_ABI_CATALOG "${CMAKE_CURRENT_BINARY_DIR}/python-api-abi-catalog.json")
     set_target_properties(python_plugin_loader PROPERTIES SLIC3R_PLUGIN_EXTRA_ABI "${SLIC3R_PYTHON_ABI_MANIFEST}")
     file(GLOB SLIC3R_PLUGIN_C_HEADERS CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/c/*.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/c/steps/*.h"
     )
+    file(GLOB_RECURSE SLIC3R_PYTHON_RUNTIME_SOURCES CONFIGURE_DEPENDS
+        "${SLIC3R_PYTHON_API_DIR}/*.py"
+    )
+    list(FILTER SLIC3R_PYTHON_RUNTIME_SOURCES EXCLUDE REGEX "/generate_[^/]+\\.py$")
+    set_property(TARGET python_plugin_loader APPEND PROPERTY LINK_DEPENDS
+        ${SLIC3R_PYTHON_RUNTIME_SOURCES}
+    )
 
     add_custom_command(
-        OUTPUT "${SLIC3R_PYTHON_API_GENERATED}" "${SLIC3R_PYTHON_ABI_MANIFEST}"
+        OUTPUT "${SLIC3R_PYTHON_API_GENERATED}" "${SLIC3R_PYTHON_ABI_MANIFEST}" "${SLIC3R_PYTHON_ABI_CATALOG}"
         COMMAND "${Python3_EXECUTABLE}" "${SLIC3R_PYTHON_API_DIR}/generate_slic3r_api.py"
             --output "${SLIC3R_PYTHON_API_GENERATED}"
             --abi-output "${SLIC3R_PYTHON_ABI_MANIFEST}"
+            --abi-catalog-output "${SLIC3R_PYTHON_ABI_CATALOG}"
         DEPENDS
             "${SLIC3R_PYTHON_API_DIR}/generate_slic3r_api.py"
             ${SLIC3R_PLUGIN_C_HEADERS}
@@ -44,7 +53,7 @@ if (TARGET Python3::Python)
     )
 
     add_custom_target(slic3r_python_api_generated
-        DEPENDS "${SLIC3R_PYTHON_API_GENERATED}" "${SLIC3R_PYTHON_ABI_MANIFEST}"
+        DEPENDS "${SLIC3R_PYTHON_API_GENERATED}" "${SLIC3R_PYTHON_ABI_MANIFEST}" "${SLIC3R_PYTHON_ABI_CATALOG}"
     )
     add_dependencies(python_plugin_loader slic3r_python_api_generated)
 
@@ -54,6 +63,12 @@ if (TARGET Python3::Python)
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_api.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_api.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_abi.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_abi.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_run_context.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_run_context.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_geometry_views.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_geometry_views.py"

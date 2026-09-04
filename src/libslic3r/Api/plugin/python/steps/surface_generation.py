@@ -16,8 +16,9 @@ Context contents
 
 SurfaceGenerationContext exposes:
 
-* read-only print() and object() views; the plugin iterates layers, islands, and
-  LayerRegionIslands through the data-tree views;
+* read-only surface_generation_print() and surface_generation_object() views;
+  the plugin iterates layers, islands, and LayerRegionIslands through the
+  data-tree views;
 * data-tree helpers such as LayerIsland.get_or_create_region_island(), used
   after the plugin has resolved the destination extruder;
 * set_fill_surfaces() and set_fill_surface_groups(), which build host-owned
@@ -30,8 +31,8 @@ SurfaceGenerationContext exposes:
 Typical use
 -----------
 
-    ctx = api.surface_generation(run_ctx_address)
-    obj = ctx.object()
+    ctx = api.surface_generation_context(run_ctx_address)
+    obj = ctx.surface_generation_object()
     for layer in obj.layers():
         for island in layer.islands():
             regions = list(island.regions())
@@ -50,15 +51,14 @@ from __future__ import annotations
 import ctypes
 
 from slic3r_api_generated import (
-    PLUGIN_IS_CANCELLED,
-    PLUGIN_REPORT,
-    PLUGIN_REPORT_PROGRESS,
     PluginRunContext,
     RunCtxSurfaceGeneration,
     STEP_SURFACE_GENERATION,
 )
 from slic3r_datatree_views import LayerRegionIsland, Object, Print, Surface
 from slic3r_geometry_views import ExPolygonCollection
+from slic3r_abi import abi_requires_headers
+from slic3r_run_context import PluginRunContextView
 
 
 def _address(handle) -> int:
@@ -75,14 +75,6 @@ def _void_p(handle) -> ctypes.c_void_p:
     return ctypes.c_void_p(_address(handle))
 
 
-def _as_bytes(text: str) -> bytes:
-    return text.encode("utf-8")
-
-
-def _optional_bytes(text: str | None) -> bytes | None:
-    return None if text is None else text.encode("utf-8")
-
-
 def _areas_handle(areas) -> int:
     if areas is None:
         return 0
@@ -91,7 +83,8 @@ def _areas_handle(areas) -> int:
     return _address(areas)
 
 
-class SurfaceGenerationContext:
+@abi_requires_headers("steps/slic3r_step_surface_generation.h")
+class SurfaceGenerationContext(PluginRunContextView):
     """
     High-level wrapper around the STEP_SURFACE_GENERATION payload.
 
@@ -101,13 +94,12 @@ class SurfaceGenerationContext:
     """
 
     def __init__(self, api, common: PluginRunContext, payload_ptr) -> None:
-        self.api = api
-        self.common = common
+        super().__init__(api, common)
         self._payload_ptr = payload_ptr
         self.payload = payload_ptr.contents
 
     @classmethod
-    def from_run_context(cls, api, run_ctx_address: int) -> "SurfaceGenerationContext | None":
+    def from_surface_generation_run_context(cls, api, run_ctx_address: int) -> "SurfaceGenerationContext | None":
         if not run_ctx_address:
             return None
         common = PluginRunContext.from_address(int(run_ctx_address))
@@ -121,33 +113,11 @@ class SurfaceGenerationContext:
             return None
         return cls(api, common, payload_ptr)
 
-    def plugin_storage(self) -> int:
-        return _address(self.common.plugin_storage)
-
-    def print(self) -> Print:
+    def surface_generation_print(self) -> Print:
         return Print(self.api, self.payload.print)
 
-    def object(self) -> Object:
+    def surface_generation_object(self) -> Object:
         return Object(self.api, self.payload.object)
-
-    def is_cancelled(self) -> bool:
-        if not self.common.is_cancelled:
-            return False
-        return bool(PLUGIN_IS_CANCELLED(self.common.is_cancelled)(self.common.host_context))
-
-    def report_warning(self, message: str) -> None:
-        if self.common.report_warning:
-            PLUGIN_REPORT(self.common.report_warning)(self.common.host_context, _as_bytes(message))
-
-    def report_error(self, message: str) -> None:
-        if self.common.report_error:
-            PLUGIN_REPORT(self.common.report_error)(self.common.host_context, _as_bytes(message))
-
-    def report_progress(self, progress: float, message: str | None = None) -> None:
-        if self.common.report_progress:
-            PLUGIN_REPORT_PROGRESS(self.common.report_progress)(
-                self.common.host_context, float(progress), _optional_bytes(message)
-            )
 
     def set_fill_surfaces(self, region_island: LayerRegionIsland, areas, surface_type: int) -> bool:
         return self.set_fill_surface_groups(region_island, [(areas, surface_type)])

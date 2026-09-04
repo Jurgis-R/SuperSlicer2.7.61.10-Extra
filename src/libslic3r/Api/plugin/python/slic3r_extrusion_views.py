@@ -114,6 +114,7 @@ from slic3r_api_generated import (
 )
 
 from slic3r_geometry_views import as_point, make_point, point_tuple
+from slic3r_abi import abi_requires_headers
 
 if TYPE_CHECKING:
     # Data-tree views import extrusion views at runtime, so this import must
@@ -238,6 +239,7 @@ class ExtrusionAreaFragment(NamedTuple):
 
 # Shared read-only property API. Read access returns copies for built-in payload
 # structures, preserving Python-level const-correctness.
+@abi_requires_headers("slic3r_extrusion_property.h")
 class ExtrusionPropertyReadMixin:
     def property_count(self) -> int:
         return int(self.api.host.extrusion_property_count(self.c_handle()))
@@ -279,6 +281,7 @@ class ExtrusionPropertyReadMixin:
 
 # Mutable property API. The returned ctypes payload object is a live view over
 # host memory; only use it on MutableExtrusionEntity or StoredExtrusionEntity.
+@abi_requires_headers("slic3r_extrusion_property.h")
 class ExtrusionPropertyMutableMixin:
     def property_data_mutable_address(self, payload_cls_or_type) -> int:
         return _address(self.api.host.extrusion_property_data_mutable(
@@ -373,6 +376,7 @@ class ExtrusionPropertyMutableMixin:
 # Read-only local polyline API. It only touches points/segments stored directly
 # on this entity; tree-wide helpers such as front(), back() and length() are on
 # ExtrusionEntityReadMixin.
+@abi_requires_headers("slic3r_extrusion_polyline.h")
 class ExtrusionPolylineReadMixin:
     def has_polyline(self) -> bool:
         return bool(self.api.host.extrusion_has_polyline(self.c_handle()))
@@ -459,6 +463,7 @@ class ExtrusionPolylineReadMixin:
 
 # Mutable local polyline API. It cannot create a local polyline on an entity that
 # already has children; clear_content() first if that conversion is intentional.
+@abi_requires_headers("slic3r_extrusion_polyline.h")
 class ExtrusionPolylineMutableMixin:
     def clear_polyline(self) -> bool:
         return bool(self.api.host.extrusion_polyline_clear(self.mutable_c_handle()))
@@ -547,6 +552,7 @@ class ExtrusionPolylineMutableMixin:
 
 # Read-only tree API. It exposes direct children and higher-level helpers that
 # walk through children when the current entity has no local polyline.
+@abi_requires_headers("slic3r_extrusion_entity.h")
 class ExtrusionEntityReadMixin:
     def valid(self) -> bool:
         return self.address != 0
@@ -633,6 +639,7 @@ class ExtrusionEntityReadMixin:
 
 # Mutable tree API. Mutating children may invalidate previously borrowed child
 # views, just like mutating a Python list invalidates assumptions about indices.
+@abi_requires_headers("slic3r_extrusion_entity.h")
 class ExtrusionEntityMutableMixin:
     def child_mutable(self, idx: int) -> "MutableExtrusionEntity":
         handle = self.api.host.extrusion_child_mutable(self.mutable_c_handle(), int(idx))

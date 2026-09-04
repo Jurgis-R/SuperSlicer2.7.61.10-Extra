@@ -37,7 +37,7 @@ from slic3r_api import (
     STEP_POST_SLICING,
     STEP_SLICING,
     PluginRunContext,
-    post_slicing_context,
+    raw_post_slicing_context,
     report_error,
     report_progress,
     round_coord,
@@ -291,7 +291,7 @@ class PythonPolyholesPlugin(PluginBase):
         )
 
     def run(self, run_ctx_address: int) -> None:
-        ctx = post_slicing_context(run_ctx_address)
+        ctx = raw_post_slicing_context(run_ctx_address)
         common = PluginRunContext.from_address(run_ctx_address) if run_ctx_address else None
         if ctx is None or not ctx.print or not ctx.object or common is None:
             return

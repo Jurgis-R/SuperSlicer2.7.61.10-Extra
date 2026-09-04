@@ -17,8 +17,8 @@ Context contents
 
 PerimeterContext exposes:
 
-* read-only print(), object(), layer(), and island() views for the island being
-  processed;
+* read-only perimeter_print(), perimeter_object(), perimeter_layer(), and
+  perimeter_island() views for the island being processed;
 * LayerIsland.get_or_create_region_island(), from the data-tree views, when a
   generator needs an additional destination LayerRegionIsland;
 * set_region_island_extrusion(), which publishes a generated extrusion tree to
@@ -29,7 +29,7 @@ PerimeterContext exposes:
 
 PerimeterGenerationContextView is passed to the node callback and to perimeter
 modules. It exposes the temporary root node, current LayerRegionIsland,
-plugin_storage(), layer index, and callbacks to split a node or rebuild its
+perimeter_generation_plugin_storage(), layer index, and callbacks to split a node or rebuild its
 children. PerimeterNodeView exposes the node area, fill area, mutable extrusion
 bucket, perimeter indexes, parent/children, and helpers for requesting more
 perimeters.
@@ -37,11 +37,11 @@ perimeters.
 Typical use
 -----------
 
-    ctx = api.perimeter(run_ctx_address)
+    ctx = api.perimeter_context(run_ctx_address)
     if ctx is None:
         return
 
-    island = ctx.island()
+    island = ctx.perimeter_island()
     regions = list(island.regions())
     flow = regions[0].flow(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER)
 
@@ -63,9 +63,6 @@ from typing import Callable, Iterable
 
 from slic3r_api_generated import (
     PERIMETER_GENERATE_NODE,
-    PLUGIN_IS_CANCELLED,
-    PLUGIN_REPORT,
-    PLUGIN_REPORT_PROGRESS,
     PerimeterGenerationContext,
     PerimeterNode,
     PerimeterNodeSpan,
@@ -76,6 +73,8 @@ from slic3r_api_generated import (
 from slic3r_datatree_views import Layer, LayerIsland, LayerRegion, LayerRegionIsland, Object, Print
 from slic3r_extrusion_views import ExtrusionEntity, MutableExtrusionEntity
 from slic3r_geometry_views import ExPolygon, ExPolygonCollection, MutableExPolygonCollection
+from slic3r_abi import abi_requires_headers
+from slic3r_run_context import PluginRunContextView
 
 
 def _address(handle) -> int:
@@ -92,14 +91,6 @@ def _address(handle) -> int:
 
 def _void_p(handle) -> ctypes.c_void_p:
     return ctypes.c_void_p(_address(handle))
-
-
-def _as_bytes(text: str) -> bytes:
-    return text.encode("utf-8")
-
-
-def _optional_bytes(text: str | None) -> bytes | None:
-    return None if text is None else text.encode("utf-8")
 
 
 def _region_handle(region) -> int:
@@ -229,30 +220,30 @@ class PerimeterGenerationContextView:
     def common(self) -> PluginRunContext:
         return self.raw.run_ctx.contents
 
-    def plugin_storage(self) -> int:
+    def perimeter_generation_plugin_storage(self) -> int:
         return _address(self.common.plugin_storage)
 
-    def print(self) -> Print:
+    def perimeter_generation_print(self) -> Print:
         return Print(self.api, self.raw.print)
 
-    def object(self) -> Object:
+    def perimeter_generation_object(self) -> Object:
         return Object(self.api, self.raw.object)
 
-    def layer(self) -> Layer:
+    def perimeter_generation_layer(self) -> Layer:
         return Layer(self.api, self.raw.layer)
 
-    def island(self) -> LayerIsland:
+    def perimeter_generation_island(self) -> LayerIsland:
         return LayerIsland(self.api, self.raw.island)
 
-    def region_island(self) -> LayerRegionIsland:
+    def perimeter_generation_region_island(self) -> LayerRegionIsland:
         return LayerRegionIsland(self.api, self.raw.region_island)
 
     def root(self) -> PerimeterNodeView:
         return PerimeterNodeView(self.api, self.raw.root)
 
     def layer_id_from_object(self) -> int:
-        current_layer = self.layer()
-        for layer_idx, layer in enumerate(self.object().layers()):
+        current_layer = self.perimeter_generation_layer()
+        for layer_idx, layer in enumerate(self.perimeter_generation_object().layers()):
             if layer.same_handle(current_layer):
                 return layer_idx
         return -1
@@ -295,7 +286,8 @@ class PerimeterGenerationContextView:
         return True
 
 
-class PerimeterContext:
+@abi_requires_headers("steps/slic3r_step_perimeter.h")
+class PerimeterContext(PluginRunContextView):
     """
     High-level wrapper around the STEP_PERIMETER payload.
 
@@ -305,15 +297,14 @@ class PerimeterContext:
     """
 
     def __init__(self, api, common: PluginRunContext, payload_ptr) -> None:
-        self.api = api
-        self.common = common
+        super().__init__(api, common)
         self._payload_ptr = payload_ptr
         self.payload = payload_ptr.contents
         self._callbacks = []
         self._states = {}
 
     @classmethod
-    def from_run_context(cls, api, run_ctx_address: int) -> "PerimeterContext | None":
+    def from_perimeter_run_context(cls, api, run_ctx_address: int) -> "PerimeterContext | None":
         if not run_ctx_address:
             return None
         common = PluginRunContext.from_address(int(run_ctx_address))
@@ -327,19 +318,16 @@ class PerimeterContext:
             return None
         return cls(api, common, payload_ptr)
 
-    def plugin_storage(self) -> int:
-        return _address(self.common.plugin_storage)
-
-    def print(self) -> Print:
+    def perimeter_print(self) -> Print:
         return Print(self.api, self.payload.print)
 
-    def object(self) -> Object:
+    def perimeter_object(self) -> Object:
         return Object(self.api, self.payload.object)
 
-    def layer(self) -> Layer:
+    def perimeter_layer(self) -> Layer:
         return Layer(self.api, self.payload.layer)
 
-    def island(self) -> LayerIsland:
+    def perimeter_island(self) -> LayerIsland:
         return LayerIsland(self.api, self.payload.island)
 
     def set_region_island_extrusion(
@@ -355,25 +343,6 @@ class PerimeterContext:
             int(role),
             _void_p(_extrusion_handle(extrusion)),
         ))
-
-    def is_cancelled(self) -> bool:
-        if not self.common.is_cancelled:
-            return False
-        return bool(PLUGIN_IS_CANCELLED(self.common.is_cancelled)(self.common.host_context))
-
-    def report_warning(self, message: str) -> None:
-        if self.common.report_warning:
-            PLUGIN_REPORT(self.common.report_warning)(self.common.host_context, _as_bytes(message))
-
-    def report_error(self, message: str) -> None:
-        if self.common.report_error:
-            PLUGIN_REPORT(self.common.report_error)(self.common.host_context, _as_bytes(message))
-
-    def report_progress(self, progress: float, message: str | None = None) -> None:
-        if self.common.report_progress:
-            PLUGIN_REPORT_PROGRESS(self.common.report_progress)(
-                self.common.host_context, float(progress), _optional_bytes(message)
-            )
 
     def run_region_group(
         self,

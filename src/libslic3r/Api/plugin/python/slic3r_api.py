@@ -92,11 +92,13 @@ except ModuleNotFoundError as exc:
         "generate_slic3r_api.py with an output path next to this file for local experiments."
     ) from exc
 
+from slic3r_abi import abi_requires_headers
 from slic3r_geometry_views import *
 from slic3r_extrusion_views import *
 from slic3r_datatree_views import *
 from slic3r_clipper_views import *
 from slic3r_region_settings_views import *
+from slic3r_run_context import *
 from steps.layer_height import *
 from steps.slicing import *
 from steps.post_slicing import *
@@ -126,19 +128,22 @@ def unscaled(value: float) -> float:
     return float(value) * SCALING_FACTOR
 
 
+@abi_requires_headers("slic3r_plugin_run_context.h")
 def run_context(run_ctx_address: int) -> Optional[PluginRunContext]:
     if not run_ctx_address:
         return None
     return ctypes.cast(ctypes.c_void_p(run_ctx_address), ctypes.POINTER(PluginRunContext)).contents
 
 
-def post_slicing_context(run_ctx_address: int) -> Optional[RunCtxPostSlicing]:
+@abi_requires_headers("steps/slic3r_step_post_slicing.h")
+def raw_post_slicing_context(run_ctx_address: int) -> Optional[RunCtxPostSlicing]:
     ctx = run_context(run_ctx_address)
     if ctx is None or ctx.step != STEP_POST_SLICING or not ctx.data:
         return None
     return ctypes.cast(ctx.data, ctypes.POINTER(RunCtxPostSlicing)).contents
 
 
+@abi_requires_headers("slic3r_plugin_run_context.h")
 def is_cancelled(run_ctx_address: int) -> bool:
     ctx = run_context(run_ctx_address)
     if ctx is None or not ctx.is_cancelled:
@@ -147,18 +152,21 @@ def is_cancelled(run_ctx_address: int) -> bool:
     return bool(fn(ctx.host_context))
 
 
+@abi_requires_headers("slic3r_plugin_run_context.h")
 def report_warning(run_ctx_address: int, message: str) -> None:
     ctx = run_context(run_ctx_address)
     if ctx is not None and ctx.report_warning:
         PLUGIN_REPORT(ctx.report_warning)(ctx.host_context, _as_bytes(message))
 
 
+@abi_requires_headers("slic3r_plugin_run_context.h")
 def report_error(run_ctx_address: int, message: str) -> None:
     ctx = run_context(run_ctx_address)
     if ctx is not None and ctx.report_error:
         PLUGIN_REPORT(ctx.report_error)(ctx.host_context, _as_bytes(message))
 
 
+@abi_requires_headers("slic3r_plugin_run_context.h")
 def report_progress(run_ctx_address: int, progress: float, message: Optional[str] = None) -> None:
     ctx = run_context(run_ctx_address)
     if ctx is not None and ctx.report_progress:
@@ -183,6 +191,7 @@ def used_config_key(
     return (key, int(type), int(container_type), int(option_preset_type))
 
 
+@abi_requires_headers("slic3r_plugin_types.h")
 class PluginBase:
     """
     Base class for Python plugins.
@@ -317,6 +326,7 @@ class Slic3rAPI:
         )
         return self.host.orchestrator_add_gui_rule(self.orchestrator, ctypes.byref(rule))
 
+    @abi_requires_headers("slic3r_config_def.h", "slic3r_orchestrator.h")
     def create_option_def(self, **kwargs) -> int:
         defn = RawConfigOptionDef()
         defn.height = -1
@@ -504,29 +514,37 @@ class Slic3rAPI:
     def triangle_mesh(self, handle: int) -> TriangleMesh:
         return TriangleMesh(self, handle)
 
-    def layer_height(self, run_ctx_address: int) -> LayerHeightContext | None:
-        return LayerHeightContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_layer_height.h")
+    def layer_height_context(self, run_ctx_address: int) -> LayerHeightContext | None:
+        return LayerHeightContext.from_layer_height_run_context(self, run_ctx_address)
 
-    def slicing(self, run_ctx_address: int) -> SlicingContext | None:
-        return SlicingContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_slicing.h")
+    def slicing_context(self, run_ctx_address: int) -> SlicingContext | None:
+        return SlicingContext.from_slicing_run_context(self, run_ctx_address)
 
-    def post_slicing(self, run_ctx_address: int) -> PostSlicingContext | None:
-        return PostSlicingContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_post_slicing.h")
+    def post_slicing_context(self, run_ctx_address: int) -> PostSlicingContext | None:
+        return PostSlicingContext.from_post_slicing_run_context(self, run_ctx_address)
 
-    def post_perimeter(self, run_ctx_address: int) -> PostPerimeterContext | None:
-        return PostPerimeterContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_post_perimeter.h")
+    def post_perimeter_context(self, run_ctx_address: int) -> PostPerimeterContext | None:
+        return PostPerimeterContext.from_post_perimeter_run_context(self, run_ctx_address)
 
-    def post_infill(self, run_ctx_address: int) -> PostInfillContext | None:
-        return PostInfillContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_post_infill.h")
+    def post_infill_context(self, run_ctx_address: int) -> PostInfillContext | None:
+        return PostInfillContext.from_post_infill_run_context(self, run_ctx_address)
 
-    def perimeter(self, run_ctx_address: int) -> PerimeterContext | None:
-        return PerimeterContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_perimeter.h")
+    def perimeter_context(self, run_ctx_address: int) -> PerimeterContext | None:
+        return PerimeterContext.from_perimeter_run_context(self, run_ctx_address)
 
-    def perimeter_module(self, run_ctx_address: int) -> PerimeterModuleContext | None:
-        return PerimeterModuleContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_perimeter.h")
+    def perimeter_module_context(self, run_ctx_address: int) -> PerimeterModuleContext | None:
+        return PerimeterModuleContext.from_perimeter_module_run_context(self, run_ctx_address)
 
-    def surface_generation(self, run_ctx_address: int) -> SurfaceGenerationContext | None:
-        return SurfaceGenerationContext.from_run_context(self, run_ctx_address)
+    @abi_requires_headers("steps/slic3r_step_surface_generation.h")
+    def surface_generation_context(self, run_ctx_address: int) -> SurfaceGenerationContext | None:
+        return SurfaceGenerationContext.from_surface_generation_run_context(self, run_ctx_address)
 
     def storage_clear(self, storage_address: int) -> None:
         self.host.storage_clear(ctypes.c_void_p(storage_address))

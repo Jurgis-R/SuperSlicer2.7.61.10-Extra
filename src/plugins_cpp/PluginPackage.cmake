@@ -205,6 +205,13 @@ function(slic3r_package_python_plugin target package_name entry_file)
         message(FATAL_ERROR "Python plugin '${package_name}' entry '${_entry_file}' does not exist")
     endif()
 
+    # The analyzer follows local imports recursively. Depending on all Python
+    # sources in this plugin source tree guarantees that changing an imported
+    # helper republishes the manifest even though CMake cannot see the AST edge.
+    file(GLOB_RECURSE _python_plugin_local_sources CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/*.py"
+    )
+
     set(_slicer_version "${SLIC3R_VERSION_FULL}")
     set(_package_version "${SLIC3R_RC_VERSION_DOTS}")
     if (PACKAGE_VERSION)
@@ -226,6 +233,7 @@ function(slic3r_package_python_plugin target package_name entry_file)
 
     set(_description "${CMAKE_CURRENT_BINARY_DIR}/${package_name}-$<CONFIG>-description.ini")
     set(_version_file "${CMAKE_CURRENT_BINARY_DIR}/${package_name}-$<CONFIG>-version.ini")
+    set(_python_abi_file "${CMAKE_CURRENT_BINARY_DIR}/${package_name}-$<CONFIG>-python-abi.ini")
     set(_package_directory "${CMAKE_CURRENT_BINARY_DIR}/${package_name}-$<CONFIG>-package")
     set(_changelog_commands)
     set(_changelog_contents)
@@ -250,8 +258,14 @@ function(slic3r_package_python_plugin target package_name entry_file)
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${SLIC3R_BUILD_RESOURCES_DIR}/plugins"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_entry_file}" "${_package_directory}/plugin.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_description}" "${_package_directory}/description.ini"
+        COMMAND "${Python3_EXECUTABLE}" "${SLIC3R_PYTHON_API_DIR}/generate_python_plugin_abi.py"
+            --entry "${_entry_file}"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}"
+            --runtime-root "${SLIC3R_PYTHON_API_DIR}"
+            --catalog "${SLIC3R_PYTHON_ABI_CATALOG}"
+            --output "${_python_abi_file}"
         COMMAND "${Python3_EXECUTABLE}" "${_SLIC3R_PLUGIN_PACKAGE_CMAKE_DIRECTORY}/write_plugin_abi_manifest.py"
-            --base "${_version_file}" --abi "${SLIC3R_PYTHON_ABI_MANIFEST}"
+            --base "${_version_file}" --abi "${_python_abi_file}"
             --output "${_package_directory}/version.ini"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${SLIC3R_GENERATED_DEFAULT_ACTIVATED_FILE}"
@@ -261,6 +275,14 @@ function(slic3r_package_python_plugin target package_name entry_file)
             "${CMAKE_COMMAND}" -E tar cf "${_archive}" --format=zip --
                 plugin.py description.ini version.ini ${_changelog_contents}
         COMMENT "Packaging Python plugin ${package_name}"
+        DEPENDS
+            "${_entry_file}"
+            "${SLIC3R_PYTHON_API_DIR}/generate_python_plugin_abi.py"
+            "${SLIC3R_PYTHON_API_DIR}/slic3r_abi.py"
+            "${SLIC3R_PYTHON_API_DIR}/slic3r_api.py"
+            ${SLIC3R_PYTHON_RUNTIME_SOURCES}
+            ${_python_plugin_local_sources}
+            "${SLIC3R_PYTHON_ABI_CATALOG}"
         VERBATIM
     )
     add_dependencies(${target} Slic3r slic3r_python_api_generated)

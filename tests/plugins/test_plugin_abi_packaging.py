@@ -1,5 +1,6 @@
 """Offline ABI packaging checks, independent of the platform DLL loader."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import re
@@ -10,10 +11,52 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "src/plugins_cpp"))
+sys.path.insert(0, str(ROOT / "src/libslic3r/Api/plugin/python"))
 import write_plugin_abi_manifest as manifest
+from slic3r_abi import ABI_HEADERS_ATTRIBUTE, abi_requires_headers
+
+
+def load_python_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class AbiPackagingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        generator_path = ROOT / "src/libslic3r/Api/plugin/python/generate_slic3r_api.py"
+        analyzer_path = ROOT / "src/libslic3r/Api/plugin/python/generate_python_plugin_abi.py"
+        cls.generator = load_python_module("abi_generator", generator_path)
+        cls.analyzer = load_python_module("python_plugin_abi_generator", analyzer_path)
+
+    def test_python_abi_decorator_preserves_and_composes_targets(self):
+        def binding():
+            return 42
+
+        original = binding
+        binding = abi_requires_headers(" first.h ", "first.h")(binding)
+        binding = abi_requires_headers("steps/second.h")(binding)
+        self.assertIs(binding, original)
+        self.assertEqual(binding(), 42)
+        self.assertEqual(getattr(binding, ABI_HEADERS_ATTRIBUTE), ("first.h", "steps/second.h"))
+
+        @abi_requires_headers("class.h")
+        class Binding:
+            @abi_requires_headers("method.h")
+            def method(self):
+                return 7
+
+        self.assertEqual(getattr(Binding, ABI_HEADERS_ATTRIBUTE), ("class.h",))
+        self.assertEqual(getattr(Binding.method, ABI_HEADERS_ATTRIBUTE), ("method.h",))
+        self.assertEqual(Binding().method(), 7)
+        with self.assertRaises(ValueError):
+            abi_requires_headers()
+        with self.assertRaises(ValueError):
+            abi_requires_headers("")
+
     def test_union_and_failed_generation_never_publish_partial_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -43,19 +86,246 @@ class AbiPackagingTests(unittest.TestCase):
                     manifest.read_binary_abi(binary)
 
     def test_python_header_coverage(self):
-        generator = ROOT / "src/libslic3r/Api/plugin/python/generate_slic3r_api.py"
-        spec = importlib.util.spec_from_file_location("abi_generator", generator)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "abi.ini"
-            output.write_text(module.generate_abi_manifest(), encoding="utf-8")
+            output.write_text(self.generator.generate_abi_manifest(), encoding="utf-8")
             versions = manifest.read_ini_abi(output)
             self.assertIn("slic3r_plugin_types.h", versions)
-            for header in module.header_paths():
+            for header in self.generator.header_paths():
                 if re.search(r"^#define SLIC3R_PLUGIN_API_\w+_MAJOR\s+\d+", header.read_text(encoding="utf-8"), re.MULTILINE):
-                    self.assertIn(header.relative_to(module.HEADER_ROOT).as_posix(), versions)
+                    self.assertIn(header.relative_to(self.generator.HEADER_ROOT).as_posix(), versions)
+
+            first = self.generator.generate_abi_catalog()
+            self.assertEqual(first, self.generator.generate_abi_catalog())
+            catalog = json.loads(first)
+            self.assertIn("slic3r_extrusion_entity.h", catalog["c_functions"]["extrusion_is_loop"])
+            self.assertIn("slic3r_geometry.h", catalog["python_symbols"]["CPoint"])
+            self.assertIn("slic3r_plugin_types.h", catalog["python_symbols"]["PLUGIN_SETUP"])
+            self.assertIn("slic3r_slicing_step.h", catalog["python_symbols"]["STEP_ORDERING"])
+            self.assertEqual(
+                catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"],
+                sorted(catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"]))
+
+    def _write_catalog(self, root):
+        catalog_path = root / "catalog.json"
+        catalog_path.write_text(self.generator.generate_abi_catalog(), encoding="utf-8")
+        return self.analyzer.AbiCatalog.load(catalog_path), catalog_path
+
+    def test_python_plugin_analysis_combines_raw_symbols_wrappers_and_local_imports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            catalog, _catalog_path = self._write_catalog(root)
+            runtime.joinpath("slic3r_api.py").write_text(
+                "from slic3r_abi import abi_requires_headers\n"
+                "@abi_requires_headers('slic3r_config.h')\n"
+                "def wrapped(): pass\n"
+                "class First:\n"
+                " @abi_requires_headers('slic3r_geometry.h')\n"
+                " def touch(self): pass\n"
+                "class Second:\n"
+                " @abi_requires_headers('slic3r_extrusion_entity.h')\n"
+                " def touch(self): pass\n",
+                encoding="utf-8")
+            runtime.joinpath("slic3r_geometry_views.py").write_text(
+                "from slic3r_abi import abi_requires_headers\n"
+                "@abi_requires_headers('slic3r_geometry.h')\n"
+                "class GeometryView: pass\n",
+                encoding="utf-8")
+            runtime.joinpath("slic3r_abi.py").write_text("def abi_requires_headers(*headers): pass\n", encoding="utf-8")
+            root.joinpath("helper.py").write_text(
+                "from slic3r_api import CPoint\n"
+                "def use_type(value: CPoint): return value\n", encoding="utf-8")
+            root.joinpath("relative_helper.py").write_text(
+                "from slic3r_api import STEP_ORDERING\n"
+                "def ordering_step(): return STEP_ORDERING\n", encoding="utf-8")
+            entry = root / "plugin.py"
+            entry.write_text(
+                "from slic3r_api import wrapped as wrapped_alias\n"
+                "from slic3r_geometry_views import GeometryView\n"
+                "from helper import use_type\n"
+                "from .relative_helper import ordering_step\n"
+                "def register_plugin(api):\n"
+                " wrapped_alias()\n"
+                " GeometryView()\n"
+                " api.host.extrusion_is_loop(0)\n"
+                " unknown.touch()\n",
+                encoding="utf-8")
+
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            requirements = self.analyzer.analyze_plugin(entry, root, catalog, bindings)
+            self.assertTrue({
+                "slic3r_plugin_types.h",
+                "slic3r_config.h",
+                "slic3r_geometry.h",
+                "slic3r_extrusion_entity.h",
+                "slic3r_slicing_step.h",
+            }.issubset(requirements))
+
+    def test_common_context_methods_require_only_the_common_run_context(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            for method in (
+                "plugin_storage",
+                "is_cancelled",
+                "report_warning",
+                "report_error",
+                "report_progress",
+            ):
+                with self.subTest(method=method):
+                    self.assertEqual(
+                        bindings.methods[method],
+                        {"slic3r_plugin_run_context.h"},
+                    )
+
+    def test_ambiguous_dunder_init_call_is_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            runtime.joinpath("slic3r_api.py").write_text("", encoding="utf-8")
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            self.assertNotIn("__init__", bindings.methods)
+            entry = root / "plugin.py"
+            entry.write_text(
+                "class Local:\n"
+                " def __init__(self): pass\n"
+                "def run(value):\n"
+                " value.__init__()\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                self.analyzer.analyze_plugin(entry, root, catalog, bindings),
+                {"slic3r_plugin_types.h"},
+            )
+
+    def test_python_plugin_dynamic_access_requires_an_explicit_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            runtime.joinpath("slic3r_api.py").write_text("", encoding="utf-8")
+            runtime.joinpath("slic3r_abi.py").write_text("def abi_requires_headers(*headers): pass\n", encoding="utf-8")
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text("def run(api, name):\n getattr(api.host, name)()\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"plugin\.py:2:2: dynamic plugin API access"):
+                self.analyzer.analyze_plugin(entry, root, catalog, bindings)
+
+            entry.write_text(
+                "from slic3r_abi import abi_requires_headers\n"
+                "@abi_requires_headers('slic3r_geometry.h')\n"
+                "def run(api, name):\n getattr(api.host, name)()\n",
+                encoding="utf-8")
+            requirements = self.analyzer.analyze_plugin(entry, root, catalog, bindings)
+            self.assertIn("slic3r_geometry.h", requirements)
+
+    def test_failed_python_analysis_does_not_replace_a_valid_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            runtime.joinpath("slic3r_api.py").write_text("", encoding="utf-8")
+            runtime.joinpath("slic3r_abi.py").write_text("def abi_requires_headers(*headers): pass\n", encoding="utf-8")
+            _catalog, catalog_path = self._write_catalog(root)
+            entry = root / "plugin.py"
+            entry.write_text("def run(api, name):\n getattr(api.host, name)()\n", encoding="utf-8")
+            output = root / "abi.ini"
+            output.write_text("previous valid manifest\n", encoding="utf-8")
+            command = [
+                sys.executable,
+                str(ROOT / "src/libslic3r/Api/plugin/python/generate_python_plugin_abi.py"),
+                "--entry", str(entry),
+                "--source-root", str(root),
+                "--runtime-root", str(runtime),
+                "--catalog", str(catalog_path),
+                "--output", str(output),
+            ]
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertRegex(result.stderr, r"plugin\.py:2:2: dynamic plugin API access")
+            self.assertEqual(output.read_text(encoding="utf-8"), "previous valid manifest\n")
+
+    def test_python_plugin_rejects_star_import_and_unknown_decorator_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            runtime.joinpath("slic3r_api.py").write_text("", encoding="utf-8")
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text("from slic3r_api import *\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "wildcard imports"):
+                self.analyzer.analyze_plugin(entry, root, catalog, bindings)
+            entry.write_text(
+                "from slic3r_abi import abi_requires_headers\n"
+                "@abi_requires_headers('missing.h')\n"
+                "def run(): pass\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unknown C ABI header 'missing.h'"):
+                self.analyzer.analyze_plugin(entry, root, catalog, bindings)
+            entry.write_text("from slic3r_api import missing_binding\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unknown Python plugin API symbol 'missing_binding'"):
+                self.analyzer.analyze_plugin(entry, root, catalog, bindings)
+
+            runtime.joinpath("slic3r_api.py").write_text(
+                "class Binding:\n"
+                " def method_only(self): pass\n",
+                encoding="utf-8",
+            )
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry.write_text("from slic3r_api import method_only\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unknown Python plugin API symbol 'method_only'"):
+                self.analyzer.analyze_plugin(entry, root, catalog, bindings)
+
+    def test_repository_python_plugins_generate_targeted_manifests(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        plugins = ROOT / "src/plugins_python"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            full_count = len(catalog.headers)
+            entries = [
+                (plugins / "examples/example_python_plugin.py", None),
+                (plugins / "polyholes/polyholes_low_level.py", "steps/slic3r_step_post_slicing.h"),
+                (plugins / "polyholes/polyholes_high_level.py", "steps/slic3r_step_post_slicing.h"),
+                (plugins / "perimeter/simple_perimeter_generator.py", "steps/slic3r_step_perimeter.h"),
+                (plugins / "perimeter/hairy_object.py", "steps/slic3r_step_post_perimeter.h"),
+                (
+                    plugins / "surface/initial_typed_surface_builder.py",
+                    "steps/slic3r_step_surface_generation.h",
+                ),
+            ]
+            for entry, expected_step in entries:
+                with self.subTest(entry=entry.name):
+                    requirements = self.analyzer.analyze_plugin(entry, plugins, catalog, bindings)
+                    self.assertIn("slic3r_plugin_types.h", requirements)
+                    self.assertLess(len(requirements), full_count)
+                    if expected_step is not None:
+                        self.assertIn(expected_step, requirements)
+
+            perimeter_requirements = self.analyzer.analyze_plugin(
+                plugins / "perimeter/simple_perimeter_generator.py",
+                plugins,
+                catalog,
+                bindings,
+            )
+            self.assertIn("steps/slic3r_step_perimeter.h", perimeter_requirements)
+            self.assertTrue({
+                "steps/slic3r_step_layer_height.h",
+                "steps/slic3r_step_post_infill.h",
+                "steps/slic3r_step_post_perimeter.h",
+                "steps/slic3r_step_post_slicing.h",
+                "steps/slic3r_step_slicing.h",
+                "steps/slic3r_step_surface_generation.h",
+            }.isdisjoint(perimeter_requirements))
 
 
 if __name__ == "__main__":

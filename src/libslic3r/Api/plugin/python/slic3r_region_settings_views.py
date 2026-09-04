@@ -105,6 +105,7 @@ from slic3r_geometry_views import (
     StoredExPolygonCollection,
     StoredPolylineCollection,
 )
+from slic3r_abi import abi_requires_headers
 
 
 def _address(handle) -> int:
@@ -119,6 +120,7 @@ def _void_p(handle) -> ctypes.c_void_p:
     return ctypes.c_void_p(_address(handle))
 
 
+@abi_requires_headers("slic3r_config_option.h")
 class RegionSettingsValue:
     """
     Config values for one RegionSettings entry.
@@ -236,6 +238,7 @@ class RegionSettingsValue:
         return False
 
 
+@abi_requires_headers("slic3r_clipper.h")
 class RegionSettingsClip:
     """
     Geometry clip attached to one RegionSettingsValue.
@@ -437,6 +440,7 @@ class RegionSettingsClip:
         return self._expolygons
 
 
+@abi_requires_headers("slic3r_data_tree.h", "slic3r_config.h")
 class RegionSettings:
     """
     Split an island into areas where a group of options has one value.

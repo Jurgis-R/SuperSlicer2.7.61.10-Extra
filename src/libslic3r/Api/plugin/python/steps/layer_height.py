@@ -19,8 +19,10 @@ Context contents
 
 LayerHeightContext exposes:
 
-* read-only print() and object() views for the object being sliced;
-* max_z(), the object-local scaled Z height the descriptor list must cover;
+* read-only layer_height_print() and layer_height_object() views for the object
+  being sliced;
+* layer_height_max_z(), the object-local scaled Z height the descriptor list
+  must cover;
 * enforced_layer_descriptors(), the host-provided fixed boundaries that a
   plugin should preserve unless it intentionally overrides the layer plan;
 * layer_config_ranges(), the object-local Z ranges with their effective config;
@@ -30,13 +32,13 @@ LayerHeightContext exposes:
 Typical use
 -----------
 
-    ctx = api.layer_height(run_ctx_address)
+    ctx = api.layer_height_context(run_ctx_address)
     if ctx is None:
         return
 
     descriptors = []
     z = scale_i(0.2)
-    while z <= ctx.max_z():
+    while z <= ctx.layer_height_max_z():
         descriptors.append((z, scale_i(0.2)))
         z += scale_i(0.2)
     ctx.set_layer_descriptors(descriptors)
@@ -52,15 +54,14 @@ from dataclasses import dataclass
 from typing import Iterable, Iterator
 
 from slic3r_api_generated import (
-    PLUGIN_IS_CANCELLED,
-    PLUGIN_REPORT,
-    PLUGIN_REPORT_PROGRESS,
     CLayerConfigRange,
     PluginRunContext,
     RunCtxLayerHeightGeneration,
     STEP_LAYER_HEIGHT,
 )
 from slic3r_datatree_views import Config, Object, Print
+from slic3r_abi import abi_requires_headers
+from slic3r_run_context import PluginRunContextView
 
 
 def _address(handle) -> int:
@@ -71,14 +72,6 @@ def _address(handle) -> int:
     if hasattr(handle, "c_handle"):
         return _address(handle.c_handle())
     return int(handle)
-
-
-def _as_bytes(text: str) -> bytes:
-    return text.encode("utf-8")
-
-
-def _optional_bytes(text: str | None) -> bytes | None:
-    return None if text is None else text.encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -121,7 +114,8 @@ class LayerConfigRange:
         return Config(self.api, self.raw.config)
 
 
-class LayerHeightContext:
+@abi_requires_headers("steps/slic3r_step_layer_height.h")
+class LayerHeightContext(PluginRunContextView):
     """
     High-level wrapper around the STEP_LAYER_HEIGHT payload.
 
@@ -131,13 +125,12 @@ class LayerHeightContext:
     """
 
     def __init__(self, api, common: PluginRunContext, payload: RunCtxLayerHeightGeneration) -> None:
-        self.api = api
-        self.common = common
+        super().__init__(api, common)
         self.payload = payload
         self._last_descriptor_array = None
 
     @classmethod
-    def from_run_context(cls, api, run_ctx_address: int) -> "LayerHeightContext | None":
+    def from_layer_height_run_context(cls, api, run_ctx_address: int) -> "LayerHeightContext | None":
         if not run_ctx_address:
             return None
         common = PluginRunContext.from_address(int(run_ctx_address))
@@ -148,16 +141,13 @@ class LayerHeightContext:
             return None
         return cls(api, common, payload)
 
-    def plugin_storage(self) -> int:
-        return _address(self.common.plugin_storage)
-
-    def print(self) -> Print:
+    def layer_height_print(self) -> Print:
         return Print(self.api, self.payload.print)
 
-    def object(self) -> Object:
+    def layer_height_object(self) -> Object:
         return Object(self.api, self.payload.object)
 
-    def max_z(self) -> int:
+    def layer_height_max_z(self) -> int:
         return int(self.payload.max_z)
 
     def enforced_layer_descriptor_values(self) -> list[int]:
@@ -215,26 +205,6 @@ class LayerHeightContext:
                 top_z, height = descriptor
             values.extend([int(top_z), int(height)])
         self.set_layer_descriptor_values(values)
-
-    def is_cancelled(self) -> bool:
-        if not self.common.is_cancelled:
-            return False
-        return bool(PLUGIN_IS_CANCELLED(self.common.is_cancelled)(self.common.host_context))
-
-    def report_warning(self, message: str) -> None:
-        if self.common.report_warning:
-            PLUGIN_REPORT(self.common.report_warning)(self.common.host_context, _as_bytes(message))
-
-    def report_error(self, message: str) -> None:
-        if self.common.report_error:
-            PLUGIN_REPORT(self.common.report_error)(self.common.host_context, _as_bytes(message))
-
-    def report_progress(self, progress: float, message: str | None = None) -> None:
-        if self.common.report_progress:
-            PLUGIN_REPORT_PROGRESS(self.common.report_progress)(
-                self.common.host_context, float(progress), _optional_bytes(message)
-            )
-
 
 __all__ = [
     "LayerConfigRange",

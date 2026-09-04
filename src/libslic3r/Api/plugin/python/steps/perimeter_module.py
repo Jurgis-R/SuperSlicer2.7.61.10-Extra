@@ -39,7 +39,7 @@ Typical use
             self._published_module = None
 
         def run(self, run_ctx_address):
-            ctx = self.api.perimeter_module(run_ctx_address)
+            ctx = self.api.perimeter_module_context(run_ctx_address)
             if ctx is not None:
                 self._published_module = ctx.publish(after=self.after)
 
@@ -69,6 +69,7 @@ from slic3r_api_generated import (
     RunCtxPerimeterGenerationModule,
 )
 from .perimeter import PerimeterGenerationContextView, PerimeterNodeView
+from slic3r_abi import abi_requires_headers
 
 
 def _address(handle) -> int:
@@ -193,6 +194,7 @@ class PublishedPerimeterGenerationModule:
             self._report_error(raw_context, f"Python perimeter module end failed: {exc}")
 
 
+@abi_requires_headers("steps/slic3r_step_perimeter.h")
 class PerimeterModuleContext:
     """
     High-level wrapper around the PERIMETER_GENERATION_MODULE payload.
@@ -208,7 +210,7 @@ class PerimeterModuleContext:
         self.payload = payload
 
     @classmethod
-    def from_run_context(cls, api, run_ctx_address: int) -> "PerimeterModuleContext | None":
+    def from_perimeter_module_run_context(cls, api, run_ctx_address: int) -> "PerimeterModuleContext | None":
         if not run_ctx_address:
             return None
         common = PluginRunContext.from_address(int(run_ctx_address))

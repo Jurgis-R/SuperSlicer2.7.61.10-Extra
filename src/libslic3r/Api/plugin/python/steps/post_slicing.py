@@ -16,10 +16,10 @@ Context contents
 
 PostSlicingContext exposes:
 
-* mutable print() and object() views because this step is allowed to edit the
-  freshly produced layer slices;
-* mutable_layer(), plus borrowed layer, LayerRegion, and LayerIsland polygon
-  views for targeted edits;
+* mutable post_slicing_print() and post_slicing_object() views because this
+  step is allowed to edit the freshly produced layer slices;
+* post_slicing_mutable_layer(), plus borrowed layer, LayerRegion, and
+  LayerIsland polygon views for targeted edits;
 * assign_islands_by_moving_contents(), for replacing a layer's islands from a
   storage-owned ExPolygon collection;
 * recompute_slices_from_islands() and
@@ -31,16 +31,16 @@ PostSlicingContext exposes:
 Typical use
 -----------
 
-    ctx = api.post_slicing(run_ctx_address)
+    ctx = api.post_slicing_context(run_ctx_address)
     if ctx is None:
         return
 
-    obj = ctx.object()
+    obj = ctx.post_slicing_object()
     for layer_idx in range(obj.layer_count()):
         layer = obj.layer_mutable(layer_idx)
         for region_idx in range(layer.region_count()):
             region = layer.region_mutable(region_idx)
-            slices = ctx.borrow_layer_region_slices(region)
+            slices = ctx.post_slicing_borrow_layer_region_slices(region)
             # edit slices here
         ctx.recompute_slices_and_islands_from_layer_region(layer)
 
@@ -54,15 +54,14 @@ from __future__ import annotations
 import ctypes
 
 from slic3r_api_generated import (
-    PLUGIN_IS_CANCELLED,
-    PLUGIN_REPORT,
-    PLUGIN_REPORT_PROGRESS,
     PluginRunContext,
     RunCtxPostSlicing,
     STEP_POST_SLICING,
 )
 from slic3r_datatree_views import MutableLayer, MutableLayerIsland, MutableLayerRegion, MutableObject, MutablePrint
 from slic3r_geometry_views import ExPolygonCollection, MutableExPolygonCollection, MutableExPolygon
+from slic3r_abi import abi_requires_headers
+from slic3r_run_context import PluginRunContextView
 
 
 def _address(handle) -> int:
@@ -77,23 +76,15 @@ def _void_p(handle) -> ctypes.c_void_p:
     return ctypes.c_void_p(_address(handle))
 
 
-def _as_bytes(text: str) -> bytes:
-    return text.encode("utf-8")
-
-
-def _optional_bytes(text: str | None) -> bytes | None:
-    return None if text is None else text.encode("utf-8")
-
-
 # High-level wrapper around the STEP_POST_SLICING payload.
-class PostSlicingContext:
+@abi_requires_headers("steps/slic3r_step_post_slicing.h")
+class PostSlicingContext(PluginRunContextView):
     def __init__(self, api, common: PluginRunContext, payload: RunCtxPostSlicing) -> None:
-        self.api = api
-        self.common = common
+        super().__init__(api, common)
         self.payload = payload
 
     @classmethod
-    def from_run_context(cls, api, run_ctx_address: int) -> "PostSlicingContext | None":
+    def from_post_slicing_run_context(cls, api, run_ctx_address: int) -> "PostSlicingContext | None":
         if not run_ctx_address:
             return None
         common = PluginRunContext.from_address(int(run_ctx_address))
@@ -104,16 +95,13 @@ class PostSlicingContext:
             return None
         return cls(api, common, payload)
 
-    def plugin_storage(self) -> int:
-        return _address(self.common.plugin_storage)
-
-    def print(self) -> MutablePrint:
+    def post_slicing_print(self) -> MutablePrint:
         return MutablePrint(self.api, self.payload.print)
 
-    def object(self) -> MutableObject:
+    def post_slicing_object(self) -> MutableObject:
         return MutableObject(self.api, self.payload.object)
 
-    def mutable_layer(self, idx: int) -> MutableLayer:
+    def post_slicing_mutable_layer(self, idx: int) -> MutableLayer:
         """
         Borrow one mutable object layer through the step callback.
 
@@ -128,7 +116,9 @@ class PostSlicingContext:
         handle = self.payload.layer_borrow_mutable_slices(layer.mutable_c_handle())
         return MutableExPolygonCollection(self.api, handle)
 
-    def borrow_layer_region_slices(self, layer_region: MutableLayerRegion) -> MutableExPolygonCollection:
+    def post_slicing_borrow_layer_region_slices(
+        self, layer_region: MutableLayerRegion
+    ) -> MutableExPolygonCollection:
         handle = self.payload.layer_region_borrow_mutable_slices(layer_region.mutable_c_handle())
         return MutableExPolygonCollection(self.api, handle)
 
@@ -151,30 +141,10 @@ class PostSlicingContext:
     def recompute_slices_and_islands_from_layer_region(self, layer: MutableLayer) -> None:
         self.payload.layer_recompute_slices_and_islands_from_layer_region(layer.mutable_c_handle())
 
-    def storage_size(self) -> int:
+    def post_slicing_storage_size(self) -> int:
         return int(self.api.host.storage_size(_void_p(self.plugin_storage())))
 
     def clear_storage(self) -> None:
         self.api.host.storage_clear(_void_p(self.plugin_storage()))
-
-    def is_cancelled(self) -> bool:
-        if not self.common.is_cancelled:
-            return False
-        return bool(PLUGIN_IS_CANCELLED(self.common.is_cancelled)(self.common.host_context))
-
-    def report_warning(self, message: str) -> None:
-        if self.common.report_warning:
-            PLUGIN_REPORT(self.common.report_warning)(self.common.host_context, _as_bytes(message))
-
-    def report_error(self, message: str) -> None:
-        if self.common.report_error:
-            PLUGIN_REPORT(self.common.report_error)(self.common.host_context, _as_bytes(message))
-
-    def report_progress(self, progress: float, message: str | None = None) -> None:
-        if self.common.report_progress:
-            PLUGIN_REPORT_PROGRESS(self.common.report_progress)(
-                self.common.host_context, float(progress), _optional_bytes(message)
-            )
-
 
 __all__ = ["PostSlicingContext"]

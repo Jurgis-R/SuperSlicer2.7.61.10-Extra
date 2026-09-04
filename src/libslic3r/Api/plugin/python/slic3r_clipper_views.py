@@ -73,6 +73,7 @@ from slic3r_geometry_views import (
     StoredExPolygonCollection,
     StoredPolygonCollection,
 )
+from slic3r_abi import abi_requires_headers
 
 
 def _address(handle) -> int:
@@ -127,6 +128,7 @@ def _unary_args(storage_or_subject, subject=None):
     return subject.api, storage, subject
 
 
+@abi_requires_headers("slic3r_clipper.h")
 class ClipperOperand:
     """
     Storage-owned Clipper input or result.
@@ -463,6 +465,7 @@ def clipper_clip_shapes_with_subject_bbox(storage_or_subject, subject_or_bbox=No
     return ClipperOperand.adopt_owned(api, storage, handle)
 
 
+@abi_requires_headers("slic3r_clipper.h")
 class ClipperContext:
     """
     Convenience object bound to one storage_handle.

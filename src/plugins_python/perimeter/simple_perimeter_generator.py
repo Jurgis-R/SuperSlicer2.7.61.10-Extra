@@ -92,7 +92,7 @@ class PythonSimplePerimeterGeneratorPlugin(PluginBase):
         self.api = api
 
     def run(self, run_ctx_address: int) -> None:
-        ctx = self.api.perimeter(run_ctx_address)
+        ctx = self.api.perimeter_context(run_ctx_address)
         if ctx is None:
             return
 
@@ -102,7 +102,7 @@ class PythonSimplePerimeterGeneratorPlugin(PluginBase):
             ctx.report_error(f"Python simple perimeter generator failed: {exc}")
 
     def _run_perimeter(self, ctx) -> None:
-        island = ctx.island()
+        island = ctx.perimeter_island()
         regions = list(island.regions())
         if not regions:
             return
@@ -116,7 +116,7 @@ class PythonSimplePerimeterGeneratorPlugin(PluginBase):
         ctx.run_region_group(regions, island.slice(), state, self._generate_node)
 
     def _generate_node(self, state: SimpleGeneratorState, generation, node, inner_areas, inner_fill_areas) -> bool:
-        storage = generation.plugin_storage()
+        storage = generation.perimeter_generation_plugin_storage()
         flow = state.flow
 
         if state.perimeter_count > 0:

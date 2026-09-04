@@ -16,8 +16,9 @@ Context contents
 
 PostPerimeterContext exposes:
 
-* read-only print() and object() views; topology is not edited directly here;
-* mutable_extrusion(), the callback that borrows one extrusion bucket from a
+* read-only post_perimeter_print() and post_perimeter_object() views; topology
+  is not edited directly here;
+* post_perimeter_mutable_extrusion(), the callback that borrows one extrusion bucket from a
   LayerRegionIsland for a specific role;
 * set_island_fill_areas() and set_island_fill_free_areas(), which replace the
   island-level areas consumed by surface generation;
@@ -28,11 +29,11 @@ PostPerimeterContext exposes:
 Typical use
 -----------
 
-    ctx = api.post_perimeter(run_ctx_address)
-    for layer in ctx.object().layers():
+    ctx = api.post_perimeter_context(run_ctx_address)
+    for layer in ctx.post_perimeter_object().layers():
         for island in layer.islands():
             for region_island in island.region_islands():
-                root = ctx.mutable_extrusion(region_island, RAW_EXTRUSION_ROLE_PERIMETER)
+                root = ctx.post_perimeter_mutable_extrusion(region_island, RAW_EXTRUSION_ROLE_PERIMETER)
                 if root is not None:
                     root.disable_sort()
 
@@ -45,9 +46,6 @@ from __future__ import annotations
 import ctypes
 
 from slic3r_api_generated import (
-    PLUGIN_IS_CANCELLED,
-    PLUGIN_REPORT,
-    PLUGIN_REPORT_PROGRESS,
     RAW_FACET_PAINTING_ENFORCER,
     RunCtxPostPerimeterGeneration,
     PluginRunContext,
@@ -56,6 +54,8 @@ from slic3r_api_generated import (
 from slic3r_datatree_views import LayerIsland, LayerRegionIsland, Object, Print
 from slic3r_extrusion_views import MutableExtrusionEntity
 from slic3r_geometry_views import StoredExPolygonCollection, StoredPolygonCollection
+from slic3r_abi import abi_requires_headers
+from slic3r_run_context import PluginRunContextView
 
 
 def _address(handle) -> int:
@@ -76,11 +76,8 @@ def _as_bytes(text: str) -> bytes:
     return text.encode("utf-8")
 
 
-def _optional_bytes(text: str | None) -> bytes | None:
-    return None if text is None else text.encode("utf-8")
-
-
-class PostPerimeterContext:
+@abi_requires_headers("steps/slic3r_step_post_perimeter.h")
+class PostPerimeterContext(PluginRunContextView):
     """
     High-level wrapper around the STEP_POST_PERIMETER payload.
 
@@ -90,13 +87,12 @@ class PostPerimeterContext:
     """
 
     def __init__(self, api, common: PluginRunContext, payload_ptr) -> None:
-        self.api = api
-        self.common = common
+        super().__init__(api, common)
         self._payload_ptr = payload_ptr
         self.payload = payload_ptr.contents
 
     @classmethod
-    def from_run_context(cls, api, run_ctx_address: int) -> "PostPerimeterContext | None":
+    def from_post_perimeter_run_context(cls, api, run_ctx_address: int) -> "PostPerimeterContext | None":
         if not run_ctx_address:
             return None
         common = PluginRunContext.from_address(int(run_ctx_address))
@@ -108,35 +104,15 @@ class PostPerimeterContext:
             return None
         return cls(api, common, payload_ptr)
 
-    def plugin_storage(self) -> int:
-        return _address(self.common.plugin_storage)
-
-    def print(self) -> Print:
+    def post_perimeter_print(self) -> Print:
         return Print(self.api, self.payload.print)
 
-    def object(self) -> Object:
+    def post_perimeter_object(self) -> Object:
         return Object(self.api, self.payload.object)
 
-    def is_cancelled(self) -> bool:
-        if not self.common.is_cancelled:
-            return False
-        return bool(PLUGIN_IS_CANCELLED(self.common.is_cancelled)(self.common.host_context))
-
-    def report_warning(self, message: str) -> None:
-        if self.common.report_warning:
-            PLUGIN_REPORT(self.common.report_warning)(self.common.host_context, _as_bytes(message))
-
-    def report_error(self, message: str) -> None:
-        if self.common.report_error:
-            PLUGIN_REPORT(self.common.report_error)(self.common.host_context, _as_bytes(message))
-
-    def report_progress(self, progress: float, message: str | None = None) -> None:
-        if self.common.report_progress:
-            PLUGIN_REPORT_PROGRESS(self.common.report_progress)(
-                self.common.host_context, float(progress), _optional_bytes(message)
-            )
-
-    def mutable_extrusion(self, region_island: LayerRegionIsland, role: int) -> MutableExtrusionEntity | None:
+    def post_perimeter_mutable_extrusion(
+        self, region_island: LayerRegionIsland, role: int
+    ) -> MutableExtrusionEntity | None:
         if not self.payload.get_region_island_mutable_extrusion:
             return None
         handle = self.payload.get_region_island_mutable_extrusion(region_island.c_handle(), int(role))
@@ -169,7 +145,7 @@ class PostPerimeterContext:
         Empty collections simply mean that the layer has no matching painted
         facets.
         """
-        obj = self.object()
+        obj = self.post_perimeter_object()
         storage = self.plugin_storage()
         layer_count = obj.layer_count()
         by_layer = [StoredPolygonCollection(self.api, storage) for _ in range(layer_count)]

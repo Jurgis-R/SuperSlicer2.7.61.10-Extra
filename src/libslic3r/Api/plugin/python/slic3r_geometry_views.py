@@ -84,6 +84,7 @@ from slic3r_api_generated import (
     MultipointView,
     SCALED_EPSILON,
 )
+from slic3r_abi import abi_requires_headers
 
 
 PI = 3.141592653589793238
@@ -270,6 +271,7 @@ class StoredHandleMixin:
 # Shared read-only point-sequence API. Polygon and Polyline expose this API
 # through their underlying multipoint handle, so most point algorithms can work
 # on either type.
+@abi_requires_headers("slic3r_geometry.h")
 class MultiPointReadMixin:
     def multipoint_handle(self) -> int:
         return self.handle()
@@ -335,6 +337,7 @@ class MultiPointReadMixin:
 # Shared mutable point-sequence API. Use it only on geometry you own in the
 # current storage, or on borrowed geometry that the host explicitly exposed as
 # mutable for the current step.
+@abi_requires_headers("slic3r_geometry.h")
 class MultiPointMutableMixin:
     def mutable_multipoint_handle(self) -> int:
         return self.mutable_handle()
@@ -571,6 +574,7 @@ class StoredPolyline(Polyline, StoredHandleMixin, MultiPointMutableMixin):
 
 # Shared read-only collection API. Iteration returns borrowed element views; do
 # not keep those views after the collection is modified or destroyed.
+@abi_requires_headers("slic3r_geometry.h")
 class CollectionReadMixin:
     _view_cls = None
     _stored_collection_cls = None
@@ -626,6 +630,7 @@ class CollectionReadMixin:
 
 # Shared mutable collection API for Stored*Collection classes. Copy methods keep
 # the source unchanged; move methods leave the source object or element empty.
+@abi_requires_headers("slic3r_geometry.h", "slic3r_utils.h")
 class StoredCollectionMixin:
     _stored_value_cls = None
     _clear_fn = ""
