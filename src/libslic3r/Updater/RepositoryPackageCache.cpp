@@ -241,6 +241,7 @@ bool write_description_file(const boost::filesystem::path &path,
         stream << "config_update_rest = " << description.config_update_rest << "\n";
         stream << "slicer = " << description.slicer << "\n";
         stream << "internal = " << (description.is_internal ? 1 : 0) << "\n";
+        stream << "bundled_exact = " << (description.is_bundled_exact ? 1 : 0) << "\n";
         if (!stream.good()) {
             error_message = "Cannot finish repository description '" + path.string() + "'.";
             return false;
@@ -362,6 +363,10 @@ bool descriptions_match(const RepositoryDescription &actual,
     }
     if (actual.is_internal != expected.is_internal) {
         error_message = "Package description visibility does not match its expected value.";
+        return false;
+    }
+    if (actual.is_bundled_exact != expected.is_bundled_exact) {
+        error_message = "Package bundled lifecycle does not match its expected value.";
         return false;
     }
     return true;

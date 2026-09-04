@@ -533,6 +533,9 @@ bool parse_repository_description(const std::string &contents,
         bool is_internal = false;
         parse_repository_enabled_value(section.get<std::string>("internal", "0"), is_internal);
         description.is_internal = is_internal;
+        bool is_bundled_exact = false;
+        parse_repository_enabled_value(section.get<std::string>("bundled_exact", "0"), is_bundled_exact);
+        description.is_bundled_exact = is_bundled_exact;
         // Version-looking keys are accepted for compatibility with packages
         // produced before versions were separated, but are intentionally not
         // copied into the generic repository description.
@@ -846,6 +849,92 @@ bool plugin_package_is_compatible(const boost::filesystem::path &package_root, s
     return metadata.compatibility.compatible();
 }
 
+bool bundled_exact_plugin_package_is_valid(const boost::filesystem::path &data_directory,
+                                           const std::string &package_name,
+                                           const PluginInstalledVersion &version,
+                                           std::string &error_message)
+{
+    if (!plugin_package_cache_is_valid(data_directory, package_name, version, error_message))
+        return false;
+
+    const boost::filesystem::path package_root = repository_package_cache_path(
+        data_directory, RepositoryPackageType::Plugin, package_name,
+        version.package_version, version.slicer_version);
+    RepositoryDescription description;
+    boost::nowide::ifstream stream((package_root / "description.ini").string());
+    if (!stream) {
+        error_message = "Cannot read exact bundled package description '" +
+                        (package_root / "description.ini").string() + "'.";
+        return false;
+    }
+    const std::string contents((std::istreambuf_iterator<char>(stream)),
+                               std::istreambuf_iterator<char>());
+    if (!parse_repository_description(contents, RepositoryPackageType::Plugin,
+                                      description, error_message))
+        return false;
+    if (description.id != package_name || !description.is_bundled_exact) {
+        error_message = "Bundled package '" + package_name +
+                        "' does not declare bundled_exact = 1.";
+        return false;
+    }
+    return plugin_package_is_compatible(package_root, error_message);
+}
+
+bool reconcile_bundled_exact_plugin_packages(
+    const boost::filesystem::path &data_directory,
+    const std::map<std::string, PluginInstalledVersion> &packages,
+    std::vector<std::string> &diagnostics,
+    std::string &error_message)
+{
+    diagnostics.clear();
+    error_message.clear();
+    FilesystemTransaction transaction;
+    const boost::filesystem::path live_root = data_directory / PLUGIN_DIRECTORY;
+
+    // Each managed destination is independent of the user-selected package
+    // set. Invalid shipped content removes only its own stale live runtime.
+    for (const auto &[package_name, version] : packages) {
+        const boost::filesystem::path destination = live_root / package_name;
+        std::string validation_error;
+        if (!bundled_exact_plugin_package_is_valid(
+                data_directory, package_name, version, validation_error)) {
+            diagnostics.emplace_back("Cannot use exact bundled package '" + package_name + "': " +
+                                     validation_error);
+            transaction.add_removal(destination);
+            continue;
+        }
+
+        const boost::filesystem::path source = repository_package_cache_path(
+            data_directory, RepositoryPackageType::Plugin, package_name,
+            version.package_version, version.slicer_version);
+        const boost::filesystem::path staging = live_root /
+            boost::filesystem::unique_path("." + package_name + ".bundled-exact-%%%%-%%%%");
+        if (!copy_directory_tree(source, staging, validation_error) ||
+            !validate_plugin_package(staging, package_name, version, validation_error) ||
+            !plugin_package_is_compatible(staging, validation_error)) {
+            boost::system::error_code cleanup_error;
+            boost::filesystem::remove_all(staging, cleanup_error);
+            diagnostics.emplace_back("Cannot stage exact bundled package '" + package_name + "': " +
+                                     validation_error);
+            transaction.add_removal(destination);
+        } else {
+            transaction.add_replacement(staging, destination);
+        }
+    }
+
+    const FilesystemTransactionResult result = transaction.commit();
+    log_plugin_transaction_cleanup_warnings(result);
+    if (result.status == FilesystemTransactionStatus::RollbackFailed)
+        throw RuntimeError("Exact bundled plugin transaction could not restore the live repository: " +
+                           format_filesystem_transaction_error(result));
+    if (result.status != FilesystemTransactionStatus::Committed) {
+        error_message = "Cannot synchronize exact bundled plugin packages: " +
+                        format_filesystem_transaction_error(result);
+        return false;
+    }
+    return diagnostics.empty();
+}
+
 bool request_plugin_install(const std::string &package_name,
                             const std::string &package_version,
                             const std::string &slicer_version,
@@ -857,16 +946,20 @@ bool request_plugin_install(const std::string &package_name,
     }
     PluginInstalledVersion version{package_version, slicer_version};
     const boost::filesystem::path data_directory(data_dir());
+    PluginActivationConfig config;
+    bool from_user_config = false;
+    if (!ensure_plugin_activation_config(data_directory, config, from_user_config, error_message))
+        return false;
+    if (config.bundled_exact.count(package_name) != 0) {
+        error_message = "Plugin package '" + package_name +
+                        "' is synchronized with the application and cannot be installed manually.";
+        return false;
+    }
     if (!prepare_plugin_cache(data_directory, error_message) ||
         !plugin_package_cache_is_valid(data_directory, package_name, version, error_message))
         return false;
     if (!plugin_package_is_compatible(repository_package_cache_path(data_directory,
             RepositoryPackageType::Plugin, package_name, package_version, slicer_version), error_message))
-        return false;
-
-    PluginActivationConfig config;
-    bool from_user_config = false;
-    if (!ensure_plugin_activation_config(data_directory, config, from_user_config, error_message))
         return false;
     config.installed[package_name] = version;
     return write_plugin_activation_config(plugin_activation_config_path(data_directory), config, error_message);
@@ -888,6 +981,11 @@ bool request_plugin_uninstall(const std::string &package_name, std::string &erro
     const boost::filesystem::path data_directory(data_dir());
     if (!ensure_plugin_activation_config(data_directory, config, from_user_config, error_message))
         return false;
+    if (config.bundled_exact.count(package_name) != 0) {
+        error_message = "Plugin package '" + package_name +
+                        "' is synchronized with the application and cannot be removed.";
+        return false;
+    }
     config.installed.erase(package_name);
     for (std::map<std::string, std::string>::iterator it = config.plugin_packages.begin();
          it != config.plugin_packages.end();) {

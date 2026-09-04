@@ -454,7 +454,11 @@ void PluginUpdateDialog::add_plugin_row(const PluginSync &plugin,
     wxButton *package_button = new wxButton(package_panel, wxID_ANY, display_name);
     package_sizer->Add(package_button, 1, wxEXPAND);
     package_panel->SetSizer(package_sizer);
-    if (plugin.available_packages.empty()) {
+    if (plugin.is_bundled_exact()) {
+        package_button->Enable(false);
+        package_panel->SetToolTip(
+            _L("This system package is supplied and synchronized by the application."));
+    } else if (plugin.available_packages.empty()) {
         package_button->Enable(false);
         package_panel->SetToolTip(_L("No plugin package version is available in the local cache or repository."));
     } else {
@@ -558,7 +562,11 @@ void PluginUpdateDialog::add_plugin_row(const PluginSync &plugin,
     // install action. This avoids presenting a permanently disabled command as
     // if an update were available.
     wxWindow *upgrade_control = nullptr;
-    if (plugin.load_report.has_value() && !plugin.load_report->issues.empty()) {
+    if (plugin.is_bundled_exact()) {
+        upgrade_control = new wxStaticText(m_content, wxID_ANY, _L("Bundled with application"));
+        upgrade_control->SetToolTip(
+            _L("This exact package version is installed automatically when the application starts."));
+    } else if (plugin.load_report.has_value() && !plugin.load_report->issues.empty()) {
         upgrade_control = new wxStaticText(m_content, wxID_ANY,
                                            plugin_package_load_label(*plugin.load_report));
         upgrade_control->SetToolTip(plugin_package_load_tooltip(*plugin.load_report));
@@ -639,14 +647,20 @@ void PluginUpdateDialog::add_plugin_row(const PluginSync &plugin,
     grid.Add(upgrade_control, 0, wxALIGN_CENTER_VERTICAL | wxEXPAND);
 
     wxString remove_label;
-    if (plugin.is_installed)
+    if (plugin.is_bundled_exact())
+        remove_label = _L("System package");
+    else if (plugin.is_installed)
         remove_label = _L("Uninstall");
     else if (plugin.has_cache)
         remove_label = _L("Clear cache");
     else
         remove_label = _L("Not installed");
     wxButton *remove_button = new wxButton(m_content, wxID_ANY, remove_label);
-    if (plugin.is_installed) {
+    if (plugin.is_bundled_exact()) {
+        remove_button->Enable(false);
+        remove_button->SetToolTip(
+            _L("This package is managed by the application and cannot be removed manually."));
+    } else if (plugin.is_installed) {
         remove_button->SetToolTip(
             _L("Schedule this plugin for removal when the application next starts."));
         bind_repository_action(*remove_button, [this, plugin_id](wxCommandEvent &) {
@@ -718,6 +732,10 @@ void PluginUpdateDialog::check_updates()
 
 void PluginUpdateDialog::choose_version(const std::string &plugin_id)
 {
+    const std::optional<PluginSync> plugin = m_updater.plugin(plugin_id);
+    if (!plugin || plugin->is_bundled_exact())
+        return;
+
     // Changelog failures do not hide otherwise usable packages. The chooser
     // opens after every request has finished and leaves missing notes blank.
     begin_plugin_operation(_L("Loading package and repository changelogs, please wait"));
@@ -742,6 +760,8 @@ void PluginUpdateDialog::choose_version(const std::string &plugin_id)
 void PluginUpdateDialog::install_latest(const std::string &plugin_id)
 {
     const std::optional<PluginSync> plugin = m_updater.plugin(plugin_id);
+    if (plugin && plugin->is_bundled_exact())
+        return;
     const PluginAvailable *best = plugin ? plugin->best_available() : nullptr;
     if (best == nullptr)
         return;
@@ -765,7 +785,7 @@ void PluginUpdateDialog::install_latest(const std::string &plugin_id)
 void PluginUpdateDialog::uninstall(const std::string &plugin_id)
 {
     const std::optional<PluginSync> plugin = m_updater.plugin(plugin_id);
-    if (!plugin || !plugin->is_installed)
+    if (!plugin || !plugin->is_installed || plugin->is_bundled_exact())
         return;
     const wxString display_name = from_u8(
         plugin->description.full_name.empty() ? plugin_id : plugin->description.full_name);
@@ -797,7 +817,7 @@ void PluginUpdateDialog::uninstall(const std::string &plugin_id)
 void PluginUpdateDialog::clear_cache(const std::string &plugin_id)
 {
     const std::optional<PluginSync> plugin = m_updater.plugin(plugin_id);
-    if (!plugin || plugin->is_installed || !plugin->has_cache)
+    if (!plugin || plugin->is_bundled_exact() || plugin->is_installed || !plugin->has_cache)
         return;
     const wxString display_name = from_u8(
         plugin->description.full_name.empty() ? plugin_id : plugin->description.full_name);

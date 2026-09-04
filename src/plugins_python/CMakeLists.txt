@@ -120,11 +120,13 @@ if (TARGET Python3::Python)
 
     # The bridge is runtime infrastructure shared by every pure Python package.
     # INTERNAL lets it load successfully without registering a user-selectable
-    # plugin id; the package itself remains manageable in Plugin Package Manager.
+    # plugin id. BUNDLED_EXACT binds its lifecycle to this application build;
+    # Plugin Package Manager therefore exposes it as a read-only component.
     slic3r_package_plugin(
         python_plugin_loader
         python
         INTERNAL
+        BUNDLED_EXACT
         NAME "Python plugin support"
         DESCRIPTION "Runtime support for plugins implemented in Python."
         FILES python

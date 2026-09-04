@@ -1,6 +1,9 @@
 [installed]
 ; Package versions installed into a new profile before plugin activation.
 @SLIC3R_DEFAULT_INSTALLED_PLUGIN_ENTRIES@
+[bundled_exact]
+; Exact system package versions supplied by this application build.
+@SLIC3R_BUNDLED_EXACT_PLUGIN_ENTRIES@
 [activated]
 ; Plugin ids enabled on a fresh profile.
 standard_layer_height_generator = 1

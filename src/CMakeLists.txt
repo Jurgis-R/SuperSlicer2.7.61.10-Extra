@@ -176,6 +176,17 @@ foreach(_default_plugin_package IN LISTS _default_plugin_packages)
         "${_default_plugin_id} = ${_default_plugin_version}\n"
         "${_default_plugin_id}.slicer_version = ${_default_plugin_slicer_version}\n")
 endforeach()
+get_property(_bundled_exact_plugin_packages GLOBAL PROPERTY SLIC3R_BUNDLED_EXACT_PLUGIN_PACKAGES)
+set(SLIC3R_BUNDLED_EXACT_PLUGIN_ENTRIES "")
+foreach(_bundled_exact_plugin_package IN LISTS _bundled_exact_plugin_packages)
+    string(REPLACE "|" ";" _bundled_exact_fields "${_bundled_exact_plugin_package}")
+    list(GET _bundled_exact_fields 0 _bundled_exact_id)
+    list(GET _bundled_exact_fields 1 _bundled_exact_version)
+    list(GET _bundled_exact_fields 2 _bundled_exact_slicer_version)
+    string(APPEND SLIC3R_BUNDLED_EXACT_PLUGIN_ENTRIES
+        "${_bundled_exact_id} = ${_bundled_exact_version}\n"
+        "${_bundled_exact_id}.slicer_version = ${_bundled_exact_slicer_version}\n")
+endforeach()
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated-resources/plugins")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/plugins/default_activated.ini.in"
                "${SLIC3R_GENERATED_DEFAULT_ACTIVATED_FILE}" @ONLY)

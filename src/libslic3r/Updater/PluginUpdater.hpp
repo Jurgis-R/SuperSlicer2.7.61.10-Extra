@@ -42,6 +42,9 @@ struct PluginAvailable : public RepositoryPackageVersion {
 
 struct PluginSync {
     RepositoryDescription description;
+    // Present for a system package whose version is dictated by the current
+    // application bundle rather than by an updater selection.
+    std::optional<PluginInstalledVersion> bundled_exact_version;
     // Desired selection from activated.ini; it may not be active until restart.
     PluginInstalledVersion installed_version;
     PluginPackageMetadata installed_metadata;
@@ -51,6 +54,7 @@ struct PluginSync {
     std::optional<PluginInstalledVersion> live_version;
     // Compare package and build identities without inspecting files from the GUI.
     bool installation_pending() const;
+    bool is_bundled_exact() const { return bundled_exact_version.has_value(); }
     // True when the repository cache contains this plugin description. The
     // entry may exist before any package version has been downloaded.
     bool has_cache = false;

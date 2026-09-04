@@ -3292,7 +3292,7 @@ TEST_CASE_METHOD(PluginUpdaterFunctionalFixture,
     CHECK(http.pending_count() == 0);
 }
 
-TEST_CASE("PluginUpdater lists and manages Python runtime infrastructure",
+TEST_CASE("PluginUpdater exposes exact bundled Python runtime read-only",
           "[plugins][updater][python]")
 {
     TemporaryDirectory temporary;
@@ -3300,16 +3300,17 @@ TEST_CASE("PluginUpdater lists and manages Python runtime infrastructure",
     const boost::filesystem::path data_directory = temporary.path() / "data";
     ScopedUpdaterDirectories directories(resources_directory, data_directory);
     write_test_file(resources_directory / "plugins" / "default_activated.ini",
-                    "[installed]\n[activated]\n");
+                    "[installed]\npython = 1.0.0\npython.slicer_version = 2.7.0.0\n"
+                    "[bundled_exact]\npython = 1.0.0\npython.slicer_version = 2.7.0.0\n"
+                    "[activated]\n");
 
     Slic3r::RepositoryPackageCache cache(data_directory, Slic3r::plugin_repository_cache_adapter());
     bool purged = false;
     std::string error_message;
     REQUIRE(cache.prepare_layout(purged, error_message));
 
-    // Both packages use the normal package cache. The internal marker allows
-    // runtime infrastructure to register no plugin id, but does not change
-    // whether users can install or remove its package.
+    // INTERNAL and BUNDLED_EXACT are independent: ordinary packages remain
+    // manageable, while the runtime's exact bundled identity is read-only.
     const boost::filesystem::path visible_package = temporary.path() / "python.visible";
     write_test_file(visible_package / "description.ini",
                     "[plugin]\nid = python.visible\nname = Visible Python plugin\ninternal = 0\n");
@@ -3321,13 +3322,14 @@ TEST_CASE("PluginUpdater lists and manages Python runtime infrastructure",
 
     const boost::filesystem::path internal_package = temporary.path() / "python";
     write_test_file(internal_package / "description.ini",
-                    "[plugin]\nid = python\nname = Python runtime\ninternal = 1\n");
+                    "[plugin]\nid = python\nname = Python runtime\ninternal = 1\nbundled_exact = 1\n");
     write_test_file(internal_package / "version.ini",
                     "[plugin]\npackage_version = 1.0.0\nslicer_version = 2.7.0.0\n[abi]\nslic3r_plugin_types.h = 1.0\n");
     write_test_file(internal_package / "plugin.py", "def register_plugin(api):\n    return None\n");
     Slic3r::RepositoryCachedVersion internal_cached;
     REQUIRE(cache.cache_simple(internal_package, internal_cached, error_message));
     CHECK(internal_cached.description.is_internal);
+    CHECK(internal_cached.description.is_bundled_exact);
 
     FakeUpdaterHttpTransport http;
     Slic3r::PluginUpdater updater(http);
@@ -3338,6 +3340,10 @@ TEST_CASE("PluginUpdater lists and manages Python runtime infrastructure",
 
     std::optional<Slic3r::PluginSync> runtime = updater.plugin("python");
     REQUIRE(runtime.has_value());
+    CHECK(runtime->is_bundled_exact());
+    CHECK(runtime->is_installed);
+    REQUIRE(runtime->bundled_exact_version.has_value());
+    CHECK(runtime->bundled_exact_version->package_version == "1.0.0");
     const Slic3r::PluginAvailable *runtime_best = runtime->best_available();
     REQUIRE(runtime_best != nullptr);
     std::optional<Slic3r::UpdaterError> install_result;
@@ -3346,14 +3352,13 @@ TEST_CASE("PluginUpdater lists and manages Python runtime infrastructure",
     });
     updater.wait_for_pending_operations();
     REQUIRE(install_result.has_value());
-    REQUIRE(install_result->succeeded());
+    CHECK_FALSE(install_result->succeeded());
+    CHECK(install_result->code == Slic3r::UpdaterError::Code::PreparationRejected);
     runtime = updater.plugin("python");
     REQUIRE(runtime.has_value());
     CHECK(runtime->is_installed);
 
-    // Package installation must not create a fake activatable plugin id. The
-    // runtime remains absent from Plugin configuration because that dialog
-    // enumerates registered plugin instances, not package installation rows.
+    // The generated desired state contains no fake activatable plugin id.
     Slic3r::PluginActivationConfig activation;
     REQUIRE(Slic3r::read_plugin_activation_config(
         Slic3r::plugin_activation_config_path(data_directory), activation, error_message));
@@ -3367,15 +3372,17 @@ TEST_CASE("PluginUpdater lists and manages Python runtime infrastructure",
     });
     updater.wait_for_pending_operations();
     REQUIRE(uninstall_result.has_value());
-    REQUIRE(uninstall_result->succeeded());
+    CHECK_FALSE(uninstall_result->succeeded());
+    CHECK(uninstall_result->code == Slic3r::UpdaterError::Code::PreparationRejected);
     runtime = updater.plugin("python");
     REQUIRE(runtime.has_value());
-    CHECK_FALSE(runtime->is_installed);
+    CHECK(runtime->is_installed);
     CHECK(runtime->has_cache);
 
     REQUIRE(Slic3r::read_plugin_activation_config(
         Slic3r::plugin_activation_config_path(data_directory), activation, error_message));
-    CHECK(activation.installed.count("python") == 0);
+    CHECK(activation.installed.count("python") == 1);
+    CHECK(activation.bundled_exact.count("python") == 1);
     CHECK(activation.activated.count("python") == 0);
     CHECK(activation.plugin_packages.count("python") == 0);
 }

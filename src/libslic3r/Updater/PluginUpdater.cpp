@@ -239,6 +239,10 @@ void PluginSync::sort_available()
     });
 
     const PluginAvailable *best = best_available();
+    if (is_bundled_exact()) {
+        can_upgrade = false;
+        return;
+    }
     if (best != nullptr && is_installed) {
         const std::optional<Semver> installed = Semver::parse(installed_version.package_version);
         const std::optional<Semver> available = Semver::parse(best->package_version);
@@ -339,6 +343,12 @@ void PluginUpdater::reload_all_plugins()
             version.package_version, version.slicer_version));
         plugin.sort_available();
     }
+    for (const auto &[id, version] : config.bundled_exact) {
+        PluginSync &plugin = plugins[id];
+        plugin.bundled_exact_version = version;
+        plugin.description.is_bundled_exact = true;
+        plugin.sort_available();
+    }
 
     // A failed or missing live package may have no cache descriptor to create
     // its row. The startup report still has a stable package id, so expose a
@@ -394,16 +404,26 @@ void PluginUpdater::sync_async(std::function<void(int)> callback_result, bool fo
 void PluginUpdater::update_plugin(const std::string &plugin_id, bool force)
 {
     std::string rest_url;
+    bool requires_repository_refresh = true;
     {
         std::lock_guard<std::mutex> guard(m_model_mutex);
         PluginSync *plugin = find_plugin_unlocked(plugin_id);
         if (plugin == nullptr) {
-            finish_sync();
-            return;
+            requires_repository_refresh = false;
+        } else if (plugin->is_bundled_exact()) {
+            plugin->sync_state = RepositorySyncState::Succeeded;
+            requires_repository_refresh = false;
+        } else {
+            plugin->sync_state = RepositorySyncState::InProgress;
+            plugin->sync_error = UpdaterError();
+            rest_url = plugin->description.config_update_rest;
         }
-        plugin->sync_state = RepositorySyncState::InProgress;
-        plugin->sync_error = UpdaterError();
-        rest_url = plugin->description.config_update_rest;
+    }
+    // Completing a skipped system package may notify subscribers, which read
+    // the model and therefore must run after releasing m_model_mutex.
+    if (!requires_repository_refresh) {
+        finish_sync();
+        return;
     }
 
     const RepositoryPackageCache cache(boost::filesystem::path(data_dir()),
@@ -607,8 +627,15 @@ void PluginUpdater::install_plugin(const std::string &plugin_id,
     if (!start_plugin_change("Plugin installation", std::move(callback_result), complete))
         return;
 
-    if (!plugin(plugin_id).has_value()) {
+    const std::optional<PluginSync> plugin_snapshot = plugin(plugin_id);
+    if (!plugin_snapshot.has_value()) {
         complete(make_updater_error(UpdaterError::Code::ArchiveUnavailable));
+        return;
+    }
+    if (plugin_snapshot->is_bundled_exact()) {
+        complete(make_updater_error(
+            UpdaterError::Code::PreparationRejected,
+            "This system package is synchronized with the application and cannot be installed manually."));
         return;
     }
 
@@ -737,6 +764,12 @@ void PluginUpdater::uninstall_plugin(const std::string &plugin_id,
         complete(make_updater_error(UpdaterError::Code::ArchiveUnavailable));
         return;
     }
+    if (plugin_snapshot->is_bundled_exact()) {
+        complete(make_updater_error(
+            UpdaterError::Code::PreparationRejected,
+            "This system package is synchronized with the application and cannot be uninstalled."));
+        return;
+    }
 
     const bool accepted = enqueue_operation(
         [this, plugin_id] { return uninstall_plugin_files(plugin_id); },
@@ -773,6 +806,14 @@ void PluginUpdater::clear_cache_plugin(const std::string &plugin_id, std::functi
     std::function<void(UpdaterError)> complete;
     if (!start_plugin_change("Plugin cache removal", std::move(callback_result), complete))
         return;
+
+    const std::optional<PluginSync> plugin_snapshot = plugin(plugin_id);
+    if (plugin_snapshot && plugin_snapshot->is_bundled_exact()) {
+        complete(make_updater_error(
+            UpdaterError::Code::PreparationRejected,
+            "The cache of a system package synchronized with the application cannot be removed manually."));
+        return;
+    }
 
     const bool accepted = enqueue_operation(
         [this, plugin_id] { return clear_cache_plugin_files(plugin_id); },

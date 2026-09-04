@@ -18,6 +18,8 @@
 # generated from the compiled library's static header-version record.
 # INTERNAL marks runtime infrastructure that may register no user-selectable
 # plugin id. It does not hide the package from installation or update tools.
+# BUNDLED_EXACT marks system infrastructure whose exact shipped version is
+# selected automatically at startup and cannot be managed by the updater.
 # CHANGELOG names an optional versioned JSON file, validated before archiving.
 
 set(_SLIC3R_PLUGIN_PACKAGE_CMAKE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}")
@@ -60,7 +62,7 @@ function(_slic3r_plugin_quoted_string output_variable input_value)
 endfunction()
 
 function(slic3r_package_plugin target package_name)
-    cmake_parse_arguments(PACKAGE "INTERNAL" "VERSION;UPDATE_REST;NAME;FULL_NAME;DESCRIPTION;CHANGELOG" "FILES" ${ARGN})
+    cmake_parse_arguments(PACKAGE "INTERNAL;BUNDLED_EXACT" "VERSION;UPDATE_REST;NAME;FULL_NAME;DESCRIPTION;CHANGELOG" "FILES" ${ARGN})
     get_target_property(_plugin_source_directory ${target} SOURCE_DIR)
     get_target_property(_plugin_binary_directory ${target} BINARY_DIR)
     set(_description "${_plugin_binary_directory}/${package_name}-$<CONFIG>-description.ini")
@@ -86,6 +88,13 @@ function(slic3r_package_plugin target package_name)
         set(_package_internal 1)
     else()
         set(_package_internal 0)
+    endif()
+    if (PACKAGE_BUNDLED_EXACT)
+        set(_package_bundled_exact 1)
+        set_property(GLOBAL APPEND PROPERTY SLIC3R_BUNDLED_EXACT_PLUGIN_PACKAGES
+            "${package_name}|${_package_version}|${_slicer_version}")
+    else()
+        set(_package_bundled_exact 0)
     endif()
     set(_archive "${SLIC3R_BUILD_RESOURCES_DIR}/plugins/${package_name}_${_package_version}_${_slicer_version}.zip")
     set(_package_contents "$<TARGET_FILE_NAME:${target}>" "description.ini" "version.ini" ${PACKAGE_FILES} ${PACKAGE_UNPARSED_ARGUMENTS})
@@ -116,7 +125,7 @@ function(slic3r_package_plugin target package_name)
     endif()
 
     file(GENERATE OUTPUT "${_description}" CONTENT
-        "[plugin]\nid = ${package_name}\nname = ${_package_display_name}\nfull_name = ${_package_full_name}\ndescription = ${PACKAGE_DESCRIPTION}\nconfig_update_rest = ${PACKAGE_UPDATE_REST}\nslicer = SuperSlicer\ninternal = ${_package_internal}\n")
+        "[plugin]\nid = ${package_name}\nname = ${_package_display_name}\nfull_name = ${_package_full_name}\ndescription = ${PACKAGE_DESCRIPTION}\nconfig_update_rest = ${PACKAGE_UPDATE_REST}\nslicer = SuperSlicer\ninternal = ${_package_internal}\nbundled_exact = ${_package_bundled_exact}\n")
     file(GENERATE OUTPUT "${_version_file}" CONTENT
         "[plugin]\npackage_version = ${_package_version}\nslicer_version = ${_slicer_version}\n")
 
@@ -199,7 +208,7 @@ endfunction()
 # package remains independently installable, removable and visible to the
 # updater without embedding it inside the bridge DLL.
 function(slic3r_package_python_plugin target package_name entry_file)
-    cmake_parse_arguments(PACKAGE "INTERNAL" "VERSION;UPDATE_REST;NAME;FULL_NAME;DESCRIPTION;CHANGELOG" "" ${ARGN})
+    cmake_parse_arguments(PACKAGE "INTERNAL;BUNDLED_EXACT" "VERSION;UPDATE_REST;NAME;FULL_NAME;DESCRIPTION;CHANGELOG" "" ${ARGN})
     get_filename_component(_entry_file "${entry_file}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     if (NOT EXISTS "${_entry_file}")
         message(FATAL_ERROR "Python plugin '${package_name}' entry '${_entry_file}' does not exist")
@@ -230,6 +239,13 @@ function(slic3r_package_python_plugin target package_name entry_file)
     else()
         set(_package_internal 0)
     endif()
+    if (PACKAGE_BUNDLED_EXACT)
+        set(_package_bundled_exact 1)
+        set_property(GLOBAL APPEND PROPERTY SLIC3R_BUNDLED_EXACT_PLUGIN_PACKAGES
+            "${package_name}|${_package_version}|${_slicer_version}")
+    else()
+        set(_package_bundled_exact 0)
+    endif()
 
     set(_description "${CMAKE_CURRENT_BINARY_DIR}/${package_name}-$<CONFIG>-description.ini")
     set(_version_file "${CMAKE_CURRENT_BINARY_DIR}/${package_name}-$<CONFIG>-version.ini")
@@ -246,7 +262,7 @@ function(slic3r_package_python_plugin target package_name entry_file)
     endif()
     set(_archive "${SLIC3R_BUILD_RESOURCES_DIR}/plugins/${package_name}_${_package_version}_${_slicer_version}.zip")
     file(GENERATE OUTPUT "${_description}" CONTENT
-        "[plugin]\nid = ${package_name}\nname = ${_package_display_name}\nfull_name = ${_package_full_name}\ndescription = ${PACKAGE_DESCRIPTION}\nconfig_update_rest = ${PACKAGE_UPDATE_REST}\nslicer = SuperSlicer\ninternal = ${_package_internal}\n")
+        "[plugin]\nid = ${package_name}\nname = ${_package_display_name}\nfull_name = ${_package_full_name}\ndescription = ${PACKAGE_DESCRIPTION}\nconfig_update_rest = ${PACKAGE_UPDATE_REST}\nslicer = SuperSlicer\ninternal = ${_package_internal}\nbundled_exact = ${_package_bundled_exact}\n")
     file(GENERATE OUTPUT "${_version_file}" CONTENT
         "[plugin]\npackage_version = ${_package_version}\nslicer_version = ${_slicer_version}\n")
 

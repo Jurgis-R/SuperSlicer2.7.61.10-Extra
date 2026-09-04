@@ -11,6 +11,7 @@
 #ifndef plugins_pluginrepository_hpp_
 #define plugins_pluginrepository_hpp_
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,10 @@ struct RepositoryDescription {
     // legitimately register no plugin id of their own. They still use the
     // normal package lifecycle and remain visible in the package updater.
     bool is_internal = false;
+    // Exact bundled packages are system components selected from the current
+    // application resources. The updater exposes them read-only and startup
+    // never substitutes a downloaded or stale live version.
+    bool is_bundled_exact = false;
 };
 
 struct RepositoryPackageVersion {
@@ -137,6 +142,22 @@ bool plugin_package_cache_is_valid(const boost::filesystem::path &data_directory
 // before scheduling, publishing or loading an installed package.
 bool plugin_package_is_compatible(const boost::filesystem::path &package_root,
                                   std::string &error_message);
+
+// Validate the exact cached version named by the generated application
+// defaults, including its repository policy and ABI manifest.
+bool bundled_exact_plugin_package_is_valid(const boost::filesystem::path &data_directory,
+                                           const std::string &package_name,
+                                           const PluginInstalledVersion &version,
+                                           std::string &error_message);
+
+// Publish only the system-owned package set. Other live packages are never
+// inspected or removed, which makes this safe even when activated.ini could
+// only be read through the startup recovery path.
+bool reconcile_bundled_exact_plugin_packages(
+    const boost::filesystem::path &data_directory,
+    const std::map<std::string, PluginInstalledVersion> &packages,
+    std::vector<std::string> &diagnostics,
+    std::string &error_message);
 
 // Reconcile data/plugins with the complete desired package set from
 // activated.ini before loading any DLL. False guarantees that the live tree

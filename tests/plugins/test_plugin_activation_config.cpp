@@ -185,6 +185,7 @@ TEST_CASE("Plugin activation configuration preserves package providers",
     written.plugin_packages["example.first"] = "example.package";
     written.plugin_packages["example.second"] = "example.package";
     written.installed["example.package"] = {"1.2.3", "2.7.63.0"};
+    written.bundled_exact["python"] = {"2.7.63.0", "2.7.63.0-alpha+UNKNOWN"};
 
     boost::filesystem::create_directories(root);
     {
@@ -200,6 +201,7 @@ TEST_CASE("Plugin activation configuration preserves package providers",
     REQUIRE(Slic3r::read_plugin_activation_config(config_path, read, error_message));
     CHECK(read.activated == written.activated);
     CHECK(read.plugin_packages == written.plugin_packages);
+    CHECK(read.bundled_exact == written.bundled_exact);
     REQUIRE(read.installed.size() == 1);
     const Slic3r::PluginInstalledVersion &installed = read.installed.at("example.package");
     CHECK(installed.package_version == "1.2.3");
@@ -207,6 +209,8 @@ TEST_CASE("Plugin activation configuration preserves package providers",
 
     const std::string contents = read_text_file(config_path);
     CHECK(contents.find("[plugin_packages]") != std::string::npos);
+    CHECK(contents.find("[bundled_exact]") != std::string::npos);
+    CHECK(contents.find("python.slicer_version = 2.7.63.0-alpha+UNKNOWN") != std::string::npos);
     CHECK(contents.find("example.first = example.package") != std::string::npos);
     CHECK(contents.find("obsolete.package") == std::string::npos);
 

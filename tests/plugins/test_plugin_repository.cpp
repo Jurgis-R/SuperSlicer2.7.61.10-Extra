@@ -837,6 +837,12 @@ TEST_CASE("Repository descriptions and GitHub tags share one version protocol", 
                                                  plugin.id, "1.0.0.0", "2.7.63.0") ==
           boost::filesystem::path("data/cache/plugins/postprocess.truc/1.0.0.0=2.7.63.0"));
 
+    REQUIRE(Slic3r::parse_repository_description(
+        "[plugin]\nid = python\nname = Python runtime\ninternal = 1\nbundled_exact = 1\n",
+        Slic3r::RepositoryPackageType::Plugin, plugin, error_message));
+    CHECK(plugin.is_internal);
+    CHECK(plugin.is_bundled_exact);
+
     CHECK_FALSE(Slic3r::parse_repository_description(
         "[vendor]\nid = vendor\n\n[plugin]\nid = plugin\n", Slic3r::RepositoryPackageType::Plugin,
         plugin, error_message));
@@ -852,6 +858,60 @@ TEST_CASE("Repository descriptions and GitHub tags share one version protocol", 
     CHECK(versions.front().slicer_version == "2.7.63.0");
     CHECK(versions.back().package_version == "2.0.0-beta.1");
     CHECK(versions.back().slicer_version == "2.8.0-rc.1");
+}
+
+TEST_CASE("Exact bundled packages replace only their managed live directory",
+          "[plugins][repository][bundled-exact]")
+{
+    const boost::filesystem::path root = boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("slic3r-bundled-exact-%%%%-%%%%");
+    const boost::filesystem::path data_directory = root / "data";
+    const boost::filesystem::path source = root / "python";
+    boost::filesystem::create_directories(source);
+    {
+        boost::nowide::ofstream description((source / "description.ini").string());
+        description << "[plugin]\nid = python\nname = Python runtime\ninternal = 1\nbundled_exact = 1\n";
+        boost::nowide::ofstream version((source / "version.ini").string());
+        version << version_contents("2.7.63.0", "2.7.63.0-alpha+UNKNOWN");
+        boost::nowide::ofstream library((source / plugin_library_filename()).string(), std::ios::binary);
+        library << "current runtime";
+    }
+
+    Slic3r::RepositoryPackageCache cache(data_directory, Slic3r::plugin_repository_cache_adapter());
+    bool purged = false;
+    std::string error_message;
+    REQUIRE(cache.prepare_layout(purged, error_message));
+    Slic3r::RepositoryCachedVersion cached;
+    REQUIRE(cache.cache_simple(source, cached, error_message));
+
+    const boost::filesystem::path stale_runtime = data_directory / "plugins" / "python";
+    const boost::filesystem::path unrelated = data_directory / "plugins" / "unrelated";
+    boost::filesystem::create_directories(stale_runtime);
+    boost::filesystem::create_directories(unrelated);
+    {
+        boost::nowide::ofstream stale((stale_runtime / plugin_library_filename()).string());
+        stale << "stale runtime";
+        boost::nowide::ofstream marker((unrelated / "marker.txt").string());
+        marker << "preserved";
+    }
+
+    const std::map<std::string, Slic3r::PluginInstalledVersion> expected = {
+        {"python", {"2.7.63.0", "2.7.63.0-alpha+UNKNOWN"}}};
+    std::vector<std::string> diagnostics;
+    REQUIRE(Slic3r::reconcile_bundled_exact_plugin_packages(
+        data_directory, expected, diagnostics, error_message));
+    CHECK(diagnostics.empty());
+    CHECK(read_text_file(stale_runtime / plugin_library_filename()) == "current runtime");
+    CHECK(boost::filesystem::is_regular_file(unrelated / "marker.txt"));
+
+    const std::map<std::string, Slic3r::PluginInstalledVersion> missing = {
+        {"python", {"9.9.9", "9.9.9"}}};
+    CHECK_FALSE(Slic3r::reconcile_bundled_exact_plugin_packages(
+        data_directory, missing, diagnostics, error_message));
+    CHECK_FALSE(diagnostics.empty());
+    CHECK_FALSE(boost::filesystem::exists(stale_runtime));
+    CHECK(boost::filesystem::is_regular_file(unrelated / "marker.txt"));
+    boost::filesystem::remove_all(root);
 }
 
 TEST_CASE("Repository package cache imports incomplete local content with defaults",

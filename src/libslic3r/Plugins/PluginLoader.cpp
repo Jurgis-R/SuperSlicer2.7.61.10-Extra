@@ -62,6 +62,7 @@ after the available plugin set is known.
 #include <array>
 #include <chrono>
 #include <iterator>
+#include <map>
 #include <new>
 #include <optional>
 #include <set>
@@ -468,18 +469,41 @@ void load_plugin_library(const boost::filesystem::path &plugin_path,
 #endif
 }
 
-void load_plugins_from_repository_impl(const boost::filesystem::path &repository, orchestrator_handle *orchestrator)
+void load_plugins_from_repository_impl(
+    const boost::filesystem::path &repository,
+    orchestrator_handle *orchestrator,
+    const std::map<std::string, PluginInstalledVersion> *bundled_exact_packages)
 {
+    Orchestrator &host = *reinterpret_cast<Orchestrator *>(orchestrator);
     if (!boost::filesystem::exists(repository)) {
         BOOST_LOG_TRIVIAL(trace) << "Plugin repository '" << repository.string() << "' does not exist.";
+        if (bundled_exact_packages != nullptr)
+            for (const auto &[package_name, version] : *bundled_exact_packages) {
+                host.begin_plugin_package_load(package_name, (repository / package_name).string(), true);
+                PluginPackageLoadIssue issue;
+                issue.code = PluginPackageLoadErrorCode::PackageMissing;
+                issue.detail = "The exact system package bundled with this application is unavailable.";
+                report_plugin_package_issue(host, package_name, std::move(issue));
+                host.finish_plugin_package_load(package_name);
+            }
         return;
     }
     if (!boost::filesystem::is_directory(repository)) {
         BOOST_LOG_TRIVIAL(warning) << "Plugin repository path '" << repository.string() << "' is not a directory.";
+        if (bundled_exact_packages != nullptr)
+            for (const auto &[package_name, version] : *bundled_exact_packages) {
+                host.begin_plugin_package_load(package_name, (repository / package_name).string(), true);
+                PluginPackageLoadIssue issue;
+                issue.code = PluginPackageLoadErrorCode::PackageMissing;
+                issue.detail = "The exact system package bundled with this application is unavailable because "
+                               "the plugin repository path is not a directory.";
+                report_plugin_package_issue(host, package_name, std::move(issue));
+                host.finish_plugin_package_load(package_name);
+            }
         return;
     }
 
-    Orchestrator &host = *reinterpret_cast<Orchestrator *>(orchestrator);
+    std::set<std::string> found_bundled_exact;
     for (boost::filesystem::directory_iterator it(repository), end; it != end; ++it) {
         const boost::filesystem::path plugin_path = it->path();
         if (boost::filesystem::is_directory(plugin_path)) {
@@ -518,6 +542,40 @@ void load_plugins_from_repository_impl(const boost::filesystem::path &repository
                 continue;
             }
 
+            // A system-owned package must match the identity generated for
+            // this application build. This guard prevents a stale live DLL
+            // from loading when cache extraction or publication failed.
+            const std::map<std::string, PluginInstalledVersion>::const_iterator expected =
+                bundled_exact_packages == nullptr ?
+                    std::map<std::string, PluginInstalledVersion>::const_iterator() :
+                    bundled_exact_packages->find(package_name);
+            const bool expected_exact = bundled_exact_packages != nullptr &&
+                expected != bundled_exact_packages->end();
+            if (expected_exact)
+                found_bundled_exact.insert(package_name);
+            if (description.is_bundled_exact || expected_exact) {
+                PluginPackageMetadata metadata;
+                std::string metadata_error;
+                const bool identity_matches = expected_exact && description.is_bundled_exact &&
+                    read_plugin_package_metadata(package_version.string(), metadata, metadata_error) &&
+                    metadata.package_version == expected->second.package_version &&
+                    metadata.slicer_version == expected->second.slicer_version &&
+                    metadata.compatibility.compatible();
+                if (!identity_matches) {
+                    host.begin_plugin_package_load(package_name, plugin_path.string(), description.is_internal);
+                    PluginPackageLoadIssue issue;
+                    issue.code = PluginPackageLoadErrorCode::InvalidPackage;
+                    issue.detail = expected_exact ?
+                        "The system package does not match the exact version bundled with this application." :
+                        "The system package is not declared by this application build.";
+                    if (!metadata_error.empty())
+                        issue.detail += " " + metadata_error;
+                    report_plugin_package_issue(host, package_name, std::move(issue));
+                    host.finish_plugin_package_load(package_name);
+                    continue;
+                }
+            }
+
             if (boost::filesystem::is_regular_file(package_library)) {
                 BOOST_LOG_TRIVIAL(info) << "Loading plugin package '" << plugin_path.string() << "'.";
                 load_plugin_library(package_library, plugin_path, package_name,
@@ -530,6 +588,20 @@ void load_plugins_from_repository_impl(const boost::filesystem::path &repository
                 report_plugin_package_issue(host, package_name, std::move(issue));
                 host.finish_plugin_package_load(package_name);
             }
+        }
+    }
+
+    if (bundled_exact_packages != nullptr) {
+        for (const auto &[package_name, version] : *bundled_exact_packages) {
+            if (found_bundled_exact.count(package_name) != 0)
+                continue;
+            const boost::filesystem::path package_root = repository / package_name;
+            host.begin_plugin_package_load(package_name, package_root.string(), true);
+            PluginPackageLoadIssue issue;
+            issue.code = PluginPackageLoadErrorCode::PackageMissing;
+            issue.detail = "The exact system package bundled with this application is unavailable.";
+            report_plugin_package_issue(host, package_name, std::move(issue));
+            host.finish_plugin_package_load(package_name);
         }
     }
 
@@ -938,7 +1010,7 @@ void load_plugin_packages_from_repository(const boost::filesystem::path &reposit
                                           Orchestrator &orchestrator)
 {
     load_plugins_from_repository_impl(repository,
-        reinterpret_cast<orchestrator_handle *>(&orchestrator));
+        reinterpret_cast<orchestrator_handle *>(&orchestrator), nullptr);
 }
 
 void register_exclusive_step_group_ui_fragments(Orchestrator &orchestrator)
@@ -990,43 +1062,77 @@ void load_plugins()
         }
     }
 
-    if (!config_dir.empty() && user_configuration_available) {
+    PluginActivationConfig default_plugin_config;
+    bool default_plugin_config_available = false;
+    if (!config_dir.empty()) {
         // A profile created before a later built-in plugin existed should pick
         // up the new default unless it explicitly keeps that id disabled.
-        PluginActivationConfig default_plugin_config;
         bool ignored_from_user_config = false;
 
         // Split the former combined editor before merging defaults. Copying its
         // false state now prevents the default merge from re-enabling either
         // independent successor in a profile that disabled the old plugin.
-        bool activation_config_changed = migrate_plugin_activation_id(
+        bool activation_config_changed = user_configuration_available && migrate_plugin_activation_id(
             plugin_config,
             "layer_extrusion_edit.speed_acceleration.default",
             {"layer_extrusion_edit.speed.default", "layer_extrusion_edit.acceleration.default"});
-        activation_config_changed = migrate_plugin_activation_id(
+        activation_config_changed = (user_configuration_available && migrate_plugin_activation_id(
             plugin_config,
             "gcode.firmware.default",
-            {"gcode.firmware.marlin2"}) ||
+            {"gcode.firmware.marlin2"})) ||
             activation_config_changed;
         if (ensure_plugin_activation_config(boost::filesystem::path(), default_plugin_config,
                                             ignored_from_user_config, plugin_config_error)) {
-            for (const auto &[plugin_id, enabled] : default_plugin_config.activated)
-                if (enabled && plugin_config.activated.find(plugin_id) == plugin_config.activated.end()) {
-                    plugin_config.activated.emplace(plugin_id, true);
-                    activation_config_changed = true;
-                }
-            for (const auto &[plugin_id, package_id] : default_plugin_config.plugin_packages)
-                if (plugin_config.plugin_packages.emplace(plugin_id, package_id).second)
-                    activation_config_changed = true;
+            default_plugin_config_available = true;
+            if (user_configuration_available) {
+                for (const auto &[plugin_id, enabled] : default_plugin_config.activated)
+                    if (enabled && plugin_config.activated.find(plugin_id) == plugin_config.activated.end()) {
+                        plugin_config.activated.emplace(plugin_id, true);
+                        activation_config_changed = true;
+                    }
+                for (const auto &[plugin_id, package_id] : default_plugin_config.plugin_packages)
+                    if (plugin_config.plugin_packages.emplace(plugin_id, package_id).second)
+                        activation_config_changed = true;
+            }
         } else {
             BOOST_LOG_TRIVIAL(warning) << plugin_config_error;
         }
         const bool packages_prepared = prepare_plugin_bundle_cache(
             boost::filesystem::path(resources_dir()), config_dir, plugin_config, plugin_config_error);
-        const bool packages_applied = packages_prepared && reconcile_installed_plugin_packages(
-            config_dir, plugin_config, plugin_config_error);
+        if (packages_prepared && default_plugin_config_available) {
+            activation_config_changed = activation_config_changed ||
+                plugin_config.bundled_exact != default_plugin_config.bundled_exact;
+            plugin_config.bundled_exact = default_plugin_config.bundled_exact;
+            for (const auto &[package_name, version] : plugin_config.bundled_exact) {
+                std::string validation_error;
+                if (bundled_exact_plugin_package_is_valid(
+                        config_dir, package_name, version, validation_error)) {
+                    const std::map<std::string, PluginInstalledVersion>::const_iterator selected =
+                        plugin_config.installed.find(package_name);
+                    activation_config_changed = activation_config_changed ||
+                        selected == plugin_config.installed.end() || selected->second != version;
+                    plugin_config.installed[package_name] = version;
+                } else {
+                    activation_config_changed = activation_config_changed ||
+                        plugin_config.installed.count(package_name) != 0;
+                    plugin_config.installed.erase(package_name);
+                    BOOST_LOG_TRIVIAL(error) << validation_error;
+                }
+            }
+            std::vector<std::string> exact_diagnostics;
+            std::string exact_error;
+            if (!reconcile_bundled_exact_plugin_packages(
+                    config_dir, plugin_config.bundled_exact, exact_diagnostics, exact_error) &&
+                !exact_error.empty())
+                BOOST_LOG_TRIVIAL(error) << exact_error;
+            for (const std::string &diagnostic : exact_diagnostics)
+                BOOST_LOG_TRIVIAL(error) << diagnostic;
+        }
+        const bool packages_applied = packages_prepared && user_configuration_available &&
+            reconcile_installed_plugin_packages(config_dir, plugin_config, plugin_config_error);
         if (!packages_applied)
-            BOOST_LOG_TRIVIAL(warning) << plugin_config_error;
+            if (user_configuration_available)
+                BOOST_LOG_TRIVIAL(warning) << plugin_config_error;
         if (activation_config_changed && automatic_configuration_writes_allowed &&
             !write_plugin_activation_config(plugin_activation_config_path(config_dir),
                                             plugin_config, plugin_config_error))
@@ -1035,7 +1141,9 @@ void load_plugins()
 
     register_builtin_plugins(orchestrator_handle_ptr);
     if (!config_dir.empty())
-        load_plugin_packages_from_repository(config_dir / "plugins", orchestrator);
+        load_plugins_from_repository_impl(
+            config_dir / "plugins", orchestrator_handle_ptr,
+            default_plugin_config_available ? &default_plugin_config.bundled_exact : nullptr);
 
     // A successfully registered external plugin is the authoritative source
     // for its provider association. Backfill old profiles when that relation
