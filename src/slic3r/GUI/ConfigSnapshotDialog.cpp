@@ -7,6 +7,8 @@
 
 #include "ConfigSnapshotDialog.hpp"
 
+#include <utility>
+
 #include "libslic3r/Color.hpp"
 #include "libslic3r/Time.hpp"
 #include "libslic3r/Utils.hpp"
@@ -125,10 +127,16 @@ static wxString generate_html_page(const Config::SnapshotDB &snapshot_db, const 
     return text;
 }
 
-ConfigSnapshotDialog::ConfigSnapshotDialog(const Config::SnapshotDB &snapshot_db, const wxString &on_snapshot)
+ConfigSnapshotDialog::ConfigSnapshotDialog(const Config::SnapshotDB &snapshot_db, const wxString &on_snapshot,
+                                           CreateSnapshotCallback create_snapshot_callback,
+                                           PrepareActivationCallback prepare_activation_callback)
     : DPIDialog(static_cast<wxWindow*>(wxGetApp().mainframe), wxID_ANY, _(L("Configuration Snapshots")), wxDefaultPosition,
                wxSize(45 * wxGetApp().em_unit(), 40 * wxGetApp().em_unit()), 
-               wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER | wxMAXIMIZE_BOX, "snapshotcal")
+               wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER | wxMAXIMIZE_BOX, "snapshotcal"),
+      m_snapshot_db(snapshot_db),
+      m_active_snapshot(on_snapshot.ToUTF8().data()),
+      m_create_snapshot_callback(std::move(create_snapshot_callback)),
+      m_prepare_activation_callback(std::move(prepare_activation_callback))
 {
     this->SetFont(wxGetApp().normal_font());
 #ifdef _WIN32
@@ -155,18 +163,31 @@ ConfigSnapshotDialog::ConfigSnapshotDialog(const Config::SnapshotDB &snapshot_db
         #endif
         html->SetFonts(font.GetFaceName(), font.GetFaceName(), size);
         html->SetBorders(2);
-        wxString text = generate_html_page(snapshot_db, on_snapshot);
+        wxString text = generate_html_page(m_snapshot_db, from_u8(m_active_snapshot));
         html->SetPage(text);
         vsizer->Add(html, 1, wxEXPAND | wxALIGN_LEFT | wxRIGHT | wxBOTTOM, 0);
         html->Bind(wxEVT_HTML_LINK_CLICKED, &ConfigSnapshotDialog::onLinkClicked, this);
     }
-    
+
+    // Creation is kept inside the manager. The application callback owns the
+    // preset checks and snapshot storage, while this dialog only refreshes its
+    // presentation after a successful creation.
+    wxButton *create_snapshot_button = new wxButton(this, wxID_ADD, _L("Create new snapshot"));
+    wxGetApp().SetWindowVariantForButton(create_snapshot_button);
+    wxGetApp().UpdateDarkUI(create_snapshot_button);
+    this->Bind(wxEVT_BUTTON, &ConfigSnapshotDialog::onCreateSnapshot, this, wxID_ADD);
+
     wxStdDialogButtonSizer* buttons = this->CreateStdDialogButtonSizer(wxCLOSE);
     wxGetApp().SetWindowVariantForButton(buttons->GetCancelButton());
     wxGetApp().UpdateDarkUI(buttons->GetCancelButton());
     this->SetEscapeId(wxID_CLOSE);
     this->Bind(wxEVT_BUTTON, &ConfigSnapshotDialog::onCloseDialog, this, wxID_CLOSE);
-    vsizer->Add(buttons, 0, wxEXPAND | wxRIGHT | wxBOTTOM, 3);
+
+    wxBoxSizer *footer = new wxBoxSizer(wxHORIZONTAL);
+    footer->Add(create_snapshot_button, 0, wxALIGN_CENTER_VERTICAL);
+    footer->AddStretchSpacer();
+    footer->Add(buttons, 0, wxALIGN_CENTER_VERTICAL);
+    vsizer->Add(footer, 0, wxEXPAND | wxALL, 3);
 }
 
 void ConfigSnapshotDialog::on_dpi_changed(const wxRect &suggested_rect)
@@ -182,7 +203,7 @@ void ConfigSnapshotDialog::on_dpi_changed(const wxRect &suggested_rect)
 
     const int& em = em_unit();
 
-    msw_buttons_rescale(this, em, { wxID_CLOSE});
+    msw_buttons_rescale(this, em, { wxID_ADD, wxID_CLOSE });
 
     const wxSize& size = wxSize(45 * em, 40 * em);
     SetMinSize(size);
@@ -191,8 +212,33 @@ void ConfigSnapshotDialog::on_dpi_changed(const wxRect &suggested_rect)
     Refresh();
 }
 
+void ConfigSnapshotDialog::refresh_snapshot_list()
+{
+    html->SetPage(generate_html_page(m_snapshot_db, from_u8(m_active_snapshot)));
+    html->Refresh();
+}
+
+void ConfigSnapshotDialog::onCreateSnapshot(wxEvent &)
+{
+    if (!m_create_snapshot_callback)
+        return;
+
+    const std::string snapshot_id = m_create_snapshot_callback(this);
+    if (snapshot_id.empty())
+        return;
+
+    m_active_snapshot = snapshot_id;
+    refresh_snapshot_list();
+}
+
 void ConfigSnapshotDialog::onLinkClicked(wxHtmlLinkEvent &event)
 {
+    // Keep the manager open when the application cannot safely replace the
+    // current presets, for example when the user cancels the unsaved-changes
+    // confirmation.
+    if (m_prepare_activation_callback && !m_prepare_activation_callback())
+        return;
+
     m_snapshot_to_activate = event.GetLinkInfo().GetHref().ToUTF8();
     this->EndModal(wxID_CLOSE);
 }

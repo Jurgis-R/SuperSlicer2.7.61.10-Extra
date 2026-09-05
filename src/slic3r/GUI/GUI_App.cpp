@@ -3487,6 +3487,35 @@ void GUI_App::update_mode()
     plater()->canvas3D()->update_gizmos_on_off_state();
 }
 
+std::string GUI_App::create_configuration_snapshot(wxWindow *parent)
+{
+    const wxString action_name = _L("Taking a configuration snapshot");
+    if (!check_and_save_current_preset_changes(
+            action_name,
+            _L("Some presets are modified and the unsaved changes will not be captured by the configuration snapshot."),
+            false, true))
+        return {};
+
+    wxTextEntryDialog dialog(parent, action_name, _L("Snapshot name"));
+    UpdateDlgDarkUI(&dialog);
+
+    // Applying the font only to the top-level dialog does not update the
+    // native children created by wxTextEntryDialog.
+    for (wxWindow *child : dialog.GetChildren())
+        child->SetFont(normal_font());
+
+    if (dialog.ShowModal() != wxID_OK)
+        return {};
+
+    const Config::Snapshot *snapshot = Config::take_config_snapshot_report_error(
+        *app_config, Config::Snapshot::SNAPSHOT_USER, dialog.GetValue().ToUTF8().data());
+    if (snapshot == nullptr)
+        return {};
+
+    app_config->set("on_snapshot", snapshot->id);
+    return snapshot->id;
+}
+
 void GUI_App::add_config_menu(wxMenuBar *menu)
 {
     auto local_menu = new wxMenu();
@@ -3501,7 +3530,6 @@ void GUI_App::add_config_menu(wxMenuBar *menu)
             _L("Check for vendor bundle updates, and choose which version is installed and available in the wizard"));
         local_menu->Append(config_id_base + ConfigMenuWizard, config_wizard_name + dots, config_wizard_tooltip);
         local_menu->Append(config_id_base + ConfigMenuSnapshots, _L("&Configuration Snapshots") + dots, _L("Inspect / activate configuration snapshots"));
-        local_menu->Append(config_id_base + ConfigMenuTakeSnapshot, _L("Take Configuration &Snapshot"), _L("Capture a configuration snapshot"));
         local_menu->Append(config_id_base + ConfigMenuUpdateApp, _L("Check for &Application Updates"), _L("Check for new version of application"));
 #if defined(__linux__) && defined(SLIC3R_DESKTOP_INTEGRATION) 
         //if (DesktopIntegrationDialog::integration_possible())
@@ -3601,54 +3629,44 @@ void GUI_App::add_config_menu(wxMenuBar *menu)
             show_desktop_integration_dialog();
             break;
 #endif
-        case ConfigMenuTakeSnapshot:
-            // Take a configuration snapshot.
-            if (wxString action_name = _L("Taking a configuration snapshot");
-                check_and_save_current_preset_changes(action_name, _L("Some presets are modified and the unsaved changes will not be captured by the configuration snapshot."), false, true)) {
-                wxTextEntryDialog dlg(nullptr, action_name, _L("Snapshot name"));
-                UpdateDlgDarkUI(&dlg);
-                
-                // set current normal font for dialog children, 
-                // because of just dlg.SetFont(normal_font()) has no result;
-                for (auto child : dlg.GetChildren())
-                    child->SetFont(normal_font());
-
-                if (dlg.ShowModal() == wxID_OK)
-                    if (const Config::Snapshot *snapshot = Config::take_config_snapshot_report_error(
-                            *app_config, Config::Snapshot::SNAPSHOT_USER, dlg.GetValue().ToUTF8().data());
-                        snapshot != nullptr)
-                        app_config->set("on_snapshot", snapshot->id);
-            }
-            break;
         case ConfigMenuSnapshots:
-            if (check_and_save_current_preset_changes(_L("Loading a configuration snapshot"), "", false)) {
-                std::string on_snapshot;
-                if (Config::SnapshotDB::singleton().is_on_snapshot(*app_config))
-                    on_snapshot = app_config->get("on_snapshot");
-                ConfigSnapshotDialog dlg(Slic3r::GUI::Config::SnapshotDB::singleton(), on_snapshot);
-                dlg.ShowModal();
-                if (!dlg.snapshot_to_activate().empty()) {
-                    if (! Config::SnapshotDB::singleton().is_on_snapshot(*app_config) && 
-                        ! Config::take_config_snapshot_cancel_on_error(*app_config, Config::Snapshot::SNAPSHOT_BEFORE_ROLLBACK, "",
-                                GUI::format(_L("Continue to activate a configuration snapshot %1%?"), dlg.snapshot_to_activate())))
-                        break;
-                    try {
-                        app_config->set("on_snapshot", Config::SnapshotDB::singleton().restore_snapshot(dlg.snapshot_to_activate(), *app_config).id);
-                        // Enable substitutions, log both user and system substitutions. There should not be any substitutions performed when loading system
-                        // presets because compatibility of profiles shall be verified using the min_slic3r_version keys in config index, but users
-                        // are known to be creative and mess with the config files in various ways.
-                        if (PresetsConfigSubstitutions all_substitutions = preset_bundle->load_presets(*app_config, ForwardCompatibilitySubstitutionRule::Enable);
-                            ! all_substitutions.empty())
-                            show_substitutions_info(all_substitutions);
+        {
+            // Opening the manager only inspects snapshots. Defer the modified-
+            // preset confirmation until the user requests an actual restore;
+            // snapshot creation has its own confirmation and capture rules.
+            std::string on_snapshot;
+            if (Config::SnapshotDB::singleton().is_on_snapshot(*app_config))
+                on_snapshot = app_config->get("on_snapshot");
+            ConfigSnapshotDialog dlg(
+                Slic3r::GUI::Config::SnapshotDB::singleton(), on_snapshot,
+                [this](wxWindow *parent) { return create_configuration_snapshot(parent); },
+                [this]() {
+                    return check_and_save_current_preset_changes(
+                        _L("Loading a configuration snapshot"), "", false);
+                });
+            dlg.ShowModal();
+            if (!dlg.snapshot_to_activate().empty()) {
+                if (! Config::SnapshotDB::singleton().is_on_snapshot(*app_config) &&
+                    ! Config::take_config_snapshot_cancel_on_error(*app_config, Config::Snapshot::SNAPSHOT_BEFORE_ROLLBACK, "",
+                            GUI::format(_L("Continue to activate a configuration snapshot %1%?"), dlg.snapshot_to_activate())))
+                    break;
+                try {
+                    app_config->set("on_snapshot", Config::SnapshotDB::singleton().restore_snapshot(dlg.snapshot_to_activate(), *app_config).id);
+                    // Enable substitutions, log both user and system substitutions. There should not be any substitutions performed when loading system
+                    // presets because compatibility of profiles shall be verified using the min_slic3r_version keys in config index, but users
+                    // are known to be creative and mess with the config files in various ways.
+                    if (PresetsConfigSubstitutions all_substitutions = preset_bundle->load_presets(*app_config, ForwardCompatibilitySubstitutionRule::Enable);
+                        ! all_substitutions.empty())
+                        show_substitutions_info(all_substitutions);
 
-                        // Load the currently selected preset into the GUI, update the preset selection box.
-                        load_current_presets();
-                    } catch (std::exception &ex) {
-                        GUI::show_error(nullptr, _L("Failed to activate configuration snapshot.") + "\n" + into_u8(ex.what()));
-                    }
+                    // Load the currently selected preset into the GUI, update the preset selection box.
+                    load_current_presets();
+                } catch (std::exception &ex) {
+                    GUI::show_error(nullptr, _L("Failed to activate configuration snapshot.") + "\n" + into_u8(ex.what()));
                 }
             }
             break;
+        }
         case ConfigMenuPreferences:
         {
             open_preferences();

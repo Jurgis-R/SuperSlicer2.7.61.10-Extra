@@ -99,7 +99,6 @@ wxString sla_wildcards(OutputFormat formatid, const std::string& custom_extensio
 enum ConfigMenuIDs {
     ConfigMenuWizard,
     ConfigMenuSnapshots,
-    ConfigMenuTakeSnapshot,
     ConfigMenuUpdateConf,
     ConfigMenuUpdateApp,
     ConfigMenuDesktopIntegration,
@@ -451,6 +450,9 @@ private:
     void            window_pos_restore(wxTopLevelWindow* window, const std::string &name, bool default_maximized = false);
     void            window_pos_sanitize(wxTopLevelWindow* window);
     bool            select_language();
+    // Create a named user snapshot and return its ID. An empty result means
+    // that the operation was cancelled or snapshot creation failed.
+    std::string     create_configuration_snapshot(wxWindow *parent);
 
     bool            config_wizard_startup();
     // Returns true if the configuration is fine. 
