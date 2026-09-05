@@ -77,6 +77,23 @@ struct PluginSync {
     const PluginAvailable *best_available() const;
 };
 
+// Background preparation may fail for one repository while updates from
+// other repositories remain usable. Keeping those failures by package lets
+// the GUI report partial work without treating the whole scan as unusable.
+struct PluginUpdatePreparationResult {
+    size_t available_updates = 0;
+    UpdaterError operation_error;
+    std::map<std::string, UpdaterError> package_errors;
+};
+
+// A bulk update is best-effort. Successfully scheduled packages remain
+// selected even when another package fails later in the same operation.
+struct PluginUpdateBatchResult {
+    std::vector<std::string> scheduled_packages;
+    UpdaterError operation_error;
+    std::map<std::string, UpdaterError> package_errors;
+};
+
 class PluginUpdater : public RepositoryUpdater {
 public:
     PluginUpdater() = default;
@@ -94,6 +111,16 @@ public:
     // contact the network; sync_async() performs that work later.
     void reload_all_plugins();
     void sync_async(std::function<void(int)> callback_result, bool force = false);
+
+    // Refresh repository tags and cache the newest ABI-compatible update for
+    // each installed package. With network disabled this only inspects the
+    // already validated cache and completes synchronously.
+    void prepare_updates(bool allow_network,
+                         std::function<void(PluginUpdatePreparationResult)> callback_result);
+
+    // Schedule every currently compatible update for the next application
+    // start. The callback receives all successes and per-package failures.
+    void install_all_updates(std::function<void(PluginUpdateBatchResult)> callback_result);
 
     // Prefer embedded notes for each version, then use the repository. Notes cached less
     // than 24 hours ago are reused unless force is true. The callback reports
@@ -128,6 +155,8 @@ public:
     std::optional<PluginSync> plugin(const std::string &id) const;
 
 private:
+    struct UpdatePreparationState;
+
     // Acquire the shared repository mutation gate and build a once-only
     // terminal callback which releases it before notifying the caller.
     bool start_plugin_change(const char *context,
@@ -137,6 +166,17 @@ private:
     void schedule_cached_plugin_install_async(const std::string &plugin_id,
                                               const PluginAvailable &version,
                                               std::function<void(UpdaterError)> callback_result);
+    void begin_update_preparation(
+        std::function<void(PluginUpdatePreparationResult)> callback_result);
+    void prepare_next_update_candidate(
+        std::shared_ptr<UpdatePreparationState> state);
+    void cache_update_candidate(
+        const std::string &plugin_id,
+        const PluginAvailable &version,
+        std::function<void(UpdaterError)> callback_result);
+    void publish_cached_update_candidate(
+        const std::string &plugin_id,
+        const PluginAvailable &version);
     void update_plugin(const std::string &plugin_id, bool force);
     PluginSync *find_plugin_unlocked(const std::string &id);
     const PluginSync *find_plugin_unlocked(const std::string &id) const;

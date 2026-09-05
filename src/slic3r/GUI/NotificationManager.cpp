@@ -143,6 +143,7 @@ NotificationManager::PopNotification::PopNotification(const NotificationData &n,
 	, m_text1               (n.text1)
 	, m_hypertext           (n.hypertext)
 	, m_text2               (n.text2)
+	, m_secondary_hypertext (n.secondary_hypertext)
 	, m_evt_handler         (evt_handler)
 	, m_notification_start  (GLCanvas3D::timestamp_now())
 {}
@@ -343,6 +344,12 @@ void NotificationManager::PopNotification::count_lines()
 	*/
 	int prev_end = m_endlines.size() > 1 ? m_endlines[m_endlines.size() - 2] : 0;
 	int size_of_last_line = ImGui::CalcTextSize(text.substr(prev_end, last_end - prev_end).c_str()).x;
+	// Two-action notifications reserve one full line for their actions. This
+	// keeps both clickable targets stable instead of wrapping one into text2.
+	if (!m_secondary_hypertext.empty()) {
+		m_lines_count++;
+		return;
+	}
 	// hypertext calculation
 	if (!m_hypertext.empty()) {
 		if (size_of_last_line + ImGui::CalcTextSize(m_hypertext.c_str()).x > m_window_width - m_window_width_offset) {
@@ -476,8 +483,23 @@ void NotificationManager::PopNotification::render_text(ImGuiWrapper& imgui, cons
 			imgui.text(line.c_str());
 		}
 	}
-	//hyperlink text
-	if (!m_multiline && m_lines_count > m_normal_lines_count) {
+	// hyperlink text. A second action receives a dedicated line and callback;
+	// the original single-link positioning remains unchanged for other types.
+	if (!m_secondary_hypertext.empty()) {
+		const float action_y = starting_y + m_endlines.size() * shift_y;
+		render_hypertext(imgui, x_offset, action_y, m_hypertext);
+		const float separator_x = x_offset + ImGui::CalcTextSize(m_hypertext.c_str()).x;
+		ImGui::SetCursorPosX(separator_x);
+		ImGui::SetCursorPosY(action_y);
+		imgui.text("  |  ");
+		render_hypertext(
+			imgui,
+			separator_x + ImGui::CalcTextSize("  |  ").x,
+			action_y,
+			m_secondary_hypertext,
+			false,
+			true);
+	} else if (!m_multiline && m_lines_count > m_normal_lines_count) {
 		render_hypertext(imgui, x_offset + ImGui::CalcTextSize((line + " ").c_str()).x, starting_y + (m_normal_lines_count -1) *shift_y, "[" + _u8L("More") + "]", true);
 	}
 	else if (!m_hypertext.empty()) {
@@ -509,7 +531,13 @@ void NotificationManager::PopNotification::render_text(ImGuiWrapper& imgui, cons
 	}
 }
 
-void NotificationManager::PopNotification::render_hypertext(ImGuiWrapper& imgui, const float text_x, const float text_y, const std::string text, bool more)
+void NotificationManager::PopNotification::render_hypertext(
+	ImGuiWrapper& imgui,
+	const float text_x,
+	const float text_y,
+	const std::string text,
+	bool more,
+	bool secondary)
 {
 	//invisible button
 	ImVec2 part_size = ImGui::CalcTextSize(text.c_str());
@@ -518,6 +546,9 @@ void NotificationManager::PopNotification::render_hypertext(ImGuiWrapper& imgui,
 	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.0f, .0f, .0f, .0f));
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.0f, .0f, .0f, .0f));
 	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.0f, .0f, .0f, .0f));
+	// Multiple hyperlinks share the same invisible button label. Scope that
+	// label by purpose so ImGui can dispatch each action independently.
+	ImGui::PushID(more ? "more" : secondary ? "secondary" : "primary");
 	if (imgui.button("   ", part_size.x + 6, part_size.y + 10))
 	{
 		if (more)
@@ -525,10 +556,11 @@ void NotificationManager::PopNotification::render_hypertext(ImGuiWrapper& imgui,
 			on_more_hypertext_click();
 			set_next_window_size(imgui);
 		}
-		else if (on_text_click()) {
+		else if ((secondary ? on_secondary_text_click() : on_text_click())) {
 			close();
 		}
 	}
+	ImGui::PopID();
 	ImGui::PopStyleColor(3);
 
 	// hover color (hypertext is always blue)
@@ -648,6 +680,13 @@ bool NotificationManager::PopNotification::on_text_click()
 	return false;
 }
 
+bool NotificationManager::PopNotification::on_secondary_text_click()
+{
+	if (m_data.secondary_callback != nullptr)
+		return m_data.secondary_callback(m_evt_handler);
+	return false;
+}
+
 void  NotificationManager::PopNotification::on_more_hypertext_click()
 {
 	m_multiline = true;
@@ -658,6 +697,7 @@ void NotificationManager::PopNotification::update(const NotificationData& n)
 	m_text1          = n.text1;
 	m_hypertext      = n.hypertext;
     m_text2          = n.text2;
+	m_secondary_hypertext = n.secondary_hypertext;
 	init();
 }
 bool NotificationManager::PopNotification::compare_text(const std::string& text) const 
@@ -1941,11 +1981,17 @@ void NotificationManager::SlicingProgressNotification::render_bar(ImGuiWrapper& 
 	}
 	ProgressBarNotification::render_bar(imgui, win_size_x, win_size_y, win_pos_x, win_pos_y);
 }
-void  NotificationManager::SlicingProgressNotification::render_hypertext(ImGuiWrapper& imgui,const float text_x, const float text_y, const std::string text, bool more)
+void NotificationManager::SlicingProgressNotification::render_hypertext(
+	ImGuiWrapper& imgui,
+	const float text_x,
+	const float text_y,
+	const std::string text,
+	bool more,
+	bool secondary)
 {
 	if (m_sp_state == SlicingProgressState::SP_COMPLETED && !m_sidebar_collapsed) 
 		return;
-	ProgressBarNotification::render_hypertext(imgui, text_x, text_y, text, more);
+	ProgressBarNotification::render_hypertext(imgui, text_x, text_y, text, more, secondary);
 }
 void NotificationManager::SlicingProgressNotification::render_cancel_button(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
 {
@@ -2151,8 +2197,25 @@ void NotificationManager::push_notification(NotificationType type,
                                             const std::string &text_after,
                                             int timestamp)
 {
-	int duration = get_standard_duration(level);
+	int duration = type == NotificationType::PluginUpdatesProgress ? 0 : get_standard_duration(level);
     push_notification_data({ type, level, duration, text, hypertext, callback, text_after }, timestamp);
+}
+
+void NotificationManager::push_notification_with_two_actions(
+	NotificationType type,
+	NotificationLevel level,
+	const std::string &text,
+	const std::string &primary_text,
+	std::function<bool(wxEvtHandler*)> primary_callback,
+	const std::string &secondary_text,
+	std::function<bool(wxEvtHandler*)> secondary_callback,
+	int timestamp)
+{
+	const int duration = type == NotificationType::PluginUpdatesAvailable ? 0 : get_standard_duration(level);
+	push_notification_data(
+		{type, level, duration, text, primary_text, std::move(primary_callback), std::string(),
+		 secondary_text, std::move(secondary_callback)},
+		timestamp);
 }
 
 void NotificationManager::push_delayed_notification(const NotificationType type, std::function<bool(void)> condition_callback, int64_t initial_delay, int64_t delay_interval)

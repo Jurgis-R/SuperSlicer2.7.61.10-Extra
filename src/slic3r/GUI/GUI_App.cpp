@@ -118,6 +118,7 @@
 #include "Mouse3DController.hpp"
 #include "RemovableDriveManager.hpp"
 #include "NotificationManager.hpp"
+#include "UpdaterErrorMessages.hpp"
 #include "UnsavedChangesDialog.hpp"
 #include "SavePresetDialog.hpp"
 #include "PrintHostDialogs.hpp"
@@ -1123,7 +1124,8 @@ void GUI_App::post_init()
                 // sees something else than "we want something" on the first start.
                 // don't show_send_system_info_dialog_if_needed, only prusa has the server to receive the data anyway.
                 // show_send_system_info_dialog_if_needed();
-            }  
+            }
+            this->prepare_plugin_updates_on_startup();
             // app version check is asynchronous and triggers blocking dialog window, better call it last
             this->app_version_check(false);
         });
@@ -4501,6 +4503,151 @@ bool GUI_App::config_wizard_startup()
     }
 #endif
     return false;
+}
+
+void GUI_App::prepare_plugin_updates_on_startup()
+{
+    if (plugin_updater == nullptr || plater_ == nullptr || is_gcode_viewer())
+        return;
+
+    const bool allow_network = app_config->get_bool("plugin_update_background_check");
+    plugin_updater->prepare_updates(
+        allow_network,
+        [this](PluginUpdatePreparationResult result) mutable {
+            CallAfter([this, result = std::move(result)] {
+                if (!result.operation_error.succeeded())
+                    BOOST_LOG_TRIVIAL(warning) << "Plugin update preparation failed: "
+                                               << format_updater_error(result.operation_error);
+                for (const auto &[package_id, error] : result.package_errors)
+                    BOOST_LOG_TRIVIAL(warning) << "Cannot prepare update for plugin package '"
+                                               << package_id << "': " << format_updater_error(error);
+                if (result.available_updates > 0)
+                    show_plugin_updates_notification(result.available_updates);
+            });
+        });
+}
+
+void GUI_App::show_plugin_updates_notification(size_t update_count)
+{
+    if (plater_ == nullptr || update_count == 0)
+        return;
+
+    const std::string message = update_count == 1 ?
+        _u8L("One plugin package update is available.") :
+        Slic3r::format(_u8L("%1% plugin package updates are available."), update_count);
+    plater_->get_notification_manager()->push_notification_with_two_actions(
+        NotificationType::PluginUpdatesAvailable,
+        NotificationManager::NotificationLevel::ImportantNotificationLevel,
+        message,
+        _u8L("Update all"),
+        [this](wxEvtHandler *) {
+            CallAfter([this] { install_all_plugin_updates(); });
+            return true;
+        },
+        _u8L("Open Plugin Package Manager"),
+        [this](wxEvtHandler *) {
+            CallAfter([this] { open_plugin_package_manager(); });
+            return true;
+        });
+}
+
+void GUI_App::install_all_plugin_updates()
+{
+    if (plugin_updater == nullptr || plater_ == nullptr)
+        return;
+
+    plater_->get_notification_manager()->push_notification(
+        NotificationType::PluginUpdatesProgress,
+        NotificationManager::NotificationLevel::ImportantNotificationLevel,
+        _u8L("Preparing plugin package updates..."));
+    plugin_updater->install_all_updates(
+        [this](PluginUpdateBatchResult result) mutable {
+            CallAfter([this, result = std::move(result)] {
+                if (plater_ == nullptr)
+                    return;
+                NotificationManager *manager = plater_->get_notification_manager();
+                manager->close_notification_of_type(NotificationType::PluginUpdatesProgress);
+
+                const size_t failure_count = result.package_errors.size() +
+                    (result.operation_error.succeeded() ? 0 : 1);
+                std::string message;
+                NotificationManager::NotificationLevel level =
+                    NotificationManager::NotificationLevel::ImportantNotificationLevel;
+                if (failure_count == 0) {
+                    if (result.scheduled_packages.empty()) {
+                        message = _u8L("No plugin package updates remain available.");
+                    } else {
+                        message = result.scheduled_packages.size() == 1 ?
+                            _u8L("One plugin package update will be installed after restarting the application.") :
+                            Slic3r::format(
+                                _u8L("%1% plugin package updates will be installed after restarting the application."),
+                                result.scheduled_packages.size());
+                    }
+                } else {
+                    level = NotificationManager::NotificationLevel::WarningNotificationLevel;
+                    message = Slic3r::format(
+                        _u8L("%1% plugin package updates were scheduled and %2% failed. Open the package manager to retry."),
+                        result.scheduled_packages.size(), failure_count);
+                    if (!result.operation_error.succeeded())
+                        BOOST_LOG_TRIVIAL(error) << "Plugin batch update failed: "
+                                                 << format_updater_error(result.operation_error);
+                    for (const auto &[package_id, error] : result.package_errors)
+                        BOOST_LOG_TRIVIAL(error) << "Cannot schedule update for plugin package '"
+                                                 << package_id << "': " << format_updater_error(error);
+                }
+                std::string action_text = _u8L("Open Plugin Package Manager");
+                std::function<bool(wxEvtHandler *)> action_callback = [this](wxEvtHandler *) {
+                    CallAfter([this] { open_plugin_package_manager(); });
+                    return true;
+                };
+                if (failure_count == 0 && !result.scheduled_packages.empty()) {
+                    action_text = _u8L("Restart now");
+                    action_callback = [this](wxEvtHandler *) {
+                        CallAfter([this] { restart_after_plugin_updates(); });
+                        return true;
+                    };
+                }
+                manager->push_notification(
+                    NotificationType::PluginUpdatesResult,
+                    level,
+                    message,
+                    action_text,
+                    std::move(action_callback));
+            });
+        });
+}
+
+void GUI_App::open_plugin_package_manager()
+{
+    if (plugin_updater == nullptr || mainframe == nullptr)
+        return;
+
+    PluginUpdateDialog dialog(mainframe, *plugin_updater);
+    dialog.ShowModal();
+}
+
+void GUI_App::restart_after_plugin_updates()
+{
+    if (mainframe == nullptr)
+        return;
+
+    // Match the package manager's restart guard so applying updates never
+    // discards an edited project or unsaved preset changes.
+    if (plater_ != nullptr) {
+        const int saved_project = plater_->save_project_if_dirty(
+            format_wxstr(_L("Closing %1%. Current project is modified."), SLIC3R_APP_NAME));
+        if (saved_project == wxID_CANCEL)
+            return;
+        if (saved_project == wxID_NO && plater_->is_presets_dirty() &&
+            !check_and_save_current_preset_changes(
+                format_wxstr(_L("Closing %1%"), SLIC3R_APP_NAME),
+                format_wxstr(_L("Closing %1% while some presets are modified."), SLIC3R_APP_NAME)))
+            return;
+    }
+
+    start_new_slicer(nullptr, false);
+    if (mainframe != nullptr)
+        mainframe->Close(true);
 }
 
 #ifndef USE_GTHUB_PRESET_UPDATE

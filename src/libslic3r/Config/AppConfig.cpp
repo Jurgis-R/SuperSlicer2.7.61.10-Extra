@@ -190,6 +190,9 @@ void AppConfig::set_defaults()
         if (get("preset_update").empty())
             set("preset_update", "0");
 
+        if (get("plugin_update_background_check").empty())
+            set("plugin_update_background_check", "1");
+
         // Archive downloads are allowed more time than repository metadata,
         // while remaining finite so application shutdown cannot wait forever.
         if (get("repository_archive_download_timeout_minutes").empty())

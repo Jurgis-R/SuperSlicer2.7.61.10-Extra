@@ -598,6 +598,14 @@ void PreferencesDialog::build()
 			  "into a separate temporary location. When a new preset version becomes available it is offered at application startup."),
 			app_config->get_bool("preset_update"));
 
+        append_bool_option(
+            m_tabid_2_optgroups.back().back(),
+            "plugin_update_background_check",
+            L("Check plugin package updates in the background"),
+            L("If enabled, Slic3r checks installed plugin repositories at startup and downloads candidate packages "
+              "to verify their API compatibility. Packages are never installed without confirmation."),
+            app_config->get_bool("plugin_update_background_check"));
+
         int archive_timeout_minutes =
             atoi(app_config->get("repository_archive_download_timeout_minutes").c_str());
         if (archive_timeout_minutes < 1 || archive_timeout_minutes > 120)

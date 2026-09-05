@@ -133,7 +133,13 @@ enum class NotificationType
 	// MacOS specific - PS comes forward even when downloader is not allowed
 	URLNotRegistered,
 	// Config file was detected during startup, open wifi config dialog via hypertext
-	WifiConfigFileDetected
+	WifiConfigFileDetected,
+	// Persistent notification offering bulk plugin update and package manager actions.
+	PluginUpdatesAvailable,
+	// Persistent non-interactive state while compatible packages are scheduled.
+	PluginUpdatesProgress,
+	// Terminal result of a bulk plugin update request.
+	PluginUpdatesResult
 };
 
 class NotificationManager
@@ -176,6 +182,13 @@ public:
 	// ErrorNotificationLevel are never faded out.
     void push_notification(NotificationType type, NotificationLevel level, const std::string& text, const std::string& hypertext = "",
                            std::function<bool(wxEvtHandler*)> callback = std::function<bool(wxEvtHandler*)>(), const std::string& text_after = "", int timestamp = 0);
+	// Display two independent actions on one persistent notification. Existing
+	// single-action notifications keep their current layout and callbacks.
+	void push_notification_with_two_actions(
+		NotificationType type, NotificationLevel level, const std::string &text,
+		const std::string &primary_text, std::function<bool(wxEvtHandler*)> primary_callback,
+		const std::string &secondary_text, std::function<bool(wxEvtHandler*)> secondary_callback,
+		int timestamp = 0);
 	// Pushes basic_notification with delay. See push_delayed_notification_data.
 	void push_delayed_notification(const NotificationType type, std::function<bool(void)> condition_callback, int64_t initial_delay, int64_t delay_interval);
 	// Removes all notifications of type from m_waiting_notifications
@@ -304,6 +317,8 @@ private:
 		// Examples in basic_notifications.
         std::function<bool(wxEvtHandler*)> callback;
 		const std::string        text2;
+		const std::string        secondary_hypertext = std::string();
+		std::function<bool(wxEvtHandler*)> secondary_callback;
 	};
 
 	// Cache of IDs to identify and reuse ImGUI windows.
@@ -376,9 +391,10 @@ private:
 			                             const float win_size_x, const float win_size_y,
 			                             const float win_pos_x , const float win_pos_y);
 		virtual void render_hypertext(ImGuiWrapper& imgui,
-			                          const float text_x, const float text_y,
-		                              const std::string text,
-		                              bool more = false);
+		                          const float text_x, const float text_y,
+		                          const std::string text,
+		                              bool more = false,
+		                              bool secondary = false);
 		// Left sign could be error or warning sign
 		virtual void render_left_sign(ImGuiWrapper& imgui);
 		virtual void render_minimize_button(ImGuiWrapper& imgui,
@@ -386,6 +402,7 @@ private:
 		// Hypertext action, returns true if notification should close.
 		// Action is stored in NotificationData::callback as std::function<bool(wxEvtHandler*)>
 		virtual bool on_text_click();
+		virtual bool on_secondary_text_click();
 		// "More" hypertext to show full message
 		virtual void on_more_hypertext_click();
 		// Part of init(), counts horizontal spacing like left indentation 
@@ -423,6 +440,9 @@ private:
 		std::string      m_hypertext;
 		// Aditional text after hypertext - currently not used
 		std::string      m_text2;
+		// Optional second action. It is rendered beside the primary action on a
+		// dedicated line so both targets remain unambiguous at every DPI.
+		std::string      m_secondary_hypertext;
 
 		// inner variables to position notification window, texts and buttons correctly
 
@@ -723,7 +743,8 @@ private:
 		void		render_hypertext(ImGuiWrapper& imgui,
 										const float text_x, const float text_y,
 										const std::string text,
-										bool more = false) override ;
+										bool more = false,
+										bool secondary = false) override ;
 		// Part of init(), counts end lines
 		virtual void count_lines();
 		//virtual void set_next_window_size(ImGuiWrapper& imgui);

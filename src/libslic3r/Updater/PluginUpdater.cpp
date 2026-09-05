@@ -57,6 +57,16 @@ PluginPackageLoadReport missing_live_package_report(
 void invoke_plugin_callback(const std::function<void(UpdaterError)> &callback,
                             UpdaterError error,
                             const char *context);
+// Deliver aggregate preparation results without allowing a GUI callback to
+// unwind through an HTTP or repository worker.
+void invoke_plugin_preparation_callback(
+    const std::function<void(PluginUpdatePreparationResult)> &callback,
+    PluginUpdatePreparationResult result);
+// Deliver best-effort installation results after the repository mutation
+// reservation has been released.
+void invoke_plugin_batch_callback(
+    const std::function<void(PluginUpdateBatchResult)> &callback,
+    PluginUpdateBatchResult result);
 
 bool read_plugin_description(const boost::filesystem::path &path,
                              RepositoryDescription &description,
@@ -142,7 +152,52 @@ void invoke_plugin_callback(const std::function<void(UpdaterError)> &callback,
     }
 }
 
+void invoke_plugin_preparation_callback(
+    const std::function<void(PluginUpdatePreparationResult)> &callback,
+    PluginUpdatePreparationResult result)
+{
+    if (!callback)
+        return;
+    try {
+        callback(std::move(result));
+    } catch (const std::exception &exception) {
+        BOOST_LOG_TRIVIAL(error) << "Plugin update preparation callback failed: " << exception.what();
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "Plugin update preparation callback failed with an unknown exception.";
+    }
+}
+
+void invoke_plugin_batch_callback(
+    const std::function<void(PluginUpdateBatchResult)> &callback,
+    PluginUpdateBatchResult result)
+{
+    if (!callback)
+        return;
+    try {
+        callback(std::move(result));
+    } catch (const std::exception &exception) {
+        BOOST_LOG_TRIVIAL(error) << "Plugin batch installation callback failed: " << exception.what();
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "Plugin batch installation callback failed with an unknown exception.";
+    }
+}
+
 } // namespace
+
+// One package is completed before moving to the next. Within a package,
+// candidates are tried newest first until one compatible archive is cached.
+struct PluginUpdater::UpdatePreparationState {
+    struct Package {
+        std::string id;
+        std::vector<PluginAvailable> candidates;
+        size_t candidate_idx = 0;
+    };
+
+    std::vector<Package> packages;
+    size_t package_idx = 0;
+    PluginUpdatePreparationResult result;
+    std::function<void(PluginUpdatePreparationResult)> callback;
+};
 
 PluginUpdater::~PluginUpdater()
 {
@@ -399,6 +454,257 @@ void PluginUpdater::sync_async(std::function<void(int)> callback_result, bool fo
         return;
     for (const std::string &plugin_id : plugin_ids)
         update_plugin(plugin_id, force);
+}
+
+void PluginUpdater::prepare_updates(
+    bool allow_network,
+    std::function<void(PluginUpdatePreparationResult)> callback_result)
+{
+    if (!allow_network) {
+        PluginUpdatePreparationResult result;
+        result.available_updates = count_updates();
+        invoke_plugin_preparation_callback(callback_result, std::move(result));
+        return;
+    }
+
+    sync_async(
+        [this, callback_result = std::move(callback_result)](int) mutable {
+            begin_update_preparation(std::move(callback_result));
+        },
+        false);
+}
+
+void PluginUpdater::begin_update_preparation(
+    std::function<void(PluginUpdatePreparationResult)> callback_result)
+{
+    const std::shared_ptr<UpdatePreparationState> state =
+        std::make_shared<UpdatePreparationState>();
+    state->callback = std::move(callback_result);
+
+    {
+        std::lock_guard<std::mutex> guard(m_model_mutex);
+        for (const auto &[id, plugin] : m_plugins) {
+            if (!plugin.is_installed || plugin.is_bundled_exact() ||
+                plugin.installation_pending() || plugin.can_upgrade)
+                continue;
+
+            const std::optional<Semver> installed = Semver::parse(plugin.installed_version.package_version);
+            if (!installed)
+                continue;
+
+            UpdatePreparationState::Package package;
+            package.id = id;
+            for (const PluginAvailable &candidate : plugin.available_packages) {
+                const std::optional<Semver> version = Semver::parse(candidate.package_version);
+                if (!version || *version <= *installed)
+                    continue;
+                if (candidate.local_directory.empty() && !candidate.url_zip.empty())
+                    package.candidates.emplace_back(candidate);
+            }
+            if (!package.candidates.empty())
+                state->packages.emplace_back(std::move(package));
+
+            if (plugin.sync_state == RepositorySyncState::Failed)
+                state->result.package_errors[id] = plugin.sync_error;
+        }
+    }
+
+    if (state->packages.empty()) {
+        state->result.available_updates = count_updates();
+        invoke_plugin_preparation_callback(state->callback, std::move(state->result));
+        return;
+    }
+    if (!begin_repository_change()) {
+        state->result.operation_error = make_updater_error(
+            UpdaterError::Code::PreparationRejected,
+            "Another plugin package operation is already in progress.");
+        state->result.available_updates = count_updates();
+        invoke_plugin_preparation_callback(state->callback, std::move(state->result));
+        return;
+    }
+
+    prepare_next_update_candidate(state);
+}
+
+void PluginUpdater::prepare_next_update_candidate(
+    std::shared_ptr<UpdatePreparationState> state)
+{
+    if (state->package_idx == state->packages.size()) {
+        finish_repository_change();
+        state->result.available_updates = count_updates();
+        for (const PluginSync &plugin : plugins())
+            if (plugin.can_upgrade)
+                state->result.package_errors.erase(plugin.description.id);
+        invoke_plugin_preparation_callback(state->callback, std::move(state->result));
+        return;
+    }
+
+    UpdatePreparationState::Package &package = state->packages[state->package_idx];
+    if (package.candidate_idx == package.candidates.size()) {
+        ++state->package_idx;
+        prepare_next_update_candidate(std::move(state));
+        return;
+    }
+
+    const PluginAvailable candidate = package.candidates[package.candidate_idx];
+    cache_update_candidate(
+        package.id, candidate,
+        [this, state](UpdaterError error) mutable {
+            UpdatePreparationState::Package &current = state->packages[state->package_idx];
+            if (!error.succeeded())
+                state->result.package_errors[current.id] = std::move(error);
+
+            bool compatible = false;
+            const std::optional<PluginSync> plugin = this->plugin(current.id);
+            if (plugin) {
+                for (const PluginAvailable &available : plugin->available_packages) {
+                    if (available.package_version == current.candidates[current.candidate_idx].package_version &&
+                        available.slicer_version == current.candidates[current.candidate_idx].slicer_version) {
+                        compatible = available.metadata.compatibility.compatible();
+                        break;
+                    }
+                }
+            }
+
+            if (compatible) {
+                state->result.package_errors.erase(current.id);
+                ++state->package_idx;
+            } else {
+                ++current.candidate_idx;
+            }
+            prepare_next_update_candidate(std::move(state));
+        });
+}
+
+void PluginUpdater::cache_update_candidate(
+    const std::string &plugin_id,
+    const PluginAvailable &version,
+    std::function<void(UpdaterError)> callback_result)
+{
+    const boost::filesystem::path archive_path = repository_cache_root_path(
+        boost::filesystem::path(data_dir()), RepositoryPackageType::Plugin, plugin_id) /
+        (RepositoryPackageCache::version_directory_name(
+            version.package_version, version.slicer_version) + ".zip");
+    download_repository_file_async(
+        version.url_zip, archive_path, 130 * 1024 * 1024,
+        [this, plugin_id, version, archive_path,
+         callback_result = std::move(callback_result)](UpdaterError download_error) mutable {
+            if (!download_error.succeeded()) {
+                invoke_plugin_callback(callback_result, std::move(download_error),
+                                       "Plugin update preparation");
+                return;
+            }
+
+            const bool accepted = enqueue_operation(
+                [plugin_id, version, archive_path] {
+                    std::string error_message;
+                    UpdaterError result;
+                    if (!cache_plugin_package_archive(
+                            boost::filesystem::path(data_dir()), archive_path, plugin_id,
+                            version.package_version, version.slicer_version, error_message))
+                        result = make_updater_error(UpdaterError::Code::Cache, std::move(error_message));
+                    boost::system::error_code cleanup_error;
+                    boost::filesystem::remove(archive_path, cleanup_error);
+                    return result;
+                },
+                [this, plugin_id, version,
+                 callback_result](UpdaterError error) mutable {
+                    if (error.succeeded())
+                        publish_cached_update_candidate(plugin_id, version);
+                    invoke_plugin_callback(callback_result, std::move(error),
+                                           "Plugin update preparation");
+                });
+            if (!accepted) {
+                boost::system::error_code cleanup_error;
+                boost::filesystem::remove(archive_path, cleanup_error);
+                invoke_plugin_callback(
+                    callback_result,
+                    make_updater_error(UpdaterError::Code::PreparationRejected,
+                                       "The plugin updater is shutting down."),
+                    "Plugin update preparation");
+            }
+        });
+}
+
+void PluginUpdater::publish_cached_update_candidate(
+    const std::string &plugin_id,
+    const PluginAvailable &version)
+{
+    const boost::filesystem::path directory = repository_package_cache_path(
+        boost::filesystem::path(data_dir()), RepositoryPackageType::Plugin, plugin_id,
+        version.package_version, version.slicer_version);
+    PluginPackageMetadata metadata;
+    std::string error_message;
+    read_plugin_package_metadata((directory / "version.ini").string(), metadata, error_message);
+
+    std::lock_guard<std::mutex> guard(m_model_mutex);
+    PluginSync *current = find_plugin_unlocked(plugin_id);
+    if (current == nullptr)
+        return;
+    for (PluginAvailable &available : current->available_packages) {
+        if (available.package_version == version.package_version &&
+            available.slicer_version == version.slicer_version) {
+            available.local_directory = directory.string();
+            available.metadata = metadata;
+            break;
+        }
+    }
+    current->has_cache = true;
+    current->sort_available();
+}
+
+void PluginUpdater::install_all_updates(
+    std::function<void(PluginUpdateBatchResult)> callback_result)
+{
+    const std::shared_ptr<std::vector<std::pair<std::string, PluginAvailable>>> updates =
+        std::make_shared<std::vector<std::pair<std::string, PluginAvailable>>>();
+    {
+        std::lock_guard<std::mutex> guard(m_model_mutex);
+        for (const auto &[id, plugin] : m_plugins) {
+            const PluginAvailable *best = plugin.best_available();
+            if (plugin.is_installed && !plugin.is_bundled_exact() &&
+                !plugin.installation_pending() && plugin.can_upgrade && best != nullptr)
+                updates->emplace_back(id, *best);
+        }
+    }
+    if (updates->empty()) {
+        invoke_plugin_batch_callback(callback_result, PluginUpdateBatchResult());
+        return;
+    }
+    if (!begin_repository_change()) {
+        PluginUpdateBatchResult result;
+        result.operation_error = make_updater_error(
+            UpdaterError::Code::PreparationRejected,
+            "Another plugin package operation is already in progress.");
+        invoke_plugin_batch_callback(callback_result, std::move(result));
+        return;
+    }
+
+    const std::shared_ptr<PluginUpdateBatchResult> result =
+        std::make_shared<PluginUpdateBatchResult>();
+    const bool accepted = enqueue_operation(
+        [this, updates, result] {
+            for (const std::pair<std::string, PluginAvailable> &update : *updates) {
+                const UpdaterError error = schedule_cached_plugin_install(update.first, update.second);
+                if (error.succeeded())
+                    result->scheduled_packages.emplace_back(update.first);
+                else
+                    result->package_errors[update.first] = error;
+            }
+            return UpdaterError();
+        },
+        [this, result, callback_result](UpdaterError operation_error) mutable {
+            finish_repository_change();
+            result->operation_error = std::move(operation_error);
+            invoke_plugin_batch_callback(callback_result, std::move(*result));
+        });
+    if (!accepted) {
+        finish_repository_change();
+        result->operation_error = make_updater_error(
+            UpdaterError::Code::PreparationRejected,
+            "The plugin updater is shutting down.");
+        invoke_plugin_batch_callback(callback_result, std::move(*result));
+    }
 }
 
 void PluginUpdater::update_plugin(const std::string &plugin_id, bool force)

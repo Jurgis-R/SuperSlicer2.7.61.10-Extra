@@ -460,6 +460,13 @@ private:
     void            app_updater(bool from_user);
     // inititate read of version file online in separate thread
     void            app_version_check(bool from_user);
+    // Check cached or remote plugin packages after startup and publish the
+    // non-modal notification once compatibility is known.
+    void            prepare_plugin_updates_on_startup();
+    void            show_plugin_updates_notification(size_t update_count);
+    void            install_all_plugin_updates();
+    void            open_plugin_package_manager();
+    void            restart_after_plugin_updates();
 
     bool                    m_datadir_redefined { false }; 
     bool                    m_wifi_config_dialog_shown { false };
