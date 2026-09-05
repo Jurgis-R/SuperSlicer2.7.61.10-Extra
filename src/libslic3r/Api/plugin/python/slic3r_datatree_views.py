@@ -68,6 +68,8 @@ from slic3r_api_generated import (
     RAW_MESH_SLICING_MODE_EVEN_ODD,
     RAW_MESH_SLICING_MODE_POSITIVE,
     RAW_MESH_SLICING_MODE_REGULAR,
+    SLIC3R_CONFIG_OPTION_POINT,
+    SLIC3R_CONFIG_OPTION_POINTS,
     RAW_VOLUME_TYPE_BRIM_NEGATIVE,
     RAW_VOLUME_TYPE_BRIM_PATCH,
     RAW_VOLUME_TYPE_MODEL_PART,
@@ -165,6 +167,14 @@ CLayerBrimProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_BRIM
 LayerBrimProperty = CLayerBrimProperty
 CLayerAdhesionProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_ADHESION
 LayerAdhesionProperty = CLayerAdhesionProperty
+
+
+@abi_requires_headers("slic3r_config_option.h")
+class ConfigPoint(NamedTuple):
+    """Unscaled XY value stored by a point configuration option."""
+
+    x: float
+    y: float
 
 
 # Base for borrowed data-tree views. It never owns or frees the handle.
@@ -273,8 +283,51 @@ class PluginProperties:
         self.api.host.plugin_property_copy_all(self.c_handle(), other.c_handle())
 
 
+# Borrowed read-only view over one graph payload stored inside a ConfigOption.
+@abi_requires_headers("slic3r_config_option.h")
+class GraphData(DataTreeView):
+    """
+    Borrowed graph value owned by a scalar or vector configuration option.
+
+    The handle is invalidated when its parent option is replaced, resized or
+    destroyed. Do not free it or retain it across configuration mutations.
+    Interpolation and serialization only read the graph; they do not expose its
+    mutable native storage.
+    """
+
+    def size(self) -> int:
+        """Return the number of usable points in the graph."""
+        return int(self.api.host.graph_data_size(self.c_handle()))
+
+    def interpolate(self, x: float) -> float:
+        """Evaluate the graph at unscaled coordinate ``x``."""
+        return float(self.api.host.graph_interpolate(self.c_handle(), float(x)))
+
+    def inverse_interpolate(self, y: float) -> float:
+        """Evaluate the host's inverse interpolation at unscaled ``y``."""
+        return float(
+            self.api.host.graph_inverse_interpolate(self.c_handle(), float(y))
+        )
+
+    def validate(self) -> bool:
+        """Return whether the native graph points and interpolation mode are valid."""
+        return bool(self.api.host.graph_validate(self.c_handle()))
+
+    def serialize(self) -> str:
+        """Copy the graph's canonical serialized representation."""
+        needed = int(self.api.host.graph_serialize(self.c_handle(), None, 0))
+        if needed == 0:
+            return ""
+        output = ctypes.create_string_buffer(needed + 1)
+        written = int(
+            self.api.host.graph_serialize(self.c_handle(), output, len(output))
+        )
+        return output.value[:written].decode("utf-8")
+
+
 # Read-only view over one ConfigOption. It covers common scalar/vector access
 # without exposing raw config_option_handle values.
+@abi_requires_headers("slic3r_config_option.h")
 class ConfigOption(DataTreeView):
     def type(self) -> int:
         return int(self.api.host.config_option_type_get(self.c_handle()))
@@ -311,6 +364,67 @@ class ConfigOption(DataTreeView):
 
     def get_float_or_percent(self, idx: int = 0) -> CFloatOrPercent:
         return self.api.host.config_option_get_float_or_percent(self.c_handle(), int(idx))
+
+    def get_string(self, idx: int = 0) -> str:
+        """
+        Copy one typed string value from this option.
+
+        Unlike serialize(), this returns the string payload itself without
+        option syntax or escaping. A scalar string ignores ``idx``. For a
+        vector string, an invalid index produces an empty string at the C
+        boundary. Non-string options also produce an empty string; callers
+        that need to distinguish these cases should inspect type(), is_vector()
+        and size() first.
+        """
+        needed = int(
+            self.api.host.config_option_get_string(
+                self.c_handle(), int(idx), None, 0
+            )
+        )
+        output = ctypes.create_string_buffer(needed + 1)
+        written = int(
+            self.api.host.config_option_get_string(
+                self.c_handle(), int(idx), output, len(output)
+            )
+        )
+        return output.value[:written].decode("utf-8")
+
+    def get_point(self, idx: int = 0) -> ConfigPoint:
+        """
+        Copy one unscaled XY point from a point or points option.
+
+        Point components occupy two consecutive numeric slots in the C ABI.
+        For a vector option, ``idx`` selects the point, not a component.
+        """
+        if idx < 0 or idx >= self.size():
+            raise IndexError(
+                f"configuration point index {idx} is outside [0, {self.size()})"
+            )
+        component = int(idx) * 2
+        return ConfigPoint(
+            float(self.api.host.config_option_get_float(self.c_handle(), component)),
+            float(
+                self.api.host.config_option_get_float(
+                    self.c_handle(), component + 1
+                )
+            ),
+        )
+
+    def graph(self, idx: int = 0) -> GraphData | None:
+        """
+        Borrow one graph payload, or return None for a wrong type/index.
+
+        A scalar graph ignores ``idx``. For a vector graph, an invalid index
+        returns None.
+
+        The returned view is owned by this option and is invalidated by any
+        mutation that replaces or resizes the option. It must not be freed.
+        """
+        return _optional(
+            GraphData,
+            self.api,
+            self.api.host.config_option_get_graph(self.c_handle(), int(idx)),
+        )
 
     def is_percent(self, idx: int = 0) -> bool:
         return bool(self.get_float_or_percent(idx).percent)
@@ -393,7 +507,18 @@ class MutableConfigOption(ConfigOption):
 
 
 # Borrowed read-only config view. get() returns None for an unknown key.
+@abi_requires_headers("slic3r_config.h", "slic3r_config_option.h")
 class Config(DataTreeView):
+    """
+    Read-only access to one host-owned configuration.
+
+    ``option(key).get_*()`` performs a direct typed read and is appropriate
+    when the option is required. The ``*_or_default`` helpers return their
+    fallback when a key is absent, the option or selected item is disabled, or
+    a vector index is outside the current option size. Scalar helpers read item
+    zero; vector helpers take an explicit item index.
+    """
+
     def keys(self) -> list[str]:
         raw = self.api.host.config_keys(self.c_handle())
         out: list[str] = []
@@ -404,6 +529,10 @@ class Config(DataTreeView):
     def get(self, key: str) -> ConfigOption | None:
         return _optional(ConfigOption, self.api, self.api.host.config_get(self.c_handle(), _as_bytes(key)))
 
+    def has(self, key: str) -> bool:
+        """Return whether this configuration currently contains ``key``."""
+        return self.get(key) is not None
+
     def option(self, key: str) -> ConfigOption:
         option = self.get(key)
         if option is None:
@@ -411,20 +540,206 @@ class Config(DataTreeView):
         return option
 
     def bool(self, key: str, idx: int = 0, default: bool = False) -> bool:
-        option = self.get(key)
+        """Read legacy numeric slot ``idx``; point slots are flattened X/Y components."""
+        option = self._legacy_numeric_option_if_enabled(key, idx)
         return default if option is None else option.get_bool(idx)
 
     def int(self, key: str, idx: int = 0, default: int = 0) -> int:
-        option = self.get(key)
+        """Read legacy numeric slot ``idx``; point slots are flattened X/Y components."""
+        option = self._legacy_numeric_option_if_enabled(key, idx)
         return default if option is None else option.get_int(idx)
 
     def float(self, key: str, idx: int = 0, default: float = 0.0) -> float:
-        option = self.get(key)
+        """Read legacy numeric slot ``idx``; point slots are flattened X/Y components."""
+        option = self._legacy_numeric_option_if_enabled(key, idx)
         return default if option is None else option.get_float(idx)
 
     def float_or_percent(self, key: str, idx: int = 0) -> CFloatOrPercent | None:
         option = self.get(key)
         return None if option is None else option.get_float_or_percent(idx)
+
+    def bool_or_default(self, key: str, fallback: bool) -> bool:
+        option = self._option_if_enabled(key)
+        return fallback if option is None else option.get_bool()
+
+    def vector_bool_or_default(self, key: str, idx: int, fallback: bool) -> bool:
+        option = self._vector_option_if_enabled(key, idx)
+        return fallback if option is None else option.get_bool(idx)
+
+    def int_or_default(self, key: str, fallback: int) -> int:
+        option = self._option_if_enabled(key)
+        return fallback if option is None else option.get_int()
+
+    def vector_int_or_default(self, key: str, idx: int, fallback: int) -> int:
+        option = self._vector_option_if_enabled(key, idx)
+        return fallback if option is None else option.get_int(idx)
+
+    def enum_or_default(self, key: str, fallback: int) -> int:
+        return self.int_or_default(key, fallback)
+
+    def vector_enum_or_default(self, key: str, idx: int, fallback: int) -> int:
+        return self.vector_int_or_default(key, idx, fallback)
+
+    def float_or_default(self, key: str, fallback: float) -> float:
+        option = self._option_if_enabled(key)
+        return fallback if option is None else option.get_float()
+
+    def vector_float_or_default(
+        self, key: str, idx: int, fallback: float
+    ) -> float:
+        option = self._vector_option_if_enabled(key, idx)
+        return fallback if option is None else option.get_float(idx)
+
+    def percent_or_default(self, key: str, fallback: float) -> float:
+        return self.float_or_default(key, fallback)
+
+    def vector_percent_or_default(
+        self, key: str, idx: int, fallback: float
+    ) -> float:
+        return self.vector_float_or_default(key, idx, fallback)
+
+    def float_or_percent_or_default(
+        self, key: str, fallback: CFloatOrPercent
+    ) -> CFloatOrPercent:
+        option = self._option_if_enabled(key)
+        return (
+            CFloatOrPercent(fallback.value, fallback.percent)
+            if option is None
+            else option.get_float_or_percent()
+        )
+
+    def vector_float_or_percent_or_default(
+        self, key: str, idx: int, fallback: CFloatOrPercent
+    ) -> CFloatOrPercent:
+        option = self._vector_option_if_enabled(key, idx)
+        return (
+            CFloatOrPercent(fallback.value, fallback.percent)
+            if option is None
+            else option.get_float_or_percent(idx)
+        )
+
+    def effective_float_or_percent_or_default(
+        self, key: str, ratio: float, fallback: float
+    ) -> float:
+        option = self._option_if_enabled(key)
+        return fallback if option is None else option.get_effective_value(ratio)
+
+    def vector_effective_float_or_percent_or_default(
+        self, key: str, idx: int, ratio: float, fallback: float
+    ) -> float:
+        option = self._vector_option_if_enabled(key, idx)
+        return (
+            fallback
+            if option is None
+            else option.get_effective_value(ratio, idx)
+        )
+
+    def computed_float_or_default(
+        self, key: str, extruder_id: int, fallback: float
+    ) -> float:
+        """
+        Resolve a numeric setting through the host's ratio dependency chain.
+
+        ``fallback`` is returned when the key or selected vector item is
+        absent, disabled, non-numeric, non-finite or otherwise unresolved.
+        """
+        output = ctypes.c_double(float(fallback))
+        resolved = self.api.host.config_get_computed_value(
+            self.c_handle(), _as_bytes(key), int(extruder_id), ctypes.byref(output)
+        )
+        return float(output.value) if resolved else float(fallback)
+
+    def string_or_default(self, key: str, fallback: str) -> str:
+        option = self._option_if_enabled(key)
+        return fallback if option is None else option.get_string()
+
+    def vector_string_or_default(
+        self, key: str, idx: int, fallback: str
+    ) -> str:
+        option = self._vector_option_if_enabled(key, idx)
+        return fallback if option is None else option.get_string(idx)
+
+    def point_or_default(
+        self, key: str, fallback: ConfigPoint
+    ) -> ConfigPoint:
+        option = self._option_if_enabled(key)
+        return fallback if option is None else option.get_point()
+
+    def vector_point_or_default(
+        self, key: str, idx: int, fallback: ConfigPoint
+    ) -> ConfigPoint:
+        option = self._vector_option_if_enabled(key, idx)
+        return fallback if option is None else option.get_point(idx)
+
+    def graph_or_default(
+        self, key: str, fallback: GraphData | None
+    ) -> GraphData | None:
+        option = self._option_if_enabled(key)
+        if option is None:
+            return fallback
+        return option.graph()
+
+    def vector_graph_or_default(
+        self, key: str, idx: int, fallback: GraphData | None
+    ) -> GraphData | None:
+        option = self._vector_option_if_enabled(key, idx)
+        if option is None:
+            return fallback
+        return option.graph(idx)
+
+    def _option_if_enabled(self, key: str) -> ConfigOption | None:
+        option = self.get(key)
+        if option is None or option.size() == 0 or not option.is_enabled(0):
+            return None
+        return option
+
+    def _vector_option_if_enabled(
+        self, key: str, idx: int
+    ) -> ConfigOption | None:
+        option = self.get(key)
+        if (
+            option is None
+            or idx < 0
+            or idx >= option.size()
+            or not option.is_enabled(idx)
+        ):
+            return None
+        return option
+
+    def _legacy_numeric_option_if_enabled(
+        self, key: str, idx: int
+    ) -> ConfigOption | None:
+        """
+        Validate the raw numeric index used by bool(), int() and float().
+
+        Those pre-existing shortcuts expose point options as flattened numeric
+        components. ConfigOption.size(), however, counts whole points, and the
+        enabled state of a points vector is also stored per point. Other vector
+        options use the numeric index directly. Other scalar numeric options
+        retain their native behavior of ignoring the index after checking item
+        zero.
+        """
+        option = self.get(key)
+        if option is None or idx < 0 or option.size() == 0:
+            return None
+
+        option_type = option.type()
+        if option_type == SLIC3R_CONFIG_OPTION_POINT:
+            if idx >= 2:
+                return None
+            enabled_idx = 0
+        elif option_type == SLIC3R_CONFIG_OPTION_POINTS:
+            if idx >= option.size() * 2:
+                return None
+            enabled_idx = idx // 2
+        elif option.is_vector():
+            if idx >= option.size():
+                return None
+            enabled_idx = idx
+        else:
+            enabled_idx = 0
+
+        return option if option.is_enabled(enabled_idx) else None
 
     def serialize_all(self) -> str:
         """Serialize every option into the host's versioned SCFG format."""
@@ -1560,7 +1875,9 @@ __all__ = [
     "AuxiliaryLayerBuildResult",
     "Config",
     "ConfigOption",
+    "ConfigPoint",
     "DataTreeView",
+    "GraphData",
     "Layer",
     "LayerIsland",
     "LayerRegion",

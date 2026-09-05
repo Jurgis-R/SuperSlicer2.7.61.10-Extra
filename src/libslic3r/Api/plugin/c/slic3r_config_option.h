@@ -32,12 +32,38 @@ SLIC3R_HOST_API int32_t c_float_or_percent_less(const c_float_or_percent *lhs, c
 
 typedef struct graph_data_handle graph_data_handle;
 
+/* Return the number of usable points in this borrowed graph; null returns 0. */
 SLIC3R_HOST_API uint32_t         graph_data_size(const graph_data_handle *me);
+
+/*
+Borrow a contiguous pointer to the graph's usable points. The pointer remains
+owned by the graph option and is invalidated when that option is modified or
+destroyed. Null or an invalid point range returns null. No allocation occurs.
+*/
 SLIC3R_HOST_API const c_point *graph_data_ptr(const graph_data_handle *me);
+
+/* Evaluate the graph at unscaled X; a null graph returns 0.0. */
 SLIC3R_HOST_API double         graph_interpolate(const graph_data_handle *me, double x);
+
+/* Evaluate the host's inverse interpolation at unscaled Y; null returns 0.0. */
 SLIC3R_HOST_API double         graph_inverse_interpolate(const graph_data_handle *me, double y);
+
+/* Return nonzero when the graph's usable point range and mode are valid. */
 SLIC3R_HOST_API int32_t        graph_validate(const graph_data_handle *me);
+
+/*
+Serialize a graph into its canonical UTF-8 representation. The return value is
+the required byte count without the terminating null. A null output performs a
+sizing query; a smaller buffer receives a terminated prefix. Null graph returns
+zero.
+*/
 SLIC3R_HOST_API uint32_t         graph_serialize(const graph_data_handle *me, char *out, uint32_t max_size);
+
+/*
+Replace a mutable graph from its serialized representation. The graph remains
+owned by its parent option. Return nonzero on success; null arguments or invalid
+text return zero.
+*/
 SLIC3R_HOST_API int32_t        graph_deserialize(graph_data_handle *me, const char *str);
 
 enum config_option_flags

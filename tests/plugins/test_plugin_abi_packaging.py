@@ -190,6 +190,41 @@ class AbiPackagingTests(unittest.TestCase):
                         bindings.methods[data_tree_method],
                     )
 
+            for config_symbol in ("ConfigPoint", "GraphData"):
+                with self.subTest(config_symbol=config_symbol):
+                    self.assertIn(
+                        "slic3r_config_option.h",
+                        bindings.symbols[config_symbol],
+                    )
+
+            for config_method in (
+                "bool_or_default",
+                "computed_float_or_default",
+                "effective_float_or_percent_or_default",
+                "float_or_default",
+                "float_or_percent_or_default",
+                "get_point",
+                "get_string",
+                "graph",
+                "graph_or_default",
+                "int_or_default",
+                "point_or_default",
+                "string_or_default",
+                "vector_bool_or_default",
+                "vector_effective_float_or_percent_or_default",
+                "vector_float_or_default",
+                "vector_float_or_percent_or_default",
+                "vector_graph_or_default",
+                "vector_int_or_default",
+                "vector_point_or_default",
+                "vector_string_or_default",
+            ):
+                with self.subTest(config_method=config_method):
+                    self.assertIn(
+                        "slic3r_config_option.h",
+                        bindings.methods[config_method],
+                    )
+
             self.assertIn("slic3r_geometry.h", bindings.symbols["LineDistancer"])
             for visitor in ("ExtrusionTreeConstVisitor", "ExtrusionTreeVisitor"):
                 with self.subTest(visitor=visitor):

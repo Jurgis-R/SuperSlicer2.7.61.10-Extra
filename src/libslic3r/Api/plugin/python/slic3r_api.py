@@ -575,20 +575,48 @@ class Slic3rAPI:
     def config_get(self, config_address: int, key: str) -> int:
         return int(self.host.config_get(ctypes.c_void_p(config_address), _as_bytes(key)) or 0)
 
+    def _config_enabled_numeric_option(self, config_address: int, key: str, idx: int) -> int:
+        """Return an option whose legacy raw numeric index is usable and enabled."""
+        option = self.config_get(config_address, key)
+        if not option or idx < 0:
+            return 0
+        handle = ctypes.c_void_p(option)
+        size = int(self.host.config_option_size(handle))
+        if size == 0:
+            return 0
+
+        option_type = int(self.host.config_option_type_get(handle))
+        if option_type == SLIC3R_CONFIG_OPTION_POINT:
+            if idx >= 2:
+                return 0
+            enabled_idx = 0
+        elif option_type == SLIC3R_CONFIG_OPTION_POINTS:
+            if idx >= size * 2:
+                return 0
+            enabled_idx = idx // 2
+        elif self.host.config_option_is_vector(handle):
+            if idx >= size:
+                return 0
+            enabled_idx = idx
+        else:
+            enabled_idx = 0
+
+        return option if self.host.config_option_is_enabled(handle, enabled_idx) else 0
+
     def config_bool(self, config_address: int, key: str, idx: int = 0) -> bool:
-        opt = self.config_get(config_address, key)
+        opt = self._config_enabled_numeric_option(config_address, key, idx)
         return bool(opt and self.host.config_option_get_bool(ctypes.c_void_p(opt), int(idx)))
 
     def config_int(self, config_address: int, key: str, idx: int = 0) -> int:
-        opt = self.config_get(config_address, key)
+        opt = self._config_enabled_numeric_option(config_address, key, idx)
         return 0 if not opt else int(self.host.config_option_get_int(ctypes.c_void_p(opt), int(idx)))
 
     def config_float(self, config_address: int, key: str, idx: int = 0) -> float:
-        opt = self.config_get(config_address, key)
+        opt = self._config_enabled_numeric_option(config_address, key, idx)
         return 0.0 if not opt else float(self.host.config_option_get_float(ctypes.c_void_p(opt), int(idx)))
 
     def config_float_or_percent_effective(self, config_address: int, key: str, ratio: float, idx: int = 0) -> float:
-        opt = self.config_get(config_address, key)
+        opt = self._config_enabled_numeric_option(config_address, key, idx)
         if not opt:
             return 0.0
         value = self.host.config_option_get_float_or_percent(ctypes.c_void_p(opt), int(idx))
