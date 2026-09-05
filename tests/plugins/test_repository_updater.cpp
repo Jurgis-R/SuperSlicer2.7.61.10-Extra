@@ -808,14 +808,22 @@ TEST_CASE("UpdaterError explicitly represents success and failure", "[plugins][u
     CHECK(constructed.detail == "read only");
 }
 
-TEST_CASE("Plugin background update checks are enabled by default",
+TEST_CASE("Plugin background update check frequencies have stable defaults and legacy migration",
           "[plugins][updater][plugin-updates]")
 {
     Slic3r::AppConfig config(Slic3r::AppConfig::EAppMode::Editor);
-    CHECK(config.get_bool("plugin_update_background_check"));
+    CHECK(config.get("plugin_update_background_check") == "daily");
+    CHECK(config.get("plugin_update_background_check_last_epoch") == "0");
+
+    config.set("plugin_update_background_check", "1");
+    config.set_defaults();
+    CHECK(config.get("plugin_update_background_check") == "daily");
     config.set("plugin_update_background_check", "0");
     config.set_defaults();
-    CHECK_FALSE(config.get_bool("plugin_update_background_check"));
+    CHECK(config.get("plugin_update_background_check") == "never");
+    config.set("plugin_update_background_check", "invalid");
+    config.set_defaults();
+    CHECK(config.get("plugin_update_background_check") == "daily");
 }
 
 TEST_CASE("RepositoryUpdater normalizes configured repository URLs", "[plugins][updater]")

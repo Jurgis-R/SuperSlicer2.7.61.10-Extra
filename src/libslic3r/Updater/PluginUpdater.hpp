@@ -112,8 +112,8 @@ public:
     void reload_all_plugins();
     void sync_async(std::function<void(int)> callback_result, bool force = false);
 
-    // Refresh repository tags and cache the newest ABI-compatible update for
-    // each installed package. With network disabled this only inspects the
+    // Force-refresh repository tags and cache the newest ABI-compatible update
+    // for each installed package. With network disabled this only inspects the
     // already validated cache and completes synchronously.
     void prepare_updates(bool allow_network,
                          std::function<void(PluginUpdatePreparationResult)> callback_result);

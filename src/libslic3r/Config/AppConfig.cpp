@@ -190,8 +190,17 @@ void AppConfig::set_defaults()
         if (get("preset_update").empty())
             set("preset_update", "0");
 
-        if (get("plugin_update_background_check").empty())
-            set("plugin_update_background_check", "1");
+        const std::string plugin_update_check = get("plugin_update_background_check");
+        if (plugin_update_check.empty() || plugin_update_check == "1")
+            set("plugin_update_background_check", "daily");
+        else if (plugin_update_check == "0")
+            set("plugin_update_background_check", "never");
+        else if (plugin_update_check != "never" && plugin_update_check != "hourly" &&
+                 plugin_update_check != "daily" && plugin_update_check != "weekly" &&
+                 plugin_update_check != "monthly")
+            set("plugin_update_background_check", "daily");
+        if (get("plugin_update_background_check_last_epoch").empty())
+            set("plugin_update_background_check_last_epoch", "0");
 
         // Archive downloads are allowed more time than repository metadata,
         // while remaining finite so application shutdown cannot wait forever.

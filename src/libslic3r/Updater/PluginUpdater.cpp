@@ -471,7 +471,7 @@ void PluginUpdater::prepare_updates(
         [this, callback_result = std::move(callback_result)](int) mutable {
             begin_update_preparation(std::move(callback_result));
         },
-        false);
+        true);
 }
 
 void PluginUpdater::begin_update_preparation(

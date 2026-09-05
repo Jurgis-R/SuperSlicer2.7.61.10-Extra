@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <iterator>
 #include <exception>
 #include <cstdlib>
@@ -4510,11 +4511,33 @@ void GUI_App::prepare_plugin_updates_on_startup()
     if (plugin_updater == nullptr || plater_ == nullptr || is_gcode_viewer())
         return;
 
-    const bool allow_network = app_config->get_bool("plugin_update_background_check");
+    const std::string frequency = app_config->get("plugin_update_background_check");
+    std::time_t interval_seconds = 24 * 60 * 60;
+    if (frequency == "hourly")
+        interval_seconds = 60 * 60;
+    else if (frequency == "weekly")
+        interval_seconds = 7 * 24 * 60 * 60;
+    else if (frequency == "monthly")
+        interval_seconds = 30 * 24 * 60 * 60;
+
+    // The timestamp records completed automatic attempts. Before the next
+    // deadline the updater still inspects compatible packages already cached.
+    const std::time_t now = std::time(nullptr);
+    const std::time_t last_check = static_cast<std::time_t>(
+        std::atoll(app_config->get("plugin_update_background_check_last_epoch").c_str()));
+    const bool frequency_enabled = frequency != "never";
+    const bool allow_network = frequency_enabled &&
+        (last_check <= 0 || now < last_check || now - last_check >= interval_seconds);
+    const std::time_t check_started = allow_network ? now : 0;
     plugin_updater->prepare_updates(
         allow_network,
-        [this](PluginUpdatePreparationResult result) mutable {
-            CallAfter([this, result = std::move(result)] {
+        [this, check_started](PluginUpdatePreparationResult result) mutable {
+            CallAfter([this, check_started, result = std::move(result)] {
+                if (check_started > 0 && result.operation_error.succeeded()) {
+                    app_config->set("plugin_update_background_check_last_epoch",
+                                    std::to_string(static_cast<long long>(check_started)));
+                    app_config->save();
+                }
                 if (!result.operation_error.succeeded())
                     BOOST_LOG_TRIVIAL(warning) << "Plugin update preparation failed: "
                                                << format_updater_error(result.operation_error);

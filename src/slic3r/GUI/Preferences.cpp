@@ -101,6 +101,22 @@ namespace Slic3r {
     };
     CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SuppressHyperlinks)
 
+    enum PluginUpdateCheckFrequency {
+        pucNever,
+        pucHourly,
+        pucDaily,
+        pucWeekly,
+        pucMonthly,
+    };
+    static const t_config_enum_values s_keys_map_PluginUpdateCheckFrequency = {
+        {"never",   pucNever},
+        {"hourly",  pucHourly},
+        {"daily",   pucDaily},
+        {"weekly",  pucWeekly},
+        {"monthly", pucMonthly},
+    };
+    CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(PluginUpdateCheckFrequency)
+
 namespace GUI {
 
 wxIcon icon_from_bitmap(const wxBitmap &bitmap) {
@@ -187,6 +203,7 @@ void PreferencesDialog::show(const std::string& highlight_opt_key /*= std::strin
             {"notify_release", s_keys_map_NotifyReleaseMode},
             {"auto_switch_preview", s_keys_map_AutoSwitchPreview},
             {"suppress_hyperlinks", s_keys_map_SuppressHyperlinks},
+            {"plugin_update_background_check", s_keys_map_PluginUpdateCheckFrequency},
         };
         for (auto key2map : enums) {
             if (m_optkey_to_optgroup.find(key2map.first) != m_optkey_to_optgroup.end()) {
@@ -598,13 +615,24 @@ void PreferencesDialog::build()
 			  "into a separate temporary location. When a new preset version becomes available it is offered at application startup."),
 			app_config->get_bool("preset_update"));
 
-        append_bool_option(
+        const std::string plugin_update_check = app_config->get("plugin_update_background_check");
+        append_enum_option<PluginUpdateCheckFrequency>(
             m_tabid_2_optgroups.back().back(),
             "plugin_update_background_check",
-            L("Check plugin package updates in the background"),
-            L("If enabled, Slic3r checks installed plugin repositories at startup and downloads candidate packages "
-              "to verify their API compatibility. Packages are never installed without confirmation."),
-            app_config->get_bool("plugin_update_background_check"));
+            L("Check plugin package updates"),
+            L("Choose how often Slic3r checks installed plugin repositories when the application starts. "
+              "When a check is due, candidate packages are downloaded to verify their API compatibility. "
+              "Packages are never installed without confirmation."),
+            new ConfigOptionEnum<PluginUpdateCheckFrequency>(
+                static_cast<PluginUpdateCheckFrequency>(
+                    s_keys_map_PluginUpdateCheckFrequency.at(plugin_update_check))),
+            {
+                {"never", L("Never")},
+                {"hourly", L("Hourly")},
+                {"daily", L("Daily")},
+                {"weekly", L("Weekly")},
+                {"monthly", L("Monthly")},
+            });
 
         int archive_timeout_minutes =
             atoi(app_config->get("repository_archive_download_timeout_minutes").c_str());
@@ -1409,6 +1437,12 @@ void PreferencesDialog::accept(wxEvent&)
 #endif
 	}
 	
+	const std::map<std::string, std::string>::const_iterator plugin_update_check =
+		m_values.find("plugin_update_background_check");
+	if (plugin_update_check != m_values.end() &&
+		plugin_update_check->second != app_config->get("plugin_update_background_check"))
+		app_config->set("plugin_update_background_check_last_epoch", "0");
+
 	for (std::map<std::string, std::string>::iterator it = m_values.begin(); it != m_values.end(); ++it)
 		app_config->set(it->first, it->second);
 
