@@ -116,8 +116,9 @@ static int32_t detect_angle(void *detector_ctx, double bridge_direction_override
 
 static uint32_t coverage(void *detector_ctx, double angle, polygon_collection_handle *out_polygons)
 {
-    // ABI collections are caller-owned output buffers. Always clear them first
-    // so repeated calls return exactly the detector result for this angle.
+    // The caller owns the ABI collection, but this operation replaces its
+    // contents instead of appending. Clearing the vector invalidates every
+    // element pointer or view previously borrowed from the collection.
     NativeBridgeDetector *native = static_cast<NativeBridgeDetector *>(detector_ctx);
     if (native == nullptr || native->detector == nullptr || out_polygons == nullptr)
         return 0;
@@ -133,8 +134,8 @@ static uint32_t coverage(void *detector_ctx, double angle, polygon_collection_ha
 
 static uint32_t unsupported_edges(void *detector_ctx, double angle, polyline_collection_handle *out_polylines)
 {
-    // Same ownership rule as coverage(): the detector computes a native vector,
-    // then copies it into the caller-provided ABI collection.
+    // As with coverage(), this replaces the caller-owned collection and
+    // invalidates every element pointer or view previously borrowed from it.
     NativeBridgeDetector *native = static_cast<NativeBridgeDetector *>(detector_ctx);
     if (native == nullptr || native->detector == nullptr || out_polylines == nullptr)
         return 0;

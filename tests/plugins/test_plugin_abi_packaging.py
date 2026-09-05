@@ -293,6 +293,25 @@ class AbiPackagingTests(unittest.TestCase):
                         bindings.methods[perimeter_method],
                     )
 
+            for orchestrator_symbol in ("OrchestratorView", "PluginView"):
+                with self.subTest(orchestrator_symbol=orchestrator_symbol):
+                    self.assertIn(
+                        "slic3r_orchestrator.h",
+                        bindings.symbols[orchestrator_symbol],
+                    )
+            self.assertIn(
+                "slic3r_bridge_detector.h",
+                bindings.symbols["BridgeDetector"],
+            )
+            self.assertIn(
+                "slic3r_orchestrator.h",
+                bindings.methods["create_bridge_detector"],
+            )
+            self.assertIn(
+                "slic3r_bridge_detector.h",
+                bindings.methods["create_bridge_detector"],
+            )
+
             execution_methods = {
                 "pre_perimeter_context": "steps/slic3r_step_pre_perimeter.h",
                 "pre_infill_context": "steps/slic3r_step_pre_infill.h",

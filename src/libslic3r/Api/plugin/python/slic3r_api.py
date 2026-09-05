@@ -102,6 +102,8 @@ from slic3r_datatree_views import *
 from slic3r_clipper_views import *
 from slic3r_region_settings_views import *
 from slic3r_printing_plan_views import *
+from slic3r_bridge_detector_views import *
+from slic3r_orchestrator_views import *
 from slic3r_run_context import *
 from steps.layer_height import *
 from steps.slicing import *
@@ -326,6 +328,16 @@ class Slic3rAPI:
     def _bind_host_functions(self) -> None:
         for name, restype, argtypes in C_FUNCTION_SIGNATURES:
             _bind_c_function(self.host, name, restype, argtypes)
+
+    @abi_requires_headers("slic3r_orchestrator.h")
+    def orchestrator_view(self) -> OrchestratorView:
+        """Borrow this API's orchestrator for service lookup and execution."""
+        return OrchestratorView(self)
+
+    @abi_requires_headers("slic3r_bridge_detector.h", "slic3r_orchestrator.h")
+    def create_bridge_detector(self, **kwargs) -> BridgeDetector:
+        """Create an owning detector using borrowed input geometry views."""
+        return self.orchestrator_view().create_bridge_detector(**kwargs)
 
     def add_ui_fragment(self, target_file: str, fragment_id: str, ui_fragment: str, priority: int = 0) -> int:
         return self.host.orchestrator_add_ui_fragment(
