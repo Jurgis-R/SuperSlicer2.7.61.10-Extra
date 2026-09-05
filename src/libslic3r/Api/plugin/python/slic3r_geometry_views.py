@@ -1073,6 +1073,51 @@ class StoredExPolygonCollection(ExPolygonCollection, StoredHandleMixin, StoredCo
 ExPolygonCollection._stored_collection_cls = StoredExPolygonCollection
 
 
+@abi_requires_headers("slic3r_geometry.h", "slic3r_utils.h")
+def convex_hull(storage, polygon: Polygon) -> StoredPolygon:
+    """
+    Build a storage-owned convex hull from one borrowed polygon.
+
+    The host copies the polygon's point cloud and ignores its orientation. The
+    source remains owned by its current host or storage and is not modified.
+    The result belongs to ``storage``; release it with ``free_from_storage()``
+    or use it as a context manager before that storage is cleared or destroyed.
+    Coordinates remain in scaled integer units.
+    """
+    storage_address = _require_handle(storage, "storage")
+    result = polygon.api.host.polygon_convex_hull(
+        _void_p(storage_address), polygon.c_handle()
+    )
+    return StoredPolygon.adopt_owned(
+        polygon.api,
+        storage_address,
+        _require_handle(result, "convex hull result"),
+    )
+
+
+@abi_requires_headers("slic3r_geometry.h", "slic3r_utils.h")
+def expolygons_to_polylines(
+    storage, src: ExPolygonCollection
+) -> StoredPolylineCollection:
+    """
+    Copy every contour and hole boundary into independent open polylines.
+
+    ``src`` is borrowed, remains unchanged and may be released after this call.
+    The returned collection and all of its elements are owned by ``storage``.
+    Release the collection with ``free_from_storage()`` or a ``with`` block;
+    element views obtained from it are borrowed and must not be freed directly.
+    """
+    storage_address = _require_handle(storage, "storage")
+    result = src.api.host.expolygons_to_polylines(
+        _void_p(storage_address), src.c_handle()
+    )
+    return StoredPolylineCollection.adopt_owned(
+        src.api,
+        storage_address,
+        _require_handle(result, "polyline collection result"),
+    )
+
+
 def expolygon_equals(lhs: ExPolygon, rhs: ExPolygon) -> bool:
     if not multipoint_views_equal(lhs.contour().view(), rhs.contour().view()):
         return False
@@ -1111,7 +1156,9 @@ __all__ = [
     "abs_angle",
     "angle_ccw",
     "as_point",
+    "convex_hull",
     "expolygon_equals",
+    "expolygons_to_polylines",
     "extend_end",
     "extend_start",
     "make_point",

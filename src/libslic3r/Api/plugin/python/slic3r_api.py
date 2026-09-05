@@ -419,6 +419,22 @@ class Slic3rAPI:
     def new_expolygon_collection(self, storage_address: int) -> StoredExPolygonCollection:
         return StoredExPolygonCollection(self, storage_address)
 
+    @abi_requires_headers("slic3r_geometry.h", "slic3r_utils.h")
+    def convex_hull(self, storage_address: int, polygon: Polygon) -> StoredPolygon:
+        """Return a storage-owned hull without modifying the borrowed polygon."""
+        if polygon.api is not self:
+            raise ValueError("polygon must use this API instance")
+        return convex_hull(storage_address, polygon)
+
+    @abi_requires_headers("slic3r_geometry.h", "slic3r_utils.h")
+    def expolygons_to_polylines(
+        self, storage_address: int, src: ExPolygonCollection
+    ) -> StoredPolylineCollection:
+        """Copy borrowed boundaries into a storage-owned polyline collection."""
+        if src.api is not self:
+            raise ValueError("source collection must use this API instance")
+        return expolygons_to_polylines(storage_address, src)
+
     def extrusion(self, handle: int) -> ExtrusionEntity:
         return ExtrusionEntity(self, handle)
 
@@ -445,6 +461,44 @@ class Slic3rAPI:
 
     def clipper_operand(self, storage_address: int, source=None) -> ClipperOperand:
         return ClipperOperand(self, storage_address, source)
+
+    @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+    def clipper_diff_polyline_expolygons(
+        self,
+        storage_address: int,
+        subject: Polyline,
+        clip: ExPolygonCollection,
+    ) -> StoredPolylineCollection:
+        """Return storage-owned open pieces outside the borrowed clip areas."""
+        if subject.api is not self or clip.api is not self:
+            raise ValueError("subject and clip must use this API instance")
+        return clipper_diff_polyline_expolygons(storage_address, subject, clip)
+
+    @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+    def clipper_intersection_polyline_expolygons(
+        self,
+        storage_address: int,
+        subject: Polyline,
+        clip: ExPolygonCollection,
+    ) -> StoredPolylineCollection:
+        """Return storage-owned open pieces inside the borrowed clip areas."""
+        if subject.api is not self or clip.api is not self:
+            raise ValueError("subject and clip must use this API instance")
+        return clipper_intersection_polyline_expolygons(
+            storage_address, subject, clip
+        )
+
+    @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+    def clipper_clip_expolygons_with_subject_bbox(
+        self,
+        storage_address: int,
+        src: ExPolygonCollection,
+        bbox: CBoundingBox,
+    ) -> StoredExPolygonCollection:
+        """Copy borrowed ExPolygons into a storage-owned, bbox-clipped collection."""
+        if src.api is not self:
+            raise ValueError("source collection must use this API instance")
+        return clipper_clip_expolygons_with_subject_bbox(storage_address, src, bbox)
 
     def config(self, handle: int) -> Config:
         return Config(self, handle)
@@ -497,6 +551,27 @@ class Slic3rAPI:
 
     def mutable_object(self, handle: int) -> MutableObject:
         return MutableObject(self, handle)
+
+    @abi_requires_headers("slic3r_volume.h")
+    def project_painting_to_polygons(
+        self,
+        storage_address: int,
+        obj: Object,
+        paint_key: str,
+        painting_value: int,
+    ) -> list[StoredPolygonCollection]:
+        """
+        Project borrowed object painting into storage-owned per-layer polygons.
+
+        Every returned collection must be released with ``free_from_storage()``
+        or a ``with`` block before the storage is cleared. The object and its
+        facet annotations remain owned by the host and are not modified.
+        """
+        if obj.api is not self:
+            raise ValueError("object must use this API instance")
+        return project_painting_to_polygons(
+            storage_address, obj, paint_key, painting_value
+        )
 
     def layer(self, handle: int) -> Layer:
         return Layer(self, handle)

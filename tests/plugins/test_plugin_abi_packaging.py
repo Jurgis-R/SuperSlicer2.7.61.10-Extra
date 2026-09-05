@@ -226,6 +226,27 @@ class AbiPackagingTests(unittest.TestCase):
                     )
 
             self.assertIn("slic3r_geometry.h", bindings.symbols["LineDistancer"])
+            for geometry_helper in (
+                "convex_hull",
+                "expolygons_to_polylines",
+            ):
+                with self.subTest(geometry_helper=geometry_helper):
+                    self.assertIn(
+                        "slic3r_geometry.h",
+                        bindings.symbols[geometry_helper],
+                    )
+
+            for clipper_helper in (
+                "clipper_clip_expolygons_with_subject_bbox",
+                "clipper_diff_polyline_expolygons",
+                "clipper_intersection_polyline_expolygons",
+            ):
+                with self.subTest(clipper_helper=clipper_helper):
+                    self.assertIn(
+                        "slic3r_clipper.h",
+                        bindings.symbols[clipper_helper],
+                    )
+
             for visitor in ("ExtrusionTreeConstVisitor", "ExtrusionTreeVisitor"):
                 with self.subTest(visitor=visitor):
                     self.assertIn(

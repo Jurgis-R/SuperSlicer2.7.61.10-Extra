@@ -73,6 +73,7 @@ from slic3r_geometry_views import (
     Polyline,
     StoredExPolygonCollection,
     StoredPolygonCollection,
+    StoredPolylineCollection,
 )
 from slic3r_abi import abi_requires_headers
 
@@ -490,6 +491,82 @@ def clipper_clip_shapes_with_subject_bbox(storage_or_subject, subject_or_bbox=No
     return ClipperOperand.adopt_owned(api, storage, handle)
 
 
+@abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+def clipper_diff_polyline_expolygons(
+    storage, subject: Polyline, clip: ExPolygonCollection
+) -> StoredPolylineCollection:
+    """
+    Return the open pieces of ``subject`` that remain outside ``clip``.
+
+    Both geometry arguments are borrowed, read-only views from the same API
+    instance. The result is a new collection owned by ``storage``; release it
+    with ``free_from_storage()`` or a ``with`` block. Its element views are
+    borrowed from that collection. An empty subject returns an empty collection
+    without invoking Clipper. Coordinates use scaled integer units.
+    """
+    storage_address = _require_handle(storage, "storage")
+    if subject.api is not clip.api:
+        raise ValueError("subject and clip must use the same API instance")
+    if subject.empty():
+        return StoredPolylineCollection(subject.api, storage_address)
+    result = subject.api.host.clipper_diff_polyline_expolygons(
+        _void_p(storage_address), subject.c_handle(), clip.c_handle()
+    )
+    return StoredPolylineCollection.adopt_owned(
+        subject.api,
+        storage_address,
+        _require_handle(result, "clipped polyline collection result"),
+    )
+
+
+@abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+def clipper_intersection_polyline_expolygons(
+    storage, subject: Polyline, clip: ExPolygonCollection
+) -> StoredPolylineCollection:
+    """
+    Return the open pieces of ``subject`` that lie inside ``clip``.
+
+    The source views are borrowed and unchanged. A null or empty clip produces
+    an empty storage-owned result. Release the returned collection with
+    ``free_from_storage()`` or a ``with`` block before its storage is cleared;
+    do not free element views obtained from the collection individually.
+    """
+    storage_address = _require_handle(storage, "storage")
+    if subject.api is not clip.api:
+        raise ValueError("subject and clip must use the same API instance")
+    result = subject.api.host.clipper_intersection_polyline_expolygons(
+        _void_p(storage_address), subject.c_handle(), clip.c_handle()
+    )
+    return StoredPolylineCollection.adopt_owned(
+        subject.api,
+        storage_address,
+        _require_handle(result, "clipped polyline collection result"),
+    )
+
+
+@abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+def clipper_clip_expolygons_with_subject_bbox(
+    storage, src: ExPolygonCollection, bbox: CBoundingBox
+) -> StoredExPolygonCollection:
+    """
+    Copy and clip ExPolygons to a scaled subject bounding box.
+
+    This is a spatial pre-filter for later boolean operations. ``src`` is a
+    borrowed read-only collection and remains unchanged. The returned topology
+    is an independent collection owned by ``storage`` and must be released with
+    ``free_from_storage()`` or a ``with`` block. ``bbox`` is copied by value.
+    """
+    storage_address = _require_handle(storage, "storage")
+    result = src.api.host.clipper_clip_expolygons_with_subject_bbox(
+        _void_p(storage_address), src.c_handle(), bbox
+    )
+    return StoredExPolygonCollection.adopt_owned(
+        src.api,
+        storage_address,
+        _require_handle(result, "clipped ExPolygon collection result"),
+    )
+
+
 @abi_requires_headers("slic3r_clipper.h")
 class ClipperContext:
     """
@@ -565,6 +642,32 @@ class ClipperContext:
     def clip_shapes_with_subject_bbox(self, subject: ClipperOperand, bbox) -> ClipperOperand:
         return clipper_clip_shapes_with_subject_bbox(self.storage(), subject, bbox)
 
+    def diff_polyline_expolygons(
+        self, subject: Polyline, clip: ExPolygonCollection
+    ) -> StoredPolylineCollection:
+        """Return storage-owned pieces outside clip using this context's storage."""
+        if subject.api is not self.api or clip.api is not self.api:
+            raise ValueError("subject and clip must use this context's API instance")
+        return clipper_diff_polyline_expolygons(self.storage(), subject, clip)
+
+    def intersection_polyline_expolygons(
+        self, subject: Polyline, clip: ExPolygonCollection
+    ) -> StoredPolylineCollection:
+        """Return storage-owned pieces inside clip using this context's storage."""
+        if subject.api is not self.api or clip.api is not self.api:
+            raise ValueError("subject and clip must use this context's API instance")
+        return clipper_intersection_polyline_expolygons(
+            self.storage(), subject, clip
+        )
+
+    def clip_expolygons_with_subject_bbox(
+        self, src: ExPolygonCollection, bbox: CBoundingBox
+    ) -> StoredExPolygonCollection:
+        """Return a storage-owned bbox-clipped copy using this context's storage."""
+        if src.api is not self.api:
+            raise ValueError("source collection must use this context's API instance")
+        return clipper_clip_expolygons_with_subject_bbox(self.storage(), src, bbox)
+
 
 __all__ = [
     "CLIPPER_END_CLOSED_POLYGON",
@@ -582,11 +685,14 @@ __all__ = [
     "ClipperContext",
     "ClipperOperand",
     "clipper_concat",
+    "clipper_clip_expolygons_with_subject_bbox",
     "clipper_clip_shapes_with_subject_bbox",
     "clipper_diff",
+    "clipper_diff_polyline_expolygons",
     "clipper_diff_with_safety_offset",
     "clipper_execute",
     "clipper_intersection",
+    "clipper_intersection_polyline_expolygons",
     "clipper_intersection_with_safety_offset",
     "clipper_offset",
     "clipper_offset2",
