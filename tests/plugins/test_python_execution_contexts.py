@@ -88,8 +88,9 @@ class PythonExecutionContextTests(unittest.TestCase):
         self.assertTrue(keepalive)
 
     def test_plan_and_gcode_contexts_copy_only_the_output_path(self):
+        firmware = self.generated.RawGcodeFirmwareInstance()
         payload = self.generated.RunCtxGenerateGcode(
-            ctypes.c_void_p(21), ctypes.c_void_p(22), ctypes.c_void_p(23), b"out/test.gcode"
+            ctypes.c_void_p(21), ctypes.c_void_p(22), ctypes.pointer(firmware), b"out/test.gcode"
         )
         common, keepalive = self.make_common(self.generated.STEP_GCODE, payload)
         api = types.SimpleNamespace(host=types.SimpleNamespace())
@@ -98,7 +99,9 @@ class PythonExecutionContextTests(unittest.TestCase):
         self.assertEqual(context.gcode_print().address, 21)
         self.assertEqual(context.gcode_plan_handle(), 22)
         self.assertEqual(context.gcode_plan().address, 22)
-        self.assertEqual(context.gcode_firmware_handle(), 23)
+        self.assertEqual(
+            context.gcode_firmware_handle(), ctypes.addressof(firmware)
+        )
         self.assertEqual(context.gcode_output_path(), "out/test.gcode")
         self.assertTrue(keepalive)
 

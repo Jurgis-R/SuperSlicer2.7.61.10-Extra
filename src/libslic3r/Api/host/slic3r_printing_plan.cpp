@@ -4,6 +4,7 @@
 ///|/
 
 #include "libslic3r/Api/plugin/c/slic3r_printing_plan.h"
+#include "libslic3r/Api/plugin/c/slic3r_extrusion_entity.h"
 
 #include <algorithm>
 #include <memory>

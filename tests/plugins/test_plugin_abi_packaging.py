@@ -106,7 +106,8 @@ class AbiPackagingTests(unittest.TestCase):
                 "steps/slic3r_step_seam_placer.h",
                 catalog["python_symbols"]["RawSeamPlacerInstance"],
             )
-            self.assertNotIn("slic3r_step_gcode_firmware.h", catalog["headers"])
+            self.assertIn("slic3r_gcode_firmware.h", catalog["headers"])
+            self.assertIn("steps/slic3r_step_gcode_firmware.h", catalog["headers"])
             self.assertEqual(
                 catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"],
                 sorted(catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"]))
@@ -146,6 +147,22 @@ class AbiPackagingTests(unittest.TestCase):
             self.assertIn(
                 "slic3r_volume.h",
                 bindings.symbols["project_painting_to_polygons"],
+            )
+            self.assertIn(
+                "slic3r_gcode_firmware.h",
+                bindings.symbols["GCodeFirmwareSession"],
+            )
+            self.assertIn(
+                "steps/slic3r_step_gcode_firmware.h",
+                bindings.symbols["GCodeFirmwareContext"],
+            )
+            self.assertIn(
+                "slic3r_gcode_script.h",
+                bindings.symbols["GCodeScriptProcessorView"],
+            )
+            self.assertIn(
+                "slic3r_gcode_firmware.h",
+                bindings.methods["gcode_firmware"],
             )
 
             for surface_type in (
@@ -467,6 +484,180 @@ class AbiPackagingTests(unittest.TestCase):
                         bindings.methods[method],
                         {"slic3r_plugin_run_context.h"},
                     )
+
+    def test_python_firmware_imports_only_the_firmware_service_contracts(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text(
+                "from slic3r_api import GCodeFirmwareContext, GCodeFirmwareSession\n"
+                "def create():\n"
+                " return GCodeFirmwareContext, GCodeFirmwareSession\n",
+                encoding="utf-8",
+            )
+            requirements = self.analyzer.analyze_plugin(
+                entry, root, catalog, bindings
+            )
+            self.assertIn("slic3r_plugin_types.h", requirements)
+            self.assertIn("slic3r_gcode_firmware.h", requirements)
+            self.assertIn("steps/slic3r_step_gcode_firmware.h", requirements)
+            self.assertNotIn("steps/slic3r_step_seam_placer.h", requirements)
+            self.assertNotIn("slic3r_bridge_detector.h", requirements)
+
+    def test_typed_non_firmware_methods_do_not_require_firmware_contracts(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text(
+                "from slic3r_api import ConfigOption, Print, PrintingPlan\n"
+                "def inspect(print_view: Print, option: ConfigOption, plan: PrintingPlan):\n"
+                " print_view.config()\n"
+                " option.get_int()\n"
+                " plan.valid()\n",
+                encoding="utf-8",
+            )
+
+            requirements = self.analyzer.analyze_plugin(
+                entry, root, catalog, bindings
+            )
+
+            self.assertIn("slic3r_config_option.h", requirements)
+            self.assertIn("slic3r_printing_plan.h", requirements)
+            self.assertNotIn("slic3r_gcode_script.h", requirements)
+            self.assertNotIn("slic3r_gcode_firmware.h", requirements)
+            self.assertNotIn("steps/slic3r_step_gcode_firmware.h", requirements)
+
+    def test_printing_plan_iterator_items_keep_their_receiver_type(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text(
+                "from slic3r_api import PrintingPlan\n"
+                "def inspect(plan: PrintingPlan):\n"
+                " for group in plan.groups():\n"
+                "  group.valid()\n"
+                " groups = plan.groups()\n"
+                " for assigned_group in groups:\n"
+                "  assigned_group.valid()\n"
+                " for direct_group in plan:\n"
+                "  direct_group.valid()\n",
+                encoding="utf-8",
+            )
+
+            requirements = self.analyzer.analyze_plugin(
+                entry, root, catalog, bindings
+            )
+
+            self.assertIn("slic3r_printing_plan.h", requirements)
+            self.assertNotIn("slic3r_gcode_script.h", requirements)
+            self.assertNotIn("slic3r_gcode_firmware.h", requirements)
+            self.assertNotIn("steps/slic3r_step_gcode_firmware.h", requirements)
+
+    def test_printing_plan_comprehensions_do_not_require_firmware_contracts(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        expressions = {
+            "list": "[group.valid() for group in plan.groups()]",
+            "set": "{group.valid() for group in plan.groups()}",
+            "dict": "{group.address: group.valid() for group in plan.groups()}",
+            "generator": "(group.valid() for group in plan.groups())",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            for kind, expression in expressions.items():
+                with self.subTest(comprehension=kind):
+                    entry.write_text(
+                        "from slic3r_api import PrintingPlan\n"
+                        "def inspect(plan: PrintingPlan):\n"
+                        f" return {expression}\n",
+                        encoding="utf-8",
+                    )
+                    requirements = self.analyzer.analyze_plugin(
+                        entry, root, catalog, bindings
+                    )
+                    self.assertIn("slic3r_printing_plan.h", requirements)
+                    unexpected = requirements.intersection({
+                        "slic3r_gcode_script.h",
+                        "slic3r_gcode_firmware.h",
+                        "steps/slic3r_step_gcode_firmware.h",
+                    })
+                    self.assertFalse(unexpected, f"unrelated contracts: {sorted(unexpected)}")
+
+    def test_possibly_empty_loop_preserves_unknown_receiver_requirements(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text(
+                "from slic3r_api import PrintingPlan\n"
+                "def inspect(plan: PrintingPlan, fallback):\n"
+                " value = fallback\n"
+                " for value in plan.groups():\n"
+                "  pass\n"
+                " return value.valid()\n",
+                encoding="utf-8",
+            )
+            requirements = self.analyzer.analyze_plugin(
+                entry, root, catalog, bindings
+            )
+
+            # An empty plan leaves value equal to the unknown fallback, which
+            # may be a firmware or script view. Retain those possible contracts.
+            self.assertIn("slic3r_printing_plan.h", requirements)
+            missing = {
+                "slic3r_gcode_firmware.h",
+                "slic3r_gcode_script.h",
+            }.difference(requirements)
+            self.assertFalse(missing, f"fallback contracts omitted: {sorted(missing)}")
+
+    def test_unknown_reassignment_discards_the_previous_receiver_type(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            runtime.joinpath("slic3r_api.py").write_text(
+                "from slic3r_abi import abi_requires_headers\n"
+                "@abi_requires_headers('slic3r_geometry.h')\n"
+                "class First:\n"
+                " def touch(self): pass\n"
+                "@abi_requires_headers('slic3r_extrusion_entity.h')\n"
+                "class Second:\n"
+                " def touch(self): pass\n",
+                encoding="utf-8",
+            )
+            runtime.joinpath("slic3r_abi.py").write_text(
+                "def abi_requires_headers(*headers): pass\n", encoding="utf-8"
+            )
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text(
+                "from slic3r_api import First\n"
+                "def inspect(value: First, other):\n"
+                " value = other\n"
+                " value.touch()\n",
+                encoding="utf-8",
+            )
+
+            requirements = self.analyzer.analyze_plugin(
+                entry, root, catalog, bindings
+            )
+
+            self.assertIn("slic3r_geometry.h", requirements)
+            self.assertIn("slic3r_extrusion_entity.h", requirements)
 
     def test_ambiguous_dunder_init_call_is_ignored(self):
         with tempfile.TemporaryDirectory() as directory:

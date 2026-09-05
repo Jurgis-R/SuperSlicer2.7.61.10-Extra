@@ -14,6 +14,15 @@ from .seam_placer import (
     SeamPlacerSession,
     make_seam_placer_instance,
 )
+from .gcode_firmware import (
+    GCodeFirmwareContext,
+    GCodeFirmwareSession,
+    GCodeFirmwareView,
+    GCodeScriptConfig,
+    GCodeScriptContext,
+    GCodeScriptProcessorView,
+    make_gcode_firmware_instance,
+)
 from .post_perimeter import PostPerimeterContext
 from .post_infill import PostInfillContext
 from .surface_generation import SurfaceGenerationContext
@@ -55,6 +64,13 @@ __all__ = [
     "SeamPlacerContext",
     "SeamPlacerSession",
     "make_seam_placer_instance",
+    "GCodeFirmwareContext",
+    "GCodeFirmwareSession",
+    "GCodeFirmwareView",
+    "GCodeScriptConfig",
+    "GCodeScriptContext",
+    "GCodeScriptProcessorView",
+    "make_gcode_firmware_instance",
     "PostPerimeterContext",
     "PostInfillContext",
     "SurfaceGenerationContext",

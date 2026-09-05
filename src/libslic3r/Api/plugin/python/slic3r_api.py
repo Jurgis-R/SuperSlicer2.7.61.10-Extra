@@ -112,6 +112,7 @@ from steps.post_slicing import *
 from steps.perimeter import *
 from steps.perimeter_module import *
 from steps.seam_placer import *
+from steps.gcode_firmware import *
 from steps.post_perimeter import *
 from steps.post_infill import *
 from steps.surface_generation import *
@@ -799,6 +800,11 @@ class Slic3rAPI:
     def seam_placer_context(self, run_ctx_address: int) -> SeamPlacerContext | None:
         """Borrow the service payload used to publish a Python seam session."""
         return SeamPlacerContext.from_seam_placer_run_context(self, run_ctx_address)
+
+    @abi_requires_headers("steps/slic3r_step_gcode_firmware.h")
+    def gcode_firmware_context(self, run_ctx_address: int) -> GCodeFirmwareContext | None:
+        """Borrow the service payload used to publish a Python firmware session."""
+        return GCodeFirmwareContext.from_gcode_firmware_run_context(self, run_ctx_address)
 
     @abi_requires_headers("steps/slic3r_step_surface_generation.h")
     def surface_generation_context(self, run_ctx_address: int) -> SurfaceGenerationContext | None:

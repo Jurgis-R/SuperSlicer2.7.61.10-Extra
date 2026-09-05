@@ -19,7 +19,7 @@ Extrusion guide:
 #include <stdint.h>
 
 #include "slic3r_data_tree.h"
-#include "slic3r_extrusion_entity.h"
+#include "slic3r_extrusions.h"
 
 #ifdef __cplusplus
 extern "C" {

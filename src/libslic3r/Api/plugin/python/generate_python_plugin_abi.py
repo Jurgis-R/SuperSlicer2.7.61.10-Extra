@@ -102,6 +102,56 @@ class BindingIndex:
     modules: set[str] = field(default_factory=set)
     symbols: dict[str, set[str]] = field(default_factory=dict)
     methods: dict[str, set[str]] = field(default_factory=dict)
+    classes: set[str] = field(default_factory=set)
+    class_methods: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    method_returns: dict[tuple[str, str], str] = field(default_factory=dict)
+    method_items: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    def method_requirements(self, class_name: str, method_name: str) -> set[str] | None:
+        """Return one receiver class' method requirements, including inherited methods."""
+        pending = [class_name]
+        visited = set()
+        while pending:
+            current = pending.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            requirements = self.class_methods.get((current, method_name))
+            if requirements is not None:
+                return requirements
+            pending.extend(self.class_bases.get(current, ()))
+        return None
+
+    def method_return(self, class_name: str, method_name: str) -> str | None:
+        """Return the annotated binding class produced by one receiver method."""
+        pending = [class_name]
+        visited = set()
+        while pending:
+            current = pending.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            result = self.method_returns.get((current, method_name))
+            if result is not None:
+                return result
+            pending.extend(self.class_bases.get(current, ()))
+        return None
+
+    def method_item(self, class_name: str, method_name: str) -> str | None:
+        """Return the binding class yielded by an annotated receiver method."""
+        pending = [class_name]
+        visited = set()
+        while pending:
+            current = pending.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            result = self.method_items.get((current, method_name))
+            if result is not None:
+                return result
+            pending.extend(self.class_bases.get(current, ()))
+        return None
 
 
 def attribute_parts(node: ast.AST) -> list[str] | None:
@@ -115,6 +165,42 @@ def attribute_parts(node: ast.AST) -> list[str] | None:
         return None
     parts.append(current.id)
     return list(reversed(parts))
+
+
+def annotation_name(node: ast.AST | None) -> str | None:
+    """Extract the principal class name from a simple or forward annotation."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parts = attribute_parts(node)
+        return parts[-1] if parts else None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            return annotation_name(ast.parse(node.value, mode="eval").body)
+        except SyntaxError:
+            return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return annotation_name(node.left) or annotation_name(node.right)
+    if isinstance(node, ast.Subscript):
+        container = annotation_name(node.value)
+        if container in {"Optional", "Union"}:
+            return annotation_name(node.slice)
+    return None
+
+
+def annotation_item_name(node: ast.AST | None) -> str | None:
+    """Extract ``T`` from an iterable return annotation such as ``Iterator[T]``."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            return annotation_item_name(ast.parse(node.value, mode="eval").body)
+        except SyntaxError:
+            return None
+    if not isinstance(node, ast.Subscript):
+        return None
+    container = annotation_name(node.value)
+    if container not in {"Iterable", "Iterator", "Sequence", "list", "set"}:
+        return None
+    return annotation_name(node.slice)
 
 
 def decorator_headers(path: Path, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
@@ -186,6 +272,7 @@ def build_binding_index(runtime_root: Path, catalog: AbiCatalog) -> BindingIndex
     """Infer transitive ABI requirements for shared Python binding callables."""
     callables = []
     classes = {}
+    class_bases = {}
     symbol_aliases = {}
     module_names = set()
 
@@ -207,6 +294,9 @@ def build_binding_index(runtime_root: Path, catalog: AbiCatalog) -> BindingIndex
             elif isinstance(item, ast.ClassDef):
                 class_headers = decorator_headers(path, item, catalog)
                 classes[item.name] = set(class_headers)
+                class_bases[item.name] = tuple(
+                    name for name in (annotation_name(base) for base in item.bases) if name
+                )
                 for member in item.body:
                     if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         continue
@@ -259,7 +349,11 @@ def build_binding_index(runtime_root: Path, catalog: AbiCatalog) -> BindingIndex
                 info.requirements = expanded
                 changed = True
 
-    index = BindingIndex(modules=module_names)
+    index = BindingIndex(
+        modules=module_names,
+        classes=set(classes),
+        class_bases=class_bases,
+    )
     for info in callables:
         if info.owner_class is None:
             index.symbols.setdefault(info.simple_name, set()).update(info.requirements)
@@ -267,8 +361,16 @@ def build_binding_index(runtime_root: Path, catalog: AbiCatalog) -> BindingIndex
         # Dunder methods are implementation details: a known class constructor
         # is accounted for below through the class symbol and its own __init__,
         # without unioning every constructor into ``value.__init__()``.
-        elif not info.simple_name.startswith("__"):
-            index.methods.setdefault(info.simple_name, set()).update(info.requirements)
+        else:
+            index.class_methods[(info.owner_class, info.simple_name)] = set(info.requirements)
+            return_name = annotation_name(info.node.returns)
+            if return_name in classes:
+                index.method_returns[(info.owner_class, info.simple_name)] = return_name
+            item_name = annotation_item_name(info.node.returns)
+            if item_name in classes:
+                index.method_items[(info.owner_class, info.simple_name)] = item_name
+            if not info.simple_name.startswith("__"):
+                index.methods.setdefault(info.simple_name, set()).update(info.requirements)
     for info in callables:
         if info.module_name == "slic3r_api" and info.owner_class is None:
             index.symbols[info.simple_name] = set(info.requirements)
@@ -300,6 +402,169 @@ class PluginUseVisitor(ast.NodeVisitor):
         self.runtime_imports = {}
         self.runtime_module_aliases = set()
         self.explicit_scope_stack = [False]
+        self.type_scope_stack = [{}]
+        self.item_scope_stack = [{}]
+
+    def _binding_class(self, name: str | None) -> str | None:
+        if name is None:
+            return None
+        imported = self.runtime_imports.get(name, name)
+        return imported if imported in self.bindings.classes else None
+
+    def _expression_classes(self, node: ast.AST) -> set[str]:
+        if isinstance(node, ast.Name):
+            for scope in reversed(self.type_scope_stack):
+                if node.id in scope:
+                    return scope[node.id]
+            class_name = self._binding_class(node.id)
+            return {class_name} if class_name is not None else set()
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                class_name = self._binding_class(node.func.id)
+                return {class_name} if class_name is not None else set()
+            if isinstance(node.func, ast.Attribute):
+                parts = attribute_parts(node.func)
+                if parts and len(parts) == 2 and parts[0] in self.runtime_module_aliases:
+                    class_name = self._binding_class(parts[1])
+                    return {class_name} if class_name is not None else set()
+                results = set()
+                for receiver in self._expression_classes(node.func.value):
+                    result = self.bindings.method_return(receiver, node.func.attr)
+                    if result is not None:
+                        results.add(result)
+                return results
+        return set()
+
+    def _record_assignment_type(self, target: ast.AST, value: ast.AST) -> None:
+        if not isinstance(target, ast.Name):
+            return
+        class_names = self._expression_classes(value)
+        if class_names:
+            self.type_scope_stack[-1].setdefault(target.id, set()).update(class_names)
+        else:
+            # An unresolved assignment must shadow any type inferred earlier.
+            self.type_scope_stack[-1][target.id] = set()
+        self.item_scope_stack[-1][target.id] = self._iterable_item_classes(value)
+
+    def _iterable_item_classes(self, node: ast.AST) -> set[str]:
+        if isinstance(node, ast.Name):
+            for scope in reversed(self.item_scope_stack):
+                if node.id in scope:
+                    return scope[node.id]
+        results = set()
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            for receiver in self._expression_classes(node.func.value):
+                item = self.bindings.method_item(receiver, node.func.attr)
+                if item is not None:
+                    results.add(item)
+            return results
+        for receiver in self._expression_classes(node):
+            item = self.bindings.method_item(receiver, "__iter__")
+            if item is not None:
+                results.add(item)
+        return results
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            self._record_assignment_type(target, node.value)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            class_name = self._binding_class(annotation_name(node.annotation))
+            class_names = {class_name} if class_name is not None else set()
+            if node.value is not None:
+                class_names.update(self._expression_classes(node.value))
+            if class_names:
+                self.type_scope_stack[-1].setdefault(node.target.id, set()).update(class_names)
+            else:
+                self.type_scope_stack[-1][node.target.id] = set()
+            item_name = annotation_item_name(node.annotation)
+            item_names = {item_name} if item_name in self.bindings.classes else set()
+            if node.value is not None:
+                item_names.update(self._iterable_item_classes(node.value))
+            self.item_scope_stack[-1][node.target.id] = item_names
+        self.generic_visit(node)
+
+    @staticmethod
+    def _merge_optional_scope(before: dict[str, set[str]], after: dict[str, set[str]]) -> dict[str, set[str]]:
+        """Merge a block that may execute zero times without claiming certainty."""
+        merged = {}
+        for name in before.keys() | after.keys():
+            before_types = before.get(name)
+            after_types = after.get(name)
+            if not before_types or not after_types:
+                merged[name] = set()
+            else:
+                merged[name] = before_types | after_types
+        return merged
+
+    def _visit_optional_block(self, statements: list[ast.stmt]) -> None:
+        """Visit a conditional block and retain both entry and exit type states."""
+        before_types = {name: set(types) for name, types in self.type_scope_stack[-1].items()}
+        before_items = {name: set(types) for name, types in self.item_scope_stack[-1].items()}
+        for statement in statements:
+            self.visit(statement)
+        self.type_scope_stack[-1] = self._merge_optional_scope(
+            before_types, self.type_scope_stack[-1]
+        )
+        self.item_scope_stack[-1] = self._merge_optional_scope(
+            before_items, self.item_scope_stack[-1]
+        )
+
+    def visit_For(self, node: ast.For) -> None:
+        self.visit(node.iter)
+        item_types = self._iterable_item_classes(node.iter)
+        before_types = {name: set(types) for name, types in self.type_scope_stack[-1].items()}
+        before_items = {name: set(types) for name, types in self.item_scope_stack[-1].items()}
+        if isinstance(node.target, ast.Name):
+            self.type_scope_stack[-1][node.target.id] = item_types
+            self.item_scope_stack[-1][node.target.id] = set()
+        else:
+            self.visit(node.target)
+        for statement in node.body:
+            self.visit(statement)
+        self.type_scope_stack[-1] = self._merge_optional_scope(
+            before_types, self.type_scope_stack[-1]
+        )
+        self.item_scope_stack[-1] = self._merge_optional_scope(
+            before_items, self.item_scope_stack[-1]
+        )
+        self._visit_optional_block(node.orelse)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit_For(node)
+
+    def _visit_comprehension(self, generators: list[ast.comprehension], outputs: list[ast.AST]) -> None:
+        """Visit a comprehension in evaluation order using its isolated scope."""
+        self.type_scope_stack.append({})
+        self.item_scope_stack.append({})
+        for generator in generators:
+            self.visit(generator.iter)
+            item_types = self._iterable_item_classes(generator.iter)
+            if isinstance(generator.target, ast.Name):
+                self.type_scope_stack[-1][generator.target.id] = item_types
+                self.item_scope_stack[-1][generator.target.id] = set()
+            else:
+                self.visit(generator.target)
+            for condition in generator.ifs:
+                self.visit(condition)
+        for output in outputs:
+            self.visit(output)
+        self.item_scope_stack.pop()
+        self.type_scope_stack.pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, [node.key, node.value])
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module in self.bindings.modules:
@@ -370,7 +635,19 @@ class PluginUseVisitor(ast.NodeVisitor):
         if isinstance(node.func, ast.Attribute):
             parts = attribute_parts(node.func)
             if parts and not parts[-1].startswith("__") and not (len(parts) >= 2 and parts[-2] == "host"):
-                self.requirements.update(self.bindings.methods.get(parts[-1], ()))
+                receivers = self._expression_classes(node.func.value)
+                requirements = set()
+                completely_resolved = bool(receivers)
+                for receiver in receivers:
+                    receiver_requirements = self.bindings.method_requirements(receiver, parts[-1])
+                    if receiver_requirements is None:
+                        completely_resolved = False
+                        break
+                    requirements.update(receiver_requirements)
+                self.requirements.update(
+                    requirements if completely_resolved
+                    else self.bindings.methods.get(parts[-1], ())
+                )
         elif isinstance(node.func, ast.Name):
             imported = self.runtime_imports.get(node.func.id)
             if imported is not None:
@@ -381,8 +658,23 @@ class PluginUseVisitor(ast.NodeVisitor):
         explicit = decorator_headers(self.path, node, self.catalog)
         self.requirements.update(explicit)
         self.explicit_scope_stack.append(self.explicit_scope_stack[-1] or bool(explicit))
+        scope = {}
+        item_scope = {}
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+            for argument in arguments:
+                class_name = self._binding_class(annotation_name(argument.annotation))
+                if class_name is not None:
+                    scope[argument.arg] = {class_name}
+                item_name = annotation_item_name(argument.annotation)
+                if item_name in self.bindings.classes:
+                    item_scope[argument.arg] = {item_name}
+        self.type_scope_stack.append(scope)
+        self.item_scope_stack.append(item_scope)
         for statement in node.body:
             self.visit(statement)
+        self.item_scope_stack.pop()
+        self.type_scope_stack.pop()
         self.explicit_scope_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:

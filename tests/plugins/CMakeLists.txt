@@ -139,6 +139,10 @@ add_library(python_seam_placer_native_fixture SHARED python_seam_placer_native_f
 target_include_directories(python_seam_placer_native_fixture PRIVATE ../..)
 set_target_properties(python_seam_placer_native_fixture PROPERTIES FOLDER "tests/plugins")
 
+add_library(python_gcode_firmware_native_fixture SHARED python_gcode_firmware_native_fixture.cpp)
+target_include_directories(python_gcode_firmware_native_fixture PRIVATE ../..)
+set_target_properties(python_gcode_firmware_native_fixture PROPERTIES FOLDER "tests/plugins")
+
 add_dependencies(${_TEST_NAME}_tests
     plugin_loader_missing_register_fixture
     plugin_loader_missing_abi_fixture
@@ -147,7 +151,8 @@ add_dependencies(${_TEST_NAME}_tests
     plugin_loader_short_api_table_fixture
     plugin_loader_long_api_table_fixture
     plugin_loader_throw_register_fixture
-    python_seam_placer_native_fixture)
+    python_seam_placer_native_fixture
+    python_gcode_firmware_native_fixture)
 target_compile_definitions(${_TEST_NAME}_tests PRIVATE
     SLIC3R_FILESYSTEM_TRANSACTION_TESTING
     SLIC3R_TEST_PLUGIN_MISSING_REGISTER_DLL=R"\($<TARGET_FILE:plugin_loader_missing_register_fixture>\)"

@@ -92,7 +92,10 @@ def _address(handle) -> int:
         return _address(handle.c_handle())
     if hasattr(handle, "address"):
         return int(handle.address)
-    return int(handle)
+    try:
+        return int(handle)
+    except (TypeError, ValueError):
+        return int(ctypes.cast(handle, ctypes.c_void_p).value or 0)
 
 
 def _void_p(handle) -> ctypes.c_void_p:
@@ -383,7 +386,7 @@ class LayerExtrusionEditContext(_PrintingPlanContext):
 
 @abi_requires_headers("steps/slic3r_step_gcode.h")
 class GCodeContext(_PrintingPlanContext):
-    """Final output context; the firmware remains an intentionally raw service handle."""
+    """Final output context with a borrowed validated firmware service."""
 
     @classmethod
     def from_gcode_run_context(cls, api, address: int):
@@ -402,6 +405,15 @@ class GCodeContext(_PrintingPlanContext):
     def gcode_firmware_handle(self) -> int:
         """Return a borrowed firmware instance; invoke it only through its service adapter."""
         return _address(self.payload.firmware)
+
+    @abi_requires_headers("slic3r_gcode_firmware.h")
+    def gcode_firmware(self):
+        """Borrow the host-owned firmware instance for this G-code run only."""
+        if not self.payload.firmware:
+            raise ValueError("the G-code context has no firmware instance")
+        from .gcode_firmware import GCodeFirmwareView
+
+        return GCodeFirmwareView(self.api, self.payload.firmware)
 
     def gcode_output_path(self) -> str:
         """Copy the borrowed UTF-8 output path into an independently owned Python string."""
