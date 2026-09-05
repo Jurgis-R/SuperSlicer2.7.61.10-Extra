@@ -109,6 +109,7 @@ from steps.perimeter_module import *
 from steps.post_perimeter import *
 from steps.post_infill import *
 from steps.surface_generation import *
+from steps.execution import *
 
 
 _registered_apis = []
@@ -216,6 +217,9 @@ class PluginBase:
 
     Use run_context(), is_cancelled(), report_warning(), report_error() and
     report_progress() to inspect or use the common plugin_run_context callbacks.
+    ``progress`` is reset before setup() and may then be shared by concurrent
+    run() calls. Raise PluginCancelled (normally through throw_if_cancelled())
+    to stop cooperatively without reporting a plugin failure.
     """
 
     def __init__(
@@ -243,6 +247,7 @@ class PluginBase:
         self.dependencies = list(dependencies)
         self.used_config_keys = list(used_config_keys)
         self.defined_config_keys = list(defined_config_keys)
+        self.progress = PluginProgress()
 
     def initialize(self, storage_address: int) -> None:
         pass
@@ -255,6 +260,50 @@ class PluginBase:
 
     def run(self, run_ctx_address: int) -> None:
         pass
+
+    def progress_message_format(self) -> str:
+        """Return the ``str.format`` template used by this plugin's progress counter."""
+        return "Plugin progress: {done} / {max}"
+
+    def _slic3r_setup(self, run_ctx_address: int, run_count: int) -> None:
+        """Host bridge: reset progress, then contain user-code exceptions."""
+        self._slic3r_call_safely(
+            "setup", run_ctx_address, run_count, reset_progress=True
+        )
+
+    def _slic3r_setup_run(self, run_ctx_address: int) -> None:
+        """Host bridge: run setup_run without letting Python exceptions cross C."""
+        self._slic3r_call_safely("setup_run", run_ctx_address)
+
+    def _slic3r_run(self, run_ctx_address: int) -> None:
+        """Host bridge: run one job without letting Python exceptions cross C."""
+        self._slic3r_call_safely("run", run_ctx_address)
+
+    def _slic3r_call_safely(
+        self,
+        method_name: str,
+        run_ctx_address: int,
+        *args,
+        reset_progress: bool = False,
+    ) -> None:
+        """Translate Python failures to the host error channel and cancellation to success."""
+        try:
+            if reset_progress:
+                self.progress.reset(
+                    run_ctx_address,
+                    args[0],
+                    self.progress_message_format(),
+                )
+            getattr(self, method_name)(run_ctx_address, *args)
+        except PluginCancelled:
+            return
+        except BaseException as exc:
+            context = run_context(run_ctx_address)
+            if context is not None and context.report_error:
+                PLUGIN_REPORT(context.report_error)(
+                    context.host_context,
+                    _as_bytes(f"Python plugin {method_name} failed: {exc}"),
+                )
 
 
 class Slic3rAPI:
@@ -652,6 +701,80 @@ class Slic3rAPI:
     @abi_requires_headers("steps/slic3r_step_surface_generation.h")
     def surface_generation_context(self, run_ctx_address: int) -> SurfaceGenerationContext | None:
         return SurfaceGenerationContext.from_surface_generation_run_context(self, run_ctx_address)
+
+    @abi_requires_headers("steps/slic3r_step_pre_perimeter.h")
+    def pre_perimeter_context(self, address: int) -> PrePerimeterContext | None:
+        return PrePerimeterContext.from_pre_perimeter_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_pre_infill.h")
+    def pre_infill_context(self, address: int) -> PreInfillContext | None:
+        return PreInfillContext.from_pre_infill_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_infill_group.h")
+    def infill_grouping_context(self, address: int) -> InfillGroupingContext | None:
+        return InfillGroupingContext.from_infill_grouping_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_infill.h")
+    def infill_context(self, address: int) -> InfillContext | None:
+        return InfillContext.from_infill_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_infill.h")
+    def infill_pattern_context(self, address: int) -> InfillPatternContext | None:
+        return InfillPatternContext.from_infill_pattern_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_infill.h")
+    def infill_surface_recipe_modifier_context(
+        self, address: int
+    ) -> InfillSurfaceRecipeModifierContext | None:
+        return InfillSurfaceRecipeModifierContext.from_infill_surface_recipe_modifier_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_support.h")
+    def support_context(self, address: int) -> SupportContext | None:
+        return SupportContext.from_support_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_support_demand.h")
+    def support_demand_context(self, address: int) -> SupportDemandContext | None:
+        return SupportDemandContext.from_support_demand_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_support_spot.h")
+    def support_spot_context(self, address: int) -> SupportSpotContext | None:
+        return SupportSpotContext.from_support_spot_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_skirt_brim.h")
+    def skirt_brim_context(self, address: int) -> SkirtBrimContext | None:
+        return SkirtBrimContext.from_skirt_brim_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_wipetower.h")
+    def wipe_tower_context(self, address: int) -> WipeTowerContext | None:
+        return WipeTowerContext.from_wipe_tower_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_ordering.h")
+    def ordering_context(self, address: int) -> OrderingContext | None:
+        return OrderingContext.from_ordering_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_pre_gcode.h")
+    def pre_gcode_context(self, address: int) -> PreGCodeContext | None:
+        return PreGCodeContext.from_pre_gcode_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_gcode.h")
+    def gcode_context(self, address: int) -> GCodeContext | None:
+        return GCodeContext.from_gcode_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_extrusion_edit.h")
+    def extrusion_edit_context(self, address: int) -> ExtrusionEditContext | None:
+        return ExtrusionEditContext.from_extrusion_edit_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_layer_extrusion_edit.h")
+    def layer_extrusion_edit_context(self, address: int) -> LayerExtrusionEditContext | None:
+        return LayerExtrusionEditContext.from_layer_extrusion_edit_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_extrusion_simplification.h")
+    def extrusion_simplification_context(self, address: int) -> ExtrusionSimplificationContext | None:
+        return ExtrusionSimplificationContext.from_extrusion_simplification_run_context(self, address)
+
+    @abi_requires_headers("steps/slic3r_step_layer_stiching.h")
+    def layer_stitching_context(self, address: int) -> LayerStitchingContext | None:
+        return LayerStitchingContext.from_layer_stitching_run_context(self, address)
 
     def storage_clear(self, storage_address: int) -> None:
         self.host.storage_clear(ctypes.c_void_p(storage_address))

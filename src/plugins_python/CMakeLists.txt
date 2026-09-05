@@ -118,6 +118,9 @@ if (TARGET Python3::Python)
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/surface_generation.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/surface_generation.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/execution.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/execution.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${SLIC3R_PYTHON_API_GENERATED}"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_api_generated.py"
         COMMENT "Copying the Python plugin API runtime"

@@ -293,6 +293,29 @@ class AbiPackagingTests(unittest.TestCase):
                         bindings.methods[perimeter_method],
                     )
 
+            execution_methods = {
+                "pre_perimeter_context": "steps/slic3r_step_pre_perimeter.h",
+                "pre_infill_context": "steps/slic3r_step_pre_infill.h",
+                "infill_grouping_context": "steps/slic3r_step_infill_group.h",
+                "infill_context": "steps/slic3r_step_infill.h",
+                "support_demand_context": "steps/slic3r_step_support_demand.h",
+                "skirt_brim_context": "steps/slic3r_step_skirt_brim.h",
+                "ordering_context": "steps/slic3r_step_ordering.h",
+                "gcode_context": "steps/slic3r_step_gcode.h",
+                "layer_extrusion_edit_context": "steps/slic3r_step_layer_extrusion_edit.h",
+            }
+            for method, header in execution_methods.items():
+                with self.subTest(execution_method=method):
+                    self.assertIn(header, bindings.methods[method])
+
+            self.assertIn(
+                "slic3r_plugin_run_context.h",
+                bindings.symbols["PluginProgress"],
+            )
+            parallel_headers = bindings.symbols["parallel_for_storage_with_progress"]
+            self.assertIn("slic3r_utils.h", parallel_headers)
+            self.assertIn("slic3r_plugin_run_context.h", parallel_headers)
+
             auxiliary_headers = bindings.symbols[
                 "build_auxiliary_layer_regions_from_subject"
             ]

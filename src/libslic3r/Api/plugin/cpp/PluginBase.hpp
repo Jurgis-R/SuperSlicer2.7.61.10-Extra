@@ -199,7 +199,9 @@ public:
     }
 
     // Mark this run as done with a phase. A phase is considered globally
-    // finished only once every planned run called finish_run() for it.
+    // finished only once every planned run called finish_run() for it. The
+    // final run completes any missing work and publishes 100% when there is no
+    // following phase to display.
     void finish_run(uint32_t phase = DefaultPhase)
     {
         if (phase >= MaxPhases)
@@ -208,9 +210,10 @@ public:
         const uint32_t finished = m_phases[phase].finished_runs.fetch_add(1, std::memory_order_relaxed) + 1;
         const int32_t done = m_phases[phase].done.load(std::memory_order_relaxed);
         const uint32_t max = m_phases[phase].max.load(std::memory_order_relaxed);
-        if (finished >= m_run_count.load(std::memory_order_relaxed) && done < int32_t(max))
+        const bool completed_by_this_call = finished == m_run_count.load(std::memory_order_relaxed);
+        if (completed_by_this_call && done < int32_t(max))
             m_phases[phase].done.store(int32_t(max), std::memory_order_relaxed);
-        report_if_needed(phase, phase_message(phase).c_str());
+        report_if_needed(phase, phase_message(phase).c_str(), completed_by_this_call);
     }
 
     // Convenience wrapper around increment() with one-shot printf-style
@@ -295,14 +298,22 @@ private:
         return -1;
     }
 
-    void report_if_needed(uint32_t updated_phase, const char *message)
+    void report_if_needed(uint32_t updated_phase,
+                          const char *message,
+                          bool allow_completed_updated_phase = false)
     {
         if (m_report_progress == nullptr)
             return;
 
-        const int32_t visible_phase = first_visible_phase();
-        if (visible_phase < 0)
-            return;
+        int32_t visible_phase = first_visible_phase();
+        if (visible_phase < 0) {
+            // Once the final active phase is complete there is normally no
+            // visible phase. finish_run() may still publish its terminal 100%,
+            // but ordinary increments and duplicate finish calls may not.
+            if (!allow_completed_updated_phase || updated_phase >= MaxPhases || !phase_finished(updated_phase))
+                return;
+            visible_phase = int32_t(updated_phase);
+        }
 
         const PhaseProgress &progress = m_phases[uint32_t(visible_phase)];
         const uint32_t max = progress.max.load(std::memory_order_relaxed);

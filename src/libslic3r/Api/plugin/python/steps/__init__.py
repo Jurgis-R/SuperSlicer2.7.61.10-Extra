@@ -11,6 +11,26 @@ from .perimeter_module import PerimeterModuleContext, PublishedPerimeterGenerati
 from .post_perimeter import PostPerimeterContext
 from .post_infill import PostInfillContext
 from .surface_generation import SurfaceGenerationContext
+from .execution import (
+    ExtrusionEditContext,
+    ExtrusionSimplificationContext,
+    GCodeContext,
+    InfillContext,
+    InfillGroupingContext,
+    InfillPatternContext,
+    InfillSurfaceRecipeModifierContext,
+    LayerExtrusionEditContext,
+    LayerStitchingContext,
+    OrderingContext,
+    PreGCodeContext,
+    PreInfillContext,
+    PrePerimeterContext,
+    SkirtBrimContext,
+    SupportContext,
+    SupportDemandContext,
+    SupportSpotContext,
+    WipeTowerContext,
+)
 
 __all__ = [
     "LayerConfigRange",
@@ -28,4 +48,22 @@ __all__ = [
     "PostPerimeterContext",
     "PostInfillContext",
     "SurfaceGenerationContext",
+    "ExtrusionEditContext",
+    "ExtrusionSimplificationContext",
+    "GCodeContext",
+    "InfillContext",
+    "InfillGroupingContext",
+    "InfillPatternContext",
+    "InfillSurfaceRecipeModifierContext",
+    "LayerExtrusionEditContext",
+    "LayerStitchingContext",
+    "OrderingContext",
+    "PreGCodeContext",
+    "PreInfillContext",
+    "PrePerimeterContext",
+    "SkirtBrimContext",
+    "SupportContext",
+    "SupportDemandContext",
+    "SupportSpotContext",
+    "WipeTowerContext",
 ]

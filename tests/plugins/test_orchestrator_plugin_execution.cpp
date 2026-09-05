@@ -10,6 +10,7 @@
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Config/ConfigDef.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
 
@@ -57,6 +58,21 @@ ServicePluginState g_service_low;
 ServicePluginState g_service_high;
 ServicePluginState g_private_numeric;
 ServicePluginState g_private_numeric_alt;
+
+struct ProgressCapture
+{
+    std::vector<double> values;
+    std::vector<std::string> messages;
+};
+
+// Store progress reports in a test-owned object passed through the otherwise
+// opaque host context pointer.
+void capture_progress(plugin_host_context *host_context, double progress, const char *message)
+{
+    ProgressCapture &capture = *reinterpret_cast<ProgressCapture *>(host_context);
+    capture.values.push_back(progress);
+    capture.messages.emplace_back(message != nullptr ? message : "");
+}
 
 void perform_callback_action(ServicePluginState &state,
                              const plugin_run_context *run_context,
@@ -276,6 +292,65 @@ private:
 };
 
 } // namespace
+
+TEST_CASE("PluginProgress publishes terminal completion without hiding later phases",
+          "[plugins][progress]")
+{
+    ProgressCapture capture;
+    plugin_run_context context = {};
+    context.host_context = reinterpret_cast<plugin_host_context *>(&capture);
+    context.report_progress = &capture_progress;
+    slic3r_api::PluginProgress progress;
+
+    SECTION("the last run fills missing work and reports 100 percent") {
+        progress.reset(&context, 1, "Work: %u / %u");
+        progress.add_max(10);
+        progress.increment_by(4);
+        progress.finish_run();
+
+        REQUIRE(capture.values.size() == 2);
+        CHECK(capture.values[0] == Approx(0.4));
+        CHECK(capture.values[1] == Approx(1.0));
+        CHECK(capture.messages[1] == "Work: 10 / 10");
+        CHECK(progress.done() == 10);
+    }
+
+    SECTION("completion waits for every planned run") {
+        progress.reset(&context, 2, "Work: %u / %u");
+        progress.add_max(10);
+        progress.increment_by(4);
+        progress.finish_run();
+        REQUIRE(capture.values.size() == 1);
+        CHECK(capture.values.back() == Approx(0.4));
+
+        progress.finish_run();
+        REQUIRE(capture.values.size() == 2);
+        CHECK(capture.values.back() == Approx(1.0));
+    }
+
+    SECTION("finish does not duplicate an existing terminal report") {
+        progress.reset(&context, 1, "Work: %u / %u");
+        progress.add_max(10);
+        progress.increment_by(10);
+        REQUIRE(capture.values.size() == 1);
+
+        progress.finish_run();
+        CHECK(capture.values.size() == 1);
+    }
+
+    SECTION("the next active phase remains visible") {
+        progress.reset(&context, 1, "First: %u / %u");
+        progress.add_max(0, 10);
+        progress.set_phase_format(1, "Second: %u / %u");
+        progress.add_max(1, 5);
+        progress.increment_by(0, 4);
+        progress.finish_run(0);
+
+        REQUIRE(capture.values.size() == 2);
+        CHECK(capture.values.back() == Approx(0.0));
+        CHECK(capture.messages.back() == "Second: 0 / 5");
+    }
+}
 
 TEST_CASE("Missing dependencies block indirect consumers without executing them",
           "[plugins][orchestrator][dependencies]")

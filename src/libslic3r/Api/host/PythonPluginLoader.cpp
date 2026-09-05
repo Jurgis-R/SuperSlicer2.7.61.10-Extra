@@ -483,9 +483,16 @@ PyObject *pointer_to_python_uint(const void *ptr)
     return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ptr)));
 }
 
-void call_python_void(PyObject *object, const char *method_name, PyObject *args, const std::string &plugin_id)
+void call_python_void(PyObject *object, const char *method_name, PyObject *args, const std::string &plugin_id,
+                      const char *fallback_method_name = nullptr)
 {
     PyObject *method = PyObject_GetAttrString(object, method_name);
+    if (method == nullptr && fallback_method_name != nullptr) {
+        // PluginBase supplies protected bridge methods. The fallback preserves
+        // older duck-typed Python plugins that implemented only public hooks.
+        PyErr_Clear();
+        method = PyObject_GetAttrString(object, fallback_method_name);
+    }
     if (method == nullptr) {
         PyErr_Clear();
         return;
@@ -653,7 +660,9 @@ private:
         Py_XDECREF(py_run_ctx);
         Py_XDECREF(py_run_count);
         if (args != nullptr) {
-            call_python_void(plugin->m_plugin, "setup", args, plugin->m_id);
+            // PluginBase owns the safety wrapper: it resets aggregate progress,
+            // consumes cooperative cancellation and reports Python failures.
+            call_python_void(plugin->m_plugin, "_slic3r_setup", args, plugin->m_id, "setup");
             Py_DECREF(args);
         } else {
             PyErr_Print();
@@ -669,7 +678,7 @@ private:
         PyObject *args = arg != nullptr ? PyTuple_Pack(1, arg) : nullptr;
         Py_XDECREF(arg);
         if (args != nullptr) {
-            call_python_void(plugin->m_plugin, "setup_run", args, plugin->m_id);
+            call_python_void(plugin->m_plugin, "_slic3r_setup_run", args, plugin->m_id, "setup_run");
             Py_DECREF(args);
         } else {
             PyErr_Print();
@@ -685,7 +694,7 @@ private:
         PyObject *args = arg != nullptr ? PyTuple_Pack(1, arg) : nullptr;
         Py_XDECREF(arg);
         if (args != nullptr) {
-            call_python_void(plugin->m_plugin, "run", args, plugin->m_id);
+            call_python_void(plugin->m_plugin, "_slic3r_run", args, plugin->m_id, "run");
             Py_DECREF(args);
         } else {
             PyErr_Print();
