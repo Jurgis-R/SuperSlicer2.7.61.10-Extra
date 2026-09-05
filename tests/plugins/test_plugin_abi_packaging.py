@@ -349,6 +349,30 @@ class AbiPackagingTests(unittest.TestCase):
                 with self.subTest(auxiliary_header=header):
                     self.assertIn(header, auxiliary_headers)
 
+            print_helper_headers = {
+                "slic3r_config.h",
+                "slic3r_config_option.h",
+                "slic3r_data_tree.h",
+            }
+            for helper_name in (
+                "object_extruders",
+                "collect_object_printing_extruders",
+                "collect_print_extruders_for_skirt",
+                "get_object_first_layer_height",
+                "get_min_first_layer_height",
+                "e_per_mm",
+            ):
+                with self.subTest(print_helper=helper_name):
+                    self.assertTrue(
+                        print_helper_headers.issubset(bindings.symbols[helper_name])
+                    )
+                    self.assertTrue(
+                        print_helper_headers.issubset(bindings.methods[helper_name])
+                    )
+            self.assertIn("slic3r_def.h", bindings.symbols["check_z_step"])
+            self.assertIn("slic3r_def.h", bindings.methods["check_z_step"])
+            self.assertNotIn("slic3r_print_helpers.h", catalog.headers)
+
     def _write_catalog(self, root):
         catalog_path = root / "catalog.json"
         catalog_path.write_text(self.generator.generate_abi_catalog(), encoding="utf-8")

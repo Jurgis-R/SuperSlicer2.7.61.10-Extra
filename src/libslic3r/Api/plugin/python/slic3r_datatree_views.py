@@ -1787,6 +1787,10 @@ class AuxiliaryLayerBuildResult(NamedTuple):
     created: bool
 
 
+# Ported from src/libslic3r/Api/plugin/cpp/AuxiliaryLayerHelpers.cpp
+# at commit cca788f1cecab755cf623cb53d5e6298b4f6b6c4 (05/09/2026).
+# This is an algorithm snapshot. Compare it with the cited source whenever the
+# C++ region-classification rules change.
 def _auxiliary_layer_range_for_z(obj: Object, slice_z: int):
     """Select the active range; a shared boundary belongs to the upper range."""
     selected = None
@@ -1808,7 +1812,7 @@ def _auxiliary_mask_slicing_params(print_view: Print, obj: Object) -> CMeshSlici
     """Build native-equivalent parameters for settings masks without XY growth."""
     print_config = print_view.config()
     object_config = obj.config()
-    slicing_mode = object_config.int("slicing_mode", default=0)
+    slicing_mode = object_config.enum_or_default("slicing_mode", 0)
 
     params = CMeshSlicingParams()
     if slicing_mode == 1:
@@ -1819,10 +1823,10 @@ def _auxiliary_mask_slicing_params(print_view: Print, obj: Object) -> CMeshSlici
         params.mode = RAW_MESH_SLICING_MODE_REGULAR
     params.mode_below = params.mode
     params.transform = obj.transform_centered()
-    params.closing_radius = float(object_config.float("slice_closing_radius", default=0.0))
+    params.closing_radius = float(object_config.float_or_default("slice_closing_radius", 0.0))
     params.extra_offset = 0.0
-    params.resolution = float(print_config.float("resolution", default=EPSILON))
-    params.model_resolution = float(object_config.float("model_precision", default=0.0))
+    params.resolution = float(print_config.float_or_default("resolution", EPSILON))
+    params.model_resolution = float(object_config.float_or_default("model_precision", 0.0))
     return params
 
 

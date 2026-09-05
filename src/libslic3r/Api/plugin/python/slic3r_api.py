@@ -102,6 +102,7 @@ from slic3r_datatree_views import *
 from slic3r_clipper_views import *
 from slic3r_region_settings_views import *
 from slic3r_printing_plan_views import *
+from slic3r_print_helpers import *
 from slic3r_bridge_detector_views import *
 from slic3r_orchestrator_views import *
 from slic3r_run_context import *
@@ -338,6 +339,45 @@ class Slic3rAPI:
     def create_bridge_detector(self, **kwargs) -> BridgeDetector:
         """Create an owning detector using borrowed input geometry views."""
         return self.orchestrator_view().create_bridge_detector(**kwargs)
+
+    @abi_requires_headers("slic3r_config.h", "slic3r_config_option.h", "slic3r_data_tree.h")
+    def object_extruders(self, print_view: Print, obj: Object) -> tuple[int, ...]:
+        """Return copied zero-based extruder ids used by one borrowed Object."""
+        return object_extruders(print_view, obj)
+
+    @abi_requires_headers("slic3r_config.h", "slic3r_config_option.h", "slic3r_data_tree.h")
+    def collect_object_printing_extruders(
+        self, print_view: Print, obj: Object, region: PrintRegion
+    ) -> tuple[int, ...]:
+        """Return copied extruder ids used by one borrowed printing region."""
+        return collect_object_printing_extruders(print_view, obj, region)
+
+    @abi_requires_headers("slic3r_config.h", "slic3r_config_option.h", "slic3r_data_tree.h")
+    def collect_print_extruders_for_skirt(
+        self, print_view: Print, objects=None
+    ) -> tuple[int, ...]:
+        """Return copied zero-based skirt extruders for borrowed Objects."""
+        return collect_print_extruders_for_skirt(print_view, objects)
+
+    @abi_requires_headers("slic3r_config.h", "slic3r_config_option.h", "slic3r_data_tree.h")
+    def get_object_first_layer_height(self, print_view: Print, obj: Object) -> int:
+        """Return one Object's first-layer height using the pinned C++ port."""
+        return get_object_first_layer_height(print_view, obj)
+
+    @abi_requires_headers("slic3r_config.h", "slic3r_config_option.h", "slic3r_data_tree.h")
+    def get_min_first_layer_height(self, print_view: Print) -> int:
+        """Return the minimum first-layer height using the pinned C++ port."""
+        return get_min_first_layer_height(print_view)
+
+    @abi_requires_headers("slic3r_config.h", "slic3r_config_option.h", "slic3r_data_tree.h")
+    def e_per_mm(self, print_view: Print, extruder_id: int, mm3_per_mm: float) -> float:
+        """Convert volumetric flow using the pinned C++ extruder formula."""
+        return e_per_mm(print_view, extruder_id, mm3_per_mm)
+
+    @abi_requires_headers("slic3r_def.h")
+    def check_z_step(self, value: int, z_step: int) -> int:
+        """Round one scaled coordinate using the pinned C++ Z-step formula."""
+        return check_z_step(value, z_step)
 
     def add_ui_fragment(self, target_file: str, fragment_id: str, ui_fragment: str, priority: int = 0) -> int:
         return self.host.orchestrator_add_ui_fragment(
