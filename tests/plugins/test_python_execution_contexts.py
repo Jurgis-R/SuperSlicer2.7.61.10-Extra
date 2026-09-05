@@ -97,6 +97,7 @@ class PythonExecutionContextTests(unittest.TestCase):
 
         self.assertEqual(context.gcode_print().address, 21)
         self.assertEqual(context.gcode_plan_handle(), 22)
+        self.assertEqual(context.gcode_plan().address, 22)
         self.assertEqual(context.gcode_firmware_handle(), 23)
         self.assertEqual(context.gcode_output_path(), "out/test.gcode")
         self.assertTrue(keepalive)

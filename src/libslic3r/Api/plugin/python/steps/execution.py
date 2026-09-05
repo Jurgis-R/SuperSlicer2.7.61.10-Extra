@@ -6,9 +6,9 @@
 """High-level Python views for the remaining execution-step payloads.
 
 Each class validates both the step id and the payload before exposing borrowed
-host objects. Data-tree handles are wrapped in their normal Python views. A
-printing-plan or firmware handle stays an integer because those services have
-their own contracts and no generic Python ownership model yet.
+host objects. Data-tree and printing-plan handles are wrapped in their normal
+Python views. A firmware handle stays an integer because that service still has
+no generic Python ownership model.
 
 All returned handles are borrowed and valid only during the current
 ``PluginBase.setup_run()`` or ``PluginBase.run()`` callback. Collection setters
@@ -72,6 +72,12 @@ from slic3r_datatree_views import (
 )
 from slic3r_extrusion_views import MutableExtrusionEntity
 from slic3r_geometry_views import ExPolygonCollection, MutableExPolygonCollection
+from slic3r_printing_plan_views import (
+    LayerExtrusionEditPrintingLayerGroup,
+    MutablePrintingPlan,
+    PrintingGroup,
+    PrintingPlan,
+)
 from slic3r_surface_views import Surface
 from slic3r_run_context import PluginRunContextView
 
@@ -276,13 +282,16 @@ class SkirtBrimContext(_PayloadContext):
 
 
 class _PrintingPlanContext(_PayloadContext):
-    """Common read-only Print plus borrowed printing-plan handle."""
+    """Common read-only Print plus a host-owned printing-plan work copy."""
 
     def _print(self) -> Print:
         return Print(self.api, self.payload.print)
 
     def _plan_handle(self) -> int:
         return _address(self.payload.plan)
+
+    def _plan(self) -> MutablePrintingPlan:
+        return MutablePrintingPlan(self.api, self.payload.plan)
 
 
 @abi_requires_headers("steps/slic3r_step_ordering.h")
@@ -297,8 +306,12 @@ class OrderingContext(_PrintingPlanContext):
         return self._print()
 
     def ordering_plan_handle(self) -> int:
-        """Return a borrowed mutable plan handle; this wrapper never releases it."""
+        """Return the low-level borrowed plan address for legacy plugin code."""
         return self._plan_handle()
+
+    def ordering_plan(self) -> MutablePrintingPlan:
+        """Borrow the mutable ordering plan; never free or retain it after the callback."""
+        return self._plan()
 
 
 @abi_requires_headers("steps/slic3r_step_extrusion_edit.h")
@@ -313,8 +326,12 @@ class ExtrusionEditContext(_PrintingPlanContext):
         return self._print()
 
     def extrusion_edit_plan_handle(self) -> int:
-        """Return the borrowed mutable plan handle for this one callback."""
+        """Return the low-level borrowed plan address for legacy plugin code."""
         return self._plan_handle()
+
+    def extrusion_edit_plan(self) -> MutablePrintingPlan:
+        """Borrow the mutable whole-plan work copy for this callback."""
+        return self._plan()
 
 
 @abi_requires_headers("steps/slic3r_step_layer_extrusion_edit.h")
@@ -337,13 +354,25 @@ class LayerExtrusionEditContext(_PrintingPlanContext):
     def layer_extrusion_edit_plan_handle(self) -> int:
         return self._plan_handle()
 
+    def layer_extrusion_edit_plan(self) -> PrintingPlan:
+        """Borrow read-only structural context shared by parallel layer jobs."""
+        return PrintingPlan(self.api, self.payload.plan)
+
     def layer_extrusion_edit_group_handle(self) -> int:
         """Return the borrowed read-only PrintingGroup containing this job."""
         return _address(self.payload.group)
 
+    def layer_extrusion_edit_group(self) -> PrintingGroup:
+        """Borrow the containing group without granting structural mutation."""
+        return PrintingGroup(self.api, self.payload.group)
+
     def layer_extrusion_edit_layer_group_handle(self) -> int:
         """Return the borrowed mutable PrintingLayerGroup owned by this job."""
         return _address(self.payload.layer_group)
+
+    def layer_extrusion_edit_layer_group(self) -> LayerExtrusionEditPrintingLayerGroup:
+        """Borrow a restricted view exposing mutation only on cloned roots."""
+        return LayerExtrusionEditPrintingLayerGroup(self.api, self.payload.layer_group)
 
     def layer_extrusion_edit_group_index(self) -> int:
         return int(self.payload.group_idx)
@@ -365,6 +394,10 @@ class GCodeContext(_PrintingPlanContext):
 
     def gcode_plan_handle(self) -> int:
         return self._plan_handle()
+
+    def gcode_plan(self) -> MutablePrintingPlan:
+        """Borrow the mutable plan work copy owned by this G-code run."""
+        return self._plan()
 
     def gcode_firmware_handle(self) -> int:
         """Return a borrowed firmware instance; invoke it only through its service adapter."""

@@ -19,8 +19,9 @@ The C ABI vtable is built by the loader DLL, not by Python. This avoids fragile
 callback signatures while keeping Python plugin code simple. Slic3rAPI binds the
 public host C functions with ctypes; raw functions are available as
 api.host.function_name(...), and a smaller set of Python-friendly helpers is
-provided for common tasks. Handles and run contexts are exposed as integer
-addresses.
+provided for common tasks. Low-level handles and run contexts remain available
+as integer addresses, while data-tree, geometry, extrusion, and printing-plan
+views make their ownership and mutation rules explicit.
 
 Plugins should import this module from the Python runtime directory prepared by
 the loader:
@@ -100,6 +101,7 @@ from slic3r_surface_views import *
 from slic3r_datatree_views import *
 from slic3r_clipper_views import *
 from slic3r_region_settings_views import *
+from slic3r_printing_plan_views import *
 from slic3r_run_context import *
 from steps.layer_height import *
 from steps.slicing import *
@@ -663,6 +665,48 @@ class Slic3rAPI:
 
     def mutable_print_region(self, handle: int) -> MutablePrintRegion:
         return MutablePrintRegion(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def printing_plan(self, handle: int) -> PrintingPlan:
+        """Borrow a read-only plan; neither this view nor its children are freed."""
+        return PrintingPlan(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def mutable_printing_plan(self, handle: int) -> MutablePrintingPlan:
+        """Borrow a mutable plan only when the host payload grants mutation."""
+        return MutablePrintingPlan(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def printing_group(self, handle: int) -> PrintingGroup:
+        return PrintingGroup(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def mutable_printing_group(self, handle: int) -> MutablePrintingGroup:
+        return MutablePrintingGroup(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def printing_layer_group(self, handle: int) -> PrintingLayerGroup:
+        return PrintingLayerGroup(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def mutable_printing_layer_group(self, handle: int) -> MutablePrintingLayerGroup:
+        return MutablePrintingLayerGroup(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def printing_tool_group(self, handle: int) -> PrintingToolGroup:
+        return PrintingToolGroup(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def mutable_printing_tool_group(self, handle: int) -> MutablePrintingToolGroup:
+        return MutablePrintingToolGroup(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def printing_extrusion(self, handle: int) -> PrintingExtrusion:
+        return PrintingExtrusion(self, handle)
+
+    @abi_requires_headers("slic3r_printing_plan.h")
+    def mutable_printing_extrusion(self, handle: int) -> MutablePrintingExtrusion:
+        return MutablePrintingExtrusion(self, handle)
 
     def volume(self, handle: int) -> Volume:
         return Volume(self, handle)
