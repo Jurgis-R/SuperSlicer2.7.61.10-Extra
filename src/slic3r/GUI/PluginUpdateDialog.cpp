@@ -365,6 +365,7 @@ void PluginUpdateDialog::rebuild()
     m_repository_action_controls.clear();
     m_version_colours.clear();
     m_save_button = nullptr;
+    m_save_and_restart_button = nullptr;
     m_main_sizer->Clear(true);
 
     wxBoxSizer *repository_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -412,15 +413,20 @@ void PluginUpdateDialog::rebuild()
     m_main_sizer->Add(grid, 1, wxEXPAND | wxLEFT | wxRIGHT, 10);
 
     wxBoxSizer *buttons = new wxBoxSizer(wxHORIZONTAL);
-    wxButton *save = new wxButton(m_content, wxID_ANY, _L("Save and restart"));
+    wxButton *save = new wxButton(m_content, wxID_SAVE, _L("Save"));
     m_save_button = save;
+    wxButton *save_and_restart = new wxButton(m_content, wxID_OK, _L("Save and restart"));
+    m_save_and_restart_button = save_and_restart;
     wxButton *cancel = new wxButton(m_content, wxID_CANCEL, _L("Cancel"));
     buttons->AddStretchSpacer();
     buttons->Add(save, 0, wxRIGHT, 6);
+    buttons->Add(save_and_restart, 0, wxRIGHT, 6);
     buttons->Add(cancel, 0);
-    bind_repository_action(*save, [this](wxCommandEvent &) { save_and_restart(); });
+    bind_repository_action(*save, [this](wxCommandEvent &) { this->save(); });
+    bind_repository_action(*save_and_restart, [this](wxCommandEvent &) { this->save_and_restart(); });
     cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_CANCEL); });
     m_repository_action_controls.emplace_back(save);
+    m_repository_action_controls.emplace_back(save_and_restart);
     m_main_sizer->Add(buttons, 0, wxEXPAND | wxALL, 10);
     apply_plugin_operation_state();
     // Newly created native controls start at (0, 0). Position them before
@@ -856,10 +862,18 @@ void PluginUpdateDialog::apply_plugin_operation_state()
                                 !m_updater.repository_change_in_progress();
     for (wxWindow *control : m_repository_action_controls)
         control->Enable(enable_actions);
-    // The shared action toggle must not re-enable Save without a net change.
+    // The shared action toggle must not re-enable either save action without
+    // a net change in activation or requested package installations.
+    const bool save_enabled = enable_actions && has_pending_changes();
     if (m_save_button != nullptr)
-        m_save_button->Enable(enable_actions &&
-            (m_activation_draft->dirty() || m_activation_draft->installation_changed(m_updater.plugins())));
+        m_save_button->Enable(save_enabled);
+    if (m_save_and_restart_button != nullptr)
+        m_save_and_restart_button->Enable(save_enabled);
+}
+
+bool PluginUpdateDialog::has_pending_changes() const
+{
+    return m_activation_draft->dirty() || m_activation_draft->installation_changed(m_updater.plugins());
 }
 
 bool PluginUpdateDialog::prepare_restart() const
@@ -882,17 +896,14 @@ bool PluginUpdateDialog::prepare_restart() const
 
 void PluginUpdateDialog::save_and_restart()
 {
-    if (!m_activation_draft->dirty() && !m_activation_draft->installation_changed(m_updater.plugins())) {
+    if (!has_pending_changes()) {
         return;
     }
     if (!prepare_restart())
         return;
 
-    std::string error_message;
-    if (!m_activation_draft->save(error_message)) {
-        show_repository_error(error_message);
+    if (!save_changes())
         return;
-    }
 
     BOOST_LOG_TRIVIAL(info) << "Plugin activation configuration saved to '"
                             << plugin_activation_config_path(boost::filesystem::path(data_dir())).string()
@@ -901,6 +912,27 @@ void PluginUpdateDialog::save_and_restart()
     start_new_slicer(nullptr, false);
     if (wxGetApp().mainframe != nullptr)
         wxGetApp().mainframe->Close(true);
+}
+
+bool PluginUpdateDialog::save_changes()
+{
+    std::string error_message;
+    if (!m_activation_draft->save(error_message)) {
+        show_repository_error(error_message);
+        return false;
+    }
+
+    return true;
+}
+
+void PluginUpdateDialog::save()
+{
+    if (!has_pending_changes() || !save_changes())
+        return;
+
+    BOOST_LOG_TRIVIAL(info) << "Plugin activation configuration saved to '"
+                            << plugin_activation_config_path(boost::filesystem::path(data_dir())).string() << "'.";
+    EndModal(wxID_OK);
 }
 
 ChoosePluginVersionDialog::ChoosePluginVersionDialog(wxWindow *parent,

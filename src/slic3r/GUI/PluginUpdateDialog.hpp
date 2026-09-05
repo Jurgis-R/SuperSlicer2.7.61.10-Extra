@@ -55,7 +55,10 @@ private:
     void begin_plugin_operation(const wxString &message);
     void finish_plugin_operation();
     void apply_plugin_operation_state();
+    bool has_pending_changes() const;
     bool prepare_restart() const;
+    bool save_changes();
+    void save();
     void save_and_restart();
 
     PluginUpdater &m_updater;
@@ -65,6 +68,7 @@ private:
     wxBoxSizer *m_main_sizer = nullptr;
     wxTextCtrl *m_repository_url = nullptr;
     wxButton *m_save_button = nullptr;
+    wxButton *m_save_and_restart_button = nullptr;
     std::vector<wxWindow *> m_repository_action_controls;
     // Apply semantic backgrounds after the application themes ordinary controls.
     std::vector<std::pair<wxWindow *, wxColour>> m_version_colours;

@@ -319,6 +319,8 @@ public:
     wxDataViewCtrl *plugin_list { nullptr };
     PluginListModel *plugin_list_model { nullptr };
     PluginDetailsPanel *details_panel { nullptr };
+    wxButton *save_button { nullptr };
+    wxButton *save_and_restart_button { nullptr };
     DetailWidgets details;
 };
 
@@ -1428,6 +1430,7 @@ void PluginConfigDialog::refresh_plugin_list()
         m_state->plugin_list->EnsureVisible(selection);
     }
     refresh_details();
+    update_save_buttons();
 }
 
 void PluginConfigDialog::refresh_details()
@@ -1504,6 +1507,36 @@ void PluginConfigDialog::refresh_details()
     m_state->details.activation_groups->Wrap(wrap_width);
     m_state->details.diagnostic->Wrap(wrap_width);
     m_state->details_panel->fit_contents();
+}
+
+// The effective set follows the exact same rules as publication: entries
+// preserved for diagnostics stay untouched, while every editable entry
+// replaces its opening activation choice.
+std::set<std::string> PluginConfigDialog::active_plugin_ids() const
+{
+    std::set<std::string> active_ids = m_state->original_active_plugin_ids;
+    for (const PluginCatalogEntry &entry : m_state->entries) {
+        if (entry.activation_group_diagnostic || entry.preserve_unavailable_activation)
+            continue;
+        active_ids.erase(entry.id);
+        if (entry.active)
+            active_ids.insert(entry.id);
+    }
+    return active_ids;
+}
+
+bool PluginConfigDialog::has_pending_changes() const
+{
+    return active_plugin_ids() != m_state->original_active_plugin_ids;
+}
+
+void PluginConfigDialog::update_save_buttons()
+{
+    const bool enabled = has_pending_changes();
+    if (m_state->save_button != nullptr)
+        m_state->save_button->Enable(enabled);
+    if (m_state->save_and_restart_button != nullptr)
+        m_state->save_and_restart_button->Enable(enabled);
 }
 
 void PluginConfigDialog::build()
@@ -1663,10 +1696,14 @@ void PluginConfigDialog::build()
     main_sizer->Add(content, 1, wxEXPAND | wxLEFT | wxRIGHT, 10);
 
     wxBoxSizer *buttons = new wxBoxSizer(wxHORIZONTAL);
-    wxButton *save = new wxButton(this, wxID_OK, _L("Save and restart"));
+    wxButton *save = new wxButton(this, wxID_SAVE, _L("Save"));
+    wxButton *save_and_restart = new wxButton(this, wxID_OK, _L("Save and restart"));
+    m_state->save_button = save;
+    m_state->save_and_restart_button = save_and_restart;
     wxButton *cancel = new wxButton(this, wxID_CANCEL, _L("Cancel"));
     buttons->AddStretchSpacer();
     buttons->Add(save, 0, wxRIGHT, 6);
+    buttons->Add(save_and_restart, 0, wxRIGHT, 6);
     buttons->Add(cancel, 0);
     main_sizer->Add(buttons, 0, wxEXPAND | wxALL, 10);
 
@@ -1685,8 +1722,13 @@ void PluginConfigDialog::build()
         refresh_navigation_counts();
         refresh_plugin_list();
     });
-    save->Bind(wxEVT_BUTTON, &PluginConfigDialog::save_and_restart, this);
-    cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_CANCEL); });
+    save->Bind(wxEVT_BUTTON, &PluginConfigDialog::save, this);
+    save_and_restart->Bind(wxEVT_BUTTON, &PluginConfigDialog::save_and_restart, this);
+    cancel->Bind(wxEVT_BUTTON, &PluginConfigDialog::cancel, this);
+    Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent &) {
+        discard_draft_changes();
+        EndModal(wxID_CANCEL);
+    });
 
     SetSizer(main_sizer);
     SetMinSize(wxSize(106 * em_unit(), 36 * em_unit()));
@@ -1705,14 +1747,7 @@ bool PluginConfigDialog::write_active_plugins(std::string &error_message) const
 
     const boost::filesystem::path config_path = plugin_activation_config_path(boost::filesystem::path(data_dir()));
     try {
-        std::set<std::string> active_ids = m_state->original_active_plugin_ids;
-        for (const PluginCatalogEntry &entry : m_state->entries) {
-            if (entry.activation_group_diagnostic || entry.preserve_unavailable_activation)
-                continue;
-            active_ids.erase(entry.id);
-            if (entry.active)
-                active_ids.insert(entry.id);
-        }
+        const std::set<std::string> active_ids = active_plugin_ids();
 
         std::vector<std::string> selected_plugin_ids;
         for (const std::string &plugin_id : active_ids)
@@ -1765,24 +1800,65 @@ bool PluginConfigDialog::prepare_restart() const
     return true;
 }
 
-void PluginConfigDialog::save_and_restart(wxCommandEvent &)
+// Writes the draft only after every activation constraint has been checked. It
+// deliberately does not change the currently loaded plugin instances.
+bool PluginConfigDialog::save_changes()
 {
-    if (!prepare_restart())
-        return;
-
     std::string error_message;
     if (!write_active_plugins(error_message)) {
         show_error(this, error_message);
-        return;
+        return false;
     }
 
     BOOST_LOG_TRIVIAL(info) << "Plugin activation configuration saved to '"
                             << plugin_activation_config_path(boost::filesystem::path(data_dir())).string()
-                            << "'. Restarting.";
+                            << "'.";
+    return true;
+}
+
+// Publishes the requested activation for the following application launch but
+// leaves the current process untouched.
+void PluginConfigDialog::save(wxCommandEvent &)
+{
+    if (has_pending_changes() && save_changes())
+        EndModal(wxID_OK);
+}
+
+void PluginConfigDialog::save_and_restart(wxCommandEvent &)
+{
+    if (!has_pending_changes())
+        return;
+    if (!prepare_restart())
+        return;
+
+    if (!save_changes())
+        return;
+
     EndModal(wxID_OK);
     start_new_slicer(nullptr, false);
     if (wxGetApp().mainframe != nullptr)
         wxGetApp().mainframe->Close(true);
+}
+
+// Restores the opening draft before closing. The catalog is normally local,
+// but this makes the discard contract explicit for all activation paths.
+void PluginConfigDialog::discard_draft_changes()
+{
+    for (PluginCatalogEntry &entry : m_state->entries) {
+        if (!entry.modifiable || entry.activation_group_diagnostic || entry.preserve_unavailable_activation)
+            continue;
+        entry.active = m_state->original_active_plugin_ids.find(entry.id) !=
+                       m_state->original_active_plugin_ids.end();
+    }
+
+    refresh_navigation_counts();
+    refresh_plugin_list();
+}
+
+void PluginConfigDialog::cancel(wxCommandEvent &)
+{
+    discard_draft_changes();
+    EndModal(wxID_CANCEL);
 }
 
 void PluginConfigDialog::on_dpi_changed(const wxRect &)
@@ -1794,7 +1870,7 @@ void PluginConfigDialog::on_dpi_changed(const wxRect &)
         m_state->plugin_list->GetColumn(PluginListModel::Active)->SetWidth(7 * em_unit());
         m_state->plugin_list->GetColumn(PluginListModel::Name)->SetWidth(43 * em_unit());
     }
-    msw_buttons_rescale(this, em_unit(), { wxID_OK, wxID_CANCEL });
+    msw_buttons_rescale(this, em_unit(), { wxID_SAVE, wxID_OK, wxID_CANCEL });
     refresh_details();
     Layout();
     Refresh();

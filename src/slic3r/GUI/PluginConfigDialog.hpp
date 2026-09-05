@@ -7,6 +7,7 @@
 #define slic3r_GUI_PluginConfigDialog_hpp_
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -39,9 +40,16 @@ private:
     void refresh_navigation_counts();
     void refresh_plugin_list();
     void refresh_details();
+    void update_save_buttons();
+    bool has_pending_changes() const;
+    std::set<std::string> active_plugin_ids() const;
     bool write_active_plugins(std::string &error_message) const;
+    bool save_changes();
     bool prepare_restart() const;
+    void save(wxCommandEvent &event);
     void save_and_restart(wxCommandEvent &event);
+    void cancel(wxCommandEvent &event);
+    void discard_draft_changes();
     void on_dpi_changed(const wxRect &suggested_rect) override;
 
     std::unique_ptr<PluginConfigDialogState> m_state;
