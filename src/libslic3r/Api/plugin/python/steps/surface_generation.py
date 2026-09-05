@@ -55,8 +55,9 @@ from slic3r_api_generated import (
     RunCtxSurfaceGeneration,
     STEP_SURFACE_GENERATION,
 )
-from slic3r_datatree_views import LayerRegionIsland, Object, Print, Surface
+from slic3r_datatree_views import LayerRegionIsland, Object, Print
 from slic3r_geometry_views import ExPolygonCollection
+from slic3r_surface_views import Surface
 from slic3r_abi import abi_requires_headers
 from slic3r_run_context import PluginRunContextView
 

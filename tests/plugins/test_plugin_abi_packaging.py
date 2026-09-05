@@ -106,7 +106,7 @@ class AbiPackagingTests(unittest.TestCase):
                 catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"],
                 sorted(catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"]))
 
-    def test_clipper_and_volume_helpers_declare_their_native_contracts(self):
+    def test_high_level_helpers_declare_their_native_contracts(self):
         runtime = ROOT / "src/libslic3r/Api/plugin/python"
         with tempfile.TemporaryDirectory() as directory:
             catalog, _catalog_path = self._write_catalog(Path(directory))
@@ -142,6 +142,32 @@ class AbiPackagingTests(unittest.TestCase):
                 "slic3r_volume.h",
                 bindings.symbols["project_painting_to_polygons"],
             )
+
+            for surface_type in (
+                "MutableSurface",
+                "StoredSurface",
+                "StoredSurfaceCollection",
+            ):
+                with self.subTest(surface_type=surface_type):
+                    self.assertIn(
+                        "slic3r_data_tree.h",
+                        bindings.symbols[surface_type],
+                    )
+
+            for surface_method in (
+                "has_any_flag",
+                "has_all_flags",
+                "copy_properties_from",
+                "append_like",
+                "append_like_move",
+                "mutable_at",
+                "back_mutable",
+            ):
+                with self.subTest(surface_method=surface_method):
+                    self.assertIn(
+                        "slic3r_data_tree.h",
+                        bindings.methods[surface_method],
+                    )
 
             self.assertIn("slic3r_geometry.h", bindings.symbols["LineDistancer"])
             for visitor in ("ExtrusionTreeConstVisitor", "ExtrusionTreeVisitor"):

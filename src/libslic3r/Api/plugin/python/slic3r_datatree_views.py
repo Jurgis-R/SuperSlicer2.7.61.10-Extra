@@ -57,21 +57,10 @@ from slic3r_api_generated import (
     CFloatOrPercent,
     CMatrix4d,
     CMeshSlicingParams,
-    CSurface,
     CTriangleIndices,
     PLUGIN_PROPERTY_TYPE_LAYER_ADHESION,
     PLUGIN_PROPERTY_TYPE_LAYER_BRIM,
     PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT,
-    RAW_SURFACE_TYPE_DENS_SOLID,
-    RAW_SURFACE_TYPE_DENS_SPARSE,
-    RAW_SURFACE_TYPE_DENS_VOID,
-    RAW_SURFACE_TYPE_MOD_BRIDGE,
-    RAW_SURFACE_TYPE_MOD_OVERBRIDGE,
-    RAW_SURFACE_TYPE_NONE,
-    RAW_SURFACE_TYPE_POS_BOTTOM,
-    RAW_SURFACE_TYPE_POS_INTERNAL,
-    RAW_SURFACE_TYPE_POS_PERIMETER,
-    RAW_SURFACE_TYPE_POS_TOP,
     RAW_FACET_PAINTING_FDM_SUPPORT,
     RAW_FACET_PAINTING_MMU_SEGMENTATION,
     RAW_FACET_PAINTING_SEAM,
@@ -101,6 +90,15 @@ from slic3r_geometry_views import (
     ExPolygonCollection,
     StoredExPolygonCollection,
     StoredPolygonCollection,
+)
+from slic3r_surface_views import (
+    MutableSurface,
+    StoredSurface,
+    StoredSurfaceCollection,
+    Surface,
+    SurfaceCollection,
+    SurfaceTypeBuilder,
+    srf_type,
 )
 from slic3r_abi import abi_requires_headers
 
@@ -185,6 +183,7 @@ class DataTreeView:
         return self.address != 0
 
 
+@abi_requires_headers("slic3r_data_tree.h")
 class PluginProperties:
     """
     Generic plugin-property view for data-tree objects.
@@ -257,6 +256,20 @@ class PluginProperties:
 
     def clear(self) -> None:
         self.api.host.plugin_property_clear(self.c_handle())
+
+    def copy_from(self, other: "PluginProperties") -> None:
+        """
+        Replace this container's properties with independent copies of ``other``.
+
+        Both views are borrowed and remain owned by their data-tree objects.
+        The payload bytes are copied by the host, so later changes to either
+        container do not affect the other. An invalid source is treated as a
+        no-op by the native API; this lets property-free ``c_surface`` snapshots
+        serve as templates for newly appended Surfaces.
+        """
+        if not self.valid():
+            raise ValueError("destination property container must not be null")
+        self.api.host.plugin_property_copy_all(self.c_handle(), other.c_handle())
 
 
 # Read-only view over one ConfigOption. It covers common scalar/vector access
@@ -492,132 +505,6 @@ class StoredConfig(MutableConfig):
             self.close()
         except Exception:
             pass
-
-
-# Small builder for raw_surface_type. It mirrors the intended order:
-# position -> density -> optional modifiers.
-class SurfaceTypeBuilder:
-    def __init__(self, value: int = RAW_SURFACE_TYPE_NONE) -> None:
-        self.value = int(value)
-
-    def top(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_POS_TOP)
-
-    def bottom(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_POS_BOTTOM)
-
-    def internal(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_POS_INTERNAL)
-
-    def perimeter(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_POS_PERIMETER)
-
-    def solid(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_DENS_SOLID)
-
-    def sparse(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_DENS_SPARSE)
-
-    def empty(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_DENS_VOID)
-
-    def bridge(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_MOD_BRIDGE)
-
-    def overbridge(self) -> "SurfaceTypeBuilder":
-        return SurfaceTypeBuilder(self.value | RAW_SURFACE_TYPE_MOD_OVERBRIDGE)
-
-    def raw(self) -> int:
-        return self.value
-
-    def __int__(self) -> int:
-        return self.value
-
-
-def srf_type() -> SurfaceTypeBuilder:
-    return SurfaceTypeBuilder()
-
-
-# Borrowed surface view. It can either wrap a host surface_handle or a c_surface
-# snapshot returned by the ABI.
-class Surface:
-    def __init__(self, api, handle=None, surface: CSurface | None = None) -> None:
-        if handle is None and surface is None:
-            raise ValueError("surface handle or c_surface is required")
-        self.api = api
-        self.address = _address(handle)
-        self._surface = surface
-
-    @classmethod
-    def from_c_surface(cls, api, surface: CSurface) -> "Surface":
-        return cls(api, surface=surface)
-
-    def has_handle(self) -> bool:
-        return self.address != 0
-
-    def c_handle(self) -> ctypes.c_void_p:
-        return _void_p(self.address)
-
-    def c_view(self) -> CSurface:
-        if self.has_handle():
-            return self.api.host.surface_c_view(self.c_handle())
-        return self._surface
-
-    def expolygon(self) -> ExPolygon:
-        handle = self.api.host.surface_get_expolygon(self.c_handle()) if self.has_handle() else self._surface.expolygon
-        return ExPolygon(self.api, handle)
-
-    def type(self) -> int:
-        return int(self.api.host.surface_get_type(self.c_handle())) if self.has_handle() else int(self._surface.type)
-
-    def id(self) -> int:
-        return int(self.api.host.surface_get_id(self.c_handle())) if self.has_handle() else int(self._surface.id)
-
-    def properties(self) -> PluginProperties:
-        if not self.has_handle():
-            return PluginProperties(self.api, None)
-        return PluginProperties(self.api, self.api.host.surface_get_properties(self.c_handle()))
-
-    def has_flag(self, flag: int) -> bool:
-        if self.has_handle():
-            return bool(self.api.host.surface_get_flag(self.c_handle(), int(flag)))
-        return (self.type() & int(flag)) != 0
-
-
-# Borrowed read-only surface collection.
-class SurfaceCollection(DataTreeView):
-    def size(self) -> int:
-        return int(self.api.host.surface_collection_size(self.c_handle()))
-
-    def empty(self) -> bool:
-        return self.size() == 0
-
-    def at(self, idx: int) -> Surface:
-        return Surface(self.api, self.api.host.surface_collection_at(self.c_handle(), int(idx)))
-
-    def front(self) -> Surface:
-        if self.empty():
-            raise IndexError("empty surface collection")
-        return self.at(0)
-
-    def back(self) -> Surface:
-        if self.empty():
-            raise IndexError("empty surface collection")
-        return self.at(self.size() - 1)
-
-    def __len__(self) -> int:
-        return self.size()
-
-    def __iter__(self) -> Iterator[Surface]:
-        for idx in range(self.size()):
-            yield self.at(idx)
-
-    def __getitem__(self, idx: int) -> Surface:
-        if idx < 0:
-            idx += self.size()
-        if idx < 0 or idx >= self.size():
-            raise IndexError(idx)
-        return self.at(idx)
 
 
 def _validated_mesh_slice_z_values(z_mm_by_layer: Iterable[float]) -> list[float]:
@@ -1590,12 +1477,15 @@ __all__ = [
     "MutableObject",
     "MutablePrint",
     "MutablePrintRegion",
+    "MutableSurface",
     "Object",
     "Print",
     "PrintRecords",
     "PrintRegion",
     "project_painting_to_polygons",
     "StoredConfig",
+    "StoredSurface",
+    "StoredSurfaceCollection",
     "Surface",
     "SurfaceCollection",
     "SurfaceTypeBuilder",

@@ -95,6 +95,7 @@ except ModuleNotFoundError as exc:
 from slic3r_abi import abi_requires_headers
 from slic3r_geometry_views import *
 from slic3r_extrusion_views import *
+from slic3r_surface_views import *
 from slic3r_datatree_views import *
 from slic3r_clipper_views import *
 from slic3r_region_settings_views import *
@@ -460,11 +461,30 @@ class Slic3rAPI:
     def mutable_config_option(self, handle: int) -> MutableConfigOption:
         return MutableConfigOption(self, handle)
 
+    @abi_requires_headers("slic3r_data_tree.h")
     def surface(self, handle: int) -> Surface:
         return Surface(self, handle)
 
+    @abi_requires_headers("slic3r_data_tree.h")
+    def mutable_surface(self, handle: int) -> MutableSurface:
+        """Borrow a mutable Surface view explicitly supplied by the host."""
+        return MutableSurface(self, handle)
+
+    @abi_requires_headers("slic3r_data_tree.h")
     def surface_collection(self, handle: int) -> SurfaceCollection:
         return SurfaceCollection(self, handle)
+
+    @abi_requires_headers("slic3r_data_tree.h", "slic3r_geometry.h")
+    def new_surface_collection(self, storage_address: int) -> StoredSurfaceCollection:
+        """Create a temporary mutable Surface collection owned by storage."""
+        return StoredSurfaceCollection(self, storage_address)
+
+    @abi_requires_headers("slic3r_data_tree.h", "slic3r_geometry.h")
+    def new_surface(
+        self, expolygon: StoredExPolygon, surface_type: int
+    ) -> StoredSurface:
+        """Transfer owned geometry into a temporary standalone Surface value."""
+        return StoredSurface(expolygon, surface_type)
 
     def print(self, handle: int) -> Print:
         return Print(self, handle)
