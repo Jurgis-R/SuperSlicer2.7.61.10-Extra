@@ -87,6 +87,8 @@ operation.
 from __future__ import annotations
 
 import ctypes
+from dataclasses import dataclass
+from enum import IntEnum
 from typing import Iterable
 
 from slic3r_clipper_views import (
@@ -97,7 +99,7 @@ from slic3r_clipper_views import (
     clipper_offset,
     clipper_union,
 )
-from slic3r_datatree_views import Config, ConfigOption, LayerIsland, LayerRegion
+from slic3r_datatree_views import Config, ConfigOption, LayerIsland, LayerRegion, LayerRegionIsland
 from slic3r_geometry_views import (
     ExPolygon,
     ExPolygonCollection,
@@ -236,6 +238,34 @@ class RegionSettingsValue:
                 continue
             return bool(self.api.host.config_option_less(lhs.c_handle(), rhs.c_handle()))
         return False
+
+
+class RegionSettingsPointStatus(IntEnum):
+    """Outcome of a point-only regional setting lookup."""
+
+    Found = 0
+    Outside = 1
+    Ambiguous = 2
+
+
+@dataclass(frozen=True)
+class RegionSettingsPointResult:
+    """
+    Result returned by ``RegionSettings.lookup_at_point()``.
+
+    ``value`` is populated only for ``Found`` and contains borrowed ConfigOption
+    views owned by the source regions/configuration. It needs no release but
+    must not outlive the corresponding print data tree. ``uniform`` means every
+    source region has the same tuple, so no geometric containment was needed.
+    """
+
+    status: RegionSettingsPointStatus = RegionSettingsPointStatus.Outside
+    value: RegionSettingsValue | None = None
+    uniform: bool = False
+
+    def found(self) -> bool:
+        """Return whether ``value`` may be consumed by the caller."""
+        return self.status == RegionSettingsPointStatus.Found
 
 
 @abi_requires_headers("slic3r_clipper.h")
@@ -450,6 +480,61 @@ class RegionSettings:
     geometry with the clips it cares about.
     """
 
+    @staticmethod
+    @abi_requires_headers("slic3r_data_tree.h", "slic3r_config.h", "slic3r_config_option.h")
+    def lookup_at_point(
+        region_island: LayerRegionIsland,
+        option_keys: Iterable[str],
+        point,
+    ) -> RegionSettingsPointResult:
+        """
+        Resolve one setting tuple at a scaled XY point without building clips.
+
+        ``region_island`` and all returned ConfigOption views remain host-owned.
+        The point uses the source layer coordinate system; callers querying an
+        instanced PrintingPlan must remove its instance shift first. Uniform
+        settings return ``Found`` even outside finite slices, matching the C++
+        fast path. Otherwise ``Outside`` means no region contains the point and
+        ``Ambiguous`` means overlapping regions contain it with different
+        setting tuples. This read-only helper allocates no PluginStorage data
+        and may be used concurrently on independent data-tree views.
+        """
+        keys = [str(key) for key in option_keys if key is not None]
+        if not keys:
+            raise ValueError("lookup_at_point requires at least one option key")
+        if region_island.region_count() == 0:
+            raise ValueError("lookup_at_point requires at least one source region")
+
+        regions = list(region_island.regions())
+        default_config = regions[0].print_region().config()
+        values = [
+            RegionSettingsValue.create(
+                default_config,
+                region.print_region().config(),
+                keys,
+            )
+            for region in regions
+        ]
+        if all(value == values[0] for value in values[1:]):
+            return RegionSettingsPointResult(
+                RegionSettingsPointStatus.Found,
+                values[0],
+                True,
+            )
+
+        candidate = None
+        for region, value in zip(regions, values):
+            if not any(area.contains(point) for area in region.slices()):
+                continue
+            if candidate is None:
+                candidate = value
+            elif candidate != value:
+                return RegionSettingsPointResult(RegionSettingsPointStatus.Ambiguous)
+
+        if candidate is None:
+            return RegionSettingsPointResult()
+        return RegionSettingsPointResult(RegionSettingsPointStatus.Found, candidate)
+
     def __init__(self, api, storage, source, option_groups: Iterable[Iterable[str]]) -> None:
         """
         Create a helper from a LayerIsland or a default Config.
@@ -630,5 +715,7 @@ class _RegionSettingsValueSortKey:
 __all__ = [
     "RegionSettings",
     "RegionSettingsClip",
+    "RegionSettingsPointResult",
+    "RegionSettingsPointStatus",
     "RegionSettingsValue",
 ]

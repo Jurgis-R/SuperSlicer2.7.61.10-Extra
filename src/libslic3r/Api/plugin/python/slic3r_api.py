@@ -93,6 +93,7 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from slic3r_abi import abi_requires_headers
+from slic3r_property_key import *
 from slic3r_geometry_views import *
 from slic3r_extrusion_views import *
 from slic3r_surface_views import *
@@ -455,6 +456,17 @@ class Slic3rAPI:
 
     def register_extrusion_property_type(self, namespaced_name: str, payload_cls) -> int:
         return register_extrusion_property_type(self, namespaced_name, payload_cls)
+
+    @abi_requires_headers("slic3r_orchestrator.h")
+    def register_property_key(self, namespaced_name: str, payload_cls) -> PluginPropertyKey:
+        """
+        Register a typed dynamic property for this orchestrator.
+
+        The returned key may be used with both extrusion entities and generic
+        data-tree property containers. Keep the key rather than serializing its
+        numeric id: dynamic ids are local to this API/orchestrator instance.
+        """
+        return PluginPropertyKey.register_dynamic(self, namespaced_name, payload_cls)
 
     def clipper(self, storage_address: int) -> ClipperContext:
         return ClipperContext(self, storage_address)

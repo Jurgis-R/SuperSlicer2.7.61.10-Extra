@@ -67,12 +67,14 @@ from slic3r_api_generated import (
     PerimeterNode,
     PerimeterNodeSpan,
     PluginRunContext,
+    RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER,
     RunCtxGeneratePerimeter,
     STEP_PERIMETER,
 )
 from slic3r_datatree_views import Layer, LayerIsland, LayerRegion, LayerRegionIsland, Object, Print
 from slic3r_extrusion_views import ExtrusionEntity, MutableExtrusionEntity
 from slic3r_geometry_views import ExPolygon, ExPolygonCollection, MutableExPolygonCollection
+from slic3r_region_settings_views import RegionSettings
 from slic3r_abi import abi_requires_headers
 from slic3r_run_context import PluginRunContextView
 
@@ -247,6 +249,44 @@ class PerimeterGenerationContextView:
             if layer.same_handle(current_layer):
                 return layer_idx
         return -1
+
+    @abi_requires_headers(
+        "steps/slic3r_step_perimeter.h",
+        "slic3r_data_tree.h",
+        "slic3r_config.h",
+        "slic3r_config_option.h",
+    )
+    def region_settings(self, option_groups: Iterable[Iterable[str]]) -> RegionSettings:
+        """
+        Build regional setting buckets for the current borrowed LayerIsland.
+
+        The helper owns only Python bookkeeping. Its regions and configuration
+        options remain owned by the current print, while temporary clip output
+        belongs to the callback's plugin storage. Do not retain the helper or
+        its clips after this perimeter-generation callback returns or after the
+        storage is cleared.
+        """
+        return RegionSettings(
+            self.api,
+            self.perimeter_generation_plugin_storage(),
+            self.perimeter_generation_island(),
+            option_groups,
+        )
+
+    @abi_requires_headers("steps/slic3r_step_perimeter.h", "slic3r_data_tree.h")
+    def perimeter_flow(self):
+        """
+        Copy the internal-perimeter reference flow for the current island.
+
+        This mirrors the C++ convenience helper and uses the first source
+        region. It is a default physical scale, not a promise that all regions
+        share the same flow; use ``region_settings()`` when relevant settings
+        differ. The returned CFlow is copied by value and needs no release.
+        """
+        island = self.perimeter_generation_island()
+        if island.region_count() == 0:
+            raise ValueError("perimeter_flow requires an island with at least one region")
+        return island.region(0).flow(RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER)
 
     def split_node(self, node: PerimeterNodeView, clip) -> list[PerimeterNodeView]:
         """

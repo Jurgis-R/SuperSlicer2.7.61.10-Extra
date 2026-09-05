@@ -247,7 +247,11 @@ class AbiPackagingTests(unittest.TestCase):
                         bindings.symbols[clipper_helper],
                     )
 
-            for visitor in ("ExtrusionTreeConstVisitor", "ExtrusionTreeVisitor"):
+            for visitor in (
+                "ExtrusionTreeVisitorBase",
+                "ExtrusionTreeConstVisitor",
+                "ExtrusionTreeVisitor",
+            ):
                 with self.subTest(visitor=visitor):
                     self.assertIn(
                         "slic3r_extrusion_entity.h",
@@ -256,6 +260,37 @@ class AbiPackagingTests(unittest.TestCase):
                     self.assertIn(
                         "slic3r_extrusion_property.h",
                         bindings.symbols[visitor],
+                    )
+
+            self.assertIn(
+                "slic3r_orchestrator.h",
+                bindings.symbols["PluginPropertyKey"],
+            )
+            for layer_helper in (
+                "layer_adhesion_property",
+                "layer_has_adhesion_kind",
+                "layer_is_brim",
+                "layer_is_normal_skirt",
+                "layer_is_skirt_first_layer_only",
+            ):
+                with self.subTest(layer_helper=layer_helper):
+                    self.assertIn(
+                        "slic3r_data_tree.h",
+                        bindings.symbols[layer_helper],
+                    )
+
+            for region_method in ("lookup_at_point",):
+                with self.subTest(region_method=region_method):
+                    self.assertIn(
+                        "slic3r_data_tree.h",
+                        bindings.methods[region_method],
+                    )
+
+            for perimeter_method in ("region_settings", "perimeter_flow"):
+                with self.subTest(perimeter_method=perimeter_method):
+                    self.assertIn(
+                        "steps/slic3r_step_perimeter.h",
+                        bindings.methods[perimeter_method],
                     )
 
             auxiliary_headers = bindings.symbols[

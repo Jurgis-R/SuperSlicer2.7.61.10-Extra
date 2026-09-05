@@ -115,6 +115,7 @@ from slic3r_api_generated import (
 
 from slic3r_geometry_views import as_point, make_point, point_tuple
 from slic3r_abi import abi_requires_headers
+from slic3r_property_key import PluginPropertyKey
 
 if TYPE_CHECKING:
     # Data-tree views import extrusion views at runtime, so this import must
@@ -143,6 +144,20 @@ EPropertyOverhang = CExtrusionPropertyOverhang
 EPropertyZOffset = CExtrusionPropertyZOffset
 EPropertyPerimeter = CExtrusionPropertyPerimeter
 EPropertyInfill = CExtrusionPropertyInfill
+
+for _property_payload in (
+    EPropertyAttributes,
+    EPropertySpeed,
+    EPropertyModifier,
+    EPropertyCustomGcode,
+    EPropertySpecialCommand,
+    EPropertyExtrusionAxis,
+    EPropertyOverhang,
+    EPropertyZOffset,
+    EPropertyPerimeter,
+    EPropertyInfill,
+):
+    _property_payload.key = PluginPropertyKey.built_in(_property_payload)
 
 
 def _address(handle) -> int:
@@ -176,6 +191,28 @@ def _payload_type(payload_cls_or_type) -> int:
     if isinstance(payload_cls_or_type, int):
         return int(payload_cls_or_type)
     return int(payload_cls_or_type.property_type)
+
+
+def _payload_class(payload_cls_or_key):
+    return getattr(payload_cls_or_key, "payload_cls", payload_cls_or_key)
+
+
+def _validate_property_key(owner, payload_cls_or_type) -> None:
+    if isinstance(payload_cls_or_type, PluginPropertyKey):
+        payload_cls_or_type.validate_owner(owner)
+
+
+def _property_orchestrator(api, payload_cls_or_key, explicit_orchestrator=None):
+    if isinstance(payload_cls_or_key, PluginPropertyKey):
+        if payload_cls_or_key.api is not None and payload_cls_or_key.api is not api:
+            raise ValueError("a dynamic property key belongs to a different API/orchestrator")
+        if payload_cls_or_key.orchestrator is not None:
+            if explicit_orchestrator is not None and (
+                _address(explicit_orchestrator) != _address(payload_cls_or_key.orchestrator)
+            ):
+                raise ValueError("the explicit orchestrator does not own this dynamic property key")
+            return payload_cls_or_key.orchestrator
+    return api.orchestrator if explicit_orchestrator is None else _void_p(explicit_orchestrator)
 
 
 def _payload_copy(payload_cls, ptr: int):
@@ -251,13 +288,17 @@ class ExtrusionPropertyReadMixin:
         return [self.property_type_at(idx) for idx in range(self.property_count())]
 
     def has_property(self, payload_cls_or_type) -> bool:
+        _validate_property_key(self, payload_cls_or_type)
         return bool(self.api.host.extrusion_property_has(self.c_handle(), _payload_type(payload_cls_or_type)))
 
     def property_data_address(self, payload_cls_or_type) -> int:
+        _validate_property_key(self, payload_cls_or_type)
         return _address(self.api.host.extrusion_property_data(self.c_handle(), _payload_type(payload_cls_or_type)))
 
-    def property(self, payload_cls):
-        return _payload_copy(payload_cls, self.property_data_address(payload_cls))
+    def property(self, payload_cls_or_key):
+        _validate_property_key(self, payload_cls_or_key)
+        payload_cls = _payload_class(payload_cls_or_key)
+        return _payload_copy(payload_cls, self.property_data_address(payload_cls_or_key))
 
     def property_or(self, payload_cls, fallback):
         payload = self.property(payload_cls)
@@ -284,23 +325,33 @@ class ExtrusionPropertyReadMixin:
 @abi_requires_headers("slic3r_extrusion_property.h")
 class ExtrusionPropertyMutableMixin:
     def property_data_mutable_address(self, payload_cls_or_type) -> int:
+        _validate_property_key(self, payload_cls_or_type)
         return _address(self.api.host.extrusion_property_data_mutable(
             self.mutable_c_handle(), _payload_type(payload_cls_or_type)
         ))
 
-    def property_mutable(self, payload_cls):
-        return _payload_mutable(payload_cls, self.property_data_mutable_address(payload_cls))
+    def property_mutable(self, payload_cls_or_key):
+        _validate_property_key(self, payload_cls_or_key)
+        payload_cls = _payload_class(payload_cls_or_key)
+        return _payload_mutable(payload_cls, self.property_data_mutable_address(payload_cls_or_key))
 
     def get_or_add_property_data_mutable_address(self, payload_cls_or_type, orchestrator=None) -> int:
-        orch = self.api.orchestrator if orchestrator is None else _void_p(orchestrator)
+        _validate_property_key(self, payload_cls_or_type)
+        orch = _property_orchestrator(self.api, payload_cls_or_type, orchestrator)
         return _address(self.api.host.extrusion_property_get_or_add_data_mutable(
             orch, self.mutable_c_handle(), _payload_type(payload_cls_or_type)
         ))
 
-    def property(self, payload_cls, orchestrator=None):
-        return _payload_mutable(payload_cls, self.get_or_add_property_data_mutable_address(payload_cls, orchestrator))
+    def property(self, payload_cls_or_key, orchestrator=None):
+        _validate_property_key(self, payload_cls_or_key)
+        payload_cls = _payload_class(payload_cls_or_key)
+        return _payload_mutable(
+            payload_cls,
+            self.get_or_add_property_data_mutable_address(payload_cls_or_key, orchestrator),
+        )
 
     def remove_property(self, payload_cls_or_type) -> bool:
+        _validate_property_key(self, payload_cls_or_type)
         return bool(self.api.host.extrusion_property_remove(self.mutable_c_handle(), _payload_type(payload_cls_or_type)))
 
     def store_data_aligned(self, data, alignment: int = 1) -> int:
@@ -310,6 +361,7 @@ class ExtrusionPropertyMutableMixin:
         return int(self.api.host.extrusion_store_data_aligned(self.mutable_c_handle(), ptr, byte_size, int(alignment)))
 
     def store_property_data_aligned(self, owner_payload_cls_or_type, payload, field_name: str, data, alignment: int = 1) -> int:
+        _validate_property_key(self, owner_payload_cls_or_type)
         field = _field_pointer(payload, field_name)
         keepalive, ptr, byte_size = _data_buffer(data)
         if byte_size == 0:
@@ -627,6 +679,18 @@ class ExtrusionEntityReadMixin:
     def is_closed(self) -> bool:
         return not self.empty() and _points_equal(self.front(), self.back())
 
+    @abi_requires_headers("slic3r_extrusion_entity.h")
+    def is_loop(self) -> bool:
+        """
+        Return whether the complete entity is one fixed continuous closed loop.
+
+        Unlike ``is_closed()``, this host-defined predicate also requires a
+        nonempty entity with sorting disabled and a continuous child path. It
+        works for both local polylines and collections. This read-only call
+        neither changes the path nor grants ownership of any child handle.
+        """
+        return bool(self.api.host.extrusion_is_loop(self.c_handle()))
+
     def collect_points(self) -> list[CPoint]:
         out = list(self.points())
         for child in self.children():
@@ -834,7 +898,7 @@ class MutableExtrusionEntity(
 
 
 @abi_requires_headers("slic3r_extrusion_entity.h", "slic3r_extrusion_property.h")
-class _ExtrusionTreeVisitorBase:
+class ExtrusionTreeVisitorBase:
     """
     Iterative depth-first visitor shared by read-only and mutable traversals.
 
@@ -949,7 +1013,7 @@ class _ExtrusionTreeVisitorBase:
 
 
 @abi_requires_headers("slic3r_extrusion_entity.h", "slic3r_extrusion_property.h")
-class ExtrusionTreeConstVisitor(_ExtrusionTreeVisitorBase):
+class ExtrusionTreeConstVisitor(ExtrusionTreeVisitorBase):
     """
     Read-only extrusion tree visitor.
 
@@ -969,7 +1033,7 @@ class ExtrusionTreeConstVisitor(_ExtrusionTreeVisitorBase):
 
 
 @abi_requires_headers("slic3r_extrusion_entity.h", "slic3r_extrusion_property.h")
-class ExtrusionTreeVisitor(_ExtrusionTreeVisitorBase):
+class ExtrusionTreeVisitor(ExtrusionTreeVisitorBase):
     """
     Mutable visitor over a borrowed or storage-owned extrusion tree.
 
@@ -1221,6 +1285,7 @@ __all__ = [
     "EXTRUSION_PROPERTY_TYPE_Z_OFFSET",
     "ExtrusionAreaFragment",
     "ExtrusionEntity",
+    "ExtrusionTreeVisitorBase",
     "ExtrusionTreeConstVisitor",
     "ExtrusionTreeVisitor",
     "MEDIAL_AXIS_EXTRUSION_CAN_REVERSE",

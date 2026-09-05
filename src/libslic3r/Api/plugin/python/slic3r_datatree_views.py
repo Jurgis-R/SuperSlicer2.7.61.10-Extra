@@ -65,6 +65,9 @@ from slic3r_api_generated import (
     RAW_FACET_PAINTING_FDM_SUPPORT,
     RAW_FACET_PAINTING_MMU_SEGMENTATION,
     RAW_FACET_PAINTING_SEAM,
+    RAW_LAYER_ADHESION_FLAG_FIRST_LAYER_ONLY,
+    RAW_LAYER_ADHESION_KIND_BRIM,
+    RAW_LAYER_ADHESION_KIND_SKIRT,
     RAW_MESH_SLICING_MODE_EVEN_ODD,
     RAW_MESH_SLICING_MODE_POSITIVE,
     RAW_MESH_SLICING_MODE_REGULAR,
@@ -104,6 +107,7 @@ from slic3r_surface_views import (
     srf_type,
 )
 from slic3r_abi import abi_requires_headers
+from slic3r_property_key import PluginPropertyKey
 
 
 def _address(handle) -> int:
@@ -145,6 +149,28 @@ def _payload_type(payload_cls_or_type) -> int:
     return int(payload_cls_or_type.property_type)
 
 
+def _payload_class(payload_cls_or_key):
+    return getattr(payload_cls_or_key, "payload_cls", payload_cls_or_key)
+
+
+def _validate_property_key(owner, payload_cls_or_type) -> None:
+    if isinstance(payload_cls_or_type, PluginPropertyKey):
+        payload_cls_or_type.validate_owner(owner)
+
+
+def _property_orchestrator(api, payload_cls_or_key, explicit_orchestrator=None):
+    if isinstance(payload_cls_or_key, PluginPropertyKey):
+        if payload_cls_or_key.api is not None and payload_cls_or_key.api is not api:
+            raise ValueError("a dynamic property key belongs to a different API/orchestrator")
+        if payload_cls_or_key.orchestrator is not None:
+            if explicit_orchestrator is not None and (
+                _address(explicit_orchestrator) != _address(payload_cls_or_key.orchestrator)
+            ):
+                raise ValueError("the explicit orchestrator does not own this dynamic property key")
+            return payload_cls_or_key.orchestrator
+    return api.orchestrator if explicit_orchestrator is None else _void_p(explicit_orchestrator)
+
+
 def _payload_copy(payload_cls, ptr: int):
     if not ptr:
         return None
@@ -162,11 +188,107 @@ def unscaled(value: int | float) -> float:
 
 
 CLayerSupportProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT
-LayerSupportProperty = CLayerSupportProperty
 CLayerBrimProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_BRIM
-LayerBrimProperty = CLayerBrimProperty
 CLayerAdhesionProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_ADHESION
-LayerAdhesionProperty = CLayerAdhesionProperty
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+class LayerSupportProperty(CLayerSupportProperty):
+    """Value snapshot marking an auxiliary layer as generated support."""
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+class LayerBrimProperty(CLayerBrimProperty):
+    """Value snapshot of the legacy object-owned brim marker."""
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+class LayerAdhesionProperty(CLayerAdhesionProperty):
+    """Value snapshot describing generated brim or skirt geometry."""
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def has_kind(self, expected_kind: int) -> bool:
+        """Return whether ``kind`` equals the requested ABI adhesion kind."""
+        return int(self.kind) == int(expected_kind)
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def has_flag(self, flag: int) -> bool:
+        """Return whether at least one bit requested by ``flag`` is present."""
+        return (int(self.flags) & int(flag)) != 0
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def is_brim(self) -> bool:
+        """Return whether this payload identifies brim geometry."""
+        return self.has_kind(RAW_LAYER_ADHESION_KIND_BRIM)
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def is_skirt(self) -> bool:
+        """Return whether this payload identifies skirt geometry."""
+        return self.has_kind(RAW_LAYER_ADHESION_KIND_SKIRT)
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def is_first_layer_only(self) -> bool:
+        """Return whether this adhesion geometry is limited to layer one."""
+        return self.has_flag(RAW_LAYER_ADHESION_FLAG_FIRST_LAYER_ONLY)
+
+
+LayerSupportProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT
+LayerBrimProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_BRIM
+LayerAdhesionProperty.property_type = PLUGIN_PROPERTY_TYPE_LAYER_ADHESION
+
+LayerSupportProperty.key = PluginPropertyKey.built_in(LayerSupportProperty)
+LayerBrimProperty.key = PluginPropertyKey.built_in(LayerBrimProperty)
+LayerAdhesionProperty.key = PluginPropertyKey.built_in(LayerAdhesionProperty)
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+def layer_adhesion_property(layer):
+    """
+    Copy the adhesion payload directly stored on ``layer``, if present.
+
+    The layer and its property container remain host-owned. The returned ctypes
+    value is an independent copy and needs no release; changing its fields does
+    not update the layer. Use ``layer.properties().get_or_add()`` explicitly
+    when the current step is allowed to annotate the layer.
+    """
+    return layer.properties().get(LayerAdhesionProperty.key)
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+def layer_has_adhesion_kind(layer, kind: int) -> bool:
+    """
+    Test the effective brim/skirt kind, including the legacy brim marker.
+
+    A modern adhesion payload is authoritative when present. Only when it is
+    absent does ``LayerBrimProperty`` count as brim, which keeps older producer
+    plugins compatible without treating that marker as skirt metadata.
+    """
+    adhesion = layer_adhesion_property(layer)
+    if adhesion is not None:
+        return adhesion.has_kind(kind)
+    return int(kind) == int(RAW_LAYER_ADHESION_KIND_BRIM) and layer.properties().has(
+        LayerBrimProperty.key
+    )
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+def layer_is_brim(layer) -> bool:
+    """Return whether a borrowed layer effectively represents brim geometry."""
+    return layer_has_adhesion_kind(layer, RAW_LAYER_ADHESION_KIND_BRIM)
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+def layer_is_normal_skirt(layer) -> bool:
+    """Return whether a layer is a recurring skirt, not first-layer-only skirt."""
+    adhesion = layer_adhesion_property(layer)
+    return adhesion is not None and adhesion.is_skirt() and not adhesion.is_first_layer_only()
+
+
+@abi_requires_headers("slic3r_data_tree.h")
+def layer_is_skirt_first_layer_only(layer) -> bool:
+    """Return whether a layer carries the special first-layer-only skirt."""
+    adhesion = layer_adhesion_property(layer)
+    return adhesion is not None and adhesion.is_skirt() and adhesion.is_first_layer_only()
 
 
 @abi_requires_headers("slic3r_config_option.h")
@@ -234,35 +356,46 @@ class PluginProperties:
         return [self.type_at(idx) for idx in range(self.count())]
 
     def has(self, payload_cls_or_type) -> bool:
+        _validate_property_key(self, payload_cls_or_type)
         return bool(self.api.host.plugin_property_has(self.c_handle(), _payload_type(payload_cls_or_type)))
 
     def data_size(self, payload_cls_or_type) -> int:
+        _validate_property_key(self, payload_cls_or_type)
         return int(self.api.host.plugin_property_data_size(self.c_handle(), _payload_type(payload_cls_or_type)))
 
     def data_address(self, payload_cls_or_type) -> int:
+        _validate_property_key(self, payload_cls_or_type)
         return _address(self.api.host.plugin_property_data(self.c_handle(), _payload_type(payload_cls_or_type)))
 
     def data_mutable_address(self, payload_cls_or_type) -> int:
+        _validate_property_key(self, payload_cls_or_type)
         return _address(self.api.host.plugin_property_data_mutable(self.c_handle(), _payload_type(payload_cls_or_type)))
 
-    def get(self, payload_cls):
-        if self.data_size(payload_cls) != ctypes.sizeof(payload_cls):
+    def get(self, payload_cls_or_key):
+        _validate_property_key(self, payload_cls_or_key)
+        payload_cls = _payload_class(payload_cls_or_key)
+        if self.data_size(payload_cls_or_key) != ctypes.sizeof(payload_cls):
             return None
-        return _payload_copy(payload_cls, self.data_address(payload_cls))
+        return _payload_copy(payload_cls, self.data_address(payload_cls_or_key))
 
-    def get_mutable(self, payload_cls):
-        if self.data_size(payload_cls) != ctypes.sizeof(payload_cls):
+    def get_mutable(self, payload_cls_or_key):
+        _validate_property_key(self, payload_cls_or_key)
+        payload_cls = _payload_class(payload_cls_or_key)
+        if self.data_size(payload_cls_or_key) != ctypes.sizeof(payload_cls):
             return None
-        return _payload_mutable(payload_cls, self.data_mutable_address(payload_cls))
+        return _payload_mutable(payload_cls, self.data_mutable_address(payload_cls_or_key))
 
-    def get_or_add(self, payload_cls, orchestrator=None):
-        orch = self.api.orchestrator if orchestrator is None else _void_p(orchestrator)
+    def get_or_add(self, payload_cls_or_key, orchestrator=None):
+        _validate_property_key(self, payload_cls_or_key)
+        payload_cls = _payload_class(payload_cls_or_key)
+        orch = _property_orchestrator(self.api, payload_cls_or_key, orchestrator)
         ptr = self.api.host.plugin_property_get_or_add_data_mutable(
-            orch, self.c_handle(), _payload_type(payload_cls)
+            orch, self.c_handle(), _payload_type(payload_cls_or_key)
         )
         return _payload_mutable(payload_cls, _address(ptr))
 
     def remove(self, payload_cls_or_type) -> bool:
+        _validate_property_key(self, payload_cls_or_type)
         return bool(self.api.host.plugin_property_remove(self.c_handle(), _payload_type(payload_cls_or_type)))
 
     def clear(self) -> None:
@@ -1879,9 +2012,12 @@ __all__ = [
     "DataTreeView",
     "GraphData",
     "Layer",
+    "LayerAdhesionProperty",
+    "LayerBrimProperty",
     "LayerIsland",
     "LayerRegion",
     "LayerRegionIsland",
+    "LayerSupportProperty",
     "MutableConfig",
     "MutableConfigOption",
     "MutableLayer",
@@ -1906,6 +2042,11 @@ __all__ = [
     "TriangleMesh",
     "Volume",
     "build_auxiliary_layer_regions_from_subject",
+    "layer_adhesion_property",
+    "layer_has_adhesion_kind",
+    "layer_is_brim",
+    "layer_is_normal_skirt",
+    "layer_is_skirt_first_layer_only",
     "srf_type",
     "unscaled",
 ]
