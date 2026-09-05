@@ -826,6 +826,30 @@ TEST_CASE("Plugin background update check frequencies have stable defaults and l
     CHECK(config.get("plugin_update_background_check") == "daily");
 }
 
+TEST_CASE("Dismissed plugin update snapshots only reopen for newer offers",
+          "[plugins][updater][plugin-updates]")
+{
+    const std::map<std::string, std::string> dismissed = {
+        {"alpha", "2.0.0"},
+        {"removed", "4.0.0"},
+    };
+
+    CHECK_FALSE(Slic3r::has_new_plugin_package_updates({}, dismissed));
+    CHECK_FALSE(Slic3r::has_new_plugin_package_updates({{"alpha", "2.0.0"}}, dismissed));
+    CHECK_FALSE(Slic3r::has_new_plugin_package_updates({{"alpha", "1.5.0"}}, dismissed));
+    CHECK(Slic3r::has_new_plugin_package_updates({{"alpha", "2.1.0"}}, dismissed));
+    CHECK(Slic3r::has_new_plugin_package_updates({{"beta", "1.0.0"}}, dismissed));
+    CHECK(Slic3r::has_new_plugin_package_updates(
+        {{"alpha", "2.0.0"}}, {{"alpha", "not-a-version"}}));
+
+    Slic3r::AppConfig config(Slic3r::AppConfig::EAppMode::Editor);
+    REQUIRE(config.set_section("dismissed_plugin_updates", dismissed));
+    REQUIRE(config.set_section("dismissed_plugin_updates", {{"alpha", "2.1.0"}}));
+    REQUIRE(config.has_section("dismissed_plugin_updates"));
+    const std::map<std::string, std::string> replaced = {{"alpha", "2.1.0"}};
+    CHECK(config.get_section("dismissed_plugin_updates") == replaced);
+}
+
 TEST_CASE("RepositoryUpdater normalizes configured repository URLs", "[plugins][updater]")
 {
     const std::string github_api = "https://api.github.com/repos/example/repository";
@@ -3244,6 +3268,8 @@ TEST_CASE_METHOD(PluginUpdaterFunctionalFixture,
     CHECK(result->operation_error.succeeded());
     CHECK(result->package_errors.empty());
     CHECK(result->available_updates == 1);
+    const std::map<std::string, std::string> expected_updates = {{plugin_id, "2.0.0.0"}};
+    CHECK(updater.available_update_versions() == expected_updates);
     CHECK(http.pending_count() == 0);
     CHECK(http.sync_request_count() == 0);
     CHECK(read_activation_config().installed.at(plugin_id).package_version == "1.0.0.0");

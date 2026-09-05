@@ -184,6 +184,22 @@ void invoke_plugin_batch_callback(
 
 } // namespace
 
+bool has_new_plugin_package_updates(
+    const std::map<std::string, std::string> &available,
+    const std::map<std::string, std::string> &dismissed)
+{
+    for (const auto &[package_id, version_text] : available) {
+        const std::map<std::string, std::string>::const_iterator previous = dismissed.find(package_id);
+        if (previous == dismissed.end())
+            return true;
+        const std::optional<Semver> version = Semver::parse(version_text);
+        const std::optional<Semver> previous_version = Semver::parse(previous->second);
+        if (!previous_version || (version && *version > *previous_version))
+            return true;
+    }
+    return false;
+}
+
 // One package is completed before moving to the next. Within a package,
 // candidates are tried newest first until one compatible archive is cached.
 struct PluginUpdater::UpdatePreparationState {
@@ -1239,9 +1255,23 @@ size_t PluginUpdater::count_updates() const
     std::lock_guard<std::mutex> guard(m_model_mutex);
     size_t count = 0;
     for (const auto &[id, plugin] : m_plugins)
-        if (plugin.can_upgrade)
+        if (plugin.is_installed && !plugin.is_bundled_exact() &&
+            !plugin.installation_pending() && plugin.can_upgrade)
             ++count;
     return count;
+}
+
+std::map<std::string, std::string> PluginUpdater::available_update_versions() const
+{
+    std::lock_guard<std::mutex> guard(m_model_mutex);
+    std::map<std::string, std::string> versions;
+    for (const auto &[id, plugin] : m_plugins) {
+        const PluginAvailable *best = plugin.best_available();
+        if (plugin.is_installed && !plugin.is_bundled_exact() &&
+            !plugin.installation_pending() && plugin.can_upgrade && best != nullptr)
+            versions[id] = best->package_version;
+    }
+    return versions;
 }
 
 int PluginUpdater::update_count()

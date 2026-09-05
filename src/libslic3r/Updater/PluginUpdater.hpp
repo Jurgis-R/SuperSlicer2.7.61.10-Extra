@@ -94,6 +94,12 @@ struct PluginUpdateBatchResult {
     std::map<std::string, UpdaterError> package_errors;
 };
 
+// Return true when the current compatible offers contain a package that was
+// not dismissed, or a package version newer than the dismissed one.
+bool has_new_plugin_package_updates(
+    const std::map<std::string, std::string> &available,
+    const std::map<std::string, std::string> &dismissed);
+
 class PluginUpdater : public RepositoryUpdater {
 public:
     PluginUpdater() = default;
@@ -147,6 +153,9 @@ public:
 
     size_t count_available() const;
     size_t count_updates() const;
+    // Snapshot the exact package versions represented by count_updates().
+    // Pending installs and application-managed packages are excluded.
+    std::map<std::string, std::string> available_update_versions() const;
 
     // These accessors return detached copies. A caller may keep or move them
     // while HTTP workers publish newer data without invalidating the copy.

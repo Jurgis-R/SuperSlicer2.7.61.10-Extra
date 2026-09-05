@@ -9,6 +9,7 @@
 #ifndef slic3r_GUI_App_hpp_
 #define slic3r_GUI_App_hpp_
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stack>
@@ -463,7 +464,8 @@ private:
     // Check cached or remote plugin packages after startup and publish the
     // non-modal notification once compatibility is known.
     void            prepare_plugin_updates_on_startup();
-    void            show_plugin_updates_notification(size_t update_count);
+    void            show_plugin_updates_notification(
+                        const std::map<std::string, std::string> &update_versions);
     void            install_all_plugin_updates();
     void            open_plugin_package_manager();
     void            restart_after_plugin_updates();

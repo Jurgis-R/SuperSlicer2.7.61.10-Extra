@@ -4544,14 +4544,22 @@ void GUI_App::prepare_plugin_updates_on_startup()
                 for (const auto &[package_id, error] : result.package_errors)
                     BOOST_LOG_TRIVIAL(warning) << "Cannot prepare update for plugin package '"
                                                << package_id << "': " << format_updater_error(error);
-                if (result.available_updates > 0)
-                    show_plugin_updates_notification(result.available_updates);
+                const std::map<std::string, std::string> update_versions =
+                    plugin_updater->available_update_versions();
+                const std::map<std::string, std::string> dismissed =
+                    app_config->has_section("dismissed_plugin_updates") ?
+                        app_config->get_section("dismissed_plugin_updates") :
+                        std::map<std::string, std::string>();
+                if (has_new_plugin_package_updates(update_versions, dismissed))
+                    show_plugin_updates_notification(update_versions);
             });
         });
 }
 
-void GUI_App::show_plugin_updates_notification(size_t update_count)
+void GUI_App::show_plugin_updates_notification(
+    const std::map<std::string, std::string> &update_versions)
 {
+    const size_t update_count = update_versions.size();
     if (plater_ == nullptr || update_count == 0)
         return;
 
@@ -4571,6 +4579,13 @@ void GUI_App::show_plugin_updates_notification(size_t update_count)
         [this](wxEvtHandler *) {
             CallAfter([this] { open_plugin_package_manager(); });
             return true;
+        },
+        [this, update_versions] {
+            // Replace the snapshot rather than accumulating entries: removed
+            // offers stay ignored, while a new package or higher version will
+            // make the next startup notification eligible again.
+            app_config->set_section("dismissed_plugin_updates", update_versions);
+            app_config->save();
         });
 }
 

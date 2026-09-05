@@ -188,6 +188,7 @@ public:
 		NotificationType type, NotificationLevel level, const std::string &text,
 		const std::string &primary_text, std::function<bool(wxEvtHandler*)> primary_callback,
 		const std::string &secondary_text, std::function<bool(wxEvtHandler*)> secondary_callback,
+		std::function<void()> manual_close_callback = std::function<void()>(),
 		int timestamp = 0);
 	// Pushes basic_notification with delay. See push_delayed_notification_data.
 	void push_delayed_notification(const NotificationType type, std::function<bool(void)> condition_callback, int64_t initial_delay, int64_t delay_interval);
@@ -319,6 +320,7 @@ private:
 		const std::string        text2;
 		const std::string        secondary_hypertext = std::string();
 		std::function<bool(wxEvtHandler*)> secondary_callback;
+		std::function<void()>    manual_close_callback;
 	};
 
 	// Cache of IDs to identify and reuse ImGUI windows.
@@ -358,6 +360,9 @@ private:
 		virtual void           render(GLCanvas3D& canvas, float initial_y, bool move_from_overlay, float overlay_width);
 		// close will dissapear notification on next render
 		virtual void           close() { m_state = EState::ClosePending; wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0);}
+		// Record an explicit close-button action before applying the normal close
+		// transition. Hyperlinks and manager-driven closes call close() directly.
+		void                   close_manually();
 		// data from newer notification of same type
 		void                   update(const NotificationData& n);
 		bool                   is_finished() const { return m_state == EState::ClosePending || m_state == EState::Finished; }

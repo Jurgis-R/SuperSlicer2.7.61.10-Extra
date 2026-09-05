@@ -7,6 +7,7 @@
 
 #include "NotificationManager.hpp"
 
+#include <exception>
 #include <iostream>
 
 #include <boost/algorithm/string.hpp>
@@ -613,7 +614,7 @@ void NotificationManager::PopNotification::render_close_button(ImGuiWrapper& img
 	ImGui::SetCursorPosY(win_size.y / 2 - button_size.y);
 	if (imgui.button(button_text.c_str(), button_size.x, button_size.y))
 	{
-		close();
+		close_manually();
 	}
 
 	//invisible large button
@@ -621,9 +622,25 @@ void NotificationManager::PopNotification::render_close_button(ImGuiWrapper& img
 	ImGui::SetCursorPosY(0);
 	if (imgui.button(" ", m_line_height * 2.125, win_size.y - ( m_minimize_b_visible ? 2 * m_line_height : 0)))
 	{
-		close();
+		close_manually();
 	}
 	ImGui::PopStyleColor(5);
+}
+
+void NotificationManager::PopNotification::close_manually()
+{
+	if (is_finished())
+		return;
+	if (m_data.manual_close_callback != nullptr) {
+		try {
+			m_data.manual_close_callback();
+		} catch (const std::exception &exception) {
+			BOOST_LOG_TRIVIAL(error) << "Notification close callback failed: " << exception.what();
+		} catch (...) {
+			BOOST_LOG_TRIVIAL(error) << "Notification close callback failed with an unknown exception.";
+		}
+	}
+	close();
 }
 
 void NotificationManager::PopNotification::render_left_sign(ImGuiWrapper& imgui)
@@ -2209,12 +2226,13 @@ void NotificationManager::push_notification_with_two_actions(
 	std::function<bool(wxEvtHandler*)> primary_callback,
 	const std::string &secondary_text,
 	std::function<bool(wxEvtHandler*)> secondary_callback,
+	std::function<void()> manual_close_callback,
 	int timestamp)
 {
 	const int duration = type == NotificationType::PluginUpdatesAvailable ? 0 : get_standard_duration(level);
 	push_notification_data(
 		{type, level, duration, text, primary_text, std::move(primary_callback), std::string(),
-		 secondary_text, std::move(secondary_callback)},
+		 secondary_text, std::move(secondary_callback), std::move(manual_close_callback)},
 		timestamp);
 }
 
