@@ -113,6 +113,156 @@ def make_point(x: int, y: int) -> CPoint:
     return CPoint(int(x), int(y))
 
 
+@abi_requires_headers("slic3r_geometry.h")
+class LineDistancer:
+    """
+    Copy polygon boundaries and answer distances to their finite segments.
+
+    Constructing the distancer copies the scaled integer points of every outer
+    contour and hole from an ``ExPolygonCollection``. The source collection is
+    borrowed and remains owned by its host or storage, but may be changed or
+    freed immediately after construction without invalidating this object.
+    ``LineDistancer`` owns only ordinary Python values; it allocates no plugin
+    handle and needs no explicit release.
+
+    Distances and radii use scaled ``CPoint`` units, not millimeters. Queries
+    perform a linear scan over all copied segments, making them O(segment
+    count); this helper is intended for modest boundary sets and does not build
+    a spatial index. Signed distances are negative only inside an outer contour
+    and outside all of that contour's holes. Points on a boundary have distance
+    zero, whose sign is not significant.
+    """
+
+    def __init__(self, areas: "ExPolygonCollection | None" = None) -> None:
+        self._segments: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        self._areas: list[tuple[list[tuple[int, int]], list[list[tuple[int, int]]]]] = []
+        if areas is not None:
+            for area in areas:
+                self._append_area(area)
+
+    def empty(self) -> bool:
+        """Return whether no usable boundary segment has been stored."""
+        return not self._segments
+
+    def append_segment(self, start, end) -> None:
+        """
+        Append one finite segment after copying its two scaled endpoints.
+
+        Manually appended segments participate in distance/radius queries but
+        not in signed inside/outside classification, because they do not define
+        a complete polygonal area.
+        """
+        a = as_point(start)
+        b = as_point(end)
+        self._segments.append(((int(a.x), int(a.y)), (int(b.x), int(b.y))))
+
+    def distance_from_lines(self, point, signed_distance: bool = False) -> float:
+        """
+        Return the shortest distance from ``point`` to a stored finite segment.
+
+        An empty distancer returns positive infinity. Set ``signed_distance``
+        to negate the result inside one copied ExPolygon area. The method does
+        not mutate the query point, source geometry, or stored boundaries.
+        """
+        if not self._segments:
+            return math.inf
+        query = as_point(point)
+        query_xy = (int(query.x), int(query.y))
+        best_squared = min(
+            self._segment_distance_squared(query_xy, segment)
+            for segment in self._segments
+        )
+        distance = math.sqrt(best_squared)
+        return -distance if signed_distance and self._contains(query_xy) else distance
+
+    def all_lines_in_radius(self, point, radius: float) -> list[int]:
+        """
+        Return segment indices whose finite distance is at most ``radius``.
+
+        Indices follow segment insertion order. A negative radius returns an
+        empty list. The method performs no allocation in plugin storage; the
+        returned Python list is owned entirely by the caller.
+        """
+        radius = float(radius)
+        if radius < 0.0:
+            return []
+        if not math.isfinite(radius):
+            if radius == math.inf:
+                return list(range(len(self._segments)))
+            return []
+        query = as_point(point)
+        query_xy = (int(query.x), int(query.y))
+        radius_squared = radius * radius
+        return [
+            idx
+            for idx, segment in enumerate(self._segments)
+            if self._segment_distance_squared(query_xy, segment) <= radius_squared
+        ]
+
+    def _append_area(self, area: "ExPolygon") -> None:
+        contour = [(int(point.x), int(point.y)) for point in area.contour()]
+        holes = [
+            [(int(point.x), int(point.y)) for point in hole]
+            for hole in area.holes()
+        ]
+        self._append_polygon_segments(contour)
+        for hole in holes:
+            self._append_polygon_segments(hole)
+        self._areas.append((contour, holes))
+
+    def _append_polygon_segments(self, points: list[tuple[int, int]]) -> None:
+        if len(points) < 2:
+            return
+        self._segments.extend(zip(points[:-1], points[1:]))
+        if points[0] != points[-1]:
+            self._segments.append((points[-1], points[0]))
+
+    @staticmethod
+    def _segment_distance_squared(
+        point: tuple[int, int],
+        segment: tuple[tuple[int, int], tuple[int, int]],
+    ) -> float:
+        (ax, ay), (bx, by) = segment
+        px, py = point
+        dx = float(bx - ax)
+        dy = float(by - ay)
+        length_squared = dx * dx + dy * dy
+        projection = 0.0
+        if length_squared > 0.0:
+            projection = ((px - ax) * dx + (py - ay) * dy) / length_squared
+        projection = max(0.0, min(1.0, projection))
+        nearest_x = ax + projection * dx
+        nearest_y = ay + projection * dy
+        return (px - nearest_x) ** 2 + (py - nearest_y) ** 2
+
+    @staticmethod
+    def _polygon_contains(polygon: list[tuple[int, int]], point: tuple[int, int]) -> bool:
+        if len(polygon) < 3:
+            return False
+        px, py = point
+        inside = False
+        previous_x, previous_y = polygon[-1]
+        for current_x, current_y in polygon:
+            crosses = (current_y > py) != (previous_y > py)
+            if crosses:
+                x_at_y = (
+                    (previous_x - current_x) * (py - current_y) /
+                    (previous_y - current_y) + current_x
+                )
+                if px < x_at_y:
+                    inside = not inside
+            previous_x, previous_y = current_x, current_y
+        return inside
+
+    def _contains(self, point: tuple[int, int]) -> bool:
+        for contour, holes in self._areas:
+            if self._polygon_contains(contour, point) and not any(
+                self._polygon_contains(hole, point) for hole in holes
+            ):
+                return True
+        return False
+
+
 def as_point(point) -> CPoint:
     if isinstance(point, CPoint):
         return point
@@ -940,6 +1090,7 @@ __all__ = [
     "MULTIPOINT_CW",
     "CPoint",
     "HandleView",
+    "LineDistancer",
     "MultiPoint",
     "Polygon",
     "MutablePolygon",

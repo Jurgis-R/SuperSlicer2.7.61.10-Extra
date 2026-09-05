@@ -51,7 +51,13 @@ from slic3r_api_generated import (
     PluginRunContext,
     STEP_POST_PERIMETER,
 )
-from slic3r_datatree_views import LayerIsland, LayerRegionIsland, Object, Print
+from slic3r_datatree_views import (
+    LayerIsland,
+    LayerRegionIsland,
+    Object,
+    Print,
+    project_painting_to_polygons as _project_painting_to_polygons,
+)
 from slic3r_extrusion_views import MutableExtrusionEntity
 from slic3r_geometry_views import StoredExPolygonCollection, StoredPolygonCollection
 from slic3r_abi import abi_requires_headers
@@ -70,10 +76,6 @@ def _address(handle) -> int:
 
 def _void_p(handle) -> ctypes.c_void_p:
     return ctypes.c_void_p(_address(handle))
-
-
-def _as_bytes(text: str) -> bytes:
-    return text.encode("utf-8")
 
 
 @abi_requires_headers("steps/slic3r_step_post_perimeter.h")
@@ -132,6 +134,7 @@ class PostPerimeterContext(PluginRunContextView):
         areas_handle = None if areas is None else areas.c_handle()
         return bool(self.payload.set_island_fill_free_areas(island.c_handle(), areas_handle))
 
+    @abi_requires_headers("slic3r_volume.h")
     def project_painting_to_polygons(
         self,
         paint_key: str,
@@ -145,19 +148,12 @@ class PostPerimeterContext(PluginRunContextView):
         Empty collections simply mean that the layer has no matching painted
         facets.
         """
-        obj = self.post_perimeter_object()
-        storage = self.plugin_storage()
-        layer_count = obj.layer_count()
-        by_layer = [StoredPolygonCollection(self.api, storage) for _ in range(layer_count)]
-        raw_array = (ctypes.c_void_p * layer_count)(*[collection.c_handle() for collection in by_layer])
-        self.api.host.object_project_painting_to_polygons(
-            obj.c_handle(),
-            _as_bytes(paint_key),
-            int(painting_value),
-            raw_array,
-            int(layer_count),
+        return _project_painting_to_polygons(
+            self.plugin_storage(),
+            self.post_perimeter_object(),
+            paint_key,
+            painting_value,
         )
-        return by_layer
 
 
 __all__ = ["PostPerimeterContext"]

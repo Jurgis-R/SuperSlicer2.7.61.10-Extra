@@ -46,7 +46,8 @@ Extrusion guide: [Using Unified Extrusion Entities](/doc/plugins/extrusions.md)
 from __future__ import annotations
 
 import ctypes
-from typing import Iterator, Sequence
+import math
+from typing import Iterable, Iterator, NamedTuple, Sequence
 
 from slic3r_api_generated import (
     CLayerAdhesionProperty,
@@ -55,6 +56,7 @@ from slic3r_api_generated import (
     CFlow,
     CFloatOrPercent,
     CMatrix4d,
+    CMeshSlicingParams,
     CSurface,
     CTriangleIndices,
     PLUGIN_PROPERTY_TYPE_LAYER_ADHESION,
@@ -70,11 +72,36 @@ from slic3r_api_generated import (
     RAW_SURFACE_TYPE_POS_INTERNAL,
     RAW_SURFACE_TYPE_POS_PERIMETER,
     RAW_SURFACE_TYPE_POS_TOP,
+    RAW_FACET_PAINTING_FDM_SUPPORT,
+    RAW_FACET_PAINTING_MMU_SEGMENTATION,
+    RAW_FACET_PAINTING_SEAM,
+    RAW_MESH_SLICING_MODE_EVEN_ODD,
+    RAW_MESH_SLICING_MODE_POSITIVE,
+    RAW_MESH_SLICING_MODE_REGULAR,
+    RAW_VOLUME_TYPE_BRIM_NEGATIVE,
+    RAW_VOLUME_TYPE_BRIM_PATCH,
+    RAW_VOLUME_TYPE_MODEL_PART,
+    RAW_VOLUME_TYPE_NEGATIVE_VOLUME,
+    RAW_VOLUME_TYPE_PARAMETER_MODIFIER,
+    RAW_VOLUME_TYPE_SEAM_POSITION_CENTER,
+    RAW_VOLUME_TYPE_SEAM_POSITION_CENTER_Z,
+    RAW_VOLUME_TYPE_SEAM_POSITION_INSIDE,
+    RAW_VOLUME_TYPE_SEAM_POSITION_INSIDE_CENTER,
+    RAW_VOLUME_TYPE_SUPPORT_BLOCKER,
+    RAW_VOLUME_TYPE_SUPPORT_ENFORCER,
+    EPSILON,
     SCALING_FACTOR,
 )
 
+from slic3r_clipper_views import ClipperContext
 from slic3r_extrusion_views import ExtrusionEntity, MutableExtrusionEntity
-from slic3r_geometry_views import CPoint, ExPolygon, ExPolygonCollection
+from slic3r_geometry_views import (
+    CPoint,
+    ExPolygon,
+    ExPolygonCollection,
+    StoredExPolygonCollection,
+    StoredPolygonCollection,
+)
 from slic3r_abi import abi_requires_headers
 
 
@@ -593,6 +620,27 @@ class SurfaceCollection(DataTreeView):
         return self.at(idx)
 
 
+def _validated_mesh_slice_z_values(z_mm_by_layer: Iterable[float]) -> list[float]:
+    """Materialize finite float-compatible heights in native slicing order."""
+    z_values: list[float] = []
+    for idx, value in enumerate(z_mm_by_layer):
+        try:
+            z_value = float(value)
+            native_z = ctypes.c_float(z_value).value
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(f"mesh slice Z value at index {idx} is not a finite number") from error
+        if not math.isfinite(z_value) or not math.isfinite(native_z):
+            raise ValueError(f"mesh slice Z value at index {idx} must be finite")
+        if z_values and z_value < z_values[-1]:
+            raise ValueError(
+                "mesh slice Z values must be sorted in non-decreasing order "
+                f"(index {idx}: {z_value} follows {z_values[-1]})"
+            )
+        z_values.append(z_value)
+    return z_values
+
+
+@abi_requires_headers("slic3r_volume.h")
 class TriangleMesh(DataTreeView):
     """
     Borrowed read-only triangle mesh view.
@@ -607,13 +655,108 @@ class TriangleMesh(DataTreeView):
     def triangle_count(self) -> int:
         return int(self.api.host.triangle_mesh_triangle_count(self.c_handle()))
 
+    def empty(self) -> bool:
+        """
+        Return whether the borrowed mesh contains no triangles.
+
+        Vertices without triangles do not form printable mesh geometry and are
+        therefore considered empty. This check does not validate manifoldness
+        or repair the mesh, and it never modifies or frees the host-owned mesh.
+        """
+        return self.triangle_count() == 0
+
     def vertex_at(self, idx: int):
         return self.api.host.triangle_mesh_vertex_at(self.c_handle(), int(idx))
 
     def triangle_at(self, idx: int) -> CTriangleIndices:
         return self.api.host.triangle_mesh_triangle_at(self.c_handle(), int(idx))
 
+    def slice_to_polygons(
+        self,
+        storage_address: int,
+        transform: CMatrix4d,
+        z_mm_by_layer: Iterable[float],
+        params: CMeshSlicingParams | None = None,
+    ) -> list[StoredPolygonCollection]:
+        """
+        Slice this mesh into one flat PolygonCollection per requested Z.
 
+        ``transform`` and every Z use unscaled model-space millimeters. Convert
+        a scaled ``Layer.slice_z()`` with ``unscaled()`` before passing it here.
+        Heights must be sorted in non-decreasing order because the native mesh
+        slicer performs binary searches over them. Repeated heights are allowed.
+        With no ``params``, the host uses regular slicing and the supplied
+        transform. When ``params`` is supplied, its transform and slicing modes
+        are authoritative; the separate ``transform`` argument is ignored.
+
+        Each returned collection owns a handle allocated in ``storage_address``.
+        Keep that storage alive, and call ``free_from_storage()`` on every
+        collection, or manage each one with a ``with`` block, before clearing
+        the storage. Polygons borrowed from a returned collection become invalid
+        when that collection is freed or modified. The method reads the mesh
+        only and never changes host model data.
+        """
+        z_values = _validated_mesh_slice_z_values(z_mm_by_layer)
+        if not z_values:
+            return []
+
+        output = [StoredPolygonCollection(self.api, storage_address) for _unused in z_values]
+        z_array = (ctypes.c_float * len(z_values))(*z_values)
+        output_array = (ctypes.c_void_p * len(output))(
+            *[collection.c_handle() for collection in output]
+        )
+        if params is None:
+            self.api.host.triangle_mesh_slice_to_polygons(
+                self.c_handle(), transform, z_array, output_array, len(output)
+            )
+        else:
+            self.api.host.triangle_mesh_slice_to_polygons_with_params(
+                self.c_handle(), ctypes.byref(params), z_array, output_array, len(output)
+            )
+        return output
+
+    def slice_to_expolygons(
+        self,
+        storage_address: int,
+        transform: CMatrix4d,
+        z_mm_by_layer: Iterable[float],
+        params: CMeshSlicingParams | None = None,
+    ) -> list[StoredExPolygonCollection]:
+        """
+        Slice this mesh into topology-aware ExPolygonCollections.
+
+        Coordinate, parameter and ownership rules are identical to
+        ``slice_to_polygons()``. Prefer this form when contours and holes must
+        remain associated. Every returned collection is allocated in the
+        caller's ``storage_address`` and must be released with
+        ``free_from_storage()``, or managed with a ``with`` block, before that
+        storage is cleared. This read-only operation never changes the borrowed
+        mesh.
+        """
+        z_values = _validated_mesh_slice_z_values(z_mm_by_layer)
+        if not z_values:
+            return []
+
+        output = [
+            StoredExPolygonCollection(self.api, storage_address)
+            for _unused in z_values
+        ]
+        z_array = (ctypes.c_float * len(z_values))(*z_values)
+        output_array = (ctypes.c_void_p * len(output))(
+            *[collection.c_handle() for collection in output]
+        )
+        if params is None:
+            self.api.host.triangle_mesh_slice_to_expolygons(
+                self.c_handle(), transform, z_array, output_array, len(output)
+            )
+        else:
+            self.api.host.triangle_mesh_slice_to_expolygons_with_params(
+                self.c_handle(), ctypes.byref(params), z_array, output_array, len(output)
+            )
+        return output
+
+
+@abi_requires_headers("slic3r_volume.h")
 class Volume(DataTreeView):
     """
     Borrowed read-only model volume view.
@@ -625,6 +768,48 @@ class Volume(DataTreeView):
 
     def type(self) -> int:
         return int(self.api.host.volume_get_type(self.c_handle()))
+
+    def is_model_part(self) -> bool:
+        """Return whether this volume contributes normal printable material."""
+        return self.type() == RAW_VOLUME_TYPE_MODEL_PART
+
+    def is_negative(self) -> bool:
+        """Return whether this volume subtracts material from model parts."""
+        return self.type() == RAW_VOLUME_TYPE_NEGATIVE_VOLUME
+
+    def is_modifier(self) -> bool:
+        """Return whether this volume changes settings without adding material."""
+        return self.type() == RAW_VOLUME_TYPE_PARAMETER_MODIFIER
+
+    def is_support_enforcer(self) -> bool:
+        """Return whether this volume marks areas where support is enforced."""
+        return self.type() == RAW_VOLUME_TYPE_SUPPORT_ENFORCER
+
+    def is_support_blocker(self) -> bool:
+        """Return whether this volume marks areas where support is blocked."""
+        return self.type() == RAW_VOLUME_TYPE_SUPPORT_BLOCKER
+
+    def is_support_modifier(self) -> bool:
+        """Return whether this is either kind of support-control volume."""
+        return self.is_support_enforcer() or self.is_support_blocker()
+
+    def is_seam_position(self) -> bool:
+        """
+        Return whether this volume is one of the seam-position helper types.
+
+        This classification only describes the volume's immutable model role;
+        it does not calculate a seam or inspect painted seam facets.
+        """
+        return self.type() in {
+            RAW_VOLUME_TYPE_SEAM_POSITION_CENTER,
+            RAW_VOLUME_TYPE_SEAM_POSITION_CENTER_Z,
+            RAW_VOLUME_TYPE_SEAM_POSITION_INSIDE_CENTER,
+            RAW_VOLUME_TYPE_SEAM_POSITION_INSIDE,
+        }
+
+    def is_brim(self) -> bool:
+        """Return whether this is a positive or negative brim-control volume."""
+        return self.type() in {RAW_VOLUME_TYPE_BRIM_PATCH, RAW_VOLUME_TYPE_BRIM_NEGATIVE}
 
     def id(self) -> int:
         return int(self.api.host.volume_get_id(self.c_handle()))
@@ -642,9 +827,34 @@ class Volume(DataTreeView):
         return self.api.host.volume_get_matrix_no_offset(self.c_handle())
 
     def has_painting(self, paint_key: str) -> bool:
+        """
+        Return whether this borrowed volume has facets for ``paint_key``.
+
+        The key must be a built-in painting key or a generic annotation key
+        registered with the orchestrator. This method reads host-owned facet
+        metadata and neither copies nor modifies it.
+        """
         return bool(self.api.host.volume_has_painting(self.c_handle(), _as_bytes(paint_key)))
 
+    def is_fdm_support_painted(self) -> bool:
+        """Return whether the volume contains FDM support painting."""
+        return self.has_painting(RAW_FACET_PAINTING_FDM_SUPPORT)
+
+    def is_seam_painted(self) -> bool:
+        """Return whether the volume contains seam painting."""
+        return self.has_painting(RAW_FACET_PAINTING_SEAM)
+
+    def is_mm_painted(self) -> bool:
+        """Return whether the volume contains multi-material painting."""
+        return self.has_painting(RAW_FACET_PAINTING_MMU_SEGMENTATION)
+
     def mesh(self) -> TriangleMesh:
+        """
+        Return a borrowed, read-only view of this volume's triangle mesh.
+
+        The mesh remains owned by the host and is valid only while this volume
+        and its model object remain alive. Do not free the returned handle.
+        """
         return TriangleMesh(self.api, self.api.host.volume_get_mesh(self.c_handle()))
 
 
@@ -1011,6 +1221,53 @@ class Object(DataTreeView):
             yield self.print_region(idx)
 
 
+@abi_requires_headers("slic3r_volume.h")
+def project_painting_to_polygons(
+    storage_address: int,
+    obj: Object,
+    paint_key: str,
+    painting_value: int,
+) -> list[StoredPolygonCollection]:
+    """
+    Project one facet-painting value from an object onto all of its layers.
+
+    ``paint_key`` may name a built-in painting channel or a generic facets
+    annotation registered with the orchestrator. For support and seam channels,
+    ``painting_value`` is normally an enforcer or blocker value; for MMU
+    painting it is a one-based extruder index. This low-level helper performs
+    geometric projection only and does not apply later strategy-specific
+    refinements such as full MMU segmentation.
+
+    The object and its model volumes are borrowed, read-only host data. Each
+    returned collection is newly allocated in ``storage_address`` and belongs
+    to the caller: keep the storage alive and release each collection with
+    ``free_from_storage()``, or manage it with a ``with`` block. Borrowed
+    polygons obtained from a collection become invalid if that collection is
+    modified or freed. The result contains one collection per current object
+    layer, including empty collections for layers without matching painted
+    facets.
+    """
+    layer_count = obj.layer_count()
+    output = [
+        StoredPolygonCollection(obj.api, storage_address)
+        for _unused in range(layer_count)
+    ]
+    if not output:
+        return []
+
+    output_array = (ctypes.c_void_p * layer_count)(
+        *[collection.c_handle() for collection in output]
+    )
+    obj.api.host.object_project_painting_to_polygons(
+        obj.c_handle(),
+        _as_bytes(paint_key),
+        int(painting_value),
+        output_array,
+        layer_count,
+    )
+    return output
+
+
 class MutableObject(Object):
     def mutable_c_handle(self) -> ctypes.c_void_p:
         return self.c_handle()
@@ -1091,7 +1348,232 @@ class PrintRecords(DataTreeView):
         return record_id
 
 
+class AuxiliaryLayerBuildResult(NamedTuple):
+    """Result of building one host-owned auxiliary layer."""
+
+    layer: Layer | None
+    created: bool
+
+
+def _auxiliary_layer_range_for_z(obj: Object, slice_z: int):
+    """Select the active range; a shared boundary belongs to the upper range."""
+    selected = None
+    range_count = int(obj.api.host.object_count_slicing_layer_range(obj.c_handle()))
+    for range_idx in range(range_count):
+        layer_range = obj.api.host.object_get_slicing_layer_range(obj.c_handle(), range_idx)
+        if not layer_range:
+            continue
+        z_min = int(obj.api.host.slicing_layer_range_get_z_min(layer_range))
+        z_max = int(obj.api.host.slicing_layer_range_get_z_max(layer_range))
+        if z_min <= slice_z <= z_max:
+            selected = layer_range
+            if slice_z < z_max:
+                break
+    return selected
+
+
+def _auxiliary_mask_slicing_params(print_view: Print, obj: Object) -> CMeshSlicingParams:
+    """Build native-equivalent parameters for settings masks without XY growth."""
+    print_config = print_view.config()
+    object_config = obj.config()
+    slicing_mode = object_config.int("slicing_mode", default=0)
+
+    params = CMeshSlicingParams()
+    if slicing_mode == 1:
+        params.mode = RAW_MESH_SLICING_MODE_EVEN_ODD
+    elif slicing_mode == 2:
+        params.mode = RAW_MESH_SLICING_MODE_POSITIVE
+    else:
+        params.mode = RAW_MESH_SLICING_MODE_REGULAR
+    params.mode_below = params.mode
+    params.transform = obj.transform_centered()
+    params.closing_radius = float(object_config.float("slice_closing_radius", default=0.0))
+    params.extra_offset = 0.0
+    params.resolution = float(print_config.float("resolution", default=EPSILON))
+    params.model_resolution = float(object_config.float("model_precision", default=0.0))
+    return params
+
+
+def _auxiliary_slice_volume_mask(
+    storage_address: int,
+    print_view: Print,
+    obj: Object,
+    volume_region,
+    subject: ExPolygonCollection,
+    slice_z: int,
+) -> StoredExPolygonCollection:
+    """Return one storage-owned model-part/modifier mask clipped to the subject."""
+    empty = StoredExPolygonCollection(obj.api, storage_address)
+    if subject.empty():
+        return empty
+
+    z_mm = unscaled(slice_z)
+    bbox = obj.api.host.slicing_volume_region_get_bbox(volume_region)
+    if bbox.min.z > z_mm + EPSILON or bbox.max.z < z_mm - EPSILON:
+        return empty
+
+    volume_handle = obj.api.host.slicing_volume_region_get_volume(volume_region)
+    if not volume_handle:
+        return empty
+    volume = Volume(obj.api, volume_handle)
+    if not volume.is_model_part() and not volume.is_modifier():
+        return empty
+
+    params = _auxiliary_mask_slicing_params(print_view, obj)
+    slices = volume.mesh().slice_to_expolygons(
+        storage_address,
+        params.transform,
+        [z_mm],
+        params,
+    )
+    if not slices or slices[0].empty():
+        return empty
+
+    clipper = ClipperContext(obj.api, storage_address)
+    with clipper(slices[0]) as mask_operand, clipper(subject) as subject_operand:
+        with clipper.intersection(mask_operand, subject_operand) as clipped:
+            return clipped.to_expolygon_collection()
+
+
+def _auxiliary_assign_regions_from_masks(
+    storage_address: int,
+    print_view: Print,
+    obj: Object,
+    layer: MutableLayer,
+    subject: ExPolygonCollection,
+    slice_z: int,
+) -> None:
+    """Publish disjoint region slices and rebuild one new layer's derived islands."""
+    region_count = obj.print_region_count()
+    if region_count == 0:
+        return
+
+    region_slices = [
+        StoredExPolygonCollection(obj.api, storage_address)
+        for _unused in range(region_count)
+    ]
+    region_slices[0].copy_from(subject)
+
+    layer_range = _auxiliary_layer_range_for_z(obj, slice_z)
+    volume_region_count = int(
+        obj.api.host.slicing_layer_range_count_volume_region(layer_range)
+    )
+    effective_masks = [
+        StoredExPolygonCollection(obj.api, storage_address)
+        for _unused in range(volume_region_count)
+    ]
+    clipper = ClipperContext(obj.api, storage_address)
+
+    for volume_region_idx in range(volume_region_count):
+        volume_region = obj.api.host.slicing_layer_range_get_volume_region(
+            layer_range, volume_region_idx
+        )
+        if not volume_region:
+            continue
+        target_region_idx = int(
+            obj.api.host.slicing_volume_region_get_layer_region_idx(volume_region)
+        )
+        if target_region_idx < 0 or target_region_idx >= len(region_slices):
+            continue
+
+        mask = _auxiliary_slice_volume_mask(
+            storage_address, print_view, obj, volume_region, subject, slice_z
+        )
+        if mask.empty():
+            mask.free_from_storage()
+            continue
+
+        parent_idx = int(obj.api.host.slicing_volume_region_get_parent(volume_region))
+        if 0 <= parent_idx < len(effective_masks):
+            with clipper(mask) as mask_operand, clipper(effective_masks[parent_idx]) as parent_operand:
+                with clipper.intersection(mask_operand, parent_operand) as clipped:
+                    parent_clipped = clipped.to_expolygon_collection()
+            mask.free_from_storage()
+            mask = parent_clipped
+            if mask.empty():
+                mask.free_from_storage()
+                continue
+
+        effective_masks[volume_region_idx].copy_from(mask)
+        for region_slice in region_slices:
+            with clipper(region_slice) as region_operand, clipper(mask) as mask_operand:
+                with clipper.diff(region_operand, mask_operand) as difference:
+                    remaining = difference.to_expolygon_collection()
+            region_slice.move_from(remaining)
+
+        region_slices[target_region_idx].append_move_from(mask)
+        with clipper(region_slices[target_region_idx]) as target_operand:
+            with clipper.union(target_operand) as united:
+                merged = united.to_expolygon_collection()
+        region_slices[target_region_idx].move_from(merged)
+
+    for region_idx, region_slice in enumerate(region_slices):
+        region = obj.api.host.layer_get_region_mutable(layer.mutable_c_handle(), region_idx)
+        destination = obj.api.host.layer_region_borrow_mutable_slices(region)
+        if destination:
+            obj.api.host.expolygons_move(destination, region_slice.mutable_c_handle())
+
+    obj.api.host.layer_recompute_slices_and_islands_from_layer_regions(layer.mutable_c_handle())
+    obj.api.host.layer_add_regions_to_islands(layer.mutable_c_handle())
+
+
+@abi_requires_headers(
+    "slic3r_clipper.h",
+    "slic3r_config.h",
+    "slic3r_config_option.h",
+    "slic3r_data_tree.h",
+    "slic3r_geometry.h",
+    "slic3r_volume.h",
+)
+def build_auxiliary_layer_regions_from_subject(
+    storage_address: int,
+    print_view: Print,
+    obj: Object,
+    subject: ExPolygonCollection,
+    height: int,
+    print_z: int,
+    slice_z: int,
+) -> AuxiliaryLayerBuildResult:
+    """
+    Create and region-classify an auxiliary layer from an existing 2D subject.
+
+    ``height``, ``print_z`` and ``slice_z`` are scaled coordinates. ``subject``
+    is borrowed and read-only: the helper copies or clips it but never mutates
+    or frees it. ``print_view`` and ``obj`` must belong to the same live print,
+    and the call must run in a sequential phase where adding a layer is allowed.
+
+    Region zero initially owns the complete subject. Model-part and parameter-
+    modifier volumes active at ``slice_z`` are sliced to choose alternate
+    PrintRegion settings; negative and special-purpose volumes are ignored.
+    The helper then rebuilds layer slices, islands and region-island membership.
+    It does not generate perimeters, infill, support, or extrusion paths.
+
+    Intermediate polygons are allocated in ``storage_address`` and released by
+    their ``Stored*`` wrappers before return. The successful ``Layer`` result is
+    a borrowed view owned by ``obj`` and must never be freed by the plugin. A
+    false result means no layer was created. If an exception occurs after host
+    creation, there is no rollback: the object may retain a partially populated
+    auxiliary layer, so callers should validate inputs before invoking it.
+    """
+    storage = _require_handle(storage_address, "storage")
+    if obj.print_region_count() == 0 or int(height) <= 0 or int(print_z) <= 0:
+        return AuxiliaryLayerBuildResult(None, False)
+
+    layer_handle = obj.api.host.object_add_auxiliary_layer(
+        obj.c_handle(), int(height), int(print_z), int(slice_z)
+    )
+    if not layer_handle:
+        return AuxiliaryLayerBuildResult(None, False)
+
+    layer = MutableLayer(obj.api, layer_handle)
+    _auxiliary_assign_regions_from_masks(
+        storage, print_view, obj, layer, subject, int(slice_z)
+    )
+    return AuxiliaryLayerBuildResult(layer, True)
+
+
 __all__ = [
+    "AuxiliaryLayerBuildResult",
     "Config",
     "ConfigOption",
     "DataTreeView",
@@ -1112,12 +1594,14 @@ __all__ = [
     "Print",
     "PrintRecords",
     "PrintRegion",
+    "project_painting_to_polygons",
     "StoredConfig",
     "Surface",
     "SurfaceCollection",
     "SurfaceTypeBuilder",
     "TriangleMesh",
     "Volume",
+    "build_auxiliary_layer_regions_from_subject",
     "srf_type",
     "unscaled",
 ]

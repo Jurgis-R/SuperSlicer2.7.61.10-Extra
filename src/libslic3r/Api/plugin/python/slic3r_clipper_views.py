@@ -50,6 +50,7 @@ import ctypes
 from typing import Callable
 
 from slic3r_api_generated import (
+    CBoundingBox,
     CLIPPER_END_CLOSED_LINE,
     CLIPPER_END_CLOSED_POLYGON,
     CLIPPER_END_OPEN_BUTT,
@@ -214,7 +215,31 @@ class ClipperOperand:
         return self._handle != 0
 
     def empty(self) -> bool:
+        """Return whether this operand contains no non-empty Clipper path."""
         return bool(self.api.host.clipper_shapes_empty(self.c_handle()))
+
+    def path_count(self) -> int:
+        """
+        Count the non-empty raw paths held by this operand.
+
+        This is not an ExPolygon count: an outer contour and each non-empty
+        hole count as separate paths. The method only inspects the operand and
+        does not materialize geometry or transfer ownership. A null operand,
+        such as ``ClipperOperand.null()``, contains zero paths.
+        """
+        return int(self.api.host.clipper_shapes_path_count(self.c_handle()))
+
+    def bounding_box(self) -> CBoundingBox:
+        """
+        Return the bounds of all raw Clipper points in scaled XY coordinates.
+
+        The returned ``CBoundingBox`` is a value copy and remains valid after
+        the operand is freed. No polygon collection is allocated. An empty or
+        null operand returns the host's empty, zero-initialized bounding box;
+        callers should use ``empty()`` when they need to distinguish that case
+        from geometry whose coordinates happen to include the origin.
+        """
+        return self.api.host.clipper_shapes_bounding_box(self.c_handle())
 
     def same_handle(self, other: "ClipperOperand") -> bool:
         return self._handle == other.handle()

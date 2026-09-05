@@ -833,6 +833,160 @@ class MutableExtrusionEntity(
         return self.valid()
 
 
+@abi_requires_headers("slic3r_extrusion_entity.h", "slic3r_extrusion_property.h")
+class _ExtrusionTreeVisitorBase:
+    """
+    Iterative depth-first visitor shared by read-only and mutable traversals.
+
+    The active root-to-entity path is retained only while ``traverse()`` is
+    running. ``current_property()`` searches that path from the current entity
+    toward the root and returns a Python copy of the nearest direct payload.
+    The copy is not mutable host memory and needs no release. Payload fields
+    containing an ``extrusion_data_id`` still refer to bytes owned by the
+    extrusion tree, so resolve those bytes before changing or destroying it.
+
+    Subclasses override ``enter_node()``, ``visit_leaf()`` and ``leave_node()``.
+    With ``leaf_is_node=True``, leaves receive all three callbacks; otherwise
+    they receive only ``visit_leaf()``. The visitor is deliberately iterative
+    to avoid consuming the Python call stack on deeply nested extrusion trees.
+
+    Mutation limits
+    ---------------
+    A mutable visitor may edit the entity currently passed to a callback. A
+    leaf may be replaced by a collection during ``visit_leaf()``; newly created
+    children are not visited in that traversal. Do not insert, remove, or
+    reorder siblings or active ancestors while traversing: their borrowed child
+    views and index order may become invalid. Run structural rewrites collected
+    from one pass in a separate pass when those guarantees are needed.
+    """
+
+    def __init__(self, leaf_is_node: bool = True) -> None:
+        self.leaf_is_node = bool(leaf_is_node)
+        self._stack: list[list[object]] = []
+        self._traversing = False
+
+    def traverse(self, root) -> None:
+        """
+        Visit ``root`` and its descendants in depth-first child order.
+
+        The root and all callback entities are borrowed; this visitor neither
+        owns nor frees them. Exceptions from callbacks propagate after the
+        active path has been cleared. One visitor instance is not reentrant and
+        must not be used concurrently.
+        """
+        if self._traversing:
+            raise RuntimeError("an extrusion tree visitor is not reentrant")
+        root_entity = self._prepare_root(root)
+        self._traversing = True
+        self._stack = [[root_entity, 0, False]]
+        try:
+            while self._stack:
+                frame = self._stack[-1]
+                entity = frame[0]
+                if not frame[2]:
+                    if self.leaf_is_node or entity.child_count() > 0:
+                        self.enter_node(entity)
+                    frame[2] = True
+
+                child_count = entity.child_count()
+                if frame[1] < child_count:
+                    child_idx = frame[1]
+                    frame[1] += 1
+                    self._stack.append([self._child(entity, child_idx), 0, False])
+                    continue
+
+                if child_count == 0:
+                    self.visit_leaf(entity)
+                    if self.leaf_is_node:
+                        self.leave_node(entity)
+                else:
+                    self.leave_node(entity)
+                self._stack.pop()
+        finally:
+            self._stack.clear()
+            self._traversing = False
+
+    def enter_node(self, entity) -> None:
+        """Handle an entity before its existing children are visited."""
+
+    def visit_leaf(self, entity) -> None:
+        """Handle an entity that has no children when this callback begins."""
+
+    def leave_node(self, entity) -> None:
+        """Handle an entity after its existing children have been visited."""
+
+    def depth(self) -> int:
+        """Return the current zero-based depth; valid only inside a callback."""
+        if not self._stack:
+            raise RuntimeError("visitor depth is available only during traversal callbacks")
+        return len(self._stack) - 1
+
+    def current_property(self, payload_cls):
+        """
+        Copy the nearest inherited property payload on the active path.
+
+        ``payload_cls`` must be a registered ctypes property payload carrying a
+        ``property_type``. The search includes the current entity and returns
+        ``None`` when no ancestor has the property. Reading through a mutable
+        visitor never creates a missing property and never grants mutable access
+        to an ancestor.
+        """
+        if not self._stack:
+            raise RuntimeError("inherited properties are available only during traversal callbacks")
+        for frame in reversed(self._stack):
+            entity = frame[0]
+            readonly = entity.readonly() if isinstance(entity, MutableExtrusionEntity) else entity
+            payload = readonly.property(payload_cls)
+            if payload is not None:
+                return payload
+        return None
+
+    def _prepare_root(self, root):
+        raise NotImplementedError
+
+    def _child(self, entity, idx: int):
+        raise NotImplementedError
+
+
+@abi_requires_headers("slic3r_extrusion_entity.h", "slic3r_extrusion_property.h")
+class ExtrusionTreeConstVisitor(_ExtrusionTreeVisitorBase):
+    """
+    Read-only extrusion tree visitor.
+
+    Mutable roots are converted to read-only views before traversal, so callback
+    code cannot accidentally mutate host geometry through the supplied entity.
+    """
+
+    def _prepare_root(self, root) -> ExtrusionEntity:
+        if isinstance(root, MutableExtrusionEntity):
+            return root.readonly()
+        if not isinstance(root, ExtrusionEntity):
+            raise TypeError("a const extrusion visitor needs an ExtrusionEntity root")
+        return root
+
+    def _child(self, entity: ExtrusionEntity, idx: int) -> ExtrusionEntity:
+        return entity.child(idx)
+
+
+@abi_requires_headers("slic3r_extrusion_entity.h", "slic3r_extrusion_property.h")
+class ExtrusionTreeVisitor(_ExtrusionTreeVisitorBase):
+    """
+    Mutable visitor over a borrowed or storage-owned extrusion tree.
+
+    The visitor does not acquire ownership. A ``StoredExtrusionEntity`` remains
+    owned by its storage and a borrowed mutable root remains owned by the host;
+    neither is freed when traversal ends.
+    """
+
+    def _prepare_root(self, root) -> MutableExtrusionEntity:
+        if not isinstance(root, MutableExtrusionEntity):
+            raise TypeError("a mutable extrusion visitor needs a MutableExtrusionEntity root")
+        return root
+
+    def _child(self, entity: MutableExtrusionEntity, idx: int) -> MutableExtrusionEntity:
+        return entity.child_mutable(idx)
+
+
 # Owned mutable extrusion entity allocated in a storage_handle. This is the
 # normal way for a Python plugin to build a new extrusion tree.
 class StoredExtrusionEntity(MutableExtrusionEntity):
@@ -1067,6 +1221,8 @@ __all__ = [
     "EXTRUSION_PROPERTY_TYPE_Z_OFFSET",
     "ExtrusionAreaFragment",
     "ExtrusionEntity",
+    "ExtrusionTreeConstVisitor",
+    "ExtrusionTreeVisitor",
     "MEDIAL_AXIS_EXTRUSION_CAN_REVERSE",
     "MEDIAL_AXIS_EXTRUSION_CONSTANT_WIDTH",
     "MEDIAL_AXIS_EXTRUSION_KEEP_EMPTY_ROOT",

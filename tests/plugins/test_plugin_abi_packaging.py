@@ -106,6 +106,69 @@ class AbiPackagingTests(unittest.TestCase):
                 catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"],
                 sorted(catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"]))
 
+    def test_clipper_and_volume_helpers_declare_their_native_contracts(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        with tempfile.TemporaryDirectory() as directory:
+            catalog, _catalog_path = self._write_catalog(Path(directory))
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+
+            for method in (
+                "path_count",
+                "bounding_box",
+            ):
+                with self.subTest(method=method):
+                    self.assertIn("slic3r_clipper.h", bindings.methods[method])
+
+            for method in (
+                "empty",
+                "slice_to_polygons",
+                "slice_to_expolygons",
+                "is_model_part",
+                "is_negative",
+                "is_modifier",
+                "is_support_enforcer",
+                "is_support_blocker",
+                "is_support_modifier",
+                "is_seam_position",
+                "is_brim",
+                "is_fdm_support_painted",
+                "is_seam_painted",
+                "is_mm_painted",
+            ):
+                with self.subTest(method=method):
+                    self.assertIn("slic3r_volume.h", bindings.methods[method])
+
+            self.assertIn(
+                "slic3r_volume.h",
+                bindings.symbols["project_painting_to_polygons"],
+            )
+
+            self.assertIn("slic3r_geometry.h", bindings.symbols["LineDistancer"])
+            for visitor in ("ExtrusionTreeConstVisitor", "ExtrusionTreeVisitor"):
+                with self.subTest(visitor=visitor):
+                    self.assertIn(
+                        "slic3r_extrusion_entity.h",
+                        bindings.symbols[visitor],
+                    )
+                    self.assertIn(
+                        "slic3r_extrusion_property.h",
+                        bindings.symbols[visitor],
+                    )
+
+            auxiliary_headers = bindings.symbols[
+                "build_auxiliary_layer_regions_from_subject"
+            ]
+            for header in (
+                "slic3r_clipper.h",
+                "slic3r_config.h",
+                "slic3r_config_option.h",
+                "slic3r_data_tree.h",
+                "slic3r_geometry.h",
+                "slic3r_volume.h",
+            ):
+                with self.subTest(auxiliary_header=header):
+                    self.assertIn(header, auxiliary_headers)
+
     def _write_catalog(self, root):
         catalog_path = root / "catalog.json"
         catalog_path.write_text(self.generator.generate_abi_catalog(), encoding="utf-8")
