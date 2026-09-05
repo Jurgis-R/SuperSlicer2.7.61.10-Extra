@@ -232,7 +232,6 @@ public:
         return Config(print_region_get_config(handle()));
     }
 
-    c_flow flow(const LayerRegion &layer_region, raw_extrusion_role role) const;
 };
 
 // Layer-specific region data: its slices, flows, plugin properties, and link

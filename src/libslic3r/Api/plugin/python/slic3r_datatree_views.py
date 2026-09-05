@@ -53,6 +53,7 @@ from slic3r_api_generated import (
     CLayerAdhesionProperty,
     CLayerBrimProperty,
     CLayerSupportProperty,
+    CCurledLine,
     CFlow,
     CFloatOrPercent,
     CMatrix4d,
@@ -764,6 +765,18 @@ class LayerRegion(DataTreeView):
     def flow(self, role: int) -> CFlow:
         return self.api.host.layer_region_get_flow(self.c_handle(), int(role))
 
+    @abi_requires_headers("slic3r_data_tree.h")
+    def bridging_flow(self, role: int) -> CFlow:
+        """
+        Return the bridge/overhang flow for ``role`` on this layer region.
+
+        The native region remains host-owned and unmodified. The returned
+        ``CFlow`` is copied by value and therefore requires no explicit free.
+        """
+        return self.api.host.layer_region_get_bridging_flow(
+            self.c_handle(), int(role)
+        )
+
     def properties(self) -> PluginProperties:
         return PluginProperties(self.api, self.api.host.layer_region_get_properties(self.c_handle()))
 
@@ -793,6 +806,33 @@ class LayerRegionIsland(DataTreeView):
 
     def properties(self) -> PluginProperties:
         return PluginProperties(self.api, self.api.host.layer_region_island_get_properties(self.c_handle()))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def region_count(self) -> int:
+        """Return the number of borrowed LayerRegion views in this group."""
+        return int(self.api.host.layer_region_island_count_region(self.c_handle()))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def region(self, idx: int) -> LayerRegion:
+        """
+        Borrow one region by its current group-local index.
+
+        The returned view is owned by the host data tree. Do not free it or
+        retain it after the current tree mutation invalidates region handles.
+        """
+        count = self.region_count()
+        if idx < 0 or idx >= count:
+            raise IndexError(f"layer-region index {idx} is outside [0, {count})")
+        return LayerRegion(
+            self.api,
+            self.api.host.layer_region_island_get_region(self.c_handle(), int(idx)),
+        )
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def regions(self) -> Iterator[LayerRegion]:
+        """Iterate borrowed regions in their current host-defined order."""
+        for idx in range(self.region_count()):
+            yield self.region(idx)
 
     def has_extrusions(self) -> bool:
         return bool(self.api.host.layer_region_island_has_extrusions(self.c_handle()))
@@ -964,8 +1004,23 @@ class Layer(DataTreeView):
     def print_z(self) -> int:
         return int(self.api.host.layer_get_print_z(self.c_handle()))
 
+    @abi_requires_headers("slic3r_data_tree.h")
+    def bottom_z(self) -> int:
+        """Return ``print_z - height`` in scaled coordinates."""
+        return self.print_z() - self.height()
+
     def slice_z(self) -> int:
         return int(self.api.host.layer_get_slice_z(self.c_handle()))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def object(self) -> "Object":
+        """
+        Borrow the Object that owns this normal or auxiliary layer.
+
+        The Object remains host-owned. Do not free it, and do not retain the
+        view after its Print or owning object has been destroyed.
+        """
+        return Object(self.api, self.api.host.layer_get_object(self.c_handle()))
 
     def properties(self) -> PluginProperties:
         return PluginProperties(self.api, self.api.host.layer_get_properties(self.c_handle()))
@@ -981,6 +1036,29 @@ class Layer(DataTreeView):
 
     def island_count(self) -> int:
         return int(self.api.host.layer_count_island(self.c_handle()))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def curled_line_count(self) -> int:
+        """Return the number of host curl-estimation segments on this layer."""
+        return int(self.api.host.layer_count_curled_line(self.c_handle()))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def curled_line(self, idx: int) -> CCurledLine:
+        """
+        Copy one curled-line estimate by index.
+
+        The returned ctypes structure owns no native allocation and needs no
+        explicit free. Its points use scaled XY coordinates.
+        """
+        count = self.curled_line_count()
+        if idx < 0 or idx >= count:
+            raise IndexError(f"curled-line index {idx} is outside [0, {count})")
+        return self.api.host.layer_get_curled_line(self.c_handle(), int(idx))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def curled_lines(self) -> list[CCurledLine]:
+        """Return independent value snapshots of all curled-line estimates."""
+        return [self.curled_line(idx) for idx in range(self.curled_line_count())]
 
     def slices(self) -> ExPolygonCollection:
         return ExPolygonCollection(self.api, self.api.host.layer_get_slices(self.c_handle()))
@@ -1038,6 +1116,25 @@ class Object(DataTreeView):
         offset = self.center_offset()
         translation = self.api.host.matrix4d_translation(-unscaled(offset.x), -unscaled(offset.y), 0.0)
         return self.api.host.matrix4d_mul(translation, self.transform())
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def instance_count(self) -> int:
+        """Return the number of physical instances of this printable object."""
+        return int(self.api.host.object_count_instance(self.c_handle()))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def instance_shift(self, idx: int) -> CPoint:
+        """
+        Copy the scaled XY translation of one object instance.
+
+        Extrusion trees are object-local; add this shift when cloning them for
+        a physical instance. The returned point owns no native memory. Instance
+        indices are stable only for the lifetime of the current Print object.
+        """
+        count = self.instance_count()
+        if idx < 0 or idx >= count:
+            raise IndexError(f"instance index {idx} is outside [0, {count})")
+        return self.api.host.object_get_instance_shift(self.c_handle(), int(idx))
 
     def layer_count(self) -> int:
         return int(self.api.host.object_count_layer(self.c_handle()))

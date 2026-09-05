@@ -217,6 +217,13 @@ SLIC3R_HOST_API void *plugin_property_get_or_add_data_mutable(orchestrator_handl
                                                               plugin_property_type type);
 SLIC3R_HOST_API int32_t plugin_property_remove(plugin_property_container_handle *me, plugin_property_type type);
 SLIC3R_HOST_API void plugin_property_clear(plugin_property_container_handle *me);
+
+/*
+Replace every property in dst with an independent byte-for-byte copy of src.
+Both containers remain owned by their data-tree entities; this function neither
+transfers nor frees either handle. A null dst or src is ignored. Copying an
+empty source clears dst, and later mutations of either container are independent.
+*/
 SLIC3R_HOST_API void plugin_property_copy_all(plugin_property_container_handle *dst,
                                               const plugin_property_container_handle *src);
 
@@ -296,18 +303,29 @@ SLIC3R_HOST_API coord_t layer_get_height(const layer_handle *me);
 SLIC3R_HOST_API coord_t layer_get_print_z(const layer_handle *me);
 /* Center Z of the slicing plane. It is exactly print_z - height / 2. */
 SLIC3R_HOST_API coord_t layer_get_slice_z(const layer_handle *me);
-/* Borrow the object that owns this normal or auxiliary layer. */
+
+/*
+Borrow the Object that owns this normal or auxiliary layer. The returned handle
+must not be freed and remains valid only while the owning Object and its layer
+storage remain alive. A null layer returns null. This function does not mutate
+the layer or object.
+*/
 SLIC3R_HOST_API const object_handle *layer_get_object(const layer_handle *me);
 SLIC3R_HOST_API const expolygon_collection_handle *layer_get_slices(const layer_handle *me);
 
 /*
-Curled-line estimates attached to this layer.
-
-They are produced by the host curl-estimation step. Post-perimeter plugins use
-them as a local slowdown/flow signal near already curled material without
-needing access to the native AABBTreeLines helper.
+Return the number of curled-line estimates attached to this layer by the host
+curl-estimation step. These estimates may be absent when that step has not run.
+A null layer returns zero. This function does not allocate or mutate data.
 */
 SLIC3R_HOST_API uint32_t layer_count_curled_line(const layer_handle *me);
+
+/*
+Copy the curled-line estimate at idx. Endpoints use scaled XY coordinates and
+curled_height is expressed in millimeters. The returned structure owns no host
+memory and needs no release. A null layer or an out-of-range index returns a
+zero-initialized structure; use layer_count_curled_line() to validate idx.
+*/
 SLIC3R_HOST_API c_curled_line layer_get_curled_line(const layer_handle *me, uint32_t idx);
 
 SLIC3R_HOST_API layer_handle *layer_get_upper_layer_mutable(layer_handle *me);
@@ -331,8 +349,22 @@ SLIC3R_HOST_API const layer_island_handle *layer_get_island(const layer_handle *
 
 SLIC3R_HOST_API plugin_property_container_handle *layer_region_get_properties(const layer_region_handle *me);
 
+/*
+Compute the normal extrusion flow for flow_role using this LayerRegion's region,
+object and layer settings, including its layer height and first-layer state.
+The LayerRegion is borrowed and is not modified. The returned c_flow is an
+independent value snapshot and needs no release. A null region returns a
+zero-initialized flow; flow_role must be supported by the host. Use
+layer_region_get_bridging_flow() when bridge/overhang flow rules are required.
+*/
 SLIC3R_HOST_API c_flow layer_region_get_flow(const layer_region_handle *me, raw_extrusion_role flow_role);
-/* Bridge/overhang flow for a perimeter or infill role. */
+
+/*
+Compute the bridge/overhang flow for flow_role using this LayerRegion's region,
+object and layer settings. The LayerRegion is borrowed and is not modified.
+The returned c_flow is a value snapshot and needs no release. A null region
+returns a zero-initialized flow; flow_role must be supported by the host.
+*/
 SLIC3R_HOST_API c_flow layer_region_get_bridging_flow(const layer_region_handle *me, raw_extrusion_role flow_role);
 SLIC3R_HOST_API const expolygon_collection_handle *layer_region_get_slices(const layer_region_handle *me);
 SLIC3R_HOST_API c_bounding_box layer_region_get_bounding_box(const layer_region_handle *me);
@@ -421,13 +453,19 @@ SLIC3R_HOST_API const surface_handle *layer_region_island_get_fill_surface(const
 SLIC3R_HOST_API plugin_property_container_handle *layer_region_island_get_properties(const layer_region_island_handle *me);
 
 /*
-Regions owned by this LayerRegionIsland.
-
-Surface-generation plugins use this to refine an existing group without
-falling back to the whole LayerIsland. The returned region handles are borrowed
-from the host data tree and remain valid during the current step run.
+Return the number of LayerRegion objects grouped by this LayerRegionIsland.
+Surface-generation plugins use these regions when refining an existing group
+instead of starting again from the whole LayerIsland. A null handle returns
+zero. This function does not allocate or mutate the group.
 */
 SLIC3R_HOST_API uint32_t layer_region_island_count_region(const layer_region_island_handle *me);
+
+/*
+Borrow the LayerRegion at the group's current iteration index. The returned
+handle must not be freed and may be invalidated by later data-tree mutations.
+A null group or out-of-range index returns null. Region ordering is host-owned;
+callers must not treat idx as a persistent identifier.
+*/
 SLIC3R_HOST_API const layer_region_handle *layer_region_island_get_region(const layer_region_island_handle *me,
                                                                           uint32_t idx);
 
@@ -464,14 +502,19 @@ c_point. Convert with unscaled() before composing it with c_matrix4d.
 SLIC3R_HOST_API c_point object_get_center_offset(const object_handle *me);
 
 /*
-Object instances.
-
-Extrusion trees stored on Layers are in object-local coordinates. A plan or
-G-code builder that duplicates those trees for each physical copy must translate
-the clone by object_get_instance_shift(). The instance index is stable only for
-the current Print object; it is context, not a persistent object identifier.
+Return the number of physical instances of this printable Object. Extrusion
+trees stored on its Layers remain in object-local coordinates and are not
+duplicated by this call. A null object returns zero.
 */
 SLIC3R_HOST_API uint32_t object_count_instance(const object_handle *me);
+
+/*
+Copy the scaled XY translation of instance idx. Add this shift when cloning an
+object-local extrusion tree for that physical instance. The returned c_point
+owns no host memory. A null object or out-of-range index returns (0, 0); use
+object_count_instance() to validate idx. Indices are stable only for the current
+Print and are not persistent object identifiers.
+*/
 SLIC3R_HOST_API c_point object_get_instance_shift(const object_handle *me, uint32_t idx);
 
 SLIC3R_HOST_API uint32_t object_count_layer(const object_handle *me);

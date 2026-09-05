@@ -169,6 +169,27 @@ class AbiPackagingTests(unittest.TestCase):
                         bindings.methods[surface_method],
                     )
 
+            for data_tree_method in (
+                "bridging_flow",
+                "bottom_z",
+                "copy_from",
+                "curled_line",
+                "curled_line_count",
+                "curled_lines",
+                "flow",
+                "instance_count",
+                "instance_shift",
+                "object",
+                "region",
+                "region_count",
+                "regions",
+            ):
+                with self.subTest(data_tree_method=data_tree_method):
+                    self.assertIn(
+                        "slic3r_data_tree.h",
+                        bindings.methods[data_tree_method],
+                    )
+
             self.assertIn("slic3r_geometry.h", bindings.symbols["LineDistancer"])
             for visitor in ("ExtrusionTreeConstVisitor", "ExtrusionTreeVisitor"):
                 with self.subTest(visitor=visitor):
