@@ -44,7 +44,6 @@ HEADER_ORDER = [
 PYTHON_EXCLUDED_HEADERS = {
     "slic3r_gcode_firmware.h",
     "slic3r_step_gcode_firmware.h",
-    "slic3r_step_seam_placer.h",
 }
 
 
@@ -72,6 +71,7 @@ TYPE_ALIASES = {
     "infill_pattern_runtime_id": "uint32_t",
     "expolygon_status": "int32_t",
     "raw_extrusion_split_status": "int32_t",
+    "raw_seam_placer_status": "int32_t",
     "raw_gcode_script_status": "int",
     "c_extrusion_custom_gcode_kind": "int",
     "c_extrusion_axis_operation": "int",

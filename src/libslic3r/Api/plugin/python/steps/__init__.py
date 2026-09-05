@@ -8,6 +8,12 @@ from .slicing import SlicingContext, SlicingLayerRange, SlicingVolumeRegion
 from .post_slicing import PostSlicingContext
 from .perimeter import PerimeterContext, PerimeterGenerationContextView, PerimeterNodeView
 from .perimeter_module import PerimeterModuleContext, PublishedPerimeterGenerationModule
+from .seam_placer import (
+    SeamPlacer,
+    SeamPlacerContext,
+    SeamPlacerSession,
+    make_seam_placer_instance,
+)
 from .post_perimeter import PostPerimeterContext
 from .post_infill import PostInfillContext
 from .surface_generation import SurfaceGenerationContext
@@ -45,6 +51,10 @@ __all__ = [
     "PerimeterNodeView",
     "PerimeterModuleContext",
     "PublishedPerimeterGenerationModule",
+    "SeamPlacer",
+    "SeamPlacerContext",
+    "SeamPlacerSession",
+    "make_seam_placer_instance",
     "PostPerimeterContext",
     "PostInfillContext",
     "SurfaceGenerationContext",

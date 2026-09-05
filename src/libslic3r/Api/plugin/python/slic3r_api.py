@@ -111,6 +111,7 @@ from steps.slicing import *
 from steps.post_slicing import *
 from steps.perimeter import *
 from steps.perimeter_module import *
+from steps.seam_placer import *
 from steps.post_perimeter import *
 from steps.post_infill import *
 from steps.surface_generation import *
@@ -793,6 +794,11 @@ class Slic3rAPI:
     @abi_requires_headers("steps/slic3r_step_perimeter.h")
     def perimeter_module_context(self, run_ctx_address: int) -> PerimeterModuleContext | None:
         return PerimeterModuleContext.from_perimeter_module_run_context(self, run_ctx_address)
+
+    @abi_requires_headers("steps/slic3r_step_seam_placer.h")
+    def seam_placer_context(self, run_ctx_address: int) -> SeamPlacerContext | None:
+        """Borrow the service payload used to publish a Python seam session."""
+        return SeamPlacerContext.from_seam_placer_run_context(self, run_ctx_address)
 
     @abi_requires_headers("steps/slic3r_step_surface_generation.h")
     def surface_generation_context(self, run_ctx_address: int) -> SurfaceGenerationContext | None:

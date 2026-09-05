@@ -102,6 +102,11 @@ class AbiPackagingTests(unittest.TestCase):
             self.assertIn("slic3r_geometry.h", catalog["python_symbols"]["CPoint"])
             self.assertIn("slic3r_plugin_types.h", catalog["python_symbols"]["PLUGIN_SETUP"])
             self.assertIn("slic3r_slicing_step.h", catalog["python_symbols"]["STEP_ORDERING"])
+            self.assertIn(
+                "steps/slic3r_step_seam_placer.h",
+                catalog["python_symbols"]["RawSeamPlacerInstance"],
+            )
+            self.assertNotIn("slic3r_step_gcode_firmware.h", catalog["headers"])
             self.assertEqual(
                 catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"],
                 sorted(catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"]))
@@ -372,6 +377,20 @@ class AbiPackagingTests(unittest.TestCase):
             self.assertIn("slic3r_def.h", bindings.symbols["check_z_step"])
             self.assertIn("slic3r_def.h", bindings.methods["check_z_step"])
             self.assertNotIn("slic3r_print_helpers.h", catalog.headers)
+
+            seam_header = "steps/slic3r_step_seam_placer.h"
+            for seam_symbol in (
+                "SeamPlacer",
+                "SeamPlacerContext",
+                "SeamPlacerSession",
+                "make_seam_placer_instance",
+            ):
+                with self.subTest(seam_symbol=seam_symbol):
+                    self.assertIn(seam_header, bindings.symbols[seam_symbol])
+            self.assertIn(seam_header, bindings.methods["seam_placer_context"])
+            self.assertIn(seam_header, bindings.methods["seam_placer_plan"])
+            self.assertIn(seam_header, bindings.methods["publish_seam_placer"])
+            self.assertIn(seam_header, bindings.methods["place_seam"])
 
     def _write_catalog(self, root):
         catalog_path = root / "catalog.json"

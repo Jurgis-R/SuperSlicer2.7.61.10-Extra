@@ -121,6 +121,9 @@ if (TARGET Python3::Python)
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/perimeter_module.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/perimeter_module.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/seam_placer.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/seam_placer.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/post_perimeter.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/post_perimeter.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
