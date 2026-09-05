@@ -520,32 +520,82 @@ void PreferencesDialog::build()
 #endif
 	assert(m_tabid_2_optgroups.empty());
 
-	// Add "General" tab
-	create_options_tab(_L("General"));
-	assert(!m_tabid_2_optgroups.empty());
+	const bool is_editor = wxGetApp().is_editor();
 
-	bool is_editor = wxGetApp().is_editor();
+	// Every preference has one semantic home. Keeping groups separate from the
+	// order in which their controls are constructed avoids coupling a setting to
+	// a fragile notebook page index. The G-code viewer omits editor-only pages,
+	// so it never exposes an empty Workflow or Presets tab.
+	const auto add_options_tab = [this](const wxString &title) {
+		create_options_tab(title);
+		return m_tabid_2_optgroups.size() - 1;
+	};
 
-    m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Automation"), tabs, 0));
+	const auto add_options_group = [this](const wxString &title, size_t tab_idx) {
+		std::shared_ptr<ConfigOptionsGroup> group = create_options_group(title, tabs, int(tab_idx));
+		m_tabid_2_optgroups[tab_idx].emplace_back(group);
+		return group;
+	};
+
+	std::shared_ptr<ConfigOptionsGroup> workflow_project_behavior;
+	std::shared_ptr<ConfigOptionsGroup> workflow_project_safeguards;
+	std::shared_ptr<ConfigOptionsGroup> presets_visibility;
+	std::shared_ptr<ConfigOptionsGroup> presets_updates;
 	if (is_editor) {
+		const size_t workflow_tab = add_options_tab(_L("Workflow"));
+		workflow_project_behavior = add_options_group(_L("Project behavior"), workflow_tab);
+		workflow_project_safeguards = add_options_group(_L("Project safeguards"), workflow_tab);
+	}
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "remember_output_path", 
-			L("Remember output directory"),
-			L("If this is enabled, Slic3r will prompt the last output directory instead of the one containing the input files."),
-			app_config->has("remember_output_path") ? app_config->get_bool("remember_output_path") : true);
-		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "autocenter", 
+	const size_t files_tab = add_options_tab(_L("Files & Export"));
+	const std::shared_ptr<ConfigOptionsGroup> files_paths_and_associations =
+		add_options_group(_L("Paths and associations"), files_tab);
+	const std::shared_ptr<ConfigOptionsGroup> files_import = add_options_group(_L("Import"), files_tab);
+	const std::shared_ptr<ConfigOptionsGroup> files_export = add_options_group(_L("Export"), files_tab);
+
+	if (is_editor) {
+		const size_t presets_tab = add_options_tab(_L("Presets, Plugins & Updates"));
+		presets_visibility = add_options_group(_L("Preset visibility"), presets_tab);
+		presets_updates = add_options_group(_L("Updates"), presets_tab);
+	}
+
+	const size_t interface_tab = add_options_tab(_L("Interface"));
+	const std::shared_ptr<ConfigOptionsGroup> interface_layout =
+		add_options_group(_L("Layout and settings"), interface_tab);
+	const std::shared_ptr<ConfigOptionsGroup> interface_controls =
+		add_options_group(_L("Controls and help"), interface_tab);
+	const std::shared_ptr<ConfigOptionsGroup> interface_accessibility =
+		add_options_group(_L("Accessibility and scale"), interface_tab);
+	const std::shared_ptr<ConfigOptionsGroup> interface_theme =
+		add_options_group(_L("Theme and colors"), interface_tab);
+
+	const size_t view_tab = add_options_tab(_L("3D View & Preview"));
+	const std::shared_ptr<ConfigOptionsGroup> view_camera_and_navigation =
+		add_options_group(_L("Camera and navigation"), view_tab);
+	const std::shared_ptr<ConfigOptionsGroup> view_rendering = add_options_group(_L("Rendering"), view_tab);
+	const std::shared_ptr<ConfigOptionsGroup> view_preview = add_options_group(_L("Preview"), view_tab);
+
+	const size_t startup_tab = add_options_tab(_L("Startup & Integrations"));
+	const std::shared_ptr<ConfigOptionsGroup> startup = add_options_group(_L("Startup"), startup_tab);
+	const std::shared_ptr<ConfigOptionsGroup> integrations =
+		add_options_group(_L("External tools and downloads"), startup_tab);
+	const std::shared_ptr<ConfigOptionsGroup> system_health = add_options_group(_L("System health"), startup_tab);
+	integrations->title_width = 20;
+	integrations->label_width = 20;
+
+	if (is_editor) {
+		append_bool_option(workflow_project_behavior, "autocenter",
 			L("Auto-center parts"),
 			L("If this is enabled, Slic3r will auto-center objects around the print bed center."),
 			app_config->get_bool("autocenter"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "background_processing", 
+		append_bool_option(workflow_project_behavior, "background_processing",
 			L("Background processing"),
 			L("If this is enabled, Slic3r will pre-process objects as soon "
 				"as they\'re loaded in order to save time when exporting G-code."),
 			app_config->get_bool("background_processing"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "alert_when_supports_needed", 
+		append_bool_option(workflow_project_behavior, "alert_when_supports_needed",
 			L("Alert when supports needed"),
 			L("If this is enabled, Slic3r will raise alerts when it detects "
 				"issues in the sliced object, that can be resolved with supports (and brim). "
@@ -576,7 +626,7 @@ void PreferencesDialog::build()
                 auto_switch_preview_value = "platter";
             }
             append_enum_option<AutoSwitchPreview>(
-                m_tabid_2_optgroups.back().back(), "auto_switch_preview", L("Switch to Preview when sliced"),
+                workflow_project_behavior, "auto_switch_preview", L("Switch to Preview when sliced"),
                 L("When an object is sliced, it will switch your view from the curent view to the "
                   "preview (and then gcode-preview) automatically, depending on the option choosen."),
                 new ConfigOptionEnum<AutoSwitchPreview>(
@@ -588,17 +638,6 @@ void PreferencesDialog::build()
                     {"gcode", L("Only when GCode is ready")},
                 });
         }
-        //m_optkey_to_optgroup["auto_switch_preview"] = m_tabid_2_optgroups.back().back();
-        //wxGetApp().sidebar().get_searcher().add_key(OptionKeyIdx::scalar("auto_switch_preview"), Preset::TYPE_PREFERENCES, m_tabid_2_optgroups.back().back()->config_category(), L("Preferences"), def_combobox_auto_switch_preview);
-
-		// Please keep in sync with ConfigWizard
-		append_bool_option(m_tabid_2_optgroups.back().back(), "export_sources_full_pathnames",
-			L("Export sources full pathnames to 3mf and amf"),
-			L("If enabled, allows the Reload from disk command to automatically find and load the files when invoked."),
-			app_config->get_bool("export_sources_full_pathnames"));
-
-        activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-        m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Presets and updates"), tabs, 0));
 /*
         // Please keep in sync with ConfigWizard
         def.label = L("Check for application updates");
@@ -609,7 +648,7 @@ void PreferencesDialog::build()
         m_tabid_2_optgroups.back().back()->append_single_option_line(option);
 */
         // Please keep in sync with ConfigWizard
-		append_bool_option(m_tabid_2_optgroups.back().back(), "preset_update",
+		append_bool_option(presets_updates, "preset_update",
 			L("Update built-in Presets automatically"),
 			L("If enabled, Slic3r downloads updates of built-in system presets in the background. These updates are downloaded "
 			  "into a separate temporary location. When a new preset version becomes available it is offered at application startup."),
@@ -617,7 +656,7 @@ void PreferencesDialog::build()
 
         const std::string plugin_update_check = app_config->get("plugin_update_background_check");
         append_enum_option<PluginUpdateCheckFrequency>(
-            m_tabid_2_optgroups.back().back(),
+            presets_updates,
             "plugin_update_background_check",
             L("Check plugin package updates"),
             L("Choose how often Slic3r checks installed plugin repositories when the application starts. "
@@ -640,7 +679,7 @@ void PreferencesDialog::build()
             archive_timeout_minutes = 5;
 
         append_int_option(
-            m_tabid_2_optgroups.back().back(),
+            presets_updates,
             "repository_archive_download_timeout_minutes",
             L("Plugin and preset download timeout"),
             L("Maximum duration of a plugin or preset archive download. Repository metadata and changelog requests always use a 60 second timeout."),
@@ -651,91 +690,85 @@ void PreferencesDialog::build()
             120,
             L("minutes"));
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "no_defaults",
+		append_bool_option(presets_visibility, "no_defaults",
 			L("Suppress \" - default - \" presets"),
 			L("Suppress \" - default - \" presets in the Print / Filament / Printer selections once there are any other valid presets available."),
 			app_config->get_bool("no_defaults"));
 		m_values_need_restart.push_back("no_defaults");
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "no_templates",
+		append_bool_option(presets_visibility, "no_templates",
 			L("Suppress \" Template \" filament presets"),
 			L("Suppress \" Template \" filament presets in configuration wizard and sidebar visibility."),
 			app_config->get_bool("no_templates"));
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_incompatible_presets",
+		append_bool_option(presets_visibility, "show_incompatible_presets",
 			L("Show incompatible print and filament presets"),
 			L("When checked, the print and filament presets are shown in the preset editor "
 			"even if they are marked as incompatible with the active printer"),
 			app_config->get_bool("show_incompatible_presets"));
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "objects_always_expert",
+		append_bool_option(interface_layout, "objects_always_expert",
 			L("Main GUI always in expert mode"),
 			L("If enabled, the gui will be in expert mode even if the simple or advanced mode is selected (but not the setting tabs)."),
 			app_config->get_bool("objects_always_expert"));
 
-        activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-        m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Files"), tabs, 0));
-
         // Please keep in sync with ConfigWizard
-		append_bool_option(m_tabid_2_optgroups.back().back(), "export_sources_full_pathnames",
+		append_bool_option(files_export, "export_sources_full_pathnames",
 			L("Export sources full pathnames to 3mf and amf"),
 			L("If enabled, allows the Reload from disk command to automatically find and load the files when invoked."),
 			app_config->get_bool("export_sources_full_pathnames"));
 
 #ifdef _WIN32
 		// Please keep in sync with ConfigWizard
-		append_bool_option(m_tabid_2_optgroups.back().back(), "associate_3mf",
+		append_bool_option(files_paths_and_associations, "associate_3mf",
 			(boost::format(_u8L("Associate .3mf files to %1%")) % SLIC3R_APP_NAME).str(),
 			L("If enabled, sets Slic3r as default application to open .3mf files."),
 			app_config->get_bool("associate_3mf"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "associate_stl",
+		append_bool_option(files_paths_and_associations, "associate_stl",
 			(boost::format(_u8L("Associate .stl files to %1%")) % SLIC3R_APP_NAME).str(),
 			L("If enabled, sets Slic3r as default application to open .stl files."),
 			app_config->get_bool("associate_stl"));
 #endif // _WIN32
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "remember_output_path",
+		append_bool_option(files_paths_and_associations, "remember_output_path",
 			L("Remember output directory"),
 			L("If this is enabled, Slic3r will prompt the last output directory "
             "instead of the one containing the input files."),
-			app_config->get_bool("remember_output_path"));
+			app_config->has("remember_output_path") ? app_config->get_bool("remember_output_path") : true);
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "date_in_config_file",
+		append_bool_option(files_export, "date_in_config_file",
 			L("Export headers with date and time"),
             L("If this is enabled, Slic3r will add the date of the export to the first line of any exported config and gcode file."
               " Note that some software may rely on that to work, be careful and report any problem if you deactivate it."),
 			app_config->get_bool("date_in_config_file"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "check_material_export",
+		append_bool_option(files_export, "check_material_export",
 			L("Show a Pop-up with the current material when exporting"),
             L("If you constantly forgot to select the right filament/material, check this option to have a really obtrusive reminder on each export."),
 			app_config->get_bool("check_material_export"));
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_unknown_setting",
+		append_bool_option(files_import, "show_unknown_setting",
 			L("Show ignored settings when loading a project or configuration"),
             L("When loading a configuration, if it's coming from an earlier, a future or from another software, show the ignored settings that doesn't suit this version. Uncheck to remove this anoying pop-up."),
 			app_config->get_bool("show_unknown_setting"));
 
-        append_bool_option(m_tabid_2_optgroups.back().back(), "use_binary_gcode_when_supported", L("Use binary G-code when the printer supports it"),
+        append_bool_option(files_export, "use_binary_gcode_when_supported", L("Use binary G-code when the printer supports it"),
                     L("If the 'Supports binary G-code' option is enabled in Printer Settings, "
                       "checking this option will result in the export of G-code in binary format."),
                     app_config->get_bool("use_binary_gcode_when_supported"));
 
-        activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-        m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Dialogs"), tabs, 0));
-		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_drop_project_dialog",
+		append_bool_option(files_import, "show_drop_project_dialog",
 			L("Show drop project dialog"),
             L("When checked, whenever dragging and dropping a project file on the application, shows a dialog asking to select the action to take on the file to load."),
 			app_config->get_bool("show_drop_project_dialog"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_overwrite_dialog",
+		append_bool_option(files_export, "show_overwrite_dialog",
 			L("Show overwrite dialog."),
             L("If this is enabled, Slic3r will prompt for when overwriting files from save dialogs."),
 			app_config->get_bool("show_overwrite_dialog"));
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "single_instance",
+		append_bool_option(startup, "single_instance",
 #if __APPLE__
             Slic3r::GUI::format(L("Allow just a single %1% instance"), SLIC3R_APP_NAME),
             L("On OSX there is always only one instance of app running by default. However it is allowed to run multiple instances "
@@ -748,48 +781,48 @@ void PreferencesDialog::build()
             app_config->has("single_instance") ? app_config->get_bool("single_instance") : false);
 
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "default_action_on_dirty_project",
+		append_bool_option(workflow_project_safeguards, "default_action_on_dirty_project",
 			L("Ask for unsaved changes in project"),
 			L("Always ask for unsaved changes in project, when: \n"
 						"- Closing Slic3r,\n"
 						"- Loading or creating a new project"),
 			app_config->get("default_action_on_dirty_project").empty());
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "default_action_on_close_application",
+		append_bool_option(workflow_project_safeguards, "default_action_on_close_application",
 			L("Ask to save unsaved changes in presets when closing the application or when loading a new project"),
 			L("Always ask for unsaved changes in presets, when: \n"
 						"- Closing Slic3r while some presets are modified,\n"
 						"- Loading a new project while some presets are modified"),
 			app_config->get("default_action_on_close_application") == "none");
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "default_action_on_select_preset",
+		append_bool_option(workflow_project_safeguards, "default_action_on_select_preset",
 			L("Ask for unsaved changes in presets when selecting new preset"),
 			L("Always ask for unsaved changes in presets when selecting new preset or resetting a preset"),
 			app_config->get("default_action_on_select_preset") == "none");
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "default_action_on_new_project",
+		append_bool_option(workflow_project_safeguards, "default_action_on_new_project",
 			L("Ask for unsaved changes in presets when creating new project"),
 			L("Always ask for unsaved changes in presets when creating new project"),
 			app_config->get("default_action_on_new_project") == "none");
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "default_action_delete_all",
+		append_bool_option(workflow_project_safeguards, "default_action_delete_all",
 			L("Ask for 'new project' on 'Delete all'"),
 			L("When you click on the garbage can (or ctrl+del), ask for the action to do. If disable, it will erase all object without asking"),
 			app_config->get_bool("default_action_delete_all"));
 
         // Clear Undo / Redo stack on new project
-		append_bool_option(m_tabid_2_optgroups.back().back(), "clear_undo_redo_stack_on_new_project",
+		append_bool_option(workflow_project_safeguards, "clear_undo_redo_stack_on_new_project",
 			L("Clear Undo / Redo stack on new project"),
 			L("Clear Undo / Redo stack on new project or when an existing project is loaded."),
 			app_config->get_bool("clear_undo_redo_stack_on_new_project"));
 	}
 #ifdef _WIN32
 	else {
-		append_bool_option(m_tabid_2_optgroups.back().back(), "associate_gcode",
+		append_bool_option(files_paths_and_associations, "associate_gcode",
 			(boost::format(_u8L("Associate .gcode files to %1%")) % GCODEVIEWER_APP_NAME).str(),
 			(boost::format(_u8L("If enabled, sets %1% as default application to open .gcode files.")) % GCODEVIEWER_APP_NAME).str(),
 			app_config->get_bool("associate_gcode"));
-		append_bool_option(m_tabid_2_optgroups.back().back(), "associate_bgcode",
+		append_bool_option(files_paths_and_associations, "associate_bgcode",
 			(boost::format(_u8L("Associate .bgcode files to %1%")) % GCODEVIEWER_APP_NAME).str(),
 			(boost::format(_u8L("If enabled, sets %1% as default application to open .bgcode files.")) % GCODEVIEWER_APP_NAME).str(),
 			app_config->get_bool("associate_bgcode"));
@@ -797,7 +830,7 @@ void PreferencesDialog::build()
 #endif // _WIN32
 
 #if __APPLE__
-	append_bool_option(m_tabid_2_optgroups.back().back(), "use_retina_opengl",
+	append_bool_option(view_rendering, "use_retina_opengl",
 		L("Use Retina resolution for the 3D scene"),
 		L("If enabled, the 3D scene will be rendered in Retina resolution. "
 	      "If you are experiencing 3D performance problems, disabling this option may help."),
@@ -805,12 +838,7 @@ void PreferencesDialog::build()
 #endif
 
 	if (is_editor) {
-        activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-		m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Paths"), tabs, 0));
-		m_tabid_2_optgroups.back().back()->title_width = 20;
-		m_tabid_2_optgroups.back().back()->label_width = 20;
-
-        m_optkey_to_optgroup["freecad_path"] = m_tabid_2_optgroups.back().back();
+        m_optkey_to_optgroup["freecad_path"] = integrations;
         ConfigOptionDef def = {"freecad_path", coString};
         def.label = L("FreeCAD path");
         def.tooltip = L("If it point to a valid freecad instance, you can use the built-in python script to quickly generate geometry."
@@ -820,92 +848,61 @@ void PreferencesDialog::build()
         Option option(def);
         //option.opt.full_width = true;
         option.opt.width = 50;
-        m_tabid_2_optgroups.back().back()->append_single_option_line(option);
-        m_optkey_to_optgroup["freecad_path"] = m_tabid_2_optgroups.back().back();
+		integrations->append_single_option_line(option);
+		m_optkey_to_optgroup["freecad_path"] = integrations;
         wxGetApp().sidebar().get_searcher().add_key(OptionKeyIdx::scalar("freecad_path"), Preset::TYPE_PREFERENCES,
-                                                    m_tabid_2_optgroups.back().back()->config_category(),
+													integrations->config_category(),
                                                     L("Preferences"), def);
 		
 
-		append_bool_option(m_tabid_2_optgroups.back().back(), "downloader_url_registered",
+		append_bool_option(integrations, "downloader_url_registered",
 			L("Allow downloads from Printables.com"),
 			L("If enabled, Slic3r will be allowed to download from Printables.com"),
 			app_config->get_bool("downloader_url_registered"));
-		assert(m_tabid_2_optgroups.size() == tabs->GetPageCount());
-		create_downloader_path_sizer(tabs->GetPage(tabs->GetPageCount()-1), m_tabid_2_optgroups.back().back());
-		create_settings_font_widget(tabs->GetPage(tabs->GetPageCount()-1), m_tabid_2_optgroups.back().back());
 	}
 
-    activate_options_tab(m_tabid_2_optgroups.back().back(), m_tabid_2_optgroups.back().back()->parent()->GetSizer()->GetItemCount() > 1 ? 3 : 20);
-	// end of general
-
-    // Add "Camera" tab
-    create_options_tab(L("Camera"));
-    m_tabid_2_optgroups.back().emplace_back(create_options_group("", tabs, 1)); // no title -> no borders
-    m_tabid_2_optgroups.back().back()->set_config_category_and_type(_L("Camera"), int(Preset::TYPE_PREFERENCES));
-    m_tabid_2_optgroups.back().back()->m_on_change =
-        [this](const OptionKeyIdx &opt_key_idx, bool enabled, const boost::any &value) {
-        assert(enabled);
-        if (auto it = m_values.find(opt_key_idx.key); it != m_values.end()) {
-            m_values.erase(
-                it); // we shouldn't change value, if some of those parameters were selected, and then deselected
-            return;
-        }
-        m_values[opt_key_idx.key] = boost::any_cast<bool>(value) ? "1" : "0";
-    };
-
-	append_bool_option(m_tabid_2_optgroups.back().back(), "use_perspective_camera",
+	append_bool_option(view_camera_and_navigation, "use_perspective_camera",
 		L("Use perspective camera"),
 		L("If enabled, use perspective camera. If not enabled, use orthographic camera."),
 		app_config->get_bool("use_perspective_camera"));
 
-	append_bool_option(m_tabid_2_optgroups.back().back(), "use_free_camera",
+	append_bool_option(view_camera_and_navigation, "use_free_camera",
 		L("Use free camera"),
 		L("If enabled, use free camera. If not enabled, use constrained camera."),
 		app_config->get_bool("use_free_camera"));
 
-	append_bool_option(m_tabid_2_optgroups.back().back(), "3D_mouse_drag",
+	append_bool_option(view_camera_and_navigation, "3D_mouse_drag",
 		L("Right mouse drag pan in 3D"),
 		L("If enabled, when you use the right mouse button to drag the view, it drag in the camera plane."
             "\nIf disabled, the pan works like for moving an object: you drag the view by locking the bed point to your mouse in the x/y plane. To move in the z direction, you need to press 'Shift' at the same time."),
 		app_config->get_bool("3D_mouse_drag"));
 
-	append_bool_option(m_tabid_2_optgroups.back().back(), "mouse_middle_target",
+	append_bool_option(view_camera_and_navigation, "mouse_middle_target",
 		L("Use the mouse middle button to set the camera position"),
 		L("If enabled, clicking on the middle mouse button set the focus on the bed's point. You can then drag to set the Z coordinate."
         "\nIf disabled, the middle button as the same behavior as the right button (pan on drag)."),
 		app_config->get_bool("mouse_middle_target"));
 
-	append_bool_option(m_tabid_2_optgroups.back().back(), "reverse_mouse_wheel_zoom",
+	append_bool_option(view_camera_and_navigation, "reverse_mouse_wheel_zoom",
 		L("Reverse direction of zoom with mouse wheel"),
 		L("If enabled, reverses the direction of zoom with mouse wheel"),
 		app_config->get_bool("reverse_mouse_wheel_zoom"));
 
 
 #if defined(_WIN32) || defined(__APPLE__)
-    // m_tabid_2_optgroups.back().back()->append_separator();
-
     append_bool_option(
-        m_tabid_2_optgroups.back().back(), "use_legacy_3DConnexion",
+        view_camera_and_navigation, "use_legacy_3DConnexion",
         L("Enable support for legacy 3DConnexion devices"),
         L("If enabled, the legacy 3DConnexion devices settings dialog is available by pressing CTRL+M"),
         app_config->get_bool("use_legacy_3DConnexion"));
 #endif // _WIN32 || __APPLE__
 
-	append_bool_option(m_tabid_2_optgroups.back().back(), "compress_png_texture",
+	append_bool_option(view_rendering, "compress_png_texture",
 		L("Compress png textures"),
 		L("If your custom texture (in png format) is displayed black, then disable this option to remove the problematic optimisation."),
 		app_config->get_bool("compress_png_texture"));
 
-	activate_options_tab(m_tabid_2_optgroups.back().back());
-
-	// Add "GUI" tab
-	create_options_tab(_L("GUI"));
-
-		//activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-	m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Controls"), tabs, 2));
-
-	append_bool_option(m_tabid_2_optgroups.back().back(), "seq_top_layer_only",
+	append_bool_option(view_preview, "seq_top_layer_only",
 		L("Sequential slider applied only to top layer"),
 		L("If enabled, changes made using the sequential slider, in preview, apply only to gcode top layer. "
 		  "If disabled, changes made using the sequential slider, in preview, apply to the whole gcode."),
@@ -931,7 +928,7 @@ void PreferencesDialog::build()
                 assert(false);
                 suppress_hyperlinks_value = "confirm";
             }
-            append_enum_option<SuppressHyperlinks>(m_tabid_2_optgroups.back().back(), "suppress_hyperlinks",
+            append_enum_option<SuppressHyperlinks>(interface_controls, "suppress_hyperlinks",
                 L("Allow to open hyperlink in browser"),
                 L("Sometimes an option is available to be opened in your browser, to have a link to documentation or a resource."
                     "\nDo you want to disabled these links (Disable)?"
@@ -943,63 +940,56 @@ void PreferencesDialog::build()
                     { "allow", L("Allow") }
                 });
         }
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_collapse_button",
+		append_bool_option(interface_controls, "show_collapse_button",
 			L("Show sidebar collapse/expand button"),
 			L("If enabled, the button for the collapse sidebar will be appeared in top right corner of the 3D Scene"),
 			app_config->get_bool("show_collapse_button"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "color_manipulation_panel",
+		append_bool_option(interface_controls, "color_manipulation_panel",
 			L("Use colors for axes values in Manipulation panel"),
 			L("If enabled, the axes names and axes values will be colorized according to the axes colors. "
 			  "If disabled, old UI will be used."),
 			app_config->get_bool("color_manipulation_panel"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "order_volumes",
+		append_bool_option(workflow_project_behavior, "order_volumes",
 			L("Order object volumes by types"),
 			L("If enabled, volumes will be always ordered inside the object. Correct order is Model Part, Negative Volume, Modifier, Support Blocker and Support Enforcer. "
 			  "If disabled, you can reorder Model Parts, Negative Volumes and Modifiers. But one of the model parts have to be on the first place."),
 			app_config->get_bool("order_volumes"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "focus_platter_on_mouse",
+		append_bool_option(view_camera_and_navigation, "focus_platter_on_mouse",
 			L("Focusing platter on mouse over"),
 			L("If disabled, moving the mouse over the platter panel will not change the focus but some shortcuts from the platter may not work. "
 			"If enabled, moving the mouse over the platter panel will move focus there, and away from the current control."),
 			app_config->get_bool("focus_platter_on_mouse"));
 
-		activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-		m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Appearance"), tabs, 2));
-
-		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "allow_auto_color_change",
+		append_bool_option(workflow_project_behavior, "allow_auto_color_change",
 			L("Allow automatically color change"),
 			L("If enabled, related notification will be shown, when sliced object looks like a logo or a sign."),
 			app_config->get_bool("allow_auto_color_change"));
    
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_step_import_parameters",
+		append_bool_option(files_import, "show_step_import_parameters",
 			L("Show STEP file import parameters"),
 			L("If enabled, SliCR-3D will show dialog with quality selection when importing STEP file."),
 			app_config->get_bool("show_step_import_parameters"));
 
 #ifdef _USE_CUSTOM_NOTEBOOK
-		append_bool_option(m_tabid_2_optgroups.back().back(), "tabs_as_menu",
+		append_bool_option(interface_layout, "tabs_as_menu",
 			L("Set settings tabs as menu items"),
 			L("If enabled, Settings Tabs will be placed as menu items. If disabled, old UI will be used."),
 			app_config->get_bool("tabs_as_menu"));
 		m_values_need_restart.push_back("tabs_as_menu");
 #endif
 
-		// FIXME separator don't work anymore
-		m_tabid_2_optgroups.back().back()->append_separator();
 /*
-		append_bool_option(m_tabid_2_optgroups.back().back(), "suppress_round_corners",
+		append_bool_option(interface_layout, "suppress_round_corners",
 			L("Suppress round corners for controls (experimental)"),
 			L("If enabled, Settings Tabs will be placed as menu items. If disabled, old UI will be used."),
 			app_config->get("suppress_round_corners") == "1");
 		m_values_need_restart.push_back("suppress_round_corners");
 
-		m_tabid_2_optgroups.back().back()->append_separator();
 */
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_hints",
+		append_bool_option(interface_controls, "show_hints",
 			L("Show \"Tip of the day\" notification after start"),
 			L("If enabled, useful hints are displayed at startup."),
 			app_config->get_bool("show_hints"));
@@ -1009,7 +999,7 @@ void PreferencesDialog::build()
             assert(false);
             notify_release_value = "release";
         }
-        append_enum_option<NotifyReleaseMode>(m_tabid_2_optgroups.back().back(), "notify_release",
+        append_enum_option<NotifyReleaseMode>(presets_updates, "notify_release",
             L("Notify about new releases"),
             L("You will be notified about new release after startup acordingly: All = Regular release and alpha / beta releases. Release only = regular release."),
             new ConfigOptionEnum<NotifyReleaseMode>(static_cast<NotifyReleaseMode>(s_keys_map_NotifyReleaseMode.at(notify_release_value))),
@@ -1018,23 +1008,18 @@ void PreferencesDialog::build()
               { "none", L("None") }
             });
 
-		m_tabid_2_optgroups.back().back()->append_separator(); //seems it's not working
-		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "use_custom_toolbar_size",
+		append_bool_option(interface_accessibility, "use_custom_toolbar_size",
 			L("Use custom size for toolbar icons"),
 			L("If enabled, you can change size of toolbar icons manually."),
 			app_config->get_bool("use_custom_toolbar_size"));
-		create_icon_size_slider(tabs->GetPage(m_tabid_2_optgroups.size() - 1), m_tabid_2_optgroups.back().back());
-		m_icon_size_sizer->ShowItems(app_config->get("use_custom_toolbar_size") == "1");
-		
-		append_int_option(m_tabid_2_optgroups.back().back(), "tab_icon_size",
+		append_int_option(interface_accessibility, "tab_icon_size",
 			L("Tab icon size"),
 			L("Size of the tab icons, in pixels. Set to 0 to remove icons."),
 			6,
 			app_config->get_int("tab_icon_size"));
 		m_values_need_restart.push_back("tab_icon_size");
 		
-		append_int_option(m_tabid_2_optgroups.back().back(), "font_size",
+		append_int_option(interface_accessibility, "font_size",
 			L("Font size"),
             L("Size of the font, and most of the gui (but not the menu and dialog ones). Set to 0 to let the Operating System decide."
               "\nPlease don't set this preference unless your OS scaling factor doesn't works. Set 10 for 100% scaling, and 20 for 200% scaling."),
@@ -1042,13 +1027,13 @@ void PreferencesDialog::build()
 			app_config->get_int("font_size"));
 		m_values_need_restart.push_back("font_size");
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "setting_icon",
+		append_bool_option(interface_layout, "setting_icon",
 			L("Display setting icons"),
 			L("The settings have a lock and dot to show how they are modified. You can hide them by uncheking this option."),
 			app_config->get_bool("setting_icon"));
 		m_values_need_restart.push_back("setting_icon");
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "use_rich_tooltip",
+		append_bool_option(interface_accessibility, "use_rich_tooltip",
 			L("Use custom tooltip"),
 			L("On some OS like MacOS or some Linux, tooltips can't stay on for a long time."
 		      " This setting replaces native tooltips with custom dialogs to improve readability (only for settings)."
@@ -1057,35 +1042,35 @@ void PreferencesDialog::build()
 			app_config->get_bool("use_rich_tooltip"));
 		m_values_need_restart.push_back("use_rich_tooltip");
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "hide_slice_tooltip",
+		append_bool_option(interface_accessibility, "hide_slice_tooltip",
 			L("Hide tooltips on slice buttons"),
 			L("These tooltip may be bothersome. You can hide them with this option."),
 			app_config->get_bool("hide_slice_tooltip"));
 		m_values_need_restart.push_back("hide_slice_tooltip");
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_layer_height_doubleslider",
+		append_bool_option(view_preview, "show_layer_height_doubleslider",
 			L("Show layer height on the scroll bar"),
 			L("Add the layer height (first number after the layer z position) next to a widget of the layer double-scrollbar."),
 			app_config->get_bool("show_layer_height_doubleslider"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_layer_time_doubleslider",
+		append_bool_option(view_preview, "show_layer_time_doubleslider",
 			L("Show layer time on the scroll bar"),
 			L("Add the layer height (after the layer height, or if it's hidden after the layer z position) next to a widget of the layer double-scrollbar."),
 			app_config->get_bool("show_layer_time_doubleslider"));
 		
-		append_bool_option(m_tabid_2_optgroups.back().back(), "show_layer_area_doubleslider",
+		append_bool_option(view_preview, "show_layer_area_doubleslider",
 			L("Show layer area on the scroll bar"),
 			L("Add the layer area (the number just below the layer id) next to a widget of the layer double-scrollbar."),
 			app_config->get_bool("show_layer_area_doubleslider"));
 		
-        append_int_option(m_tabid_2_optgroups.back().back(), "side_panel_width", L("Side Panel Width"),
+        append_int_option(interface_layout, "side_panel_width", L("Side Panel Width"),
                           L("The width of the right panel, where the objects , presets and slicing information are "
                             "displayeed. It's in 'display unit'."),
                           6, app_config->get_int("side_panel_width"));
         m_values_need_restart.push_back("side_panel_width");
     }
 
-	append_int_option(m_tabid_2_optgroups.back().back(), "gcodeviewer_decimals",
+	append_int_option(view_preview, "gcodeviewer_decimals",
 		L("Decimals for gcode viewer colors"),
 		L("On the gcode viewer window, how many decimals are used to separate colors?"
 					" It's used for height, width, volumetric rate, section. Default is 2."),
@@ -1096,17 +1081,11 @@ void PreferencesDialog::build()
 	// as it's quite hard to detect a change and then clean & reload the gcode data... then asking for relaod is easier.
 	m_values_need_restart.push_back("gcodeviewer_decimals");
 
-	activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
 
     if (is_editor) {
-        // create layout options
-        assert(m_tabid_2_optgroups.size() - 1 == 2);
-        create_settings_mode_widget(tabs->GetPage(m_tabid_2_optgroups.size() - 1), m_tabid_2_optgroups.back().back());
-        // create ui_layout check
+        // Create the layout selector in the same semantic group as the other
+        // interface layout preferences.
         {
-            m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Settings layout and colors"), tabs, 2));
-            m_tabid_2_optgroups.back().back()->title_width = 0;
-            m_tabid_2_optgroups.back().back()->label_width = 0;
             ConfigOptionDef def_combobox;
             def_combobox.label = "_";
             def_combobox.type = coString;
@@ -1127,20 +1106,17 @@ void PreferencesDialog::build()
             def_combobox.set_default_value(new ConfigOptionStrings{selected.name + ": " + selected.description});
             def_combobox.opt_key = "ui_layout";
             Option option = Option(def_combobox);
-            m_tabid_2_optgroups.back().back()->append_single_option_line(option);
+            interface_layout->append_single_option_line(option);
             m_values_need_restart.push_back("ui_layout");
-            m_optkey_to_optgroup["ui_layout"] = m_tabid_2_optgroups.back().back();
+            m_optkey_to_optgroup["ui_layout"] = interface_layout;
             wxGetApp().sidebar().get_searcher().add_key(OptionKeyIdx::scalar("ui_layout"), Preset::TYPE_PREFERENCES,
-                                                        m_tabid_2_optgroups.back().back()->config_category(),
+                                                        interface_layout->config_category(),
                                                         L("Preferences"), def_combobox);
-            activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
         }
     }
 
-    m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Splash screen"), tabs, 2));
-
     // Show/Hide splash screen
-    append_bool_option(m_tabid_2_optgroups.back().back(), "show_splash_screen",
+    append_bool_option(startup, "show_splash_screen",
         L("Show splash screen"),
         L("Show splash screen"),
         app_config->get_bool("show_splash_screen"));
@@ -1174,84 +1150,56 @@ void PreferencesDialog::build()
         }
         def_combobox.set_default_value(new ConfigOptionString{ current_file_name });
         Option option = Option(def_combobox);
-        m_tabid_2_optgroups.back().back()->append_single_option_line(option);
-        m_optkey_to_optgroup[is_editor ? "splash_screen_editor" : "splash_screen_gcodeviewer"] = m_tabid_2_optgroups.back().back();
+        startup->append_single_option_line(option);
+        m_optkey_to_optgroup[is_editor ? "splash_screen_editor" : "splash_screen_gcodeviewer"] = startup;
         wxGetApp().sidebar().get_searcher().add_key(OptionKeyIdx::scalar(is_editor ? "splash_screen_editor" :
                                                                                      "splash_screen_gcodeviewer"),
                                                     Preset::TYPE_PREFERENCES,
-                                                    m_tabid_2_optgroups.back().back()->config_category(),
+                                                    startup->config_category(),
                                                     L("Preferences"), def_combobox);
     }
 
-    append_bool_option(m_tabid_2_optgroups.back().back(), "restore_win_position",
+    append_bool_option(startup, "restore_win_position",
         L("Restore window position on start"),
         L("If enabled, Slic3r will be open at the position it was closed"),
         app_config->get_bool("restore_win_position"));
 
 #ifdef WIN32
-    // Clear Undo / Redo stack on new project
-    append_bool_option(m_tabid_2_optgroups.back().back(), "check_blacklisted_library",
+    append_bool_option(system_health, "check_blacklisted_library",
         L("Check for problematic dynamic libraries"),
         L("Some software like (for example) ASUS Sonic Studio injects a DLL (library) that is known to create some instabilities."
         " This option let Slic3r check at startup if they are loaded."),
         app_config->get_bool("check_blacklisted_library"));
 #endif
 
-    activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-
     if (is_editor) {
 #if ENABLE_ENVIRONMENT_MAP
-        // Add "Render" tab
-        create_options_tab(L("Render"));
-        m_tabid_2_optgroups.back().emplace_back(create_options_group("", tabs, 1));
-        m_tabid_2_optgroups.back().back()->set_config_category_and_type(L("Render"), int(Preset::TYPE_PREFERENCES));
-        m_tabid_2_optgroups.back().back()->m_on_change =
-            [this](const OptionKeyIdx &opt_key_idx, bool enabled, const boost::any &value) {
-            assert(enabled);
-            if (auto it = m_values.find(opt_key_idx.key); it != m_values.end()) {
-                m_values.erase(it); // we shouldn't change value, if some of those parameters were selected, and then deselected
-                return;
-            }
-            m_values[opt_key_idx.key] = boost::any_cast<bool>(value) ? "1" : "0";
-        };
-
-        append_bool_option(m_tabid_2_optgroups.back().back(), "use_environment_map",
+        append_bool_option(view_rendering, "use_environment_map",
             L("Use environment map"),
             L("If enabled, renders object using the environment map."),
             app_config->get_bool("use_environment_map"));
-
-        activate_options_tab(m_tabid_2_optgroups.back().back());
 #endif // ENABLE_ENVIRONMENT_MAP
     }
 
-    // Add "Colors" tab
-    create_options_tab(_L("Colors"));
 #ifdef _WIN32
-    // Add "Dark Mode" group
     {
-        // Add "Dark Mode" group
-        m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Dark mode (experimental)"), tabs, 3));
-
-        append_bool_option(m_tabid_2_optgroups.back().back(), "dark_color_mode", L("Enable dark mode"),
+        append_bool_option(interface_theme, "dark_color_mode", L("Enable dark mode"),
                            L("If enabled, UI will use Dark mode colors. If disabled, old UI will be used."),
                            app_config->get_bool("dark_color_mode"));
 
         if (wxPlatformInfo::Get().GetOSMajorVersion() >= 10) // Use system menu just for Window newer then Windows 10
                                                              // Use menu with ownerdrawn items by default on systems older then Windows 10
         {
-            append_bool_option(m_tabid_2_optgroups.back().back(), "sys_menu_enabled", L("Use system menu for application"),
+            append_bool_option(interface_theme, "sys_menu_enabled", L("Use system menu for application"),
                                L("If enabled, application will use the standard Windows system menu,\n"
                                  "but on some combination of display scales it can look ugly. If disabled, old UI will be used."),
                                app_config->get_bool("sys_menu_enabled"));
             m_values_need_restart.push_back("sys_menu_enabled");
         }
-
-        activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
     }
 #endif //_WIN32
     
     if (is_editor) {
-        m_tabid_2_optgroups.back().emplace_back(create_options_group(_L("Gui Colors"), tabs, 3));
         //prusa hue : ~22, Susi hue: ~216, slic3r hue: ~55
         // color prusa -> susie
         //ICON 237, 107, 33 -> ed6b21 ; 2172eb
@@ -1261,7 +1209,7 @@ void PreferencesDialog::build()
         //TEXT 1.0f, 0.49f, 0.22f, 1.0f ff7d38 ; 0.26f, 0.55f, 1.0f, 1.0f 428cff
 
         // PS 237 107 33 ; SuSi 33 114 235
-        append_color_option(m_tabid_2_optgroups.back().back(), "color_light",
+        append_color_option(interface_theme, "color_light",
             L("Platter icons Color template"),
             _u8L("Color template used by the icons on the platter.") +" "+
             _u8L("It may need a lighter color, as it's used to replace white on top of a dark background.") +"\n"+
@@ -1269,7 +1217,7 @@ void PreferencesDialog::build()
             app_config->get("color_light"));
 
         // PS 253 126 66 ; SuSi 66 141 253
-        append_color_option(m_tabid_2_optgroups.back().back(), "color",
+        append_color_option(interface_theme, "color",
             L("Main Gui color template"),
             _u8L("Main color template.") +" "+
             _u8L("If you use a color with higher than 80% saturation and/or value, these will be increased. If lower, they will be decreased.") +"\n"+
@@ -1277,19 +1225,52 @@ void PreferencesDialog::build()
             app_config->get("color"));
 
         // PS 254 172 139 ; SS 139 185 254
-        append_color_option(m_tabid_2_optgroups.back().back(), "color_dark",
+        append_color_option(interface_theme, "color_dark",
             L("Text color template"),
             _u8L("This template will be used for drawing button text on hover.") +" "+
             _u8L("It can be a good idea to use a bit darker color, as some hues can be a bit difficult to read.") +"\n"+
             _u8L("Slic3r(yellow): ccbe29, PrusaSlicer(orange): cc6429, SuperSlicer(blue): 275cad"),
             app_config->get("color_dark"));
 
-        activate_options_tab(m_tabid_2_optgroups.back().back(), 3);
-
-        //create text options
-        create_settings_text_color_widget(tabs->GetPage(m_tabid_2_optgroups.size() - 1), m_tabid_2_optgroups.back().back());
-        create_settings_mode_color_widget(tabs->GetPage(m_tabid_2_optgroups.size() - 1), m_tabid_2_optgroups.back().back());
     }
+
+    const auto activate_options_group = [](const std::shared_ptr<ConfigOptionsGroup> &group) {
+        if (group && !group->get_lines().empty())
+            activate_options_tab(group, 3);
+    };
+
+    activate_options_group(workflow_project_behavior);
+    activate_options_group(workflow_project_safeguards);
+    activate_options_group(files_paths_and_associations);
+    activate_options_group(files_import);
+    activate_options_group(files_export);
+    activate_options_group(presets_visibility);
+    activate_options_group(presets_updates);
+
+    activate_options_group(interface_layout);
+    if (is_editor)
+        create_settings_mode_widget(tabs->GetPage(interface_tab), interface_layout);
+    activate_options_group(interface_controls);
+    activate_options_group(interface_accessibility);
+    if (is_editor) {
+        create_icon_size_slider(tabs->GetPage(interface_tab), interface_accessibility);
+        m_icon_size_sizer->ShowItems(app_config->get("use_custom_toolbar_size") == "1");
+        create_settings_font_widget(tabs->GetPage(interface_tab), interface_accessibility);
+    }
+    activate_options_group(interface_theme);
+    if (is_editor) {
+        create_settings_text_color_widget(tabs->GetPage(interface_tab), interface_theme);
+        create_settings_mode_color_widget(tabs->GetPage(interface_tab), interface_theme);
+    }
+
+    activate_options_group(view_camera_and_navigation);
+    activate_options_group(view_rendering);
+    activate_options_group(view_preview);
+    activate_options_group(startup);
+    activate_options_group(integrations);
+    if (is_editor)
+        create_downloader_path_sizer(tabs->GetPage(startup_tab), integrations);
+    activate_options_group(system_health);
 
 	// update alignment of the controls for all tabs
 	//update_ctrls_alignment();
