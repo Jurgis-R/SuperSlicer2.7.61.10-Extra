@@ -2153,10 +2153,12 @@ void GraphButton::BUILD()
             settings.step_y      = 0.1;
             settings.allowed_types = {GraphData::GraphType::LINEAR, GraphData::GraphType::SPLINE, GraphData::GraphType::SQUARE};
         }
-        if (this->m_opt.type == coGraphs)
-            settings.reset_vals = m_opt.get_default_value<ConfigOptionGraphs>()->get_at(m_opt_key_idx.idx);
-        if (this->m_opt.type == coGraph)
-            settings.reset_vals = m_opt.get_default_value<ConfigOptionGraph>()->value;
+        if (!settings.has_reset_vals) {
+            if (this->m_opt.type == coGraphs)
+                settings.reset_vals = m_opt.get_default_value<ConfigOptionGraphs>()->get_at(m_opt_key_idx.idx);
+            if (this->m_opt.type == coGraph)
+                settings.reset_vals = m_opt.get_default_value<ConfigOptionGraph>()->value;
+        }
         GraphDialog dlg(this->window, current_value, settings);
         if (dlg.ShowModal() == wxID_OK) {
             m_value = current_value = dlg.get_data();

@@ -466,6 +466,13 @@ class Slic3rAPI:
                 encoded = _as_bytes(value)
                 byte_refs.append(encoded)
                 setattr(defn, key, encoded)
+            elif key == "graph_settings" and isinstance(value, RawGraphSettings):
+                # ctypes keeps nested pointer fields alive through the raw
+                # structure; retain both it and its pointer until registration
+                # has copied the complete graph definition.
+                graph_settings_pointer = ctypes.pointer(value)
+                byte_refs.extend((value, graph_settings_pointer))
+                setattr(defn, key, graph_settings_pointer)
             else:
                 setattr(defn, key, value)
 

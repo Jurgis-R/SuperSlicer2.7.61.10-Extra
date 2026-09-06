@@ -149,7 +149,10 @@ namespace Slic3r {
         std::string label_max_y;
         // the kinds of graph types allowed. the button that allow toc hange them is hidden if only one is available.
         std::vector<GraphData::GraphType> allowed_types;
-        // the values when you click on the "reset" button (dynamically set to the current data stored in the setting)
+        // True when reset_vals is an explicit reset target. Otherwise the GUI
+        // uses the option's default value for the edited scalar/vector entry.
+        bool has_reset_vals { false };
+        // the values when you click on the "reset" button
         GraphData reset_vals;
         // min & max enforced points. if no values here, no enforced points.
         // if only one, only the min is enforced.

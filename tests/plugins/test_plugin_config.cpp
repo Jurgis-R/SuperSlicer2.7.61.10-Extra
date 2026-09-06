@@ -19,6 +19,7 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -703,6 +704,7 @@ TEST_CASE("Configuration definitions expose normalized plugin metadata",
     CHECK(std::string(raw.enum_def.value_label_pairs.items[0].label) == "Half");
     CHECK(std::string(raw.enum_def.value_label_pairs.items[1].value) == "1.25");
     CHECK(std::string(raw.enum_def.value_label_pairs.items[1].label) == "Nominal");
+    CHECK(raw.graph_settings == nullptr);
     for (uint64_t value : raw.reserved_u64)
         CHECK(value == 0);
     for (const void *value : raw.reserved_ptr)
@@ -712,6 +714,75 @@ TEST_CASE("Configuration definitions expose normalized plugin metadata",
         handle, "test_config_definition_vector_introspection", &raw) == 1);
     CHECK(raw.type == RAW_CO_VECTOR_FLOAT);
     CHECK(raw.is_vector_extruder == 1);
+
+    REQUIRE(orchestrator_get_option_def(
+        handle, "test_config_definition_graph_introspection", &raw) == 1);
+    REQUIRE(raw.graph_settings != nullptr);
+    const raw_graph_settings &graph = *raw.graph_settings;
+    CHECK(std::string(graph.title) == "Plugin graph");
+    CHECK(std::string(graph.description) == "Configure a value along the X axis.");
+    CHECK(std::string(graph.x_label) == "Position");
+    CHECK(std::string(graph.y_label) == "Value");
+    CHECK(graph.min_x == Approx(0.0));
+    CHECK(graph.max_x == Approx(100.0));
+    CHECK(graph.step_x == Approx(1.0));
+    CHECK(graph.min_y == Approx(0.0));
+    CHECK(graph.max_y == Approx(50.0));
+    CHECK(graph.step_y == Approx(0.5));
+    REQUIRE(graph.allowed_type_count == 2);
+    CHECK(graph.allowed_types[0] == RAW_GRAPH_TYPE_LINEAR);
+    CHECK(graph.allowed_types[1] == RAW_GRAPH_TYPE_SPLINE);
+    CHECK(graph.reset_values.begin_index == 0);
+    CHECK(graph.reset_values.end_index == 2);
+    CHECK(graph.reset_values.type == RAW_GRAPH_TYPE_SPLINE);
+    REQUIRE(graph.reset_values.point_count == 2);
+    CHECK(graph.reset_values.points[1].x == Approx(100.0));
+    CHECK(graph.reset_values.points[1].y == Approx(20.0));
+    REQUIRE(graph.enforced_value_count == 2);
+    CHECK(std::isnan(graph.enforced_values[0].x));
+    CHECK(graph.enforced_values[0].y == Approx(10.0));
+}
+
+TEST_CASE("Identical graph definitions accept NaN endpoint sentinels",
+          "[plugins][config][definition][graph]")
+{
+    // Runtime initialization registers this graph definition twice. Reaching
+    // this assertion proves that the second declaration was compatible.
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const orchestrator_handle *handle = reinterpret_cast<const orchestrator_handle *>(
+        &Slic3r::Orchestrator::instance());
+    raw_config_option_def definition = {};
+
+    REQUIRE(orchestrator_get_option_def(
+        handle, "test_config_definition_graph_introspection", &definition) == 1);
+    REQUIRE(definition.graph_settings != nullptr);
+    REQUIRE(definition.graph_settings->enforced_value_count == 2);
+    CHECK(std::isnan(definition.graph_settings->enforced_values[0].x));
+    CHECK(definition.graph_settings->enforced_values[0].y == Approx(10.0));
+}
+
+TEST_CASE("Explicit graph reset values remain distinct from the option default",
+          "[plugins][config][definition][graph]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const orchestrator_handle *handle = reinterpret_cast<const orchestrator_handle *>(
+        &Slic3r::Orchestrator::instance());
+
+    const Slic3r::ConfigOptionDef *native_definition =
+        Slic3r::PrintConfigDef::instance().get("test_config_definition_graph_introspection");
+    REQUIRE(native_definition != nullptr);
+    REQUIRE(native_definition->graph_settings != nullptr);
+    CHECK(native_definition->graph_settings->has_reset_vals);
+    CHECK(native_definition->graph_settings->reset_vals.type == Slic3r::GraphData::GraphType::SPLINE);
+    REQUIRE(native_definition->default_value != nullptr);
+    CHECK(native_definition->get_default_value<Slic3r::ConfigOptionGraph>()->value.type ==
+          Slic3r::GraphData::GraphType::LINEAR);
+
+    raw_config_option_def native_graph = {};
+    REQUIRE(orchestrator_get_option_def(handle, "extruder_clearance", &native_graph) == 1);
+    REQUIRE(native_graph.graph_settings != nullptr);
+    CHECK(native_graph.graph_settings->reset_values.type == RAW_GRAPH_TYPE_NONE);
+    CHECK(native_graph.graph_settings->reset_values.point_count == 0);
 }
 
 TEST_CASE("C++ configuration definition views own their copied data",
@@ -736,7 +807,121 @@ TEST_CASE("C++ configuration definition views own their copied data",
         "test_introspection_old", "test_introspection_legacy"});
     REQUIRE(definition->enum_entries.size() == 2);
     CHECK(definition->enum_entries[1].label == std::optional<std::string>("Nominal"));
+
+    const std::optional<slic3r_api::ConfigOptionDefinition> graph_definition =
+        view.option_definition("test_config_definition_graph_introspection");
+    REQUIRE(graph_definition.has_value());
+    REQUIRE(graph_definition->graph_settings.has_value());
+    CHECK(graph_definition->graph_settings->title == std::optional<std::string>("Plugin graph"));
+    CHECK(graph_definition->graph_settings->allowed_types == std::vector<raw_graph_type>{
+        RAW_GRAPH_TYPE_LINEAR, RAW_GRAPH_TYPE_SPLINE});
+    REQUIRE(graph_definition->graph_settings->reset_values.points.size() == 2);
+    CHECK(graph_definition->graph_settings->reset_values.points[1].x == Approx(100.0));
+    CHECK(graph_definition->graph_settings->enforced_values.size() == 2);
     CHECK_FALSE(view.option_definition("missing.test.option").has_value());
+}
+
+TEST_CASE("Graph editor definitions reject incompatible option types",
+          "[plugins][config][definition][graph]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
+    orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
+
+    raw_graph_settings graph_settings = {};
+    const raw_graph_type allowed[] = {RAW_GRAPH_TYPE_LINEAR};
+    graph_settings.min_x = 0.0;
+    graph_settings.max_x = 100.0;
+    graph_settings.step_x = 1.0;
+    graph_settings.min_y = 0.0;
+    graph_settings.max_y = 50.0;
+    graph_settings.step_y = 0.5;
+    graph_settings.allowed_types = allowed;
+    graph_settings.allowed_type_count = 1;
+
+    raw_config_option_def definition = raw_config_option_def_init();
+    definition.opt_key = "test.invalid.graph.settings";
+    definition.type = RAW_CO_FLOAT;
+    definition.container_type = RAW_CONTAINER_TYPE_PROJECT;
+    definition.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    definition.printer_technology = RAW_PT_FFF;
+    definition.default_serialized_value = "1";
+    definition.graph_settings = &graph_settings;
+    CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+
+    definition.type = RAW_CO_GRAPH;
+    graph_settings.allowed_types = nullptr;
+    CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+}
+
+TEST_CASE("Graph editor definitions reject unusable ranges and increments",
+          "[plugins][config][definition][graph]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
+    orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
+    const raw_graph_type allowed[] = {RAW_GRAPH_TYPE_LINEAR};
+
+    raw_graph_settings graph_settings = {};
+    graph_settings.min_x = 0.0;
+    graph_settings.max_x = 100.0;
+    graph_settings.step_x = 1.0;
+    graph_settings.min_y = 0.0;
+    graph_settings.max_y = 50.0;
+    graph_settings.step_y = 0.5;
+    graph_settings.allowed_types = allowed;
+    graph_settings.allowed_type_count = 1;
+
+    raw_config_option_def definition = raw_config_option_def_init();
+    definition.opt_key = "test.invalid.graph.range";
+    definition.type = RAW_CO_GRAPH;
+    definition.container_type = RAW_CONTAINER_TYPE_PROJECT;
+    definition.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    definition.printer_technology = RAW_PT_FFF;
+    definition.default_serialized_value = "0:2:1:0x10:100x20";
+    definition.graph_settings = &graph_settings;
+
+    SECTION("zero-initialized settings")
+    {
+        raw_graph_settings zero_settings = {};
+        definition.graph_settings = &zero_settings;
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("non-finite X bound")
+    {
+        graph_settings.min_x = std::numeric_limits<double>::quiet_NaN();
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("non-finite Y bound")
+    {
+        graph_settings.max_y = std::numeric_limits<double>::infinity();
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("empty X range")
+    {
+        graph_settings.max_x = graph_settings.min_x;
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("reversed Y range")
+    {
+        graph_settings.min_y = graph_settings.max_y + 1.0;
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("zero X increment")
+    {
+        graph_settings.step_x = 0.0;
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("negative Y increment")
+    {
+        graph_settings.step_y = -0.5;
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("non-finite increment")
+    {
+        graph_settings.step_x = std::numeric_limits<double>::infinity();
+        CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
 }
 
 TEST_CASE("Configuration definition snapshots are isolated between threads",

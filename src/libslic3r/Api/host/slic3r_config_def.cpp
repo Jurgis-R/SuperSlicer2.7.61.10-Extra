@@ -36,9 +36,11 @@ struct ConfigOptionDefSnapshot;
 
 static raw_config_option_type raw_option_type(ConfigOptionType type) noexcept;
 static raw_container_type raw_container(ConfigOptionContainerType type) noexcept;
+static raw_graph_type raw_graph_interpolation(GraphData::GraphType type) noexcept;
 static const char *optional_string(const std::string &value) noexcept;
 static void rebuild_string_pointers(const std::vector<std::string> &strings,
                                     std::vector<const char *> &pointers);
+static void populate_graph_snapshot(ConfigOptionDefSnapshot &snapshot, const GraphSettings &source);
 static void populate_snapshot(ConfigOptionDefSnapshot &snapshot, const ConfigOptionDef &source);
 
 /* Own every allocation referenced by one returned raw_config_option_def. */
@@ -64,6 +66,19 @@ struct ConfigOptionDefSnapshot
     std::vector<std::string> enum_values;
     std::vector<std::string> enum_labels;
     std::vector<key_value_string_pair_t> enum_pairs;
+    raw_graph_settings graph_settings = {};
+    std::string graph_title;
+    std::string graph_description;
+    std::string graph_y_label;
+    std::string graph_x_label;
+    std::string graph_null_label;
+    std::string graph_label_min_x;
+    std::string graph_label_max_x;
+    std::string graph_label_min_y;
+    std::string graph_label_max_y;
+    std::vector<raw_graph_type> graph_allowed_types;
+    std::vector<c_vec2d> graph_reset_points;
+    std::vector<c_vec2d> graph_enforced_values;
 };
 
 thread_local ConfigOptionDefSnapshot config_option_def_snapshot;
@@ -107,6 +122,17 @@ static raw_container_type raw_container(ConfigOptionContainerType type) noexcept
     }
 }
 
+static raw_graph_type raw_graph_interpolation(GraphData::GraphType type) noexcept
+{
+    switch (type) {
+    case GraphData::GraphType::SQUARE: return RAW_GRAPH_TYPE_SQUARE;
+    case GraphData::GraphType::LINEAR: return RAW_GRAPH_TYPE_LINEAR;
+    case GraphData::GraphType::SPLINE: return RAW_GRAPH_TYPE_SPLINE;
+    case GraphData::GraphType::COUNT:  return RAW_GRAPH_TYPE_NONE;
+    }
+    return RAW_GRAPH_TYPE_NONE;
+}
+
 static const char *optional_string(const std::string &value) noexcept
 {
     return value.empty() ? nullptr : value.c_str();
@@ -119,6 +145,59 @@ static void rebuild_string_pointers(const std::vector<std::string> &strings,
     pointers.reserve(strings.size());
     for (const std::string &value : strings)
         pointers.push_back(value.c_str());
+}
+
+/* Build the pointer-backed graph subrecord owned by the enclosing snapshot. */
+static void populate_graph_snapshot(ConfigOptionDefSnapshot &snapshot, const GraphSettings &source)
+{
+    snapshot.graph_title = source.title;
+    snapshot.graph_description = source.description;
+    snapshot.graph_y_label = source.y_label;
+    snapshot.graph_x_label = source.x_label;
+    snapshot.graph_null_label = source.null_label;
+    snapshot.graph_label_min_x = source.label_min_x;
+    snapshot.graph_label_max_x = source.label_max_x;
+    snapshot.graph_label_min_y = source.label_min_y;
+    snapshot.graph_label_max_y = source.label_max_y;
+
+    snapshot.graph_allowed_types.reserve(source.allowed_types.size());
+    for (GraphData::GraphType type : source.allowed_types)
+        snapshot.graph_allowed_types.push_back(raw_graph_interpolation(type));
+    if (source.has_reset_vals) {
+        snapshot.graph_reset_points.reserve(source.reset_vals.graph_points.size());
+        for (const Vec2d &point : source.reset_vals.graph_points)
+            snapshot.graph_reset_points.push_back({point.x(), point.y()});
+    }
+    snapshot.graph_enforced_values.reserve(source.enforced_values.size());
+    for (const Vec2d &point : source.enforced_values)
+        snapshot.graph_enforced_values.push_back({point.x(), point.y()});
+
+    raw_graph_settings &out = snapshot.graph_settings;
+    out.title = optional_string(snapshot.graph_title);
+    out.description = optional_string(snapshot.graph_description);
+    out.y_label = optional_string(snapshot.graph_y_label);
+    out.x_label = optional_string(snapshot.graph_x_label);
+    out.null_label = optional_string(snapshot.graph_null_label);
+    out.min_x = source.min_x;
+    out.max_x = source.max_x;
+    out.step_x = source.step_x;
+    out.min_y = source.min_y;
+    out.max_y = source.max_y;
+    out.step_y = source.step_y;
+    out.label_min_x = optional_string(snapshot.graph_label_min_x);
+    out.label_max_x = optional_string(snapshot.graph_label_max_x);
+    out.label_min_y = optional_string(snapshot.graph_label_min_y);
+    out.label_max_y = optional_string(snapshot.graph_label_max_y);
+    out.allowed_types = snapshot.graph_allowed_types.data();
+    out.allowed_type_count = uint32_t(snapshot.graph_allowed_types.size());
+    out.reset_values.begin_index = source.has_reset_vals ? uint32_t(source.reset_vals.begin_idx) : 0u;
+    out.reset_values.end_index = source.has_reset_vals ? uint32_t(source.reset_vals.end_idx) : 0u;
+    out.reset_values.type = source.has_reset_vals ?
+        raw_graph_interpolation(source.reset_vals.type) : RAW_GRAPH_TYPE_NONE;
+    out.reset_values.points = snapshot.graph_reset_points.data();
+    out.reset_values.point_count = uint32_t(snapshot.graph_reset_points.size());
+    out.enforced_values = snapshot.graph_enforced_values.data();
+    out.enforced_value_count = uint32_t(snapshot.graph_enforced_values.size());
 }
 
 static void populate_snapshot(ConfigOptionDefSnapshot &snapshot, const ConfigOptionDef &source)
@@ -156,6 +235,9 @@ static void populate_snapshot(ConfigOptionDefSnapshot &snapshot, const ConfigOpt
             snapshot.enum_pairs.push_back({value, label});
         }
     }
+
+    if (source.graph_settings)
+        populate_graph_snapshot(snapshot, *source.graph_settings);
 
     raw_config_option_def &out = snapshot.raw;
     out.opt_key = snapshot.opt_key.c_str();
@@ -209,6 +291,7 @@ static void populate_snapshot(ConfigOptionDefSnapshot &snapshot, const ConfigOpt
     out.depends_on = {snapshot.dependency_pointers.data(), uint32_t(snapshot.dependency_pointers.size())};
     out.default_serialized_value = source.default_value ? snapshot.default_serialized_value.c_str() : nullptr;
     out.enum_def.value_label_pairs = {snapshot.enum_pairs.data(), uint32_t(snapshot.enum_pairs.size())};
+    out.graph_settings = source.graph_settings ? &snapshot.graph_settings : nullptr;
 }
 
 } // namespace

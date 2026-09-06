@@ -41,6 +41,9 @@
 
 namespace Slic3r {
 
+static bool graph_coordinate_equal(double lhs, double rhs);
+static bool graph_enforced_values_equal(const GraphSettings &lhs, const GraphSettings &rhs);
+
 // Derive the public report state from registrations and issues after every
 // mutation. A package may register useful plugins before a later registration
 // fails, which is reported as LoadedWithErrors instead of hiding those plugins.
@@ -103,6 +106,119 @@ static ConfigOptionType config_option_type(raw_config_option_type type)
     }
 }
 
+static bool raw_graph_type_valid(raw_graph_type type) noexcept
+{
+    return type == RAW_GRAPH_TYPE_SQUARE ||
+           type == RAW_GRAPH_TYPE_LINEAR ||
+           type == RAW_GRAPH_TYPE_SPLINE;
+}
+
+static GraphData::GraphType graph_type_from_raw(raw_graph_type type)
+{
+    switch (type) {
+    case RAW_GRAPH_TYPE_SQUARE: return GraphData::GraphType::SQUARE;
+    case RAW_GRAPH_TYPE_SPLINE: return GraphData::GraphType::SPLINE;
+    case RAW_GRAPH_TYPE_NONE:
+    case RAW_GRAPH_TYPE_LINEAR:
+    default:                    return GraphData::GraphType::LINEAR;
+    }
+}
+
+/* Validate pointer/count pairs and graph ranges before copying plugin memory. */
+static bool raw_graph_settings_valid(const raw_config_option_def &def)
+{
+    const raw_graph_settings *settings = def.graph_settings;
+    if (settings == nullptr)
+        return true;
+    if (def.type != RAW_CO_GRAPH && def.type != RAW_CO_VECTOR_GRAPH)
+        return false;
+    if ((settings->allowed_type_count > 0 && settings->allowed_types == nullptr) ||
+        (settings->reset_values.point_count > 0 && settings->reset_values.points == nullptr) ||
+        (settings->enforced_value_count > 0 && settings->enforced_values == nullptr) ||
+        settings->enforced_value_count > 2)
+        return false;
+
+    // GraphDialog constructs bounded spin controls and divides by each step
+    // while editing. Both axes therefore need finite, non-empty ranges and
+    // finite positive increments before the definition reaches the GUI.
+    if (!std::isfinite(settings->min_x) || !std::isfinite(settings->max_x) ||
+        !std::isfinite(settings->step_x) || settings->min_x >= settings->max_x ||
+        settings->step_x <= 0.0 ||
+        !std::isfinite(settings->min_y) || !std::isfinite(settings->max_y) ||
+        !std::isfinite(settings->step_y) || settings->min_y >= settings->max_y ||
+        settings->step_y <= 0.0)
+        return false;
+
+    std::set<raw_graph_type> unique_types;
+    for (uint32_t idx = 0; idx < settings->allowed_type_count; ++idx) {
+        const raw_graph_type type = settings->allowed_types[idx];
+        if (!raw_graph_type_valid(type) || !unique_types.insert(type).second)
+            return false;
+    }
+
+    const raw_graph_data &reset = settings->reset_values;
+    if (reset.begin_index > reset.end_index || reset.end_index > reset.point_count)
+        return false;
+    if (reset.point_count == 0) {
+        if (reset.begin_index != 0 || reset.end_index != 0 ||
+            (reset.type != RAW_GRAPH_TYPE_NONE && !raw_graph_type_valid(reset.type)))
+            return false;
+    } else if (!raw_graph_type_valid(reset.type)) {
+        return false;
+    }
+    for (uint32_t idx = 0; idx < reset.point_count; ++idx) {
+        const c_vec2d &point = reset.points[idx];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+            (idx > 0 && reset.points[idx - 1].x > point.x))
+            return false;
+    }
+    for (uint32_t idx = 0; idx < settings->enforced_value_count; ++idx) {
+        const c_vec2d &point = settings->enforced_values[idx];
+        if ((!std::isfinite(point.x) && !std::isnan(point.x)) || !std::isfinite(point.y))
+            return false;
+    }
+    return true;
+}
+
+/* Copy graph editor metadata into the host-owned ConfigOptionDef. */
+static void populate_graph_settings_from_raw(ConfigOptionDef &out, const raw_graph_settings &source)
+{
+    out.graph_settings = std::make_shared<GraphSettings>();
+    GraphSettings &destination = *out.graph_settings;
+    destination.title = source.title == nullptr ? std::string() : std::string(source.title);
+    destination.description = source.description == nullptr ? std::string() : std::string(source.description);
+    destination.y_label = source.y_label == nullptr ? std::string() : std::string(source.y_label);
+    destination.x_label = source.x_label == nullptr ? std::string() : std::string(source.x_label);
+    destination.null_label = source.null_label == nullptr ? std::string() : std::string(source.null_label);
+    destination.min_x = source.min_x;
+    destination.max_x = source.max_x;
+    destination.step_x = source.step_x;
+    destination.min_y = source.min_y;
+    destination.max_y = source.max_y;
+    destination.step_y = source.step_y;
+    destination.label_min_x = source.label_min_x == nullptr ? std::string() : std::string(source.label_min_x);
+    destination.label_max_x = source.label_max_x == nullptr ? std::string() : std::string(source.label_max_x);
+    destination.label_min_y = source.label_min_y == nullptr ? std::string() : std::string(source.label_min_y);
+    destination.label_max_y = source.label_max_y == nullptr ? std::string() : std::string(source.label_max_y);
+
+    destination.allowed_types.reserve(source.allowed_type_count);
+    for (uint32_t idx = 0; idx < source.allowed_type_count; ++idx)
+        destination.allowed_types.push_back(graph_type_from_raw(source.allowed_types[idx]));
+
+    const raw_graph_data &reset = source.reset_values;
+    destination.has_reset_vals = reset.type != RAW_GRAPH_TYPE_NONE;
+    destination.reset_vals.begin_idx = reset.begin_index;
+    destination.reset_vals.end_idx = reset.end_index;
+    destination.reset_vals.type = graph_type_from_raw(reset.type);
+    destination.reset_vals.graph_points.reserve(reset.point_count);
+    for (uint32_t idx = 0; idx < reset.point_count; ++idx)
+        destination.reset_vals.graph_points.emplace_back(reset.points[idx].x, reset.points[idx].y);
+
+    destination.enforced_values.reserve(source.enforced_value_count);
+    for (uint32_t idx = 0; idx < source.enforced_value_count; ++idx)
+        destination.enforced_values.emplace_back(source.enforced_values[idx].x, source.enforced_values[idx].y);
+}
+
 static bool string_vector_equal(const std::vector<std::string> &lhs, const std::vector<std::string> &rhs)
 {
     return lhs == rhs;
@@ -125,6 +241,52 @@ static bool enum_def_equal(const ConfigOptionDef &lhs, const ConfigOptionDef &rh
 
     return lhs.enum_def->values() == rhs.enum_def->values() &&
            lhs.enum_def->labels() == rhs.enum_def->labels();
+}
+
+/* Treat matching NaN graph endpoint sentinels as the same coordinate. */
+static bool graph_coordinate_equal(double lhs, double rhs)
+{
+    return lhs == rhs || (std::isnan(lhs) && std::isnan(rhs));
+}
+
+/* Compare enforced graph endpoints without applying NaN's IEEE inequality. */
+static bool graph_enforced_values_equal(const GraphSettings &lhs, const GraphSettings &rhs)
+{
+    if (lhs.enforced_values.size() != rhs.enforced_values.size())
+        return false;
+
+    for (size_t idx = 0; idx < lhs.enforced_values.size(); ++idx) {
+        const Vec2d &left = lhs.enforced_values[idx];
+        const Vec2d &right = rhs.enforced_values[idx];
+        if (!graph_coordinate_equal(left.x(), right.x()) ||
+            !graph_coordinate_equal(left.y(), right.y()))
+            return false;
+    }
+    return true;
+}
+
+static bool graph_settings_equal(const ConfigOptionDef &lhs, const ConfigOptionDef &rhs)
+{
+    if (!lhs.graph_settings || !rhs.graph_settings)
+        return !lhs.graph_settings && !rhs.graph_settings;
+
+    const GraphSettings &left = *lhs.graph_settings;
+    const GraphSettings &right = *rhs.graph_settings;
+    return left.title == right.title && left.description == right.description &&
+           left.y_label == right.y_label && left.x_label == right.x_label &&
+           left.null_label == right.null_label &&
+           optional_double_equal(left.min_x, right.min_x) &&
+           optional_double_equal(left.max_x, right.max_x) &&
+           optional_double_equal(left.step_x, right.step_x) &&
+           optional_double_equal(left.min_y, right.min_y) &&
+           optional_double_equal(left.max_y, right.max_y) &&
+           optional_double_equal(left.step_y, right.step_y) &&
+           left.label_min_x == right.label_min_x && left.label_max_x == right.label_max_x &&
+           left.label_min_y == right.label_min_y && left.label_max_y == right.label_max_y &&
+           left.allowed_types == right.allowed_types &&
+           left.has_reset_vals == right.has_reset_vals &&
+           (!left.has_reset_vals || left.reset_vals == right.reset_vals) &&
+           graph_enforced_values_equal(left, right);
 }
 
 static bool config_option_def_compatible(const ConfigOptionDef &existing,
@@ -181,6 +343,7 @@ static bool config_option_def_compatible(const ConfigOptionDef &existing,
     if (!string_vector_equal(existing.shortcut, candidate.shortcut)) return fail("shortcut");
     if (!string_vector_equal(existing.depends_on, candidate.depends_on)) return fail("depends_on");
     if (!enum_def_equal(existing, candidate)) return fail("enum_def");
+    if (!graph_settings_equal(existing, candidate)) return fail("graph_settings");
     if (config_option_def_default_serialized(existing) != config_option_def_default_serialized(candidate))
         return fail("default_value");
 
@@ -348,6 +511,9 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
         }
     }
 
+    if (def->graph_settings != nullptr)
+        populate_graph_settings_from_raw(out, *def->graph_settings);
+
     ConfigOption *temp_default_option = out.create_empty_option();
     if (def->default_serialized_value != nullptr)
         temp_default_option->deserialize(def->default_serialized_value);
@@ -445,7 +611,7 @@ option_def_error_code orchestrator_create_option_def(orchestrator_handle *me, co
 
     if (def->opt_key == nullptr || def->default_serialized_value == nullptr ||
         def->container_type == RAW_CONTAINER_TYPE_NONE || def->option_preset_type == RAW_PRESET_TYPE_NONE ||
-        def->printer_technology == RAW_PT_NONE)
+        def->printer_technology == RAW_PT_NONE || !Slic3r::raw_graph_settings_valid(*def))
         return OPTION_DEF_ERROR_INVALID_ARGUMENT;
 
     try {

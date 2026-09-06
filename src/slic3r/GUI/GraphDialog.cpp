@@ -334,14 +334,14 @@ GraphPanel::GraphPanel(wxWindow *parent, GraphData data, const GraphSettings &se
         bool freeze_front = false, freeze_back = false;
         if (!enforced_vals.empty()) {
             if (!std::isnan(enforced_vals.front().x())) {
-                if (buttons.front().first != enforced_vals.front().x() || buttons.front().second != enforced_vals.front().y()) {
+                if (buttons.empty() || buttons.front().first != enforced_vals.front().x() || buttons.front().second != enforced_vals.front().y()) {
                     buttons.emplace(buttons.begin(), float(enforced_vals.front().x()), float(enforced_vals.front().y()));
                 }
                 freeze_front = true;
             }
             if (enforced_vals.size() > 1) {
                 if (!std::isnan(enforced_vals.back().x())) {
-                    if (buttons.back().first != enforced_vals.back().x() ||
+                    if (buttons.empty() || buttons.back().first != enforced_vals.back().x() ||
                         buttons.back().second != enforced_vals.back().y()) {
                         buttons.emplace_back(float(enforced_vals.back().x()), float(enforced_vals.back().y()));
                     }
@@ -350,6 +350,7 @@ GraphPanel::GraphPanel(wxWindow *parent, GraphData data, const GraphSettings &se
             }
         }
         m_chart->set_buttons(buttons, freeze_front, freeze_back);
+        m_chart->set_type(reset_vals.type);
         m_chart->set_xy_range(
             reset_vals.begin_idx >= 0 && reset_vals.begin_idx < reset_vals.graph_points.size() ? reset_vals.graph_points[reset_vals.begin_idx].x() : std::numeric_limits<float>::quiet_NaN(),
             std::numeric_limits<float>::quiet_NaN(), 

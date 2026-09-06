@@ -6,8 +6,9 @@
 #define slic3r_config_def_h_
 
 #define SLIC3R_PLUGIN_API_CONFIG_DEF_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CONFIG_DEF_MINOR 1u
+#define SLIC3R_PLUGIN_API_CONFIG_DEF_MINOR 2u
 
+#include "slic3r_config_option.h"
 #include "slic3r_config_types.h"
 #include "slic3r_plugin_types.h"
 #include "slic3r_utils.h"
@@ -135,6 +136,60 @@ A Label is the string that is shown in the interface.
 typedef struct option_enum_def_t {
     key_value_string_pair_array_t value_label_pairs; /* value+label pairs */
 } option_enum_def_t;
+
+/* A graph value expressed without exposing host-owned C++ containers. */
+typedef struct raw_graph_data {
+    /* Usable range inside points: begin_index is included, end_index excluded. */
+    uint32_t begin_index;
+    uint32_t end_index;
+    raw_graph_type type;
+    const c_vec2d *points;
+    uint32_t point_count;
+} raw_graph_data;
+
+/*
+GUI metadata required to edit a GRAPH or VECTOR_GRAPH option.
+
+All strings and arrays are borrowed only for the duration of
+orchestrator_create_option_def(). The host copies them. Introspection snapshots
+returned by orchestrator_get_option_def() remain valid until the next query on
+the same thread, following the lifetime of the containing definition.
+*/
+typedef struct raw_graph_settings {
+    const char *title;
+    const char *description;
+    const char *y_label;
+    const char *x_label;
+    const char *null_label;
+
+    /* Finite editor bounds with min < max, and a finite positive step. */
+    double min_x;
+    double max_x;
+    double step_x;
+    double min_y;
+    double max_y;
+    double step_y;
+
+    const char *label_min_x;
+    const char *label_max_x;
+    const char *label_min_y;
+    const char *label_max_y;
+
+    /* NONE is not an interpolation mode and is rejected in this array. */
+    const raw_graph_type *allowed_types;
+    uint32_t allowed_type_count;
+
+    /*
+    Optional reset graph. NONE means that the editor falls back to the option's
+    default value. A real interpolation type supplies an explicit reset target;
+    its point list may intentionally be empty.
+    */
+    raw_graph_data reset_values;
+
+    /* Zero, one or two endpoint values enforced by the graph editor. */
+    const c_vec2d *enforced_values;
+    uint32_t enforced_value_count;
+} raw_graph_settings;
 
 
 /* ========================== MAIN STRUCT ========================== */
@@ -319,7 +374,16 @@ typedef struct raw_config_option_def {
 
     /* Reserved for future expansion (must be zero) */
     uint64_t reserved_u64[8];
-    const void *reserved_ptr[8];
+
+    /*
+    Optional graph editor definition. It is accepted only for GRAPH and
+    VECTOR_GRAPH options. This field consumes the first pointer slot reserved
+    by version 1.1, preserving the size and offsets of the public structure.
+    */
+    const raw_graph_settings *graph_settings;
+
+    /* Reserved for future expansion (must be zero) */
+    const void *reserved_ptr[7];
 
 } raw_config_option_def;
 

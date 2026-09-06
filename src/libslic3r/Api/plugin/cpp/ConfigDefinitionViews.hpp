@@ -22,6 +22,7 @@ They are read-only descriptions; changing a member never changes PrintConfigDef.
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 
 namespace slic3r_api {
 
@@ -35,6 +36,39 @@ struct ConfigOptionEnumEntry
 {
     std::optional<std::string> value;
     std::optional<std::string> label;
+};
+
+struct ConfigGraphData
+{
+    uint32_t begin_index = 0;
+    uint32_t end_index = 0;
+    raw_graph_type type = RAW_GRAPH_TYPE_NONE;
+    std::vector<ConfigPoint> points;
+};
+
+/* An owning copy of the graph editor metadata attached to one definition. */
+struct ConfigGraphSettings
+{
+    explicit ConfigGraphSettings(const raw_graph_settings &raw);
+
+    std::optional<std::string> title;
+    std::optional<std::string> description;
+    std::optional<std::string> y_label;
+    std::optional<std::string> x_label;
+    std::optional<std::string> null_label;
+    double min_x = 0.0;
+    double max_x = 0.0;
+    double step_x = 0.0;
+    double min_y = 0.0;
+    double max_y = 0.0;
+    double step_y = 0.0;
+    std::optional<std::string> label_min_x;
+    std::optional<std::string> label_max_x;
+    std::optional<std::string> label_min_y;
+    std::optional<std::string> label_max_y;
+    std::vector<raw_graph_type> allowed_types;
+    ConfigGraphData reset_values;
+    std::vector<ConfigPoint> enforced_values;
 };
 
 /* An owning C++ copy of every field published by raw_config_option_def. */
@@ -84,7 +118,48 @@ struct ConfigOptionDefinition
     std::vector<std::string> depends_on;
     std::optional<std::string> default_serialized_value;
     std::vector<ConfigOptionEnumEntry> enum_entries;
+    std::optional<ConfigGraphSettings> graph_settings;
 };
+
+inline ConfigGraphSettings::ConfigGraphSettings(const raw_graph_settings &raw) :
+    min_x(raw.min_x),
+    max_x(raw.max_x),
+    step_x(raw.step_x),
+    min_y(raw.min_y),
+    max_y(raw.max_y),
+    step_y(raw.step_y)
+{
+    const std::pair<const char *, std::optional<std::string> *> optional_strings[] = {
+        {raw.title, &title},
+        {raw.description, &description},
+        {raw.y_label, &y_label},
+        {raw.x_label, &x_label},
+        {raw.null_label, &null_label},
+        {raw.label_min_x, &label_min_x},
+        {raw.label_max_x, &label_max_x},
+        {raw.label_min_y, &label_min_y},
+        {raw.label_max_y, &label_max_y},
+    };
+    for (const std::pair<const char *, std::optional<std::string> *> &entry : optional_strings)
+        if (entry.first != nullptr)
+            *entry.second = std::string(entry.first);
+
+    if (raw.allowed_types != nullptr)
+        allowed_types.assign(raw.allowed_types, raw.allowed_types + raw.allowed_type_count);
+    reset_values.begin_index = raw.reset_values.begin_index;
+    reset_values.end_index = raw.reset_values.end_index;
+    reset_values.type = raw.reset_values.type;
+    if (raw.reset_values.points != nullptr) {
+        reset_values.points.reserve(raw.reset_values.point_count);
+        for (uint32_t idx = 0; idx < raw.reset_values.point_count; ++idx)
+            reset_values.points.push_back({raw.reset_values.points[idx].x, raw.reset_values.points[idx].y});
+    }
+    if (raw.enforced_values != nullptr) {
+        enforced_values.reserve(raw.enforced_value_count);
+        for (uint32_t idx = 0; idx < raw.enforced_value_count; ++idx)
+            enforced_values.push_back({raw.enforced_values[idx].x, raw.enforced_values[idx].y});
+    }
+}
 
 inline ConfigOptionDefinition::ConfigOptionDefinition(const raw_config_option_def &raw) :
     opt_key(raw.opt_key == nullptr ? std::string() : std::string(raw.opt_key)),
@@ -149,18 +224,21 @@ inline ConfigOptionDefinition::ConfigOptionDefinition(const raw_config_option_de
     }
 
     const key_value_string_pair_array_t &raw_entries = raw.enum_def.value_label_pairs;
-    if (raw_entries.items == nullptr)
-        return;
-    enum_entries.reserve(raw_entries.count);
-    for (uint32_t index = 0; index < raw_entries.count; ++index) {
-        const key_value_string_pair_t &entry = raw_entries.items[index];
-        ConfigOptionEnumEntry copied;
-        if (entry.value != nullptr)
-            copied.value = std::string(entry.value);
-        if (entry.label != nullptr)
-            copied.label = std::string(entry.label);
-        enum_entries.push_back(std::move(copied));
+    if (raw_entries.items != nullptr) {
+        enum_entries.reserve(raw_entries.count);
+        for (uint32_t index = 0; index < raw_entries.count; ++index) {
+            const key_value_string_pair_t &entry = raw_entries.items[index];
+            ConfigOptionEnumEntry copied;
+            if (entry.value != nullptr)
+                copied.value = std::string(entry.value);
+            if (entry.label != nullptr)
+                copied.label = std::string(entry.label);
+            enum_entries.push_back(std::move(copied));
+        }
     }
+
+    if (raw.graph_settings != nullptr)
+        graph_settings.emplace(*raw.graph_settings);
 }
 
 } // namespace slic3r_api

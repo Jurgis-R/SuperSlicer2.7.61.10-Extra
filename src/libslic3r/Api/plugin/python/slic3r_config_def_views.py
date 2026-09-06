@@ -60,6 +60,89 @@ class ConfigOptionEnumEntry:
     label: str | None
 
 
+@dataclass(frozen=True)
+class ConfigGraphData:
+    """One detached graph value, including its usable point range."""
+
+    begin_index: int
+    end_index: int
+    type: int
+    points: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class ConfigGraphSettings:
+    """An immutable copy of the graph editor metadata for one setting."""
+
+    title: str | None
+    description: str | None
+    y_label: str | None
+    x_label: str | None
+    null_label: str | None
+    min_x: float
+    max_x: float
+    step_x: float
+    min_y: float
+    max_y: float
+    step_y: float
+    label_min_x: str | None
+    label_max_x: str | None
+    label_min_y: str | None
+    label_max_y: str | None
+    allowed_types: tuple[int, ...]
+    reset_values: ConfigGraphData
+    enforced_values: tuple[tuple[float, float], ...]
+
+    @classmethod
+    def from_raw(cls, raw) -> "ConfigGraphSettings":
+        """Deep-copy arrays and strings owned by a native definition snapshot."""
+        allowed_types = ()
+        if raw.allowed_types:
+            allowed_types = tuple(
+                int(raw.allowed_types[index]) for index in range(int(raw.allowed_type_count))
+            )
+        reset_points = ()
+        if raw.reset_values.points:
+            reset_points = tuple(
+                (
+                    float(raw.reset_values.points[index].x),
+                    float(raw.reset_values.points[index].y),
+                )
+                for index in range(int(raw.reset_values.point_count))
+            )
+        enforced_values = ()
+        if raw.enforced_values:
+            enforced_values = tuple(
+                (float(raw.enforced_values[index].x), float(raw.enforced_values[index].y))
+                for index in range(int(raw.enforced_value_count))
+            )
+        return cls(
+            title=_decode(raw.title),
+            description=_decode(raw.description),
+            y_label=_decode(raw.y_label),
+            x_label=_decode(raw.x_label),
+            null_label=_decode(raw.null_label),
+            min_x=float(raw.min_x),
+            max_x=float(raw.max_x),
+            step_x=float(raw.step_x),
+            min_y=float(raw.min_y),
+            max_y=float(raw.max_y),
+            step_y=float(raw.step_y),
+            label_min_x=_decode(raw.label_min_x),
+            label_max_x=_decode(raw.label_max_x),
+            label_min_y=_decode(raw.label_min_y),
+            label_max_y=_decode(raw.label_max_y),
+            allowed_types=allowed_types,
+            reset_values=ConfigGraphData(
+                int(raw.reset_values.begin_index),
+                int(raw.reset_values.end_index),
+                int(raw.reset_values.type),
+                reset_points,
+            ),
+            enforced_values=enforced_values,
+        )
+
+
 @abi_requires_headers("slic3r_config_def.h")
 @dataclass(frozen=True)
 class ConfigOptionDefinition:
@@ -107,6 +190,7 @@ class ConfigOptionDefinition:
     depends_on: tuple[str, ...]
     default_serialized_value: str | None
     enum_entries: tuple[ConfigOptionEnumEntry, ...]
+    graph_settings: ConfigGraphSettings | None
 
     @classmethod
     def from_raw(cls, raw: RawConfigOptionDef) -> "ConfigOptionDefinition":
@@ -160,6 +244,11 @@ class ConfigOptionDefinition:
             depends_on=_copy_strings(raw.depends_on),
             default_serialized_value=_decode(raw.default_serialized_value),
             enum_entries=tuple(enum_entries),
+            graph_settings=(
+                ConfigGraphSettings.from_raw(raw.graph_settings.contents)
+                if raw.graph_settings
+                else None
+            ),
         )
 
 
@@ -197,6 +286,8 @@ def option_definition(api, key: str) -> ConfigOptionDefinition | None:
 
 
 __all__ = [
+    "ConfigGraphData",
+    "ConfigGraphSettings",
     "ConfigOptionDefinition",
     "ConfigOptionEnumEntry",
     "ConfigOptionKey",

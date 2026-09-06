@@ -1,6 +1,7 @@
 #include "plugin_test_helpers.hpp"
 
 #include <cassert>
+#include <limits>
 #include <stdexcept>
 
 #include <boost/log/trivial.hpp>
@@ -200,6 +201,18 @@ void register_config_introspection_fixture(orchestrator_handle *orchestrator)
         {"0.5", "Half"},
         {"1.25", "Nominal"},
     };
+    static const raw_graph_type graph_types[] = {
+        RAW_GRAPH_TYPE_LINEAR,
+        RAW_GRAPH_TYPE_SPLINE,
+    };
+    static const c_vec2d graph_reset_points[] = {
+        {0.0, 10.0},
+        {100.0, 20.0},
+    };
+    static const c_vec2d graph_enforced_values[] = {
+        {std::numeric_limits<double>::quiet_NaN(), 10.0},
+        {100.0, 20.0},
+    };
 
     raw_config_option_def definition = raw_config_option_def_init();
     definition.opt_key = "test_config_definition_introspection";
@@ -267,6 +280,43 @@ void register_config_introspection_fixture(orchestrator_handle *orchestrator)
     point3_definition.printer_technology = RAW_PT_FFF;
     point3_definition.default_serialized_value = "1,2,3";
     register_config_option_or_fail(orchestrator, point3_definition);
+
+    raw_graph_settings graph_settings = {};
+    graph_settings.title = "Plugin graph";
+    graph_settings.description = "Configure a value along the X axis.";
+    graph_settings.y_label = "Value";
+    graph_settings.x_label = "Position";
+    graph_settings.null_label = "No graph values";
+    graph_settings.min_x = 0.0;
+    graph_settings.max_x = 100.0;
+    graph_settings.step_x = 1.0;
+    graph_settings.min_y = 0.0;
+    graph_settings.max_y = 50.0;
+    graph_settings.step_y = 0.5;
+    graph_settings.label_min_x = "Minimum position";
+    graph_settings.label_max_x = "Maximum position";
+    graph_settings.label_min_y = "Minimum value";
+    graph_settings.label_max_y = "Maximum value";
+    graph_settings.allowed_types = graph_types;
+    graph_settings.allowed_type_count = 2;
+    graph_settings.reset_values = {
+        0, 2, RAW_GRAPH_TYPE_SPLINE, graph_reset_points, 2};
+    graph_settings.enforced_values = graph_enforced_values;
+    graph_settings.enforced_value_count = 2;
+
+    raw_config_option_def graph_definition = raw_config_option_def_init();
+    graph_definition.opt_key = "test_config_definition_graph_introspection";
+    graph_definition.type = RAW_CO_GRAPH;
+    graph_definition.container_type = RAW_CONTAINER_TYPE_PROJECT;
+    graph_definition.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    graph_definition.printer_technology = RAW_PT_FFF;
+    graph_definition.default_serialized_value = "0:2:1:0x10:100x20";
+    graph_definition.graph_settings = &graph_settings;
+    register_config_option_or_fail(orchestrator, graph_definition);
+    // Alternative providers may publish the same definition. Register it a
+    // second time to exercise compatibility with the native NaN endpoint
+    // sentinel before PrintConfigDef is finalized.
+    register_config_option_or_fail(orchestrator, graph_definition);
 }
 
 void activate_plugin_or_fail(Slic3r::Orchestrator &orchestrator, const char *plugin_id)

@@ -121,6 +121,45 @@ class ConfigDefinitionHost:
         )
         self.backing.append(pairs)
         raw.enum_def.value_label_pairs = self.generated.KeyValueStringPairArray(pairs, 2)
+
+        allowed_types = (ctypes.c_int * 2)(
+            self.generated.RAW_GRAPH_TYPE_LINEAR,
+            self.generated.RAW_GRAPH_TYPE_SPLINE,
+        )
+        reset_points = (self.generated.CVec2d * 2)(
+            self.generated.CVec2d(0.0, 10.0),
+            self.generated.CVec2d(100.0, 20.0),
+        )
+        enforced_values = (self.generated.CVec2d * 1)(
+            self.generated.CVec2d(0.0, 10.0),
+        )
+        graph_settings = self.generated.RawGraphSettings()
+        graph_settings.title = b"Graph title"
+        graph_settings.description = b"Graph description"
+        graph_settings.x_label = b"Position"
+        graph_settings.y_label = b"Value"
+        graph_settings.min_x = 0.0
+        graph_settings.max_x = 100.0
+        graph_settings.step_x = 1.0
+        graph_settings.min_y = 0.0
+        graph_settings.max_y = 50.0
+        graph_settings.step_y = 0.5
+        graph_settings.allowed_types = allowed_types
+        graph_settings.allowed_type_count = 2
+        graph_settings.reset_values = self.generated.RawGraphData(
+            0,
+            2,
+            self.generated.RAW_GRAPH_TYPE_LINEAR,
+            reset_points,
+            2,
+        )
+        graph_settings.enforced_values = enforced_values
+        graph_settings.enforced_value_count = 1
+        graph_settings_pointer = ctypes.pointer(graph_settings)
+        self.backing.extend(
+            [allowed_types, reset_points, enforced_values, graph_settings, graph_settings_pointer]
+        )
+        raw.graph_settings = graph_settings_pointer
         return 1
 
 
@@ -186,11 +225,22 @@ class PythonConfigDefinitionViewTests(unittest.TestCase):
         self.assertEqual(first.max_value, 8.5)
         self.assertEqual(first.max_literal_value, 4.5)
         self.assertEqual(first.flags, 0x1020304050607080)
+        self.assertEqual(first.graph_settings.title, "Graph title")
+        self.assertEqual(
+            first.graph_settings.allowed_types,
+            (
+                self.generated.RAW_GRAPH_TYPE_LINEAR,
+                self.generated.RAW_GRAPH_TYPE_SPLINE,
+            ),
+        )
+        self.assertEqual(first.graph_settings.reset_values.points[1], (100.0, 20.0))
+        self.assertEqual(first.graph_settings.enforced_values, ((0.0, 10.0),))
 
         second = self.views.option_definition(api, "alpha")
         self.assertEqual(second.label, "Label 2")
         self.assertEqual(first.label, "Label 1")
         self.assertEqual(first.aliases, ("old_alpha", "old_alpha_1"))
+        self.assertEqual(first.graph_settings.title, "Graph title")
         with self.assertRaises(FrozenInstanceError):
             first.label = "changed"
         self.assertIsNone(self.views.option_definition(api, "missing"))
@@ -222,6 +272,67 @@ class PythonConfigDefinitionViewTests(unittest.TestCase):
         public_api.orchestrator = api.orchestrator
         self.assertEqual(public_api.option_keys()[1].key, "point3")
         self.assertEqual(public_api.option_definition("alpha").label, "Label 2")
+
+    def test_create_option_def_passes_complete_graph_settings(self):
+        generated = self.generated
+
+        class CreationHost:
+            def __init__(self):
+                self.captured = None
+
+            def orchestrator_create_option_def(self, orchestrator, definition):
+                raw = definition._obj
+                graph = raw.graph_settings.contents
+                self.captured = (
+                    raw.opt_key,
+                    graph.title,
+                    tuple(graph.allowed_types[index] for index in range(graph.allowed_type_count)),
+                    tuple(
+                        (graph.reset_values.points[index].x, graph.reset_values.points[index].y)
+                        for index in range(graph.reset_values.point_count)
+                    ),
+                )
+                return generated.OPTION_DEF_ERROR_OK
+
+        allowed_types = (ctypes.c_int * 2)(
+            generated.RAW_GRAPH_TYPE_LINEAR,
+            generated.RAW_GRAPH_TYPE_SPLINE,
+        )
+        reset_points = (generated.CVec2d * 2)(
+            generated.CVec2d(0.0, 1.0),
+            generated.CVec2d(10.0, 2.0),
+        )
+        graph = generated.RawGraphSettings()
+        graph.title = b"Creation graph"
+        graph.allowed_types = allowed_types
+        graph.allowed_type_count = 2
+        graph.reset_values = generated.RawGraphData(
+            0, 2, generated.RAW_GRAPH_TYPE_LINEAR, reset_points, 2
+        )
+
+        host = CreationHost()
+        api = self.api_module.Slic3rAPI.__new__(self.api_module.Slic3rAPI)
+        api.host = host
+        api.orchestrator = ctypes.c_void_p(10)
+        api.create_option_def(
+            opt_key="plugin.graph",
+            type=generated.RAW_CO_GRAPH,
+            container_type=generated.RAW_CONTAINER_TYPE_PROJECT,
+            option_preset_type=generated.RAW_PRESET_TYPE_FFF_PRINT,
+            printer_technology=generated.RAW_PT_FFF,
+            default_serialized_value="0:2:1:0x1:10x2",
+            graph_settings=graph,
+        )
+
+        self.assertEqual(
+            host.captured,
+            (
+                b"plugin.graph",
+                b"Creation graph",
+                (generated.RAW_GRAPH_TYPE_LINEAR, generated.RAW_GRAPH_TYPE_SPLINE),
+                ((0.0, 1.0), (10.0, 2.0)),
+            ),
+        )
 
     def test_wrappers_declare_the_config_definition_contract(self):
         attribute = "__slic3r_abi_headers__"
