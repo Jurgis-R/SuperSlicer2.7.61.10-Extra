@@ -39,6 +39,8 @@ Lifetime model
   were created with ``ClipperOperand.null()``.
 - Owned handles are released with ``storage_free()`` when the object is closed,
   exits a ``with`` block, or is garbage-collected.
+- Assignment shares one operand wrapper. Shallow and deep copies are forbidden
+  because an owned operand has unique native ownership.
 - Collections returned by ``to_polygon_collection()`` and
   ``to_expolygon_collection()`` are also storage-owned wrappers and follow the
   geometry helper lifetime rules.
@@ -74,6 +76,7 @@ from slic3r_geometry_views import (
     StoredExPolygonCollection,
     StoredPolygonCollection,
     StoredPolylineCollection,
+    _UniqueOwnerMixin,
 )
 from slic3r_abi import abi_requires_headers
 
@@ -131,7 +134,7 @@ def _unary_args(storage_or_subject, subject=None):
 
 
 @abi_requires_headers("slic3r_clipper.h")
-class ClipperOperand:
+class ClipperOperand(_UniqueOwnerMixin):
     """
     Storage-owned Clipper input or result.
 

@@ -1,5 +1,6 @@
 """Behavior tests for the small public Python data-tree accessors."""
 
+import copy
 import ctypes
 import importlib
 import importlib.util
@@ -42,6 +43,15 @@ class DataTreeHost:
                 generated.CPoint(50, 60), generated.CPoint(70, 80), 1.5
             ),
         ]
+        self.freed = []
+
+    def storage_new_config(self, storage):
+        self.config_storage = address(storage)
+        return 801
+
+    def storage_free(self, storage, handle):
+        self.freed.append((address(storage), address(handle)))
+        return 1
 
     def layer_region_get_flow(self, region, role):
         self.flow_calls.append((address(region), int(role)))
@@ -123,6 +133,18 @@ class PythonDataTreeViewTests(unittest.TestCase):
             region_island.region(-1)
         with self.assertRaises(IndexError):
             region_island.region(2)
+
+    def test_stored_config_has_unique_ownership(self):
+        api = self.make_api()
+        config = self.views.StoredConfig(api, 11)
+
+        for copier in (copy.copy, copy.deepcopy):
+            with self.assertRaisesRegex(TypeError, "StoredConfig.*unique native resource"):
+                copier(config)
+        self.assertEqual(api.host.freed, [])
+        self.assertEqual(config.address, 801)
+        self.assertTrue(config.close())
+        self.assertEqual(api.host.freed, [(11, 801)])
 
     def test_layer_owner_bottom_and_curled_line_snapshots(self):
         api = self.make_api()

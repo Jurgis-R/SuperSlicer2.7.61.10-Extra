@@ -1,5 +1,6 @@
 """Behavior tests for the high-level Python Surface wrappers."""
 
+import copy
 import ctypes
 import importlib
 import importlib.util
@@ -32,6 +33,7 @@ class ReallocatingSurfaceHost:
         self.surfaces = {}
         self.properties = {}
         self.geometry_point_counts = {}
+        self.freed = []
 
     @staticmethod
     def _int(handle):
@@ -130,6 +132,7 @@ class ReallocatingSurfaceHost:
 
     def storage_free(self, _storage, handle):
         address = self._int(handle)
+        self.freed.append((self._int(_storage), address))
         record = self.collections.pop(address, None)
         if record is not None:
             for surface_handle in record["handles"]:
@@ -192,6 +195,25 @@ class PythonSurfaceViewTests(unittest.TestCase):
         self.assertTrue(area.contour().empty())
         area.free_from_storage()
         collection.free_from_storage()
+
+    def test_stored_surface_wrappers_have_unique_ownership(self):
+        host = ReallocatingSurfaceHost()
+        api = type("Api", (), {"host": host})()
+        collection = self.surfaces.StoredSurfaceCollection(api, 1)
+        area = self.geometry.StoredExPolygon.adopt_owned(api, 1, 920)
+        surface = self.surfaces.StoredSurface(area, 17)
+
+        for owner in (collection, surface):
+            for copier in (copy.copy, copy.deepcopy):
+                with self.subTest(owner=type(owner).__name__, copier=copier.__name__):
+                    with self.assertRaisesRegex(
+                        TypeError, rf"{type(owner).__name__}.*unique native resource"
+                    ):
+                        copier(owner)
+        self.assertEqual(host.freed, [])
+        self.assertTrue(collection.free_from_storage())
+        self.assertTrue(surface.free_from_storage())
+        self.assertEqual(len(host.freed), 2)
 
 
 if __name__ == "__main__":

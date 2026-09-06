@@ -10,7 +10,9 @@ Python views for Surface objects and collections.
 must never be freed by a plugin and element views may be invalidated by a
 structural change to their collection. ``StoredSurfaceCollection`` owns a
 temporary collection allocated in plugin storage; use ``free_from_storage()``
-or a ``with`` block before clearing that storage.
+or a ``with`` block before clearing that storage. Stored wrappers have unique
+ownership: assignment shares a wrapper, while shallow and deep copies are
+forbidden.
 
 Copy operations preserve their source. Move operations consume the geometry
 inside a ``StoredExPolygon`` container but leave that container valid and
@@ -44,6 +46,7 @@ from slic3r_geometry_views import (
     MutableExPolygon,
     StoredExPolygon,
     StoredExPolygonCollection,
+    _UniqueOwnerMixin,
 )
 
 if TYPE_CHECKING:
@@ -260,7 +263,7 @@ class SurfaceCollection(HandleView):
 # Storage-owned collection used to assemble Surfaces before a host callback
 # moves them into the data tree. Existing element views die after any append.
 @abi_requires_headers("slic3r_data_tree.h", "slic3r_geometry.h")
-class StoredSurfaceCollection(SurfaceCollection):
+class StoredSurfaceCollection(_UniqueOwnerMixin, SurfaceCollection):
     def __init__(self, api, storage) -> None:
         self._storage = _require_handle(storage, "storage")
         handle = api.host.storage_new_surface_collection(_void_p(self._storage))
@@ -411,7 +414,7 @@ class StoredSurfaceCollection(SurfaceCollection):
 # Owned pairing of storage-backed geometry and a Surface type. Construction
 # transfers ownership from the input StoredExPolygon, which becomes invalid.
 @abi_requires_headers("slic3r_data_tree.h", "slic3r_geometry.h")
-class StoredSurface:
+class StoredSurface(_UniqueOwnerMixin):
     def __init__(self, expolygon: StoredExPolygon, surface_type: int) -> None:
         if not isinstance(expolygon, StoredExPolygon):
             raise TypeError("expolygon must be a StoredExPolygon")

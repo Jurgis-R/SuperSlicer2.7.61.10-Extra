@@ -1,6 +1,8 @@
 """Ownership and dispatch tests for Python geometry and Clipper helpers."""
 
+import copy
 import ctypes
+import gc
 import importlib
 import importlib.util
 from pathlib import Path
@@ -133,6 +135,64 @@ class PythonGeometryClipperViewTests(unittest.TestCase):
         self.assertTrue(polylines.free_from_storage())
         self.assertFalse(hull.free_from_storage())
         self.assertEqual(api.host.freed, [(7, hull_handle), (7, polylines_handle)])
+
+    def test_storage_owned_geometry_rejects_shallow_and_deep_copy(self):
+        api = self.make_api()
+        owner_types = (
+            self.geometry.StoredPolygon,
+            self.geometry.StoredPolyline,
+            self.geometry.StoredPolygonCollection,
+            self.geometry.StoredPolylineCollection,
+            self.geometry.StoredExPolygon,
+            self.geometry.StoredExPolygonCollection,
+        )
+        owners = [
+            owner_type.adopt_owned(api, 7, 300 + idx)
+            for idx, owner_type in enumerate(owner_types)
+        ]
+
+        for owner in owners:
+            with self.subTest(owner=type(owner).__name__):
+                for copier in (copy.copy, copy.deepcopy):
+                    with self.assertRaisesRegex(
+                        TypeError, rf"{type(owner).__name__}.*unique native resource"
+                    ):
+                        copier(owner)
+                gc.collect()
+                self.assertTrue(owner)
+                self.assertNotIn((7, owner.handle()), api.host.freed)
+
+        handles = [owner.handle() for owner in owners]
+        for owner in owners:
+            self.assertTrue(owner.free_from_storage())
+        self.assertEqual(api.host.freed, [(7, handle) for handle in handles])
+        with self.assertRaisesRegex(TypeError, "StoredPolygon.*unique native resource"):
+            copy.copy(owners[0])
+
+    def test_borrowed_geometry_and_python_distancer_remain_copyable(self):
+        api = self.make_api()
+        polygon = self.geometry.Polygon(api, 501)
+        polygon_copy = copy.copy(polygon)
+        distancer = self.geometry.LineDistancer()
+        distancer_copy = copy.deepcopy(distancer)
+
+        self.assertIsNot(polygon_copy, polygon)
+        self.assertEqual(polygon_copy.handle(), polygon.handle())
+        self.assertIsNot(distancer_copy, distancer)
+        self.assertTrue(distancer_copy.empty())
+        self.assertEqual(api.host.freed, [])
+
+    def test_clipper_operand_has_unique_ownership(self):
+        api = self.make_api()
+        operand = self.clipper.ClipperOperand.adopt_owned(api, 8, 601)
+
+        for copier in (copy.copy, copy.deepcopy):
+            with self.assertRaisesRegex(TypeError, "ClipperOperand.*unique native resource"):
+                copier(operand)
+        self.assertEqual(api.host.freed, [])
+        self.assertTrue(operand)
+        self.assertTrue(operand.free_from_storage())
+        self.assertEqual(api.host.freed, [(8, 601)])
 
     def test_polyline_clipping_and_bbox_helpers_own_their_results(self):
         api = self.make_api()

@@ -51,7 +51,10 @@ Lifetime model
 - StoredPolygon, StoredPolyline, StoredPolygonCollection,
   StoredPolylineCollection, StoredExPolygon and StoredExPolygonCollection own a
   mutable handle allocated in a storage_handle. They call storage_free() when
-  freed or garbage-collected.
+  freed or garbage-collected. Assignment shares one wrapper normally, but
+  copy.copy() and copy.deepcopy() are forbidden because ownership is unique.
+  Use an explicit native clone/copy operation when independent geometry is
+  required.
 - Views returned from collections are invalidated when the owning collection is
   resized, cleared, moved from, extracted from, or destroyed.
 
@@ -370,9 +373,23 @@ class HandleView:
         return self.is_valid_handle()
 
 
+class _UniqueOwnerMixin:
+    """Reject Python object copying for wrappers with unique native ownership."""
+
+    def __copy__(self):
+        raise TypeError(
+            f"{type(self).__name__} owns a unique native resource and cannot be copied"
+        )
+
+    def __deepcopy__(self, memo):
+        raise TypeError(
+            f"{type(self).__name__} owns a unique native resource and cannot be copied"
+        )
+
+
 # Ownership mixin for Stored* wrappers. The handle must have been allocated in a
 # storage_handle, and the mixin releases it with storage_free() when possible.
-class StoredHandleMixin:
+class StoredHandleMixin(_UniqueOwnerMixin):
     def _init_storage(self, storage) -> None:
         self._storage = _require_handle(storage, "storage")
         self._owns_handle = True

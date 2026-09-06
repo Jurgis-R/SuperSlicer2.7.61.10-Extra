@@ -96,6 +96,7 @@ from slic3r_geometry_views import (
     ExPolygonCollection,
     StoredExPolygonCollection,
     StoredPolygonCollection,
+    _UniqueOwnerMixin,
 )
 from slic3r_surface_views import (
     MutableSurface,
@@ -921,7 +922,8 @@ class MutableConfig(Config):
 
 # Owned mutable DynamicConfig allocated in a storage_handle. The storage must
 # outlive this object and must not be cleared until close() has released it.
-class StoredConfig(MutableConfig):
+# Assignment shares this wrapper; copy.copy() and copy.deepcopy() are forbidden.
+class StoredConfig(_UniqueOwnerMixin, MutableConfig):
     def __init__(self, api, storage) -> None:
         self._storage = _require_handle(storage, "storage")
         handle = api.host.storage_new_config(_void_p(self._storage))

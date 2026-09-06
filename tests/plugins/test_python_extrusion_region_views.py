@@ -1,5 +1,6 @@
 """Behavior tests for Python extrusion properties and regional setting helpers."""
 
+import copy
 import ctypes
 import importlib
 import importlib.util
@@ -40,6 +41,11 @@ class PropertyHost:
         self.payloads = {}
         self.generic_payloads = {}
         self.children = {1: [2], 2: []}
+        self.freed = []
+
+    def storage_free(self, storage, handle):
+        self.freed.append((address(storage), address(handle)))
+        return 1
 
     def orchestrator_register_property(self, orchestrator, name, byte_count, alignment):
         self.registration = (
@@ -184,6 +190,20 @@ class PythonExtrusionRegionViewTests(unittest.TestCase):
         api = self.make_api()
         self.assertTrue(self.extrusions.ExtrusionEntity(api, 1).is_loop())
         self.assertFalse(self.extrusions.ExtrusionEntity(api, 2).is_loop())
+
+    def test_stored_extrusion_entity_has_unique_ownership(self):
+        api = self.make_api()
+        entity = self.extrusions.StoredExtrusionEntity.adopt_owned(api, 12, 901)
+
+        for copier in (copy.copy, copy.deepcopy):
+            with self.assertRaisesRegex(
+                TypeError, "StoredExtrusionEntity.*unique native resource"
+            ):
+                copier(entity)
+        self.assertEqual(api.host.freed, [])
+        self.assertEqual(entity.address, 901)
+        self.assertTrue(entity.free_from_storage())
+        self.assertEqual(api.host.freed, [(12, 901)])
 
     def test_dynamic_property_key_is_typed_and_orchestrator_bound(self):
         api = self.make_api()

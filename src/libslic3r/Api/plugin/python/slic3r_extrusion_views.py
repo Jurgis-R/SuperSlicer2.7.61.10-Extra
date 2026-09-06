@@ -46,7 +46,8 @@ Const-correctness model
 - MutableExtrusionEntity is a borrowed mutable view. Use it only when the host
   explicitly gives the plugin a mutable handle.
 - StoredExtrusionEntity owns a mutable handle allocated in a storage_handle and
-  releases it with storage_free().
+  releases it with storage_free(). Assignment shares that wrapper; explicit
+  shallow and deep copies are forbidden because ownership is unique.
 
 Property guide: [Using Plugin Properties](/doc/plugins/properties.md)
 
@@ -113,7 +114,12 @@ from slic3r_api_generated import (
     SCALED_EPSILON,
 )
 
-from slic3r_geometry_views import as_point, make_point, point_tuple
+from slic3r_geometry_views import (
+    _UniqueOwnerMixin,
+    as_point,
+    make_point,
+    point_tuple,
+)
 from slic3r_abi import abi_requires_headers
 from slic3r_property_key import PluginPropertyKey
 
@@ -1053,7 +1059,7 @@ class ExtrusionTreeVisitor(ExtrusionTreeVisitorBase):
 
 # Owned mutable extrusion entity allocated in a storage_handle. This is the
 # normal way for a Python plugin to build a new extrusion tree.
-class StoredExtrusionEntity(MutableExtrusionEntity):
+class StoredExtrusionEntity(_UniqueOwnerMixin, MutableExtrusionEntity):
     def __init__(self, api, storage, src: ExtrusionEntity | MutableExtrusionEntity | Sequence[CPoint] | None = None) -> None:
         self._storage = _require_handle(storage, "storage")
         if src is None:
