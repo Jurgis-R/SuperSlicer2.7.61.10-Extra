@@ -487,36 +487,67 @@ class PluginUseVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     @staticmethod
-    def _merge_optional_scope(before: dict[str, set[str]], after: dict[str, set[str]]) -> dict[str, set[str]]:
-        """Merge a block that may execute zero times without claiming certainty."""
+    def _merge_alternative_scopes(
+        first: dict[str, set[str]], second: dict[str, set[str]]
+    ) -> dict[str, set[str]]:
+        """Merge alternative control-flow states without claiming certainty."""
         merged = {}
-        for name in before.keys() | after.keys():
-            before_types = before.get(name)
-            after_types = after.get(name)
-            if not before_types or not after_types:
+        for name in first.keys() | second.keys():
+            first_types = first.get(name)
+            second_types = second.get(name)
+            if not first_types or not second_types:
                 merged[name] = set()
             else:
-                merged[name] = before_types | after_types
+                merged[name] = first_types | second_types
         return merged
+
+    @staticmethod
+    def _copy_scope(scope: dict[str, set[str]]) -> dict[str, set[str]]:
+        """Copy one type scope so a control-flow branch may mutate it independently."""
+        return {name: set(types) for name, types in scope.items()}
 
     def _visit_optional_block(self, statements: list[ast.stmt]) -> None:
         """Visit a conditional block and retain both entry and exit type states."""
-        before_types = {name: set(types) for name, types in self.type_scope_stack[-1].items()}
-        before_items = {name: set(types) for name, types in self.item_scope_stack[-1].items()}
+        before_types = self._copy_scope(self.type_scope_stack[-1])
+        before_items = self._copy_scope(self.item_scope_stack[-1])
         for statement in statements:
             self.visit(statement)
-        self.type_scope_stack[-1] = self._merge_optional_scope(
+        self.type_scope_stack[-1] = self._merge_alternative_scopes(
             before_types, self.type_scope_stack[-1]
         )
-        self.item_scope_stack[-1] = self._merge_optional_scope(
+        self.item_scope_stack[-1] = self._merge_alternative_scopes(
             before_items, self.item_scope_stack[-1]
+        )
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        entry_types = self._copy_scope(self.type_scope_stack[-1])
+        entry_items = self._copy_scope(self.item_scope_stack[-1])
+
+        for statement in node.body:
+            self.visit(statement)
+        body_types = self._copy_scope(self.type_scope_stack[-1])
+        body_items = self._copy_scope(self.item_scope_stack[-1])
+
+        self.type_scope_stack[-1] = self._copy_scope(entry_types)
+        self.item_scope_stack[-1] = self._copy_scope(entry_items)
+        for statement in node.orelse:
+            self.visit(statement)
+        else_types = self.type_scope_stack[-1]
+        else_items = self.item_scope_stack[-1]
+
+        self.type_scope_stack[-1] = self._merge_alternative_scopes(
+            body_types, else_types
+        )
+        self.item_scope_stack[-1] = self._merge_alternative_scopes(
+            body_items, else_items
         )
 
     def visit_For(self, node: ast.For) -> None:
         self.visit(node.iter)
         item_types = self._iterable_item_classes(node.iter)
-        before_types = {name: set(types) for name, types in self.type_scope_stack[-1].items()}
-        before_items = {name: set(types) for name, types in self.item_scope_stack[-1].items()}
+        before_types = self._copy_scope(self.type_scope_stack[-1])
+        before_items = self._copy_scope(self.item_scope_stack[-1])
         if isinstance(node.target, ast.Name):
             self.type_scope_stack[-1][node.target.id] = item_types
             self.item_scope_stack[-1][node.target.id] = set()
@@ -524,10 +555,10 @@ class PluginUseVisitor(ast.NodeVisitor):
             self.visit(node.target)
         for statement in node.body:
             self.visit(statement)
-        self.type_scope_stack[-1] = self._merge_optional_scope(
+        self.type_scope_stack[-1] = self._merge_alternative_scopes(
             before_types, self.type_scope_stack[-1]
         )
-        self.item_scope_stack[-1] = self._merge_optional_scope(
+        self.item_scope_stack[-1] = self._merge_alternative_scopes(
             before_items, self.item_scope_stack[-1]
         )
         self._visit_optional_block(node.orelse)

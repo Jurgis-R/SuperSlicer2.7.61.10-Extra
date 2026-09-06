@@ -659,6 +659,119 @@ class AbiPackagingTests(unittest.TestCase):
             self.assertIn("slic3r_geometry.h", requirements)
             self.assertIn("slic3r_extrusion_entity.h", requirements)
 
+    def test_conditional_branches_merge_receiver_types_conservatively(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            runtime.joinpath("slic3r_api.py").write_text(
+                "from slic3r_abi import abi_requires_headers\n"
+                "@abi_requires_headers('slic3r_geometry.h')\n"
+                "class First:\n"
+                " def touch(self): pass\n"
+                "@abi_requires_headers('slic3r_extrusion_entity.h')\n"
+                "class Second:\n"
+                " def touch(self): pass\n",
+                encoding="utf-8",
+            )
+            runtime.joinpath("slic3r_abi.py").write_text(
+                "def abi_requires_headers(*headers): pass\n", encoding="utf-8"
+            )
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            cases = {
+                "unknown_if_branch": (
+                    "def inspect(value: First, unknown, condition):\n"
+                    " if condition:\n"
+                    "  value = unknown\n"
+                    " else:\n"
+                    "  value = First()\n"
+                    " value.touch()\n",
+                    {"slic3r_geometry.h", "slic3r_extrusion_entity.h"},
+                ),
+                "two_known_branches": (
+                    "def inspect(value: First, condition):\n"
+                    " if condition:\n"
+                    "  value = First()\n"
+                    " else:\n"
+                    "  value = Second()\n"
+                    " value.touch()\n",
+                    {"slic3r_geometry.h", "slic3r_extrusion_entity.h"},
+                ),
+                "missing_else": (
+                    "def inspect(value: First, unknown, condition):\n"
+                    " if condition:\n"
+                    "  value = unknown\n"
+                    " value.touch()\n",
+                    {"slic3r_geometry.h", "slic3r_extrusion_entity.h"},
+                ),
+                "nested_elif": (
+                    "def inspect(value: First, unknown, first, second):\n"
+                    " if first:\n"
+                    "  if second:\n"
+                    "   value = Second()\n"
+                    "  else:\n"
+                    "   value = First()\n"
+                    " elif second:\n"
+                    "  value = unknown\n"
+                    " else:\n"
+                    "  value = First()\n"
+                    " value.touch()\n",
+                    {"slic3r_geometry.h", "slic3r_extrusion_entity.h"},
+                ),
+                "unchanged_receiver": (
+                    "def inspect(value: First, unknown, condition):\n"
+                    " if condition:\n"
+                    "  other = unknown\n"
+                    " else:\n"
+                    "  other = unknown\n"
+                    " value.touch()\n",
+                    {"slic3r_geometry.h"},
+                ),
+            }
+            for name, (source, expected) in cases.items():
+                with self.subTest(branches=name):
+                    entry.write_text(
+                        "from slic3r_api import First, Second\n" + source,
+                        encoding="utf-8",
+                    )
+                    requirements = self.analyzer.analyze_plugin(
+                        entry, root, catalog, bindings
+                    )
+                    branch_contracts = requirements.intersection({
+                        "slic3r_geometry.h",
+                        "slic3r_extrusion_entity.h",
+                    })
+                    self.assertEqual(branch_contracts, expected)
+
+    def test_conditional_branches_merge_iterable_item_types(self):
+        runtime = ROOT / "src/libslic3r/Api/plugin/python"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, _catalog_path = self._write_catalog(root)
+            bindings = self.analyzer.build_binding_index(runtime, catalog)
+            entry = root / "plugin.py"
+            entry.write_text(
+                "from slic3r_api import PrintingPlan\n"
+                "def inspect(plan: PrintingPlan, unknown, condition):\n"
+                " if condition:\n"
+                "  groups = plan.groups()\n"
+                " else:\n"
+                "  groups = unknown\n"
+                " for group in groups:\n"
+                "  group.valid()\n",
+                encoding="utf-8",
+            )
+
+            requirements = self.analyzer.analyze_plugin(
+                entry, root, catalog, bindings
+            )
+
+            self.assertIn("slic3r_printing_plan.h", requirements)
+            self.assertIn("slic3r_gcode_script.h", requirements)
+            self.assertIn("slic3r_gcode_firmware.h", requirements)
+
     def test_ambiguous_dunder_init_call_is_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
