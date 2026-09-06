@@ -59,6 +59,7 @@ from slic3r_api_generated import (
     CMatrix4d,
     CMeshSlicingParams,
     CTriangleIndices,
+    CVec2d,
     PLUGIN_PROPERTY_TYPE_LAYER_ADHESION,
     PLUGIN_PROPERTY_TYPE_LAYER_BRIM,
     PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT,
@@ -425,13 +426,39 @@ class GraphData(DataTreeView):
 
     The handle is invalidated when its parent option is replaced, resized or
     destroyed. Do not free it or retain it across configuration mutations.
-    Interpolation and serialization only read the graph; they do not expose its
-    mutable native storage.
+    Point access and interpolation only read the graph; they do not expose its
+    mutable native storage. Serialize the parent ConfigOption when a stable text
+    representation is needed.
     """
 
     def size(self) -> int:
         """Return the number of usable points in the graph."""
         return int(self.api.host.graph_data_size(self.c_handle()))
+
+    def point(self, index: int) -> ConfigPoint:
+        """
+        Copy one usable, unscaled graph point.
+
+        The returned value is independent from the native graph and remains
+        valid after its parent option is changed or destroyed.
+        """
+        if index < 0:
+            raise IndexError(f"graph point index {index} is outside [0, {self.size()})")
+
+        point = CVec2d()
+        if not self.api.host.graph_data_get_point(
+            self.c_handle(), int(index), ctypes.byref(point)
+        ):
+            raise IndexError(f"graph point index {index} is outside [0, {self.size()})")
+        return ConfigPoint(float(point.x), float(point.y))
+
+    def points(self) -> tuple[ConfigPoint, ...]:
+        """Copy all usable graph points in interpolation order."""
+        return tuple(self.point(index) for index in range(self.size()))
+
+    def type(self) -> int:
+        """Return one generated ``RAW_GRAPH_TYPE_*`` interpolation mode."""
+        return int(self.api.host.graph_data_type(self.c_handle()))
 
     def interpolate(self, x: float) -> float:
         """Evaluate the graph at unscaled coordinate ``x``."""
@@ -446,18 +473,6 @@ class GraphData(DataTreeView):
     def validate(self) -> bool:
         """Return whether the native graph points and interpolation mode are valid."""
         return bool(self.api.host.graph_validate(self.c_handle()))
-
-    def serialize(self) -> str:
-        """Copy the graph's canonical serialized representation."""
-        needed = int(self.api.host.graph_serialize(self.c_handle(), None, 0))
-        if needed == 0:
-            return ""
-        output = ctypes.create_string_buffer(needed + 1)
-        written = int(
-            self.api.host.graph_serialize(self.c_handle(), output, len(output))
-        )
-        return output.value[:written].decode("utf-8")
-
 
 # Read-only view over one ConfigOption. It covers common scalar/vector access
 # without exposing raw config_option_handle values.
@@ -611,6 +626,21 @@ class MutableConfigOption(ConfigOption):
 
     def deserialize(self, text: str, append: bool = False) -> bool:
         return bool(self.api.host.config_option_deserialize(self.mutable_c_handle(), _as_bytes(text), int(append)))
+
+    def vector_deserialize_at(self, idx: int, text: str) -> bool:
+        """
+        Replace one existing vector item from its serialized representation.
+
+        Invalid text or indices leave the vector unchanged. This method never
+        resizes the option; call ``resize()`` explicitly when that is intended.
+        """
+        vector = self.api.host.config_option_vector_cast_mutable(self.mutable_c_handle())
+        return bool(
+            vector
+            and self.api.host.config_option_vector_deserialize_at(
+                vector, int(idx), _as_bytes(text)
+            )
+        )
 
     def set_int(self, value: int, idx: int = 0) -> None:
         self.api.host.config_option_set_int(self.mutable_c_handle(), int(value), int(idx))

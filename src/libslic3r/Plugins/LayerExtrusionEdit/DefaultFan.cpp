@@ -23,6 +23,7 @@ fan_speed_percent and decides whether a physical fan command is necessary.
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -354,14 +355,14 @@ float dynamic_overhang_fan(const Config &config,
         state.overhang.end_distance_from_prev_layer <= 0.f)
         return float(result);
 
-    const graph_data_handle *graph = option.graph(extruder_id);
-    if (graph == nullptr || graph_validate(graph) == 0)
+    const std::optional<GraphData> graph = option.graph(extruder_id);
+    if (!graph || !graph->validate())
         return float(result);
 
     // Dynamic cooling is an increase over the perimeter fallback. The layer
     // limits prevent it from bypassing first-layer/ramp timing decisions.
-    const double start = graph_interpolate(graph, 100.0 - 100.0 * std::min(1.f, state.overhang.start_distance_from_prev_layer));
-    const double end = graph_interpolate(graph, 100.0 - 100.0 * std::min(1.f, state.overhang.end_distance_from_prev_layer));
+    const double start = graph->interpolate(100.0 - 100.0 * std::min(1.f, state.overhang.start_distance_from_prev_layer));
+    const double end = graph->interpolate(100.0 - 100.0 * std::min(1.f, state.overhang.end_distance_from_prev_layer));
     const int dynamic = std::clamp(int(std::min(start, end) + 0.5),
                                    policy.dynamic_min, policy.dynamic_max);
     result = std::max(result, dynamic);

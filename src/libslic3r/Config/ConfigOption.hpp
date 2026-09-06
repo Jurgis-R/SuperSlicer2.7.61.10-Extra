@@ -858,7 +858,9 @@ public:
                 throw ConfigurationError("ConfigOptionVector::set_at(): Assigning from an empty vector");
             this->m_values[i] = other.get_at(j);
             this->m_enabled[i] = other.is_enabled(j);
-            ConfigOption::set_enabled(other.is_enabled(-1));
+            // The global state summarizes every destination item, not the
+            // temporary vector from which this single item was copied.
+            set_default_enabled();
         } else if (rhs.type() == this->scalar_type()) {
             const ConfigOptionSingle<T> &other = static_cast<const ConfigOptionSingle<T>&>(rhs);
             this->m_values[i] = other.value;
@@ -1552,7 +1554,7 @@ private:
     }
 };
 
-class ConfigOptionPoint3 : public ConfigOptionSingle<Vec3d>
+class [[deprecated("ConfigOptionPoint3 is retained for compatibility; do not use it for new configuration definitions.")]] ConfigOptionPoint3 : public ConfigOptionSingle<Vec3d>
 {
 public:
     ConfigOptionPoint3() : ConfigOptionSingle<Vec3d>(Vec3d(0,0,0)) {}
@@ -1568,6 +1570,13 @@ public:
         bool rhs_enabled  = this->is_enabled();
         return std::tie(this_enabled, this->value.x(), this->value.y()) < std::tie(rhs_enabled, rhs.value.x(), rhs.value.y());
     }
+
+    bool    get_bool(size_t idx = 0) const override { assert(idx < 3); return idx == 0 ? this->value.x() != 0 : idx == 1 ? this->value.y() != 0 : this->value.z() != 0; }
+    int32_t get_int(size_t idx = 0) const override { assert(idx < 3); return int32_t(idx == 0 ? this->value.x() : idx == 1 ? this->value.y() : this->value.z()); }
+    double  get_float(size_t idx = 0) const override { assert(idx < 3); return double(idx == 0 ? this->value.x() : idx == 1 ? this->value.y() : this->value.z()); }
+    void    set_bool(bool value, size_t idx = 0) override { assert(idx < 3); (idx == 0 ? this->value.x() : idx == 1 ? this->value.y() : this->value.z()) = value ? 1 : 0; }
+    void    set_int(int32_t value, size_t idx = 0) override { assert(idx < 3); (idx == 0 ? this->value.x() : idx == 1 ? this->value.y() : this->value.z()) = double(value); }
+    void    set_float(double value, size_t idx = 0) override { assert(idx < 3); (idx == 0 ? this->value.x() : idx == 1 ? this->value.y() : this->value.z()) = value; }
 
     std::string serialize() const override;
 

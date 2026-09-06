@@ -5,7 +5,7 @@
 #ifndef slic3r_config_option_h_
 #define slic3r_config_option_h_
 
-#define SLIC3R_PLUGIN_API_CONFIG_OPTION_MAJOR 1u
+#define SLIC3R_PLUGIN_API_CONFIG_OPTION_MAJOR 2u
 #define SLIC3R_PLUGIN_API_CONFIG_OPTION_MINOR 0u
 
 #include <stddef.h>
@@ -32,15 +32,29 @@ SLIC3R_HOST_API int32_t c_float_or_percent_less(const c_float_or_percent *lhs, c
 
 typedef struct graph_data_handle graph_data_handle;
 
+/*
+Interpolation mode used between consecutive graph points. NONE is returned
+when a graph handle is null or contains an unsupported native mode.
+*/
+typedef enum raw_graph_type {
+    RAW_GRAPH_TYPE_NONE = 0,
+    RAW_GRAPH_TYPE_SQUARE,
+    RAW_GRAPH_TYPE_LINEAR,
+    RAW_GRAPH_TYPE_SPLINE,
+} raw_graph_type;
+
 /* Return the number of usable points in this borrowed graph; null returns 0. */
 SLIC3R_HOST_API uint32_t         graph_data_size(const graph_data_handle *me);
 
 /*
-Borrow a contiguous pointer to the graph's usable points. The pointer remains
-owned by the graph option and is invalidated when that option is modified or
-destroyed. Null or an invalid point range returns null. No allocation occurs.
+Copy one usable graph point into caller-owned storage. Graph coordinates are
+unscaled doubles. Return 1 on success. A null graph, null output, invalid graph
+or out-of-range index returns 0 and resets a non-null output to (0, 0).
 */
-SLIC3R_HOST_API const c_point *graph_data_ptr(const graph_data_handle *me);
+SLIC3R_HOST_API int32_t graph_data_get_point(const graph_data_handle *me, uint32_t index, c_vec2d *out);
+
+/* Return the graph interpolation mode, or RAW_GRAPH_TYPE_NONE on failure. */
+SLIC3R_HOST_API raw_graph_type graph_data_type(const graph_data_handle *me);
 
 /* Evaluate the graph at unscaled X; a null graph returns 0.0. */
 SLIC3R_HOST_API double         graph_interpolate(const graph_data_handle *me, double x);
@@ -50,21 +64,6 @@ SLIC3R_HOST_API double         graph_inverse_interpolate(const graph_data_handle
 
 /* Return nonzero when the graph's usable point range and mode are valid. */
 SLIC3R_HOST_API int32_t        graph_validate(const graph_data_handle *me);
-
-/*
-Serialize a graph into its canonical UTF-8 representation. The return value is
-the required byte count without the terminating null. A null output performs a
-sizing query; a smaller buffer receives a terminated prefix. Null graph returns
-zero.
-*/
-SLIC3R_HOST_API uint32_t         graph_serialize(const graph_data_handle *me, char *out, uint32_t max_size);
-
-/*
-Replace a mutable graph from its serialized representation. The graph remains
-owned by its parent option. Return nonzero on success; null arguments or invalid
-text return zero.
-*/
-SLIC3R_HOST_API int32_t        graph_deserialize(graph_data_handle *me, const char *str);
 
 enum config_option_flags
 {
@@ -133,7 +132,21 @@ SLIC3R_HOST_API config_option_vector_handle *config_option_vector_cast_mutable(c
 SLIC3R_HOST_API const config_option_vector_handle *config_option_vector_cast(const config_option_handle *me);
 SLIC3R_HOST_API uint32_t config_option_vector_size(const config_option_vector_handle *me);
 SLIC3R_HOST_API int32_t config_option_vector_empty(const config_option_vector_handle *me);
-SLIC3R_HOST_API uint32_t  config_option_vector_serialize_at(const config_option_vector_handle *me, int32_t idx, char *out, uint32_t max_size);
+/*
+Serialize one existing vector item. The return value follows the same two-call
+buffer contract as config_option_serialize(). Invalid handles or indices return
+zero.
+*/
+SLIC3R_HOST_API uint32_t config_option_vector_serialize_at(
+    const config_option_vector_handle *me, int32_t idx, char *out, uint32_t max_size);
+
+/*
+Replace one existing vector item from its serialized representation. Parsing is
+performed before mutation, so invalid text leaves the option unchanged. Return
+1 on success; null arguments, invalid indices or text return 0.
+*/
+SLIC3R_HOST_API int32_t config_option_vector_deserialize_at(
+    config_option_vector_handle *me, int32_t idx, const char *str);
 SLIC3R_HOST_API void   config_option_vector_resize(
     config_option_vector_handle *me, uint32_t new_size, const config_option_handle *default_value);
 SLIC3R_HOST_API void   config_option_vector_clear(config_option_vector_handle *me);

@@ -77,6 +77,7 @@ TYPE_ALIASES = {
     "config_option_type": "int",
     "option_def_error_code": "int",
     "raw_config_option_type": "int",
+    "raw_graph_type": "int",
     "raw_container_type": "int",
     "raw_extrusion_arc_orientation": "int",
     "raw_facet_painting_value": "int",

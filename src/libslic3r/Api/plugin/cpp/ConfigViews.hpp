@@ -7,6 +7,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -49,6 +50,42 @@ public:
 
 protected:
     const Handle *m_handle = nullptr;
+};
+
+/*
+GraphData is a borrowed read-only view over a graph stored by ConfigOption.
+
+The parent option owns the graph. Replacing or resizing that option invalidates
+this view. point() and points() copy coordinates into plugin-owned values; the
+view itself must not be freed or retained across a parent configuration change.
+*/
+class GraphData : public ConstDataTreeHandleView<graph_data_handle>
+{
+public:
+    using ConstDataTreeHandleView<graph_data_handle>::ConstDataTreeHandleView;
+
+    uint32_t size() const { return graph_data_size(handle()); }
+
+    ConfigPoint point(uint32_t idx) const {
+        c_vec2d value{0.0, 0.0};
+        if (graph_data_get_point(handle(), idx, &value) == 0)
+            throw std::out_of_range("Graph point index is outside the usable point range.");
+        return ConfigPoint{value.x, value.y};
+    }
+
+    std::vector<ConfigPoint> points() const {
+        std::vector<ConfigPoint> out;
+        const uint32_t point_count = size();
+        out.reserve(point_count);
+        for (uint32_t idx = 0; idx < point_count; ++idx)
+            out.emplace_back(point(idx));
+        return out;
+    }
+
+    raw_graph_type type() const { return graph_data_type(handle()); }
+    double interpolate(double x) const { return graph_interpolate(handle(), x); }
+    double inverse_interpolate(double y) const { return graph_inverse_interpolate(handle(), y); }
+    bool validate() const { return graph_validate(handle()) != 0; }
 };
 
 /*
@@ -105,8 +142,9 @@ public:
         c_float_or_percent value = config_option_get_float_or_percent(handle(), idx);
         return c_float_or_percent_get_effective_value(&value, ratio);
     }
-    const graph_data_handle *graph(uint32_t idx = 0) const {
-        return config_option_get_graph(handle(), idx);
+    std::optional<GraphData> graph(uint32_t idx = 0) const {
+        const graph_data_handle *value = config_option_get_graph(handle(), idx);
+        return value == nullptr ? std::nullopt : std::optional<GraphData>(GraphData(value));
     }
     bool is_enabled(uint32_t idx = 0) const { return config_option_is_enabled(handle(), int32_t(idx)) != 0; }
     bool is_vector() const { return config_option_is_vector(handle()) != 0; }
@@ -151,6 +189,11 @@ public:
     }
     bool deserialize(const std::string &serialized, bool append = false) const {
         return config_option_deserialize(mutable_handle(), serialized.c_str(), append ? 1 : 0) != 0;
+    }
+    bool vector_deserialize_at(uint32_t idx, const std::string &serialized) const {
+        config_option_vector_handle *vector = config_option_vector_cast_mutable(mutable_handle());
+        return vector != nullptr &&
+            config_option_vector_deserialize_at(vector, int32_t(idx), serialized.c_str()) != 0;
     }
     void set_int(int32_t value, uint32_t idx = 0) const {
         config_option_set_int(mutable_handle(), value, idx);

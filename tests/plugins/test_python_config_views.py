@@ -127,6 +127,32 @@ class ConfigHost:
             return 0
         return record["values"][0]
 
+    def config_option_serialize(self, option, output, capacity):
+        record = self._option(option)
+        encoded = (
+            b"0:3:1:1.25x2.5:3.75x4.5:8x9.25"
+            if record["kind"] == "graph"
+            else b""
+        )
+        if output is not None and capacity:
+            ctypes.memmove(output, encoded + b"\0", min(len(encoded) + 1, capacity))
+        return len(encoded)
+
+    def config_option_vector_cast_mutable(self, option):
+        return option if self.config_option_is_vector(option) else 0
+
+    def config_option_vector_deserialize_at(self, option, idx, text):
+        record = self._option(option)
+        index = int(idx)
+        if index < 0 or index >= len(record["values"]):
+            return 0
+        try:
+            value = int(bytes(text))
+        except ValueError:
+            return 0
+        record["values"][index] = value
+        return 1
+
     def c_float_or_percent_get_effective_value(self, value, ratio):
         typed = ctypes.cast(
             value, ctypes.POINTER(self.generated.CFloatOrPercent)
@@ -142,6 +168,21 @@ class ConfigHost:
     def graph_data_size(self, graph):
         return 3 if address(graph) == 71 else 0
 
+    def graph_data_get_point(self, graph, index, output):
+        points = ((1.25, 2.5), (3.75, 4.5), (8.0, 9.25))
+        if address(graph) != 71 or int(index) >= len(points):
+            return 0
+        point = ctypes.cast(
+            output, ctypes.POINTER(self.generated.CVec2d)
+        ).contents
+        point.x, point.y = points[int(index)]
+        return 1
+
+    def graph_data_type(self, graph):
+        if address(graph) != 71:
+            return self.generated.RAW_GRAPH_TYPE_NONE
+        return self.generated.RAW_GRAPH_TYPE_LINEAR
+
     def graph_interpolate(self, graph, x):
         return float(x) + 1.0
 
@@ -150,13 +191,6 @@ class ConfigHost:
 
     def graph_validate(self, graph):
         return address(graph) == 71
-
-    def graph_serialize(self, graph, output, capacity):
-        encoded = b"0,0;1,1"
-        if output is not None and capacity:
-            ctypes.memmove(output, encoded + b"\0", min(len(encoded) + 1, capacity))
-        return len(encoded)
-
 
 class PythonConfigViewTests(unittest.TestCase):
     @classmethod
@@ -200,10 +234,37 @@ class PythonConfigViewTests(unittest.TestCase):
         self.assertIsNotNone(config.option("graph").graph(42))
         self.assertIsNotNone(graph)
         self.assertEqual(graph.size(), 3)
+        self.assertEqual(graph.point(1), self.views.ConfigPoint(3.75, 4.5))
+        self.assertEqual(
+            graph.points(),
+            (
+                self.views.ConfigPoint(1.25, 2.5),
+                self.views.ConfigPoint(3.75, 4.5),
+                self.views.ConfigPoint(8.0, 9.25),
+            ),
+        )
+        self.assertEqual(graph.type(), self.generated.RAW_GRAPH_TYPE_LINEAR)
+        with self.assertRaises(IndexError):
+            graph.point(-1)
+        with self.assertRaises(IndexError):
+            graph.point(3)
         self.assertEqual(graph.interpolate(2.0), 3.0)
         self.assertEqual(graph.inverse_interpolate(3.0), 2.0)
         self.assertTrue(graph.validate())
-        self.assertEqual(graph.serialize(), "0,0;1,1")
+        self.assertEqual(
+            config.option("graph").serialize(),
+            "0:3:1:1.25x2.5:3.75x4.5:8x9.25",
+        )
+
+    def test_vector_deserialize_at_replaces_one_existing_item(self):
+        config = self.make_config()
+        mutable = self.views.MutableConfigOption(config.api, 12)
+
+        self.assertTrue(mutable.vector_deserialize_at(1, "73"))
+        self.assertEqual(config.option("vector_int").get_int(1), 73)
+        self.assertFalse(mutable.vector_deserialize_at(2, "19"))
+        self.assertFalse(mutable.vector_deserialize_at(0, "invalid"))
+        self.assertEqual(config.option("vector_int").get_int(0), 10)
 
     def test_scalar_helpers_filter_missing_disabled_and_empty_options(self):
         config = self.make_config()

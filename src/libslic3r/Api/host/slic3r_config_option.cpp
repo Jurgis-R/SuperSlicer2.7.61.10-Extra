@@ -4,13 +4,22 @@
 ///|/
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_config_option.h"
 #include "libslic3r/Config/ConfigDef.hpp"
 #include "libslic3r/Config/ConfigOption.hpp"
 
 namespace Slic3r {
+
+static bool parse_strict_finite_number(std::string text, bool allow_percent);
+static bool parse_strict_integer(std::string text);
+static bool graph_item_has_valid_syntax(const std::string &serialized);
+static bool vector_item_has_valid_syntax(
+    const ConfigOptionVectorBase &option, const std::string &serialized);
 
 static ConfigOption *to_option(config_option_handle *me)
 {
@@ -59,6 +68,131 @@ static uint32_t copy_string_out(const std::string &value, char *out, uint32_t ma
         out[count] = '\0';
     }
     return value.size();
+}
+
+/* Parse one complete finite number, optionally followed by a percent sign. */
+static bool parse_strict_finite_number(std::string text, bool allow_percent)
+{
+    ConfigHelpers::trim(text);
+    if (allow_percent && !text.empty() && text.back() == '%') {
+        text.pop_back();
+        ConfigHelpers::trim(text);
+    }
+    if (text.empty())
+        return false;
+
+    std::istringstream stream(text);
+    double value = 0.0;
+    stream >> value;
+    if (stream.fail())
+        return false;
+    stream >> std::ws;
+    return stream.eof() && std::isfinite(value);
+}
+
+/* Parse one complete signed 32-bit integer without accepting suffixes. */
+static bool parse_strict_integer(std::string text)
+{
+    ConfigHelpers::trim(text);
+    if (text.empty())
+        return false;
+
+    std::istringstream stream(text);
+    int32_t value = 0;
+    stream >> value;
+    if (stream.fail())
+        return false;
+    stream >> std::ws;
+    return stream.eof();
+}
+
+/*
+Validate one complete graph item in the canonical format emitted by
+GraphData::serialize(). Legacy whole-option formats remain handled by the
+general deserializer and are not valid serialized vector items.
+*/
+static bool graph_item_has_valid_syntax(const std::string &serialized)
+{
+    std::string value = serialized;
+    ConfigHelpers::trim(value);
+    if (value.empty() || value.find_first_of("|,;") != std::string::npos)
+        return false;
+
+    std::vector<std::string> fields;
+    size_t field_start = 0;
+    while (field_start <= value.size()) {
+        const size_t separator = value.find(':', field_start);
+        fields.emplace_back(value.substr(field_start, separator - field_start));
+        if (separator == std::string::npos)
+            break;
+        field_start = separator + 1;
+    }
+    if (fields.size() < 3 || !parse_strict_integer(fields[0]) ||
+        !parse_strict_integer(fields[1]) || !parse_strict_integer(fields[2]))
+        return false;
+
+    const int32_t begin_idx = std::stoi(fields[0]);
+    const int32_t end_idx = std::stoi(fields[1]);
+    const int32_t graph_type = std::stoi(fields[2]);
+    if (begin_idx < 0 || end_idx < 0 || graph_type < GraphData::GraphType::SQUARE ||
+        graph_type >= GraphData::GraphType::COUNT)
+        return false;
+
+    for (size_t field_idx = 3; field_idx < fields.size(); ++field_idx) {
+        const size_t coordinate_separator = fields[field_idx].find('x');
+        if (coordinate_separator == std::string::npos ||
+            fields[field_idx].find('x', coordinate_separator + 1) != std::string::npos ||
+            !parse_strict_finite_number(fields[field_idx].substr(0, coordinate_separator), false) ||
+            !parse_strict_finite_number(fields[field_idx].substr(coordinate_separator + 1), false))
+            return false;
+    }
+
+    GraphData graph;
+    return graph.deserialize(value);
+}
+
+/*
+Validate vector families whose legacy deserializers may ignore malformed input.
+The leading exclamation mark is interpreted only by types that use it as an
+enabled-state marker; it remains ordinary data for string values.
+*/
+static bool vector_item_has_valid_syntax(
+    const ConfigOptionVectorBase &option, const std::string &serialized)
+{
+    std::string value = serialized;
+    ConfigHelpers::trim(value);
+    const ConfigOptionType type = option.type();
+    const bool uses_enabled_marker = type == coFloats || type == coPercents ||
+                                     type == coFloatsOrPercents || type == coInts ||
+                                     type == coPoints || type == coBools || type == coGraphs;
+    if (uses_enabled_marker && !value.empty() && value.front() == '!') {
+        if (!option.can_be_disabled())
+            return false;
+        value.erase(value.begin());
+        ConfigHelpers::trim(value);
+    }
+
+    switch (type) {
+    case coFloats:
+        return parse_strict_finite_number(value, false);
+    case coPercents:
+    case coFloatsOrPercents:
+        return parse_strict_finite_number(value, true);
+    case coInts:
+        return parse_strict_integer(value);
+    case coBools:
+        return value == "0" || value == "1";
+    case coPoints: {
+        const size_t separator = value.find('x');
+        return separator != std::string::npos && value.find('x', separator + 1) == std::string::npos &&
+               parse_strict_finite_number(value.substr(0, separator), false) &&
+               parse_strict_finite_number(value.substr(separator + 1), false);
+    }
+    case coGraphs:
+        return graph_item_has_valid_syntax(value);
+    default:
+        return true;
+    }
 }
 
 } // namespace Slic3r
@@ -128,17 +262,45 @@ int32_t c_float_or_percent_less(const c_float_or_percent *lhs, const c_float_or_
 
 uint32_t graph_data_size(const graph_data_handle *me)
 {
-    return me == nullptr ? 0 : reinterpret_cast<const Slic3r::GraphData*>(me)->data_size();
+    if (me == nullptr)
+        return 0;
+
+    const Slic3r::GraphData *graph = reinterpret_cast<const Slic3r::GraphData*>(me);
+    return graph->validate() ? graph->end_idx - graph->begin_idx : 0;
 }
 
-const c_point *graph_data_ptr(const graph_data_handle *me)
+int32_t graph_data_get_point(const graph_data_handle *me, uint32_t index, c_vec2d *out)
+{
+    if (out == nullptr)
+        return 0;
+
+    *out = c_vec2d{0.0, 0.0};
+    if (me == nullptr)
+        return 0;
+
+    const Slic3r::GraphData *graph = reinterpret_cast<const Slic3r::GraphData*>(me);
+    if (!graph->validate() || index >= graph->end_idx - graph->begin_idx)
+        return 0;
+
+    const Slic3r::Vec2d &point = graph->graph_points[graph->begin_idx + index];
+    out->x = point.x();
+    out->y = point.y();
+    return 1;
+}
+
+raw_graph_type graph_data_type(const graph_data_handle *me)
 {
     if (me == nullptr)
-        return nullptr;
+        return RAW_GRAPH_TYPE_NONE;
+
     const Slic3r::GraphData *graph = reinterpret_cast<const Slic3r::GraphData*>(me);
-    if (graph->begin_idx >= graph->end_idx || graph->end_idx > graph->graph_points.size())
-        return nullptr;
-    return reinterpret_cast<const c_point*>(graph->graph_points.data() + graph->begin_idx);
+    switch (graph->type) {
+    case Slic3r::GraphData::GraphType::SQUARE: return RAW_GRAPH_TYPE_SQUARE;
+    case Slic3r::GraphData::GraphType::LINEAR: return RAW_GRAPH_TYPE_LINEAR;
+    case Slic3r::GraphData::GraphType::SPLINE: return RAW_GRAPH_TYPE_SPLINE;
+    case Slic3r::GraphData::GraphType::COUNT: break;
+    }
+    return RAW_GRAPH_TYPE_NONE;
 }
 
 double graph_interpolate(const graph_data_handle *me, double x)
@@ -154,20 +316,6 @@ double graph_inverse_interpolate(const graph_data_handle *me, double y)
 int32_t graph_validate(const graph_data_handle *me)
 {
     return me != nullptr && reinterpret_cast<const Slic3r::GraphData*>(me)->validate();
-}
-
-uint32_t graph_serialize(const graph_data_handle *me, char *out, uint32_t max_size)
-{
-    if (me == nullptr)
-        return 0;
-    return Slic3r::copy_string_out(reinterpret_cast<const Slic3r::GraphData*>(me)->serialize(), out, max_size);
-}
-
-int32_t graph_deserialize(graph_data_handle *me, const char *str)
-{
-    if (me == nullptr || str == nullptr)
-        return 0;
-    return reinterpret_cast<Slic3r::GraphData*>(me)->deserialize(std::string(str));
 }
 
 config_option_type config_option_type_get(const config_option_handle *me)
@@ -427,9 +575,52 @@ int32_t config_option_vector_empty(const config_option_vector_handle *me)
 
 uint32_t config_option_vector_serialize_at(const config_option_vector_handle *me, int32_t idx, char *out, uint32_t max_size)
 {
-    if (me == nullptr)
+    if (me == nullptr || idx < 0 || uint32_t(idx) >= Slic3r::to_option_vector(me)->size())
         return 0;
     return Slic3r::copy_string_out(Slic3r::to_option_vector(me)->serialize_at(idx), out, max_size);
+}
+
+int32_t config_option_vector_deserialize_at(config_option_vector_handle *me, int32_t idx, const char *str)
+{
+    if (me == nullptr || str == nullptr || idx < 0 || uint32_t(idx) >= Slic3r::to_option_vector(me)->size())
+        return 0;
+
+    try {
+        Slic3r::ConfigOptionVectorBase *destination = Slic3r::to_option_vector(me);
+        if (!Slic3r::vector_item_has_valid_syntax(*destination, str))
+            return 0;
+
+        // String items use scalar C-style escaping, unlike the delimited
+        // representation parsed by ConfigOptionStrings::deserialize().
+        if (destination->type() == Slic3r::coStrings) {
+            const std::string serialized = str;
+            const bool disabled = serialized.size() >= 2 && serialized[0] == '!' && serialized[1] == ':';
+            if (disabled && !destination->can_be_disabled())
+                return 0;
+
+            Slic3r::ConfigOptionString parsed_string;
+            if (destination->can_be_disabled())
+                parsed_string.set_can_be_disabled();
+            if (!parsed_string.deserialize(serialized, false))
+                return 0;
+            destination->set_at(parsed_string, uint32_t(idx), 0);
+            return 1;
+        }
+
+        std::unique_ptr<Slic3r::ConfigOption> parsed(destination->clone());
+        if (!parsed->deserialize(str, false))
+            return 0;
+
+        const Slic3r::ConfigOptionVectorBase *parsed_vector =
+            static_cast<const Slic3r::ConfigOptionVectorBase *>(parsed.get());
+        if (parsed_vector->size() != 1)
+            return 0;
+
+        destination->set_at(*parsed_vector, uint32_t(idx), 0);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
 }
 
 void config_option_vector_resize(

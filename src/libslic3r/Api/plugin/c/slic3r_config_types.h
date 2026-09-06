@@ -6,7 +6,7 @@
 #define slic3r_config_types_h_
 
 #define SLIC3R_PLUGIN_API_CONFIG_TYPES_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CONFIG_TYPES_MINOR 0u
+#define SLIC3R_PLUGIN_API_CONFIG_TYPES_MINOR 1u
 
 #include <stdint.h>
 
@@ -37,6 +37,8 @@ typedef enum raw_config_option_type {
     RAW_CO_VECTOR_POINT,
     RAW_CO_VECTOR_ENUM,
     RAW_CO_VECTOR_GRAPH,
+    /* Single 3D point value. Appended to preserve every existing numeric ID. */
+    RAW_CO_POINT3,
 } raw_config_option_type;
 
 /* Where the option instance is stored */

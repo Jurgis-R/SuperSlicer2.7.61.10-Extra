@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -114,8 +115,8 @@ struct OverhangConfig
     double speed_threshold_mm = 0.;
     double nozzle_diameter_mm = 0.;
 
-    const graph_data_handle *dynamic_flow_graph = nullptr;
-    const graph_data_handle *dynamic_speed_graph = nullptr;
+    std::optional<GraphData> dynamic_flow_graph;
+    std::optional<GraphData> dynamic_speed_graph;
 
     c_flow overhang_flow = {};
 
@@ -439,9 +440,9 @@ OverhangConfig overhang_config_from_value(const RegionSettingsValue &value, cons
     return out;
 }
 
-double graph_interpolate_or_default(const graph_data_handle *graph, double x, double fallback)
+double graph_interpolate_or_default(const std::optional<GraphData> &graph, double x, double fallback)
 {
-    return graph == nullptr ? fallback : graph_interpolate(graph, x);
+    return graph ? graph->interpolate(x) : fallback;
 }
 
 void apply_overhang_flow(EPropertyAttributes &attributes,

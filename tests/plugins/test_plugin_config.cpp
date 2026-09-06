@@ -18,6 +18,7 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <thread>
@@ -61,6 +62,11 @@ private:
 };
 
 static std::string serialize_all(const config_handle *config);
+template<class OptionType>
+static void check_vector_item_round_trip(OptionType &option);
+template<class OptionType>
+static void check_vector_item_rejections(
+    OptionType &option, std::initializer_list<const char *> invalid_values);
 
 // Use the public two-call protocol so tests also validate byte counts and null
 // termination rather than reaching into the host implementation.
@@ -73,6 +79,56 @@ static std::string serialize_all(const config_handle *config)
     REQUIRE(serialized[size] == '\0');
     serialized.resize(size);
     return serialized;
+}
+
+// Exercise the public element codec in both directions and verify that value,
+// per-item state and aggregate state remain coherent after replacement.
+template<class OptionType>
+static void check_vector_item_round_trip(OptionType &option)
+{
+    config_option_handle *handle = reinterpret_cast<config_option_handle *>(&option);
+    config_option_vector_handle *vector = config_option_vector_cast_mutable(handle);
+    REQUIRE(vector != nullptr);
+    REQUIRE(option.size() >= 2);
+
+    const std::string expected = option.serialize_at(0);
+    std::vector<char> serialized(expected.size() + 1, '\0');
+    CHECK(config_option_vector_serialize_at(
+        vector, 0, serialized.data(), uint32_t(serialized.size())) == expected.size());
+    CHECK(std::string(serialized.data()) == expected);
+    REQUIRE(config_option_vector_deserialize_at(vector, 1, serialized.data()) == 1);
+    CHECK(option.serialize_at(1) == expected);
+    CHECK(option.is_enabled(1) == option.is_enabled(0));
+    CHECK(option.is_enabled(-1) == option.has_enabled());
+}
+
+// Invalid element text must not leak any partial work from the temporary
+// parser into the destination vector.
+template<class OptionType>
+static void check_vector_item_rejections(
+    OptionType &option, std::initializer_list<const char *> invalid_values)
+{
+    config_option_handle *handle = reinterpret_cast<config_option_handle *>(&option);
+    config_option_vector_handle *vector = config_option_vector_cast_mutable(handle);
+    REQUIRE(vector != nullptr);
+    REQUIRE(option.size() >= 2);
+
+    const std::string before = option.serialize();
+    const size_t before_size = option.size();
+    std::vector<bool> before_enabled(before_size, false);
+    for (size_t idx = 0; idx < before_size; ++idx)
+        before_enabled[idx] = option.is_enabled(int32_t(idx));
+    const bool before_global_enabled = option.is_enabled(-1);
+
+    for (const char *invalid_value : invalid_values) {
+        CAPTURE(invalid_value);
+        CHECK(config_option_vector_deserialize_at(vector, 1, invalid_value) == 0);
+        CHECK(option.serialize() == before);
+        REQUIRE(option.size() == before_size);
+        for (size_t idx = 0; idx < before_size; ++idx)
+            CHECK(option.is_enabled(int32_t(idx)) == before_enabled[idx]);
+        CHECK(option.is_enabled(-1) == before_global_enabled);
+    }
 }
 
 } // namespace
@@ -131,6 +187,342 @@ TEST_CASE("Temporary configs create options and clear only dynamic configs", "[p
     CHECK(config_get_or_add_mutable(static_handle, "temporary", SLIC3R_CONFIG_OPTION_INT) == nullptr);
     CHECK(static_config.keys().size() == static_key_count);
     CHECK(static_config.option<Slic3r::ConfigOptionInt>("value")->value == 17);
+}
+
+TEST_CASE("Graph config values expose copied unscaled points and their interpolation type",
+          "[plugins][config][graph]")
+{
+    Slic3r::PluginStorage storage;
+    storage_handle *storage_api = reinterpret_cast<storage_handle *>(&storage);
+    config_handle *config = storage_new_config(storage_api);
+    REQUIRE(config != nullptr);
+
+    config_option_handle *option =
+        config_get_or_add_mutable(config, "graph", SLIC3R_CONFIG_OPTION_GRAPH);
+    REQUIRE(option != nullptr);
+    REQUIRE(config_option_deserialize(option, "1:3:2:-5.5x1.25:2.5x3.75:8x9.5:12x14", 0) == 1);
+
+    const graph_data_handle *graph = config_option_get_graph(option, 0);
+    REQUIRE(graph != nullptr);
+    CHECK(graph_data_size(graph) == 2);
+    CHECK(graph_data_type(graph) == RAW_GRAPH_TYPE_SPLINE);
+
+    c_vec2d point{-1.0, -1.0};
+    REQUIRE(graph_data_get_point(graph, 0, &point) == 1);
+    CHECK(point.x == Approx(2.5));
+    CHECK(point.y == Approx(3.75));
+    REQUIRE(graph_data_get_point(graph, 1, &point) == 1);
+    CHECK(point.x == Approx(8.0));
+    CHECK(point.y == Approx(9.5));
+
+    CHECK(graph_data_get_point(graph, 2, &point) == 0);
+    CHECK(point.x == 0.0);
+    CHECK(point.y == 0.0);
+    CHECK(graph_data_get_point(graph, 0, nullptr) == 0);
+    CHECK(graph_data_get_point(nullptr, 0, &point) == 0);
+    CHECK(graph_data_type(nullptr) == RAW_GRAPH_TYPE_NONE);
+
+    const slic3r_api::ConfigOption option_view(option);
+    const std::optional<slic3r_api::GraphData> graph_view = option_view.graph();
+    REQUIRE(graph_view.has_value());
+    CHECK(graph_view->size() == 2);
+    CHECK(graph_view->type() == RAW_GRAPH_TYPE_SPLINE);
+    CHECK(graph_view->point(0).x == Approx(2.5));
+    CHECK(graph_view->point(0).y == Approx(3.75));
+    const std::vector<slic3r_api::ConfigPoint> copied_points = graph_view->points();
+    REQUIRE(copied_points.size() == 2);
+    CHECK(copied_points[1].x == Approx(8.0));
+    CHECK(copied_points[1].y == Approx(9.5));
+    CHECK(graph_view->validate());
+    CHECK_THROWS_AS(graph_view->point(2), std::out_of_range);
+
+    config_option_handle *graphs_option =
+        config_get_or_add_mutable(config, "graphs", SLIC3R_CONFIG_OPTION_GRAPHS);
+    REQUIRE(graphs_option != nullptr);
+    REQUIRE(config_option_deserialize(
+        graphs_option, "0:2:1:0x0:1x1,0:2:1:2x2:3x3", 0) == 1);
+    config_option_vector_handle *graphs = config_option_vector_cast_mutable(graphs_option);
+    REQUIRE(graphs != nullptr);
+
+    CHECK(config_option_vector_deserialize_at(graphs, 1, "0:2:0:4.5x6.5:8.5x10.5") == 1);
+    const graph_data_handle *replaced = config_option_get_graph(graphs_option, 1);
+    REQUIRE(replaced != nullptr);
+    CHECK(graph_data_type(replaced) == RAW_GRAPH_TYPE_SQUARE);
+    REQUIRE(graph_data_get_point(replaced, 0, &point) == 1);
+    CHECK(point.x == Approx(4.5));
+    CHECK(point.y == Approx(6.5));
+
+    char replaced_serialized[128] = {};
+    REQUIRE(config_option_vector_serialize_at(graphs, 1, replaced_serialized, sizeof(replaced_serialized)) > 0);
+    CHECK(config_option_vector_deserialize_at(graphs, 1, "invalid") == 0);
+    char after_invalid[128] = {};
+    REQUIRE(config_option_vector_serialize_at(graphs, 1, after_invalid, sizeof(after_invalid)) > 0);
+    CHECK(std::strcmp(replaced_serialized, after_invalid) == 0);
+    CHECK(config_option_vector_deserialize_at(
+        graphs, 1, "invalid,0:2:1:2x2:3x3") == 0);
+    char after_partially_invalid[128] = {};
+    REQUIRE(config_option_vector_serialize_at(
+        graphs, 1, after_partially_invalid, sizeof(after_partially_invalid)) > 0);
+    CHECK(std::strcmp(replaced_serialized, after_partially_invalid) == 0);
+    const char *const malformed_graphs[] = {
+        "0:2:1:2x2:3x3suffix",
+        "0:2:1:2x2:3x3;invalid",
+        "0:2:99:2x2:3x3"
+    };
+    for (const char *malformed_graph : malformed_graphs) {
+        CAPTURE(malformed_graph);
+        CHECK(config_option_vector_deserialize_at(graphs, 1, malformed_graph) == 0);
+        char after_malformed[128] = {};
+        REQUIRE(config_option_vector_serialize_at(
+            graphs, 1, after_malformed, sizeof(after_malformed)) > 0);
+        CHECK(std::strcmp(replaced_serialized, after_malformed) == 0);
+    }
+    CHECK(config_option_vector_deserialize_at(graphs, -1, "0:0:1") == 0);
+    CHECK(config_option_vector_deserialize_at(graphs, 2, "0:0:1") == 0);
+    CHECK(config_option_vector_deserialize_at(nullptr, 0, "0:0:1") == 0);
+    CHECK(config_option_vector_deserialize_at(graphs, 0, nullptr) == 0);
+}
+
+TEST_CASE("Vector item deserialization rejects disabled bools for non-disableable options",
+          "[plugins][config][serialization][vector]")
+{
+    Slic3r::ConfigOptionBools values{true, false};
+    config_option_handle *option = reinterpret_cast<config_option_handle *>(&values);
+    config_option_vector_handle *vector = config_option_vector_cast_mutable(option);
+    REQUIRE(vector != nullptr);
+    REQUIRE_FALSE(values.can_be_disabled());
+
+    CHECK(config_option_vector_deserialize_at(vector, 0, "!0") == 0);
+    REQUIRE(values.size() == 2);
+    CHECK(values.get_at(0));
+    CHECK_FALSE(values.get_at(1));
+}
+
+TEST_CASE("Vector item deserialization preserves strings beginning with an exclamation mark",
+          "[plugins][config][serialization][vector]")
+{
+    Slic3r::ConfigOptionStrings values{"before", "after"};
+    config_option_handle *option = reinterpret_cast<config_option_handle *>(&values);
+    config_option_vector_handle *vector = config_option_vector_cast_mutable(option);
+    REQUIRE(vector != nullptr);
+
+    CHECK(config_option_vector_deserialize_at(vector, 1, "!hello") == 1);
+    CHECK(values.get_at(1) == "!hello");
+
+    char serialized[32] = {};
+    REQUIRE(config_option_vector_serialize_at(vector, 1, serialized, sizeof(serialized)) > 0);
+    CHECK(std::strcmp(serialized, "!hello") == 0);
+    CHECK(config_option_vector_deserialize_at(vector, 0, serialized) == 1);
+    CHECK(values.get_at(0) == "!hello");
+}
+
+TEST_CASE("Vector item deserialization supports disabled strings when permitted",
+          "[plugins][config][serialization][vector]")
+{
+    Slic3r::ConfigOptionStrings values{"active", "before"};
+    values.set_can_be_disabled();
+    config_option_handle *option = reinterpret_cast<config_option_handle *>(&values);
+    config_option_vector_handle *vector = config_option_vector_cast_mutable(option);
+    REQUIRE(vector != nullptr);
+
+    REQUIRE(config_option_vector_deserialize_at(vector, 1, "!:hello") == 1);
+    CHECK(values.get_at(1) == "hello");
+    CHECK(config_option_is_enabled(option, 0) == 1);
+    CHECK(config_option_is_enabled(option, 1) == 0);
+    CHECK(config_option_is_enabled(option, -1) == 1);
+
+    char serialized[32] = {};
+    REQUIRE(config_option_vector_serialize_at(vector, 1, serialized, sizeof(serialized)) > 0);
+    CHECK(std::strcmp(serialized, "!:hello") == 0);
+}
+
+TEST_CASE("Vector string items round-trip through their element serialization format",
+          "[plugins][config][serialization][vector]")
+{
+    const std::string source_values[] = {"a;b", "", "first\nsecond", "  leading spaces"};
+    for (const std::string &source_value : source_values) {
+        CAPTURE(source_value);
+        Slic3r::ConfigOptionStrings values{source_value, "destination"};
+        config_option_handle *option = reinterpret_cast<config_option_handle *>(&values);
+        config_option_vector_handle *vector = config_option_vector_cast_mutable(option);
+        REQUIRE(vector != nullptr);
+
+        char serialized[128] = {};
+        CHECK(config_option_vector_serialize_at(vector, 0, serialized, sizeof(serialized)) ==
+              values.serialize_at(0).size());
+        CHECK(config_option_vector_deserialize_at(vector, 1, serialized) == 1);
+        CHECK(values.get_at(1) == source_value);
+    }
+}
+
+TEST_CASE("Replacing one vector item recomputes the option's global enabled state",
+          "[plugins][config][serialization][vector]")
+{
+    Slic3r::ConfigOptionFloats values{1.0, 2.0};
+    values.set_can_be_disabled();
+    config_option_handle *option = reinterpret_cast<config_option_handle *>(&values);
+    config_option_vector_handle *vector = config_option_vector_cast_mutable(option);
+    REQUIRE(vector != nullptr);
+
+    REQUIRE(config_option_is_enabled(option, -1) == 1);
+    REQUIRE(config_option_is_enabled(option, 0) == 1);
+    REQUIRE(config_option_is_enabled(option, 1) == 1);
+
+    REQUIRE(config_option_vector_deserialize_at(vector, 1, "!3") == 1);
+    CHECK(values.get_at(1) == Approx(3.0));
+    CHECK(config_option_is_enabled(option, 0) == 1);
+    CHECK(config_option_is_enabled(option, 1) == 0);
+    CHECK(config_option_is_enabled(option, -1) == 1);
+
+    REQUIRE(config_option_vector_deserialize_at(vector, 0, "!4") == 1);
+    CHECK(config_option_is_enabled(option, -1) == 0);
+    REQUIRE(config_option_vector_deserialize_at(vector, 1, "5") == 1);
+    CHECK(config_option_is_enabled(option, 0) == 0);
+    CHECK(config_option_is_enabled(option, 1) == 1);
+    CHECK(config_option_is_enabled(option, -1) == 1);
+}
+
+TEST_CASE("Every vector option type round-trips one canonical item",
+          "[plugins][config][serialization][vector][types]")
+{
+    SECTION("Bool") {
+        Slic3r::ConfigOptionBools values{true, false};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+    SECTION("Int") {
+        Slic3r::ConfigOptionInts values{-17, 42};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+    SECTION("Float") {
+        Slic3r::ConfigOptionFloats values{-3.25, 4.5};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+    SECTION("Percent") {
+        Slic3r::ConfigOptionPercents values{12.5, 75.0};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+    SECTION("Float or percent") {
+        Slic3r::ConfigOptionFloatsOrPercents values{{12.5, true}, {-3.25, false}};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+    SECTION("String") {
+        Slic3r::ConfigOptionStrings values{"first; line\n", "destination"};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+    SECTION("Point") {
+        Slic3r::ConfigOptionPoints values{
+            Slic3r::Vec2d(-1.5, 2.25), Slic3r::Vec2d(3.0, 4.0)};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+    SECTION("Graph") {
+        const Slic3r::GraphData source(
+            0, 2, Slic3r::GraphData::GraphType::LINEAR,
+            {Slic3r::Vec2d(0.0, 1.0), Slic3r::Vec2d(2.0, 3.0)});
+        const Slic3r::GraphData destination(
+            0, 1, Slic3r::GraphData::GraphType::SQUARE,
+            {Slic3r::Vec2d(4.0, 5.0)});
+        Slic3r::ConfigOptionGraphs values{source, destination};
+        check_vector_item_round_trip(values);
+        values.set_can_be_disabled();
+        values.set_enabled(false, 0);
+        values.set_enabled(true, 1);
+        check_vector_item_round_trip(values);
+    }
+}
+
+TEST_CASE("Every vector option type rejects malformed items atomically",
+          "[plugins][config][serialization][vector][types]")
+{
+    SECTION("Bool") {
+        Slic3r::ConfigOptionBools values{true, false};
+        check_vector_item_rejections(
+            values, {"", "2", "true", "1,!0", "1,0", "1,"});
+    }
+    SECTION("Int") {
+        Slic3r::ConfigOptionInts values{-17, 42};
+        check_vector_item_rejections(
+            values, {"", "1.5", "1suffix", "1,2", "2147483648", "!1"});
+    }
+    SECTION("Float") {
+        Slic3r::ConfigOptionFloats values{-3.25, 4.5};
+        check_vector_item_rejections(
+            values, {"", "NaN", "inf", "1suffix", "1,2", "!1"});
+    }
+    SECTION("Percent") {
+        Slic3r::ConfigOptionPercents values{12.5, 75.0};
+        check_vector_item_rejections(
+            values, {"", "NaN", "10%%", "10%suffix", "10,20", "!10%"});
+    }
+    SECTION("Float or percent") {
+        Slic3r::ConfigOptionFloatsOrPercents values{{12.5, true}, {-3.25, false}};
+        check_vector_item_rejections(
+            values, {"", "NaN", "10%%", "10%suffix", "10,20", "!10%"});
+    }
+    SECTION("String") {
+        Slic3r::ConfigOptionStrings values{"first", "second"};
+        check_vector_item_rejections(values, {"trailing\\", "!:disabled"});
+    }
+    SECTION("Point") {
+        Slic3r::ConfigOptionPoints values{
+            Slic3r::Vec2d(-1.5, 2.25), Slic3r::Vec2d(3.0, 4.0)};
+        check_vector_item_rejections(
+            values, {"", "1x", "x2", "1x2x3", "1x2suffix", "1x2,3x4", "!1x2"});
+    }
+    SECTION("Graph") {
+        const Slic3r::GraphData graph(
+            0, 1, Slic3r::GraphData::GraphType::LINEAR,
+            {Slic3r::Vec2d(0.0, 1.0)});
+        Slic3r::ConfigOptionGraphs values{graph, graph};
+        check_vector_item_rejections(
+            values, {"", "0:1:99:0x1", "0:1:1:0x1suffix", "0:1:1:0x1;invalid", "!0:1:1:0x1"});
+    }
+}
+
+TEST_CASE("Vector item deserialization rejects invalid floating-point text atomically",
+          "[plugins][config][serialization][vector]")
+{
+    Slic3r::ConfigOptionFloats values{1.0, 2.0};
+    config_option_handle *option = reinterpret_cast<config_option_handle *>(&values);
+    config_option_vector_handle *vector = config_option_vector_cast_mutable(option);
+    REQUIRE(vector != nullptr);
+
+    CHECK(config_option_vector_deserialize_at(vector, 1, "invalid") == 0);
+    REQUIRE(values.size() == 2);
+    CHECK(values.get_at(0) == Approx(1.0));
+    CHECK(values.get_at(1) == Approx(2.0));
+
+    CHECK(config_option_vector_deserialize_at(vector, 1, "3.5") == 1);
+    CHECK(values.get_at(1) == Approx(3.5));
+    CHECK(config_option_vector_deserialize_at(vector, 1, "4.5suffix") == 0);
+    CHECK(values.get_at(1) == Approx(3.5));
 }
 
 TEST_CASE("SCFG C API follows the two-call buffer contract", "[plugins][config][serialization]")
