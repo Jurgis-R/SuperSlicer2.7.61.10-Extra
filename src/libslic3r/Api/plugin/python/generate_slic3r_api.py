@@ -98,7 +98,6 @@ OPAQUE_TYPES = {
     "storage_handle",
     "orchestrator_handle",
     "orchestrator_plugin_handle",
-    "print_config_def_handler",
     "plugin_host_context",
     "graph_data_handle",
     "config_option_handle",
@@ -614,13 +613,14 @@ def generate() -> str:
 
     lines.extend(
         [
-            "def _bind_c_function(host, name, restype, argtypes) -> None:",
+            "def _bind_c_function(host, name, restype, argtypes) -> bool:",
             "    try:",
             "        fn = getattr(host, name)",
             "    except AttributeError:",
-            "        return",
+            "        return False",
             "    fn.restype = restype",
             "    fn.argtypes = argtypes",
+            "    return True",
             "",
             "",
             "C_FUNCTION_SIGNATURES = [",

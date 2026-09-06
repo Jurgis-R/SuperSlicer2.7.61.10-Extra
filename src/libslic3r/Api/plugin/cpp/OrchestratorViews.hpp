@@ -8,11 +8,13 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
+#include "libslic3r/Api/plugin/cpp/ConfigDefinitionViews.hpp"
 
 /*
 OrchestratorViews.hpp
@@ -107,6 +109,40 @@ public:
     {
         const char *name = orchestrator_step_name(m_orchestrator, step);
         return name == nullptr ? std::string() : std::string(name);
+    }
+
+    // Copy the ordered global option-key catalogue. RAW_CO_NONE returns every
+    // definition; another value keeps only definitions of that exact ABI type.
+    std::vector<ConfigOptionKey> option_keys(raw_config_option_type type_filter = RAW_CO_NONE) const
+    {
+        uint32_t required = orchestrator_get_option_keys(m_orchestrator, type_filter, nullptr, 0);
+        std::vector<raw_config_option_key> raw_keys;
+        while (required > 0) {
+            raw_keys.resize(required);
+            const uint32_t observed = orchestrator_get_option_keys(
+                m_orchestrator, type_filter, raw_keys.data(), uint32_t(raw_keys.size()));
+            if (observed <= raw_keys.size()) {
+                raw_keys.resize(observed);
+                break;
+            }
+            required = observed;
+        }
+
+        std::vector<ConfigOptionKey> copied;
+        copied.reserve(raw_keys.size());
+        for (const raw_config_option_key &key : raw_keys)
+            copied.push_back({key.key == nullptr ? std::string() : std::string(key.key), key.type});
+        return copied;
+    }
+
+    // Copy one complete definition while the C snapshot is still valid.
+    // Missing keys return std::nullopt and never expose a partially filled value.
+    std::optional<ConfigOptionDefinition> option_definition(const std::string &key) const
+    {
+        raw_config_option_def raw = {};
+        if (!orchestrator_get_option_def(m_orchestrator, key.c_str(), &raw))
+            return std::nullopt;
+        return ConfigOptionDefinition(raw);
     }
 
     // Find a registered plugin by exact id. The result may name an inactive

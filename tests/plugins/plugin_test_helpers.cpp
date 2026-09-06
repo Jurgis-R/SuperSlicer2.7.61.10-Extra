@@ -1,6 +1,7 @@
 #include "plugin_test_helpers.hpp"
 
 #include <cassert>
+#include <stdexcept>
 
 #include <boost/log/trivial.hpp>
 
@@ -85,6 +86,12 @@
 #include "plugins_cpp/Polyholes/Polyholes.hpp"
 
 namespace {
+
+// Register one deliberately rich option before PrintConfigDef is finalized so
+// introspection tests can verify every pointer-backed and presence-tracked field.
+void register_config_introspection_fixture(orchestrator_handle *orchestrator);
+void register_config_option_or_fail(orchestrator_handle *orchestrator,
+                                    const raw_config_option_def &definition);
 
 #ifdef SLIC3R_TEST_PYTHON_PLUGINS
 
@@ -172,6 +179,96 @@ bool load_python_plugins_for_tests(orchestrator_handle *orchestrator)
 
 #endif // SLIC3R_TEST_PYTHON_PLUGINS
 
+void register_config_option_or_fail(orchestrator_handle *orchestrator,
+                                    const raw_config_option_def &definition)
+{
+    const option_def_error_code result = orchestrator_create_option_def(orchestrator, &definition);
+    if (result != OPTION_DEF_ERROR_OK) {
+        const std::string key = definition.opt_key == nullptr ? "<null>" : definition.opt_key;
+        throw std::runtime_error(
+            "Failed to register configuration introspection fixture '" + key +
+            "' (error " + std::to_string(int(result)) + ").");
+    }
+}
+
+void register_config_introspection_fixture(orchestrator_handle *orchestrator)
+{
+    static const char *aliases[] = {"test_introspection_old", "test_introspection_legacy"};
+    static const char *shortcuts[] = {"perimeter_speed", "infill_speed"};
+    static const char *dependencies[] = {"layer_height#0", "nozzle_diameter#0"};
+    static const key_value_string_pair_t enum_entries[] = {
+        {"0.5", "Half"},
+        {"1.25", "Nominal"},
+    };
+
+    raw_config_option_def definition = raw_config_option_def_init();
+    definition.opt_key = "test_config_definition_introspection";
+    definition.type = RAW_CO_FLOAT;
+    definition.category = RAW_OPTION_CATEGORY_ADVANCED;
+    definition.level = RAW_OPTION_LEVEL_EXPERT;
+    definition.container_type = RAW_CONTAINER_TYPE_PROJECT;
+    definition.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    definition.gui_type = RAW_GUI_TYPE_F_ENUM_OPEN;
+    definition.printer_technology = RAW_PT_FFF;
+    definition.invalidates_step = STEP_INFILL;
+    definition.is_optional = 1;
+    definition.gui_flags = "serialized,show_value";
+    definition.label = "Introspection value";
+    definition.full_label = "Plugin configuration introspection value";
+    definition.tooltip = "Exercises the complete normalized definition snapshot.";
+    definition.sidetext = "mm";
+    definition.cli = "test-config-definition-introspection=f";
+    definition.ratio_over = "nozzle_diameter";
+    definition.multiline = 1;
+    definition.full_width = 1;
+    definition.is_code = 1;
+    definition.is_vector_extruder = 0;
+    definition.readonly = 1;
+    definition.can_phony = 1;
+    definition.can_be_disabled = 1;
+    definition.height = 7;
+    definition.width = 19;
+    definition.label_width = 23;
+    definition.aligned_label_left = 1;
+    definition.sidetext_width = 11;
+    definition.min_value = -2.5;
+    definition.max_value = 8.5;
+    definition.has_min = 1;
+    definition.has_max = 1;
+    definition.max_literal_value = 4.5;
+    definition.max_literal_is_percent = 1;
+    definition.has_max_literal = 1;
+    definition.precision = 4;
+    definition.mode = RAW_CONFIG_OPTION_MODE_EXPERT;
+    definition.flags = uint64_t(0x1020304050607080ULL);
+    definition.aliases = {aliases, 2};
+    definition.shortcut = {shortcuts, 2};
+    definition.depends_on = {dependencies, 2};
+    definition.default_serialized_value = "1.25";
+    definition.enum_def.value_label_pairs = {enum_entries, 2};
+
+    register_config_option_or_fail(orchestrator, definition);
+
+    raw_config_option_def vector_definition = raw_config_option_def_init();
+    vector_definition.opt_key = "test_config_definition_vector_introspection";
+    vector_definition.type = RAW_CO_VECTOR_FLOAT;
+    vector_definition.container_type = RAW_CONTAINER_TYPE_PROJECT;
+    vector_definition.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    vector_definition.printer_technology = RAW_PT_FFF;
+    vector_definition.is_vector_extruder = 1;
+    vector_definition.default_serialized_value = "1.25";
+    register_config_option_or_fail(orchestrator, vector_definition);
+
+    raw_config_option_def point3_definition = raw_config_option_def_init();
+    point3_definition.opt_key = "test_config_definition_point3_introspection";
+    point3_definition.type = RAW_CO_POINT3;
+    point3_definition.container_type = RAW_CONTAINER_TYPE_PROJECT;
+    point3_definition.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    point3_definition.printer_technology = RAW_PT_FFF;
+    point3_definition.default_serialized_value = "1,2,3";
+    register_config_option_or_fail(orchestrator, point3_definition);
+}
+
 void activate_plugin_or_fail(Slic3r::Orchestrator &orchestrator, const char *plugin_id)
 {
     if (!orchestrator.set_plugin_active(plugin_id, true)) {
@@ -194,6 +291,7 @@ void ensure_plugin_test_runtime_initialized()
         Orchestrator &orchestrator = Orchestrator::instance();
         orchestrator_handle *orchestrator_handle_value =
             reinterpret_cast<orchestrator_handle *>(&orchestrator);
+        register_config_introspection_fixture(orchestrator_handle_value);
         slic3r_api::StandardLayerHeightGeneratorPlugin::register_standard_layer_height_generator_plugin(
             orchestrator_handle_value);
         slic3r_api::SliceVolumePlugin::register_slice_volume_plugin(orchestrator_handle_value);

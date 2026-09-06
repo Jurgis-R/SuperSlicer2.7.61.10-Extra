@@ -97,6 +97,7 @@ static ConfigOptionType config_option_type(raw_config_option_type type)
     case RAW_CO_VECTOR_STRING:           return coStrings;
     case RAW_CO_VECTOR_POINT:            return coPoints;
     case RAW_CO_VECTOR_GRAPH:            return coGraphs;
+    case RAW_CO_POINT3:                  return coPoint3;
     case RAW_CO_VECTOR_ENUM:
     default:                             return coNone;
     }
@@ -137,6 +138,12 @@ static bool config_option_def_compatible(const ConfigOptionDef &existing,
     };
 
     if (existing.type != candidate.type) return fail("type");
+    if (existing.plugin_api_level != candidate.plugin_api_level) return fail("level");
+    if (existing.plugin_api_flags != candidate.plugin_api_flags) return fail("flags");
+    if (existing.plugin_api_has_min != candidate.plugin_api_has_min) return fail("has_min");
+    if (existing.plugin_api_has_max != candidate.plugin_api_has_max) return fail("has_max");
+    if (existing.plugin_api_has_max_literal != candidate.plugin_api_has_max_literal)
+        return fail("has_max_literal");
     if (existing.category != candidate.category) return fail("category");
     if (existing.gui_type != candidate.gui_type) return fail("gui_type");
     if (existing.printer_technology != candidate.printer_technology) return fail("printer_technology");
@@ -230,6 +237,11 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
 {
     out.opt_key = def->opt_key;
     out.type = config_option_type(def->type);
+    out.plugin_api_level = uint32_t(def->level);
+    out.plugin_api_flags = def->flags;
+    out.plugin_api_has_min = def->has_min != 0;
+    out.plugin_api_has_max = def->has_max != 0;
+    out.plugin_api_has_max_literal = def->has_max_literal != 0;
     out.category = static_cast<OptionCategory>(def->category);
     out.gui_type = static_cast<ConfigOptionDef::GUIType>(def->gui_type);
     out.printer_technology = static_cast<PrinterTechnology>(def->printer_technology);
@@ -339,7 +351,14 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
     ConfigOption *temp_default_option = out.create_empty_option();
     if (def->default_serialized_value != nullptr)
         temp_default_option->deserialize(def->default_serialized_value);
-    out.set_default_value(temp_default_option);
+    // ConfigOptionDef has distinct ownership setters because vector defaults
+    // also carry their extruder-sized marker. Select the matching overload
+    // after deserialization instead of routing every option through the scalar
+    // assertion.
+    if (temp_default_option->is_vector())
+        out.set_default_value(static_cast<ConfigOptionVectorBase *>(temp_default_option));
+    else
+        out.set_default_value(temp_default_option);
 }
 
 static raw_config_option_def config_option_def_with_resolved_invalidation(const raw_config_option_def &def,
@@ -485,6 +504,7 @@ namespace Slic3r {
 
 Orchestrator::Orchestrator()
 {
+    link_config_definition_api();
     // Built-in seam painting is registered in the same table as plugin generic
     // facet annotations. The GUI still creates a fixed toolbar button for seam
     // today, but using the registry keeps the storage key and future plugin

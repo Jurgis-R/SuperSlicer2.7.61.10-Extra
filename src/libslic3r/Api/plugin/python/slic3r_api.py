@@ -100,6 +100,7 @@ from slic3r_extrusion_views import *
 from slic3r_surface_views import *
 from slic3r_datatree_views import *
 from slic3r_clipper_views import *
+from slic3r_config_def_views import *
 from slic3r_region_settings_views import *
 from slic3r_printing_plan_views import *
 from slic3r_print_helpers import *
@@ -329,13 +330,30 @@ class Slic3rAPI:
         _registered_apis.append(self)
 
     def _bind_host_functions(self) -> None:
+        missing = []
         for name, restype, argtypes in C_FUNCTION_SIGNATURES:
-            _bind_c_function(self.host, name, restype, argtypes)
+            if not _bind_c_function(self.host, name, restype, argtypes):
+                missing.append(name)
+        if missing:
+            raise RuntimeError(
+                "The host library is missing declared plugin API exports: "
+                + ", ".join(missing)
+            )
 
     @abi_requires_headers("slic3r_orchestrator.h")
     def orchestrator_view(self) -> OrchestratorView:
         """Borrow this API's orchestrator for service lookup and execution."""
         return OrchestratorView(self)
+
+    @abi_requires_headers("slic3r_config_def.h")
+    def option_keys(self, type_filter: int = RAW_CO_NONE) -> tuple[ConfigOptionKey, ...]:
+        """Copy global option keys in stable order, optionally filtered by type."""
+        return option_keys(self, type_filter)
+
+    @abi_requires_headers("slic3r_config_def.h")
+    def option_definition(self, key: str) -> ConfigOptionDefinition | None:
+        """Copy a complete normalized global option definition."""
+        return option_definition(self, key)
 
     @abi_requires_headers("slic3r_bridge_detector.h", "slic3r_orchestrator.h")
     def create_bridge_detector(self, **kwargs) -> BridgeDetector:

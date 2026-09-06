@@ -25,11 +25,18 @@ from collections.abc import Iterable
 from slic3r_abi import abi_requires_headers
 from slic3r_api_generated import (
     ConstStrings,
+    RAW_CO_NONE,
     RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT,
     RawPluginRunPayload,
     STEP_NONE,
 )
 from slic3r_bridge_detector_views import BridgeDetector, create_bridge_detector
+from slic3r_config_def_views import (
+    ConfigOptionDefinition,
+    ConfigOptionKey,
+    option_definition,
+    option_keys,
+)
 
 
 def _address(handle) -> int:
@@ -145,6 +152,16 @@ class OrchestratorView:
         """Copy a dynamic step name; built-in and unknown steps return empty."""
         value = self.api.host.orchestrator_step_name(self.c_handle(), int(step))
         return "" if not value else value.decode("utf-8", errors="replace")
+
+    @abi_requires_headers("slic3r_config_def.h")
+    def option_keys(self, type_filter: int = RAW_CO_NONE) -> tuple[ConfigOptionKey, ...]:
+        """Copy global option keys in stable order, optionally filtered by type."""
+        return option_keys(self.api, type_filter)
+
+    @abi_requires_headers("slic3r_config_def.h")
+    def option_definition(self, key: str) -> ConfigOptionDefinition | None:
+        """Copy a complete normalized definition, or return None when absent."""
+        return option_definition(self.api, key)
 
     def find_plugin(self, plugin_id: str) -> PluginView:
         """Find an exact plugin id, including inactive registered plugins."""

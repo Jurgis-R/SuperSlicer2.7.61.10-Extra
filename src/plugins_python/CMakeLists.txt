@@ -88,6 +88,9 @@ if (TARGET Python3::Python)
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_clipper_views.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_clipper_views.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_config_def_views.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_config_def_views.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_region_settings_views.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_region_settings_views.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

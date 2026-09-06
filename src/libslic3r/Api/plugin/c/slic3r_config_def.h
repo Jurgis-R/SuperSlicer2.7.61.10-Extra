@@ -6,7 +6,7 @@
 #define slic3r_config_def_h_
 
 #define SLIC3R_PLUGIN_API_CONFIG_DEF_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CONFIG_DEF_MINOR 0u
+#define SLIC3R_PLUGIN_API_CONFIG_DEF_MINOR 1u
 
 #include "slic3r_config_types.h"
 #include "slic3r_plugin_types.h"
@@ -91,7 +91,9 @@ typedef enum raw_option_level {
 typedef enum raw_printer_technology {
     RAW_PT_NONE = 0,
     RAW_PT_FFF,
-    RAW_PT_SLA
+    RAW_PT_SLA,
+    /* Definition shared by both currently supported printing technologies. */
+    RAW_PT_FFF_AND_SLA
 } raw_printer_technology;
 
 /* Bitmask flags for modes (mirrors ConfigOptionMode) */
@@ -356,18 +358,46 @@ SLIC3R_HOST_API option_def_error_code orchestrator_create_option_def(
 );
 
 /* ========================= CONFIG DEFINITION REQUEST ========================= */
-typedef struct config_option_handle config_option_handle;
-typedef struct print_config_def_handler print_config_def_handler;
+
+/* One borrowed option key and the type of value described by its definition. */
+typedef struct raw_config_option_key {
+    const char *key;
+    raw_config_option_type type;
+} raw_config_option_key;
 
 /*
-Ask for the global definition handler
+Enumerate the global print configuration definitions in lexicographic key order.
+
+RAW_CO_NONE disables filtering. Any other supported type keeps only matching
+definitions. The return value is always the total number of matching entries.
+Call first with out == NULL or capacity == 0 to obtain the required capacity;
+a smaller output array receives a deterministic prefix.
+
+The key pointers are borrowed from the global definition and remain valid for
+the lifetime of the host. They must not be modified or freed.
 */
-SLIC3R_HOST_API const print_config_def_handler *orchestrator_get_print_config_def(orchestrator_handle *);
+SLIC3R_HOST_API uint32_t orchestrator_get_option_keys(
+    const orchestrator_handle *orchestrator,
+    raw_config_option_type type_filter,
+    raw_config_option_key *out,
+    uint32_t capacity);
 
 /*
-Ask the global definition handler to copy the definition data from an option into out.
+Copy one normalized global option definition into caller-owned storage.
+
+The raw_config_option_def structure itself belongs to the caller. Every pointer
+stored inside it refers to a thread-local host snapshot and remains valid only
+until the next orchestrator_get_option_def() call made by the same thread. The
+caller must copy any strings or arrays it needs to retain and must never free or
+modify the pointed-to data.
+
+Return 1 on success. A null key, null output, or unknown key returns 0. When an
+output structure is provided on failure, every byte is reset to zero.
 */
-SLIC3R_HOST_API void printconfigdef_get_config_definition(const orchestrator_handle*, const char* id, raw_config_option_def *out);
+SLIC3R_HOST_API int32_t orchestrator_get_option_def(
+    const orchestrator_handle *orchestrator,
+    const char *key,
+    raw_config_option_def *out);
 
 #ifdef __cplusplus
 } // extern "C"

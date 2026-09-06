@@ -43,6 +43,10 @@ class PluginStorage;
 class DynamicConfig;
 namespace ApiClipper { class ClipperShapes; }
 
+// Referenced by Orchestrator's constructor so static-library linkers retain
+// the translation unit containing C exports used only by external plugins.
+void link_config_definition_api() noexcept;
+
 } // namespace Slic3r
 
 // Host-side state passed back to callbacks through the opaque C ABI handle.
