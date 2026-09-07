@@ -36,6 +36,7 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Config/ConfigDef.hpp"
 #include "libslic3r/Config/ConfigOption.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 namespace {
 
@@ -774,7 +775,7 @@ TEST_CASE("Explicit graph reset values remain distinct from the option default",
     REQUIRE(native_definition->graph_settings != nullptr);
     CHECK(native_definition->graph_settings->has_reset_vals);
     CHECK(native_definition->graph_settings->reset_vals.type == Slic3r::GraphData::GraphType::SPLINE);
-    REQUIRE(native_definition->default_value != nullptr);
+    REQUIRE(static_cast<bool>(native_definition->default_value));
     CHECK(native_definition->get_default_value<Slic3r::ConfigOptionGraph>()->value.type ==
           Slic3r::GraphData::GraphType::LINEAR);
 
@@ -921,6 +922,16 @@ TEST_CASE("Graph editor definitions reject unusable ranges and increments",
     {
         graph_settings.step_x = std::numeric_limits<double>::infinity();
         CHECK(orchestrator_create_option_def(handle, &definition) == OPTION_DEF_ERROR_INVALID_ARGUMENT);
+    }
+    SECTION("small positive range remains supported")
+    {
+        raw_config_option_def small_definition = {};
+        REQUIRE(orchestrator_get_option_def(
+            handle, "test_config_definition_small_graph_range", &small_definition) == 1);
+        REQUIRE(small_definition.graph_settings != nullptr);
+        CHECK(small_definition.graph_settings->min_y == 0.0);
+        CHECK(small_definition.graph_settings->max_y == Approx(0.001));
+        CHECK(small_definition.graph_settings->step_y == Approx(0.0001));
     }
 }
 

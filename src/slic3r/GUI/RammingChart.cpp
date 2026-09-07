@@ -8,6 +8,7 @@
 #include "RammingChart.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include <wx/dcbuffer.h>
 #include <wx/graphics.h>
@@ -17,29 +18,51 @@
 #include "I18N.hpp"
 wxDEFINE_EVENT(EVT_SLIC3R_CHART_CHANGED, wxCommandEvent);
 
-void Chart::set_x_label(const wxString &label, float incr)
+namespace {
+
+int legend_precision(double increment)
 {
-    m_x_legend      = label;
-    m_x_legend_incr = incr;
-    for (int i = 0; i < 6; i++) {
-        if (std::round(m_x_legend_incr * std::pow(10, i)) > 0) {
-            m_x_precision = i;
+    if (!std::isfinite(increment) || increment <= 0.0)
+        return 0;
+
+    int precision = 0;
+    double scaled_increment = increment;
+    while (precision < std::numeric_limits<double>::digits10) {
+        const double nearest_integer = std::round(scaled_increment);
+        const double tolerance = std::max(1.0, std::abs(scaled_increment)) * 1e-6;
+        // Rounding a small positive increment to zero does not provide a
+        // usable display precision; keep scaling until a non-zero decimal
+        // digit becomes significant.
+        if (nearest_integer != 0.0 && std::abs(scaled_increment - nearest_integer) <= tolerance)
             break;
-        }
+        scaled_increment *= 10.0;
+        ++precision;
     }
+    return precision;
 }
 
-void Chart::set_y_label(const wxString &label, float incr)
+double snap_to_increment(double value, double increment)
 {
-    assert(incr > 0.0001);
+    assert(std::isfinite(increment) && increment > 0.0);
+    return std::round(value / increment) * increment;
+}
+
+} // namespace
+
+void Chart::set_x_label(const wxString &label, double incr)
+{
+    assert(std::isfinite(incr) && incr > 0.0);
+    m_x_legend      = label;
+    m_x_legend_incr = std::isfinite(incr) && incr > 0.0 ? incr : 0.1;
+    m_x_precision   = legend_precision(m_x_legend_incr);
+}
+
+void Chart::set_y_label(const wxString &label, double incr)
+{
+    assert(std::isfinite(incr) && incr > 0.0);
     m_y_legend      = label;
-    m_y_legend_incr = incr;
-    for (int i = 0; i < 6; i++) {
-        if (std::round(m_y_legend_incr * std::pow(10, i)) > 0) {
-            m_y_precision = i;
-            break;
-        }
-    }
+    m_y_legend_incr = std::isfinite(incr) && incr > 0.0 ? incr : 0.1;
+    m_y_precision   = legend_precision(m_y_legend_incr);
 }
 
 void Chart::draw() {
@@ -106,6 +129,10 @@ void Chart::draw() {
         ptx.y -= 1 * legend_side;
         pty.x -= 1 * legend_side;
         pty.y -= 0.5 * legend_side;
+        const wxString x_text = wxString::FromUTF8(
+            ("x: " + Slic3r::to_string_nozero(pos.m_x, m_x_precision)).c_str());
+        const wxString y_text = wxString::FromUTF8(
+            ("y: " + Slic3r::to_string_nozero(pos.m_y, m_y_precision)).c_str());
         //{
         //    wxFont font = dc.GetFont();
         //    font.MakeBold();
@@ -124,12 +151,12 @@ void Chart::draw() {
                 gc->SetBrush(bcol);
                 gc->DrawRectangle(ptx.x - 2, ptx.y, legend_side + 2, legend_side);
                 delete gc;
-                dc.DrawText(wxString().Format(wxT("x: %.3f"), pos.m_x), ptx);
-                dc.DrawText(wxString().Format(wxT("y: %.3f"), pos.m_y), pty);
+                dc.DrawText(x_text, ptx);
+                dc.DrawText(y_text, pty);
         } else {
                 dc.SetBackgroundMode(wxSOLID);
-                dc.DrawText(wxString().Format(wxT("x: %.3f"), pos.m_x), ptx);
-                dc.DrawText(wxString().Format(wxT("y: %.3f"), pos.m_y), pty);
+                dc.DrawText(x_text, ptx);
+                dc.DrawText(y_text, pty);
                 dc.SetBackgroundMode(wxTRANSPARENT);
         }
     }
@@ -160,36 +187,39 @@ void Chart::draw() {
 
     // draw x-axis:
     double last_mark = -10000;
-    for (double math_x = int(m_moveable_area.m_x * 10) / 10.f; math_x <= (m_moveable_area.m_x + m_moveable_area.m_width); math_x += m_x_legend_incr) {
+    const double max_x = m_moveable_area.m_x + m_moveable_area.m_width;
+    for (double math_x = std::ceil(m_moveable_area.m_x / m_x_legend_incr) * m_x_legend_incr;
+         math_x <= max_x;) {
         int x = math_to_screen(wxPoint2DDouble(math_x, m_visible_area.m_y)).x;
         int y = m_rect.GetBottom();
-        if (x-last_mark < legend_side) continue;
-        dc.DrawLine(x,y+3,x,y-3);
-        if (m_x_precision == 0) {
-            dc.DrawText(wxString()<<int(math_x), wxPoint(x - scale_unit, y + 0.5 * scale_unit));
-        } else if (m_x_precision < 5){
+        if (x-last_mark >= legend_side) {
+            dc.DrawLine(x,y+3,x,y-3);
             dc.DrawText(Slic3r::to_string_nozero(math_x, m_x_precision), wxPoint(x - scale_unit, y + 0.5 * scale_unit));
-        } else {
-            dc.DrawText(wxString().Format(wxT("%f"), math_x), wxPoint(x - scale_unit, y + 0.5 * scale_unit));
+            last_mark = x;
         }
-        last_mark = x;
+        const double next_x = math_x + m_x_legend_incr;
+        if (next_x <= math_x)
+            break;
+        math_x = next_x;
     }
 
     // draw y-axis:
     last_mark=10000;
-    for (double math_y = int(m_moveable_area.m_y * 10) / 10.f; math_y < (m_moveable_area.m_y + m_moveable_area.m_height); math_y += m_y_legend_incr) {
+    const double max_y = m_moveable_area.m_y + m_moveable_area.m_height;
+    for (double math_y = std::ceil(m_moveable_area.m_y / m_y_legend_incr) * m_y_legend_incr;
+         math_y < max_y;) {
         int y = math_to_screen(wxPoint2DDouble(m_visible_area.m_x, math_y)).y;
         int x = m_rect.GetLeft();
-        if (last_mark-y < legend_side / 2) continue;    
-        dc.DrawLine(x-3,y,x+3,y);
-        if (m_y_precision == 0) {
-            dc.DrawText(wxString()<<int(math_y), wxPoint(x - 2 * scale_unit, y - 0.5 * scale_unit));
-        } else if (m_y_precision < 5){
-            dc.DrawText(Slic3r::to_string_nozero(math_y, m_y_precision), wxPoint(x - (2 + m_y_precision * 0.5f) * scale_unit, y - 0.5 * scale_unit));
-        } else {
-            dc.DrawText(wxString().Format(wxT("%f"), math_y), wxPoint(x - 4 * scale_unit, y - 0.5 * scale_unit));
+        if (last_mark-y >= legend_side / 2) {
+            dc.DrawLine(x-3,y,x+3,y);
+            dc.DrawText(Slic3r::to_string_nozero(math_y, m_y_precision),
+                        wxPoint(x - (2 + m_y_precision * 0.5f) * scale_unit, y - 0.5 * scale_unit));
+            last_mark = y;
         }
-        last_mark = y;
+        const double next_y = math_y + m_y_legend_incr;
+        if (next_y <= math_y)
+            break;
+        math_y = next_y;
     }
 
     // axis labels:
@@ -224,8 +254,8 @@ void Chart::mouse_right_button_clicked(wxMouseEvent& event) {
             return;
         wxPoint2DDouble dblpoint = screen_to_math(point);
         // trunc by precision
-        dblpoint.m_x = int((dblpoint.m_x + this->m_x_legend_incr / 2) / this->m_x_legend_incr) * this->m_x_legend_incr;
-        dblpoint.m_y = int((dblpoint.m_y + this->m_y_legend_incr / 2) / this->m_y_legend_incr) * this->m_y_legend_incr;
+        dblpoint.m_x = snap_to_increment(dblpoint.m_x, this->m_x_legend_incr);
+        dblpoint.m_y = snap_to_increment(dblpoint.m_y, this->m_y_legend_incr);
         //check it doesn't exist
         for (const ButtonToDrag &bt : m_buttons)
             if(bt.get_pos().m_x == dblpoint.m_x)
@@ -326,7 +356,7 @@ void Chart::mouse_left_window(wxMouseEvent &e)
                     m_x = m_moveable_area.m_x + m_moveable_area.m_width;
                 }
             }
-            m_x = int((m_x + this->m_x_legend_incr / 2) / this->m_x_legend_incr) * this->m_x_legend_incr;
+            m_x = snap_to_increment(m_x, this->m_x_legend_incr);
             m_dragged->move(m_x - m_dragged->get_pos().m_x, 0);
         }
         wxDouble m_y = m_dragged->get_pos().m_y;
@@ -338,7 +368,7 @@ void Chart::mouse_left_window(wxMouseEvent &e)
                 m_y = m_moveable_area.m_y + m_moveable_area.m_height;
             }
         }
-        m_y = int((m_y + this->m_y_legend_incr / 2) / this->m_y_legend_incr) * this->m_y_legend_incr;
+        m_y = snap_to_increment(m_y, this->m_y_legend_incr);
         m_dragged->move(0, m_y - m_dragged->get_pos().m_y);
         m_previous_mouse = math_to_screen(m_dragged->get_pos());
         m_dragged        = nullptr;
@@ -350,10 +380,10 @@ void Chart::mouse_released(wxMouseEvent & event)
 {
     if (m_dragged != nullptr) {
         if (!fixed_x) {
-            float m_x = int((m_dragged->get_pos().m_x + this->m_x_legend_incr / 2) / this->m_x_legend_incr) * this->m_x_legend_incr;
+            const double m_x = snap_to_increment(m_dragged->get_pos().m_x, this->m_x_legend_incr);
             m_dragged->move(m_x - m_dragged->get_pos().m_x, 0);
         }
-        float m_y = int((m_dragged->get_pos().m_y + this->m_y_legend_incr / 2) / this->m_y_legend_incr) * this->m_y_legend_incr;
+        const double m_y = snap_to_increment(m_dragged->get_pos().m_y, this->m_y_legend_incr);
         m_dragged->move(0, m_y - m_dragged->get_pos().m_y);
         m_previous_mouse = math_to_screen(m_dragged->get_pos());
         m_dragged = nullptr;

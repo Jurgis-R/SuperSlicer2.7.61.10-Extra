@@ -213,6 +213,10 @@ void register_config_introspection_fixture(orchestrator_handle *orchestrator)
         {std::numeric_limits<double>::quiet_NaN(), 10.0},
         {100.0, 20.0},
     };
+    static const c_vec2d small_graph_points[] = {
+        {0.0, 0.0},
+        {100.0, 0.001},
+    };
 
     raw_config_option_def definition = raw_config_option_def_init();
     definition.opt_key = "test_config_definition_introspection";
@@ -317,6 +321,20 @@ void register_config_introspection_fixture(orchestrator_handle *orchestrator)
     // second time to exercise compatibility with the native NaN endpoint
     // sentinel before PrintConfigDef is finalized.
     register_config_option_or_fail(orchestrator, graph_definition);
+
+    raw_graph_settings small_graph_settings = graph_settings;
+    small_graph_settings.max_y = 0.001;
+    small_graph_settings.step_y = 0.0001;
+    small_graph_settings.reset_values = {
+        0, 2, RAW_GRAPH_TYPE_LINEAR, small_graph_points, 2};
+    small_graph_settings.enforced_values = nullptr;
+    small_graph_settings.enforced_value_count = 0;
+
+    raw_config_option_def small_graph_definition = graph_definition;
+    small_graph_definition.opt_key = "test_config_definition_small_graph_range";
+    small_graph_definition.default_serialized_value = "0:2:1:0x0:100x0.001";
+    small_graph_definition.graph_settings = &small_graph_settings;
+    register_config_option_or_fail(orchestrator, small_graph_definition);
 }
 
 void activate_plugin_or_fail(Slic3r::Orchestrator &orchestrator, const char *plugin_id)

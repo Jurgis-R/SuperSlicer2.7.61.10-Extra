@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 #include <wx/sizer.h>
@@ -84,9 +85,17 @@ GraphDialog::GraphDialog(wxWindow *parent, const GraphData &parameters, const Gr
 #define style wxSP_ARROW_KEYS
 #endif
 
-static const double pow10_9to9[] = {0.000000001, 0.00000001, 0.0000001, 0.000001,  0.00001,   0.0001, 0.001,
-                                        0.01,        0.1,        1,         10,        100,       1000,   10000,
-                                        100000,      1000000,    10000000,  100000000, 1000000000};
+static double graph_legend_increment(double span)
+{
+    if (!std::isfinite(span) || span <= 0.0)
+        return 0.0;
+
+    // Keep roughly one thousand mathematical increments across the range.
+    // Deriving the power directly avoids the old fixed lower bound, which
+    // rejected otherwise representable small graph ranges.
+    const double increment = std::pow(10.0, std::ceil(std::log10(span))) / 1000.0;
+    return std::isfinite(increment) && increment > 0.0 ? increment : std::numeric_limits<double>::denorm_min();
+}
 
 double use_double_event(SpinInputDouble *widget,
                                     double &          last_val,
@@ -105,9 +114,7 @@ double use_double_event(SpinInputDouble *widget,
     if (curr_min + EPSILON >= curr_max)
         last_val = old_val;
     widget->SetValue(last_val);
-    double precision = 0.000001f;
-    while (precision < (curr_max - curr_min)) precision *= 10;
-    return precision / 1000;
+    return graph_legend_increment(curr_max - curr_min);
 }
 
 GraphPanel::GraphPanel(wxWindow *parent, GraphData data, const GraphSettings &settings)
@@ -206,12 +213,8 @@ GraphPanel::GraphPanel(wxWindow *parent, GraphData data, const GraphSettings &se
     m_chart = new Chart(this, wxRect(scale(1), scale(1), scale(64), scale(36)), buttons, scale(1));
     m_chart->set_buttons(buttons, freeze_front, freeze_back);
     m_chart->set_manual_points_manipulation(true);
-    double precision = 0.000001f;
-    while (precision < (m_last_max_x - m_last_min_x)) precision *= 10;
-    m_chart->set_x_label(_(settings.x_label), precision / 1000);
-    precision = 0.000001f;
-    while (precision < (m_last_max_y - m_last_min_y)) precision *= 10;
-    m_chart->set_y_label(_(settings.y_label), precision / 1000);
+    m_chart->set_x_label(_(settings.x_label), graph_legend_increment(m_last_max_x - m_last_min_x));
+    m_chart->set_y_label(_(settings.y_label), graph_legend_increment(m_last_max_y - m_last_min_y));
     m_chart->set_no_point_label(_(settings.null_label));
     m_chart->set_type(data.type);
 #ifdef _WIN32
@@ -325,17 +328,23 @@ GraphPanel::GraphPanel(wxWindow *parent, GraphData data, const GraphSettings &se
     sizer_chart->SetSizeHints(this);
     SetSizer(sizer_chart);
 
-    bt_reset->Bind(wxEVT_BUTTON, ([this, reset_vals = settings.reset_vals, enforced_vals = settings.enforced_values](wxCommandEvent& e) {
+    bt_reset->Bind(wxEVT_BUTTON, ([this, reset_vals = settings.reset_vals,
+                                  enforced_vals = settings.enforced_values,
+                                  x_label = settings.x_label](wxCommandEvent& e) {
         std::vector<std::pair<float,float>> buttons;// = m_chart->get_buttons();
         for (const auto &x2y: reset_vals.graph_points) {
             buttons.emplace_back(float(x2y.x()), float(x2y.y()));
         }
+        size_t active_begin = reset_vals.begin_idx;
+        size_t active_end   = reset_vals.end_idx;
         //ensure enforced valuea are here
         bool freeze_front = false, freeze_back = false;
         if (!enforced_vals.empty()) {
             if (!std::isnan(enforced_vals.front().x())) {
                 if (buttons.empty() || buttons.front().first != enforced_vals.front().x() || buttons.front().second != enforced_vals.front().y()) {
                     buttons.emplace(buttons.begin(), float(enforced_vals.front().x()), float(enforced_vals.front().y()));
+                    ++active_begin;
+                    ++active_end;
                 }
                 freeze_front = true;
             }
@@ -351,11 +360,36 @@ GraphPanel::GraphPanel(wxWindow *parent, GraphData data, const GraphSettings &se
         }
         m_chart->set_buttons(buttons, freeze_front, freeze_back);
         m_chart->set_type(reset_vals.type);
-        m_chart->set_xy_range(
-            reset_vals.begin_idx >= 0 && reset_vals.begin_idx < reset_vals.graph_points.size() ? reset_vals.graph_points[reset_vals.begin_idx].x() : std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN(), 
-            reset_vals.end_idx >= 0 && reset_vals.end_idx < reset_vals.graph_points.size() ? reset_vals.graph_points[reset_vals.end_idx].x() : std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN());
+
+        // end_idx is exclusive. Multi-point ranges can also drive the visible
+        // chart bounds directly; empty and single-point ranges retain a valid
+        // display range and are represented by m_reset_active_range instead.
+        if (active_begin < active_end && active_end <= buttons.size()) {
+            const double active_min_x = buttons[active_begin].first;
+            const double active_max_x = buttons[active_end - 1].first;
+            if (active_min_x < active_max_x) {
+                m_last_min_x = active_min_x;
+                m_last_max_x = active_max_x;
+                // The legend increment is also the drag snapping step, so it
+                // must follow the range restored by Reset.
+                m_chart->set_x_label(_(x_label), graph_legend_increment(active_max_x - active_min_x));
+                m_chart->set_xy_range(active_min_x, std::numeric_limits<double>::quiet_NaN(),
+                                      active_max_x, std::numeric_limits<double>::quiet_NaN());
+                if (m_widget_min_x != nullptr)
+                    m_widget_min_x->SetValue(active_min_x);
+                if (m_widget_max_x != nullptr)
+                    m_widget_max_x->SetValue(active_max_x);
+                m_widget_x->SetRange(active_min_x, active_max_x);
+            }
+        }
+
+        m_reset_active_range = std::make_pair(active_begin, active_end);
+        m_reset_abscissas.clear();
+        m_reset_abscissas.reserve(buttons.size());
+        for (const std::pair<float, float> &button : buttons)
+            m_reset_abscissas.push_back(button.first);
+        m_reset_min_x        = m_chart->get_min_x();
+        m_reset_max_x        = m_chart->get_max_x();
     }));
     
     bt_type->Bind(wxEVT_BUTTON, ([this, allowed_types = settings.allowed_types](wxCommandEvent& e) {
@@ -505,16 +539,31 @@ GraphData GraphPanel::get_data()
         const std::pair<float, float> &pt = buttons[idx];
         // get good position, as the graph_points are ordered
         size_t idx_insert = 0;
-        for (idx_insert = 0; idx_insert < data.graph_points.size() && data.graph_points[idx_insert].x() < pt.first;
+        for (idx_insert = 0; idx_insert < data.graph_points.size() && data.graph_points[idx_insert].x() <= pt.first;
              idx_insert++) {}
         data.graph_points.emplace(data.graph_points.begin() + idx_insert, pt.first, pt.second);
-        if (data.begin_idx == size_t(-1) && m_chart->get_min_x() <= pt.first) {
-            data.begin_idx = idx;
-        }
-        if (m_chart->get_max_x() >= pt.first) {
-            data.end_idx = idx + 1;
+    }
+
+    const bool reset_abscissas_unchanged = m_reset_abscissas.size() == buttons.size() &&
+        std::equal(m_reset_abscissas.begin(), m_reset_abscissas.end(), buttons.begin(),
+                   [](float reset_x, const std::pair<float, float> &button) { return reset_x == button.first; });
+    const bool reset_range_unchanged = m_reset_active_range.has_value() && reset_abscissas_unchanged &&
+        m_chart->get_min_x() == m_reset_min_x &&
+        m_chart->get_max_x() == m_reset_max_x &&
+        m_reset_active_range->second <= data.graph_points.size();
+    if (reset_range_unchanged) {
+        data.begin_idx = m_reset_active_range->first;
+        data.end_idx   = m_reset_active_range->second;
+    } else {
+        for (size_t idx = 0; idx < data.graph_points.size(); ++idx) {
+            const Vec2d &point = data.graph_points[idx];
+            if (data.begin_idx == size_t(-1) && m_chart->get_min_x() <= point.x())
+                data.begin_idx = idx;
+            if (m_chart->get_max_x() >= point.x())
+                data.end_idx = idx + 1;
         }
     }
+
     if (data.graph_points.empty()) {
         data.begin_idx = 0;
         data.end_idx   = 0;

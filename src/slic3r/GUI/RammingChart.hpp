@@ -8,6 +8,7 @@
 #ifndef RAMMING_CHART_H_
 #define RAMMING_CHART_H_
 
+#include <cmath>
 #include <vector>
 
 #include <wx/wxprec.h>
@@ -37,7 +38,7 @@ public:
                 m_buttons.emplace_back(wxPoint2DDouble(pair.first,pair.second), *this);
         recalculate_line();
     }
-    void set_xy_range(float min_x, float min_y, float max_x, float max_y) {
+    void set_xy_range(double min_x, double min_y, double max_x, double max_y) {
         if (!std::isnan(min_x)) {
             m_moveable_area.SetLeft(min_x);
         }
@@ -58,8 +59,8 @@ public:
         recalculate_line();
     }
     void  set_manual_points_manipulation(bool manip) { m_manual_points_manipulation = manip; }
-    void  set_x_label(const wxString &label, float incr = 0.1f);
-    void  set_y_label(const wxString &label, float incr = 0.1f);
+    void  set_x_label(const wxString &label, double incr = 0.1);
+    void  set_y_label(const wxString &label, double incr = 0.1);
     void  set_no_point_label(const wxString &label) { m_no_point_legend = label; }
     void  set_type(Slic3r::GraphData::GraphType type) { m_type = type; recalculate_line(); }
     Slic3r::GraphData::GraphType  get_type() const { return m_type; }
@@ -75,8 +76,8 @@ public:
 
 
     float get_volume() const { return m_total_volume; }
-    float get_max_x() const { return m_moveable_area.m_x + m_moveable_area.m_width; }
-    float get_min_x() const { return m_moveable_area.m_x; }
+    double get_max_x() const { return m_moveable_area.m_x + m_moveable_area.m_width; }
+    double get_min_x() const { return m_moveable_area.m_x; }
 
     std::vector<float> get_value_samples(float sampling) const; //returns sampled values
     std::vector<std::pair<float,float>> get_buttons() const; // returns buttons position
@@ -114,7 +115,6 @@ private:
     wxBrush orange_brush = wxBrush(wxColour(255,150,0), wxBRUSHSTYLE_SOLID);
 
     class ButtonToDrag {
-        static inline const int pow10[] = {1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000};
     public:
         bool operator<(const ButtonToDrag& a) const { return m_pos.m_x < a.m_pos.m_x; }
         ButtonToDrag(wxPoint2DDouble pos, const Chart &chart) : m_pos{pos}, m_pos_following{pos}, m_chart(&chart), freeze(false) {};
@@ -127,17 +127,22 @@ private:
                                  std::min(m_chart->m_moveable_area.m_x + m_chart->m_moveable_area.m_width, m_pos.m_x));
             m_pos.m_y = std::max(m_chart->m_moveable_area.m_y,
                                  std::min(m_chart->m_moveable_area.m_y + m_chart->m_moveable_area.m_height, m_pos.m_y));
-            if (m_chart->m_x_precision <= 0) {
-                m_pos.m_x = int(m_pos.m_x);
-            } else if (m_chart->m_x_precision < 10){
-                //m_pos.m_x = int(m_pos.m_x * pow10[m_chart->m_x_precision]) / double(pow10[m_chart->m_x_precision]);
+            // Coordinate snapping follows the actual editor increment. Display
+            // precision is intentionally independent so very small ranges do
+            // not change the values that may be entered or dragged.
+            if (std::isfinite(m_chart->m_x_legend_incr) && m_chart->m_x_legend_incr > 0.0) {
                 m_pos.m_x = std::round(m_pos.m_x / m_chart->m_x_legend_incr) * m_chart->m_x_legend_incr;
             }
-            if (m_chart->m_y_precision <= 0) {
-                m_pos.m_y = int(m_pos.m_y);
-            } else if (m_chart->m_y_precision < 10){
-                m_pos.m_y = int(m_pos.m_y * pow10[m_chart->m_y_precision]) / double(pow10[m_chart->m_y_precision]);
+            if (std::isfinite(m_chart->m_y_legend_incr) && m_chart->m_y_legend_incr > 0.0) {
+                m_pos.m_y = std::round(m_pos.m_y / m_chart->m_y_legend_incr) * m_chart->m_y_legend_incr;
             }
+            // Clamp again because a range boundary need not be aligned with
+            // the increment: snapping a point already on that boundary may
+            // move it just outside the editable area.
+            m_pos.m_x = std::max(m_chart->m_moveable_area.m_x,
+                                 std::min(m_chart->m_moveable_area.m_x + m_chart->m_moveable_area.m_width, m_pos.m_x));
+            m_pos.m_y = std::max(m_chart->m_moveable_area.m_y,
+                                 std::min(m_chart->m_moveable_area.m_y + m_chart->m_moveable_area.m_height, m_pos.m_y));
         }
         bool freeze = false;
     private:

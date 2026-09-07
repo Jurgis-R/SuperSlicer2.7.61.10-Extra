@@ -6,6 +6,8 @@
 #ifndef _GRAPH_DIALOG_H_
 #define _GRAPH_DIALOG_H_
 
+#include <optional>
+
 #include <wx/checkbox.h>
 #include <wx/msgdlg.h>
 #include <wx/spinctrl.h>
@@ -37,6 +39,15 @@ private:
     double            m_last_max_x   = 1.f;
     double            m_last_min_y   = 0.f;
     double            m_last_max_y   = 1.f;
+
+    // A reset target may select no point, one point, or only part of a list.
+    // Those cases cannot always be encoded by the chart's non-empty X range,
+    // so keep the exact indices while its abscissas and X range stay intact.
+    // Ordinates do not determine which points belong to the active range.
+    std::optional<std::pair<size_t, size_t>> m_reset_active_range;
+    std::vector<float>                       m_reset_abscissas;
+    double                                  m_reset_min_x = 0.0;
+    double                                  m_reset_max_x = 0.0;
 };
 
 class GraphDialog : public wxDialog
