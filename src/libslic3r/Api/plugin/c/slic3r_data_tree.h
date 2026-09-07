@@ -9,6 +9,30 @@
 #define SLIC3R_PLUGIN_API_DATA_TREE_MINOR 0u
 
 /*
+Data-tree access for a sliced Print.
+
+The main ownership path is Print -> Object -> Layer. A Layer owns LayerRegions
+(the raw slices for each PrintRegion) and LayerIslands (the merged geometric
+islands). Each LayerIsland references the LayerRegions that intersect it and
+owns LayerRegionIslands, which group generated surfaces and extrusions by
+region set and extruder. SurfaceCollections own Surface records; each Surface
+owns one ExPolygon and carries a type, a runtime id and plugin properties.
+
+Unless a function name starts with storage_new_ or explicitly says that it
+creates owned storage, every pointer returned by this header is borrowed. Do
+not free borrowed handles. A mutable handle grants mutation only through the
+public functions accepting that handle; it does not transfer ownership.
+
+Borrowed handles remain valid while their owning node exists and its containing
+collection is not structurally changed. Clearing, replacing, rebuilding or
+removing a collection invalidates handles to its elements and descendants.
+Indices are traversal positions, not persistent identifiers. Geometry mutation
+may also make derived slices, bounding boxes, islands, surfaces or extrusions
+stale; use the documented recomputation function before consuming such caches.
+Unless a function documents another result, null input is accepted by query
+functions and produces zero, an empty value or null, while indexed accessors
+return null for an out-of-range index.
+
 Developer guide: [Using Plugin Properties](/doc/plugins/properties.md)
 
 Extrusion guide: [Using Unified Extrusion Entities](/doc/plugins/extrusions.md)
@@ -123,7 +147,7 @@ typedef uint16_t raw_surface_type;
 /* Bottom horizontal surface, visible from the bottom */
 #define RAW_SURFACE_TYPE_POS_BOTTOM (1 << 1)
 
-/* Internal sparse infill */
+/* Internal horizontal surface position. Its density is selected separately. */
 #define RAW_SURFACE_TYPE_POS_INTERNAL (1 << 2)
 
 /* Inner/outer perimeters (mainly for coloring) */
@@ -204,7 +228,13 @@ Important rules:
 - do not store owning pointers or strings inside the payload;
 - use the same orchestrator that registered the property when creating it;
 - if get_or_add returns NULL, the type is unknown to the orchestrator or the
-  existing payload layout does not match the registered one.
+  existing payload layout does not match the registered one;
+- data pointers are borrowed from the container and must never be freed.
+  Removing a property invalidates its payload pointer; clearing the container
+  or copying properties into it invalidates all its previous payload pointers,
+  even though the container handle itself remains valid. Reacquire payload
+  pointers after structural mutations and never retain them past the owner's
+  lifetime.
 */
 SLIC3R_HOST_API uint32_t plugin_property_count(const plugin_property_container_handle *me);
 SLIC3R_HOST_API plugin_property_type plugin_property_type_at(const plugin_property_container_handle *me, uint32_t idx);
@@ -229,16 +259,21 @@ SLIC3R_HOST_API void plugin_property_copy_all(plugin_property_container_handle *
 
 /* ========================= SURFACE ========================= */
 
+/*
+Value snapshot of a Surface.
+
+expolygon is borrowed from the source Surface: c_surface does not own or copy
+that geometry, and the pointer must not be freed. It remains valid only until
+the source Surface or its containing SurfaceCollection is mutated, cleared or
+destroyed. Do not retain this value beyond that lifetime.
+*/
 struct c_surface
 {
     const expolygon_handle *expolygon;
     raw_surface_type type;
     uint64_t id;
 };
-/*
-Snapshot one Surface into a tiny C value. Prefer the handle API below when the
-Surface may grow new fields, or when you need to mutate it.
-*/
+/* Return a zero-initialized value for null; otherwise return the borrowed snapshot above. */
 SLIC3R_HOST_API c_surface surface_c_view(const surface_handle *me);
 
 /* Borrow the geometry owned by a read-only Surface view. */
@@ -277,29 +312,52 @@ Surface collection storage.
 Surface remains a read-only data-tree view. Plugins create temporary
 SurfaceCollections in their storage, fill them with copied or moved ExPolygons,
 then pass the whole collection to a step callback that moves it into the host
-data tree.
+data tree. The returned handle is owned by storage and must be released through
+the storage API unless ownership is explicitly transferred. Null storage
+returns null.
 */
 SLIC3R_HOST_API surface_collection_handle *storage_new_surface_collection(storage_handle *storage);
+/* Clear the collection and invalidate every Surface and ExPolygon handle obtained from it. */
 SLIC3R_HOST_API void surface_collection_clear(surface_collection_handle *me);
+/* Copy area into a new Surface. The source and destination geometries are independent. */
 SLIC3R_HOST_API void surface_collection_append_expolygon_copy(surface_collection_handle *me,
                                                               const expolygon_handle *area,
                                                               raw_surface_type surface_type);
+/*
+Move area into a new Surface and clear the source ExPolygon. The source handle
+remains valid, empty and owned by its original storage, so the caller must still
+release that storage normally. ExPolygons carry no Surface properties; the new
+Surface starts with an empty property container. Appending may invalidate
+previous Surface handles from me.
+*/
 SLIC3R_HOST_API void surface_collection_append_expolygon_move(surface_collection_handle *me,
                                                               expolygon_handle *area,
                                                               raw_surface_type surface_type);
+/* Copy every source ExPolygon into a new Surface with surface_type. */
 SLIC3R_HOST_API void surface_collection_append_expolygons_copy(surface_collection_handle *me,
                                                                const expolygon_collection_handle *areas,
                                                                raw_surface_type surface_type);
+/*
+Move all ExPolygons into new Surfaces and leave areas empty. The source
+collection handle remains valid and must still be released by its owner.
+No Surface properties are transferred. Appending may invalidate previously
+borrowed Surface handles from me.
+*/
 SLIC3R_HOST_API void surface_collection_append_expolygons_move(surface_collection_handle *me,
                                                                expolygon_collection_handle *areas,
                                                                raw_surface_type surface_type);
+/* Null collections have size zero. */
 SLIC3R_HOST_API uint32_t surface_collection_size(const surface_collection_handle *me);
+/* Borrow element idx; return null for null or out-of-range input. Never free the result. */
 SLIC3R_HOST_API const surface_handle *surface_collection_at(const surface_collection_handle *me, uint32_t idx);
+/* Mutable borrowed element access with the same null, lifetime and invalidation rules. */
 SLIC3R_HOST_API surface_handle *surface_collection_at_mutable(surface_collection_handle *me, uint32_t idx);
 
 /* ========================= LAYER ========================= */
 
+/* Return the layer thickness in scaled coord_t units. Null returns zero. */
 SLIC3R_HOST_API coord_t layer_get_height(const layer_handle *me);
+/* Return the printing Z position in scaled coord_t units. Null returns zero. */
 SLIC3R_HOST_API coord_t layer_get_print_z(const layer_handle *me);
 /* Center Z of the slicing plane. It is exactly print_z - height / 2. */
 SLIC3R_HOST_API coord_t layer_get_slice_z(const layer_handle *me);
@@ -311,6 +369,11 @@ storage remain alive. A null layer returns null. This function does not mutate
 the layer or object.
 */
 SLIC3R_HOST_API const object_handle *layer_get_object(const layer_handle *me);
+/*
+Borrow the merged Layer slices. The collection may be empty but is non-null for
+a valid Layer. Its elements become stale when Layer slices are edited or
+recomputed; the collection and its elements must not be freed.
+*/
 SLIC3R_HOST_API const expolygon_collection_handle *layer_get_slices(const layer_handle *me);
 
 /*
@@ -328,25 +391,48 @@ zero-initialized structure; use layer_count_curled_line() to validate idx.
 */
 SLIC3R_HOST_API c_curled_line layer_get_curled_line(const layer_handle *me, uint32_t idx);
 
+/*
+Borrow an adjacent layer when the host linked one. Boundary layers and unlinked
+auxiliary layers return null. These links and handles remain valid only while
+the owning Object's relevant layer collection is unchanged. Mutable variants
+do not transfer ownership.
+*/
 SLIC3R_HOST_API layer_handle *layer_get_upper_layer_mutable(layer_handle *me);
 SLIC3R_HOST_API const layer_handle *layer_get_upper_layer(const layer_handle *me);
 
 SLIC3R_HOST_API layer_handle *layer_get_lower_layer_mutable(layer_handle *me);
 SLIC3R_HOST_API const layer_handle *layer_get_lower_layer(const layer_handle *me);
 
-// tag that can be used by processed to store some information
+/*
+Borrow the Layer's mutable plugin-property container. Metadata remains writable
+even when me is const; this does not make the Layer geometry mutable. The
+container is owned by the Layer, must not be freed and dies with that Layer.
+See the Plugin Properties section for layout and threading rules.
+*/
 SLIC3R_HOST_API plugin_property_container_handle *layer_get_properties(const layer_handle *me);
 
+/*
+Enumerate LayerRegions owned by this Layer. A null Layer has count zero;
+accessors return null for invalid indices. Returned handles are borrowed and
+must not be freed. Reinitializing or destroying the Layer's region collection
+invalidates all of them; mutable access does not transfer ownership.
+*/
 SLIC3R_HOST_API uint32_t layer_count_region(const layer_handle *me);
 SLIC3R_HOST_API layer_region_handle *layer_get_region_mutable(layer_handle *me, uint32_t idx);
 SLIC3R_HOST_API const layer_region_handle *layer_get_region(const layer_handle *me, uint32_t idx);
 
+/*
+Enumerate merged LayerIslands owned by this Layer, with the same null and index
+rules as LayerRegions. Rebuilding islands invalidates every previously returned
+LayerIsland and descendant LayerRegionIsland handle.
+*/
 SLIC3R_HOST_API uint32_t layer_count_island(const layer_handle *me);
 SLIC3R_HOST_API layer_island_handle *layer_get_island_mutable(layer_handle *me, uint32_t idx);
 SLIC3R_HOST_API const layer_island_handle *layer_get_island(const layer_handle *me, uint32_t idx);
 
 /* ========================= LAYER REGION ========================= */
 
+/* Borrow this LayerRegion's mutable metadata container; null returns null. */
 SLIC3R_HOST_API plugin_property_container_handle *layer_region_get_properties(const layer_region_handle *me);
 
 /*
@@ -354,7 +440,8 @@ Compute the normal extrusion flow for flow_role using this LayerRegion's region,
 object and layer settings, including its layer height and first-layer state.
 The LayerRegion is borrowed and is not modified. The returned c_flow is an
 independent value snapshot and needs no release. A null region returns a
-zero-initialized flow; flow_role must be supported by the host. Use
+zero-initialized flow. Recognized role flags select support, perimeter, top or
+solid flow as appropriate; other values fall back to ordinary infill. Use
 layer_region_get_bridging_flow() when bridge/overhang flow rules are required.
 */
 SLIC3R_HOST_API c_flow layer_region_get_flow(const layer_region_handle *me, raw_extrusion_role flow_role);
@@ -363,37 +450,83 @@ SLIC3R_HOST_API c_flow layer_region_get_flow(const layer_region_handle *me, raw_
 Compute the bridge/overhang flow for flow_role using this LayerRegion's region,
 object and layer settings. The LayerRegion is borrowed and is not modified.
 The returned c_flow is a value snapshot and needs no release. A null region
-returns a zero-initialized flow; flow_role must be supported by the host.
+returns a zero-initialized flow. Roles that do not select support, perimeter,
+top or solid flow fall back to the infill bridge flow.
 */
 SLIC3R_HOST_API c_flow layer_region_get_bridging_flow(const layer_region_handle *me, raw_extrusion_role flow_role);
+/*
+Borrow the raw slices assigned to this LayerRegion. The collection is owned by
+the region and may be empty. Any direct mutation or replacement invalidates its
+element handles and leaves Layer slices/islands stale until recomputed.
+*/
 SLIC3R_HOST_API const expolygon_collection_handle *layer_region_get_slices(const layer_region_handle *me);
+/* Copy the XY bounding box of all current raw slices; null returns a zero value. */
 SLIC3R_HOST_API c_bounding_box layer_region_get_bounding_box(const layer_region_handle *me);
 
+/* Borrow the owning Layer; null input returns null. Never free the result. */
 SLIC3R_HOST_API const layer_handle *layer_region_get_layer(const layer_region_handle *me);
+/* Borrow the shared PrintRegion supplying this region's configuration. */
 SLIC3R_HOST_API const print_region_handle *layer_region_get_print_region(const layer_region_handle *me);
 
 /* ========================= LAYER ISLAND ========================= */
 
+/*
+Borrow the island's defining ExPolygon. The mutable form edits the source used
+to rebuild Layer slices; after mutation, call layer_recompute_slices_from_islands()
+to synchronize that Layer collection. This call does not refresh the island's
+cached bounding box, infill areas or other derived perimeter data. Code that
+needs those caches must arrange for the owning pipeline step to rebuild the
+island. Neither form transfers ownership. Null input returns null.
+*/
 SLIC3R_HOST_API expolygon_handle *layer_island_get_slice_mutable(layer_island_handle *me);
 SLIC3R_HOST_API const expolygon_handle *layer_island_get_slice(const layer_island_handle *me);
+/* Copy the cached island bounding box; null returns a zero value. */
 SLIC3R_HOST_API c_bounding_box layer_island_get_bounding_box(const layer_island_handle *me);
-/* give an expolygon included inside get_slice()  where the infill has to be extruded. */
+/*
+Borrow the first ExPolygon from infill_areas, or return null when no infill area
+exists. This is a legacy single-area convenience, not a union of all areas.
+*/
 SLIC3R_HOST_API const expolygon_handle *layer_island_get_infill_slice(const layer_island_handle *me);
-/* All ExPolygons where infill has to be extruded. Prefer this when a previous step split the island fill area. */
+/*
+Borrow every area where infill may be generated. Perimeter processing may split
+one island into multiple disconnected areas, and these areas may overlap the
+perimeter domain to provide infill anchoring. A valid island returns a borrowed
+collection owned by that island; it may be empty and must not be freed. Later perimeter/infill
+reprocessing may replace it and invalidate its element handles.
+*/
 SLIC3R_HOST_API const expolygon_collection_handle *layer_island_get_infill_areas(const layer_island_handle *me);
+/* Copy the bounding box of the first infill area, or an empty box when absent. */
 SLIC3R_HOST_API c_bounding_box layer_island_get_infill_bounding_box(const layer_island_handle *me);
-/* give an expolygon included inside get_infill_slice() where the infill may be extruded if there was no
- * infill-perimeter encroachment. */
+/*
+Borrow the first ExPolygon from infill_no_overlap_areas, or return null when the
+collection is empty. It is a convenience view, not the complete free domain.
+*/
 SLIC3R_HOST_API const expolygon_handle *layer_island_get_infill_no_overlap_slice(const layer_island_handle *me);
-/* All no-overlap/free infill ExPolygons. */
+/*
+Borrow all areas where infill may be generated without encroaching on
+perimeters. Unlike infill_areas, these areas exclude the anchoring overlap.
+An empty collection means there is no overlap restriction to apply; consumers
+normally keep infill_areas unchanged rather than treating it as no infill.
+Never free or retain element handles across perimeter/infill reprocessing.
+*/
 SLIC3R_HOST_API const expolygon_collection_handle *layer_island_get_infill_no_overlap_areas(const layer_island_handle *me);
 
+/* Borrow this island's mutable metadata container; null returns null. */
 SLIC3R_HOST_API plugin_property_container_handle *layer_island_get_properties(const layer_island_handle *me);
 
+/*
+Enumerate the borrowed LayerRegions intersecting this island. Null has count
+zero and invalid indices return null. Mutable access changes the referenced
+LayerRegion, not the membership of this island.
+*/
 SLIC3R_HOST_API uint32_t layer_island_count_region(const layer_island_handle *me);
 SLIC3R_HOST_API layer_region_handle *layer_island_get_region_mutable(layer_island_handle *me, uint32_t idx);
 SLIC3R_HOST_API const layer_region_handle *layer_island_get_region(const layer_island_handle *me, uint32_t idx);
 
+/*
+Enumerate LayerRegionIsland work buckets owned by this island. Returned handles
+are borrowed; adding or rebuilding buckets may invalidate earlier handles.
+*/
 SLIC3R_HOST_API uint32_t layer_island_count_region_island(const layer_island_handle *me);
 SLIC3R_HOST_API layer_region_island_handle *layer_island_get_region_island_mutable(layer_island_handle *me, uint32_t idx);
 SLIC3R_HOST_API const layer_region_island_handle *layer_island_get_region_island(const layer_island_handle *me, uint32_t idx);
@@ -421,10 +554,13 @@ SLIC3R_HOST_API layer_region_island_handle *layer_island_get_or_create_region_is
     uint32_t region_count,
     int32_t extruder_id);
 
+/* Borrow the Layer that owns this island; null input returns null. */
 SLIC3R_HOST_API const layer_handle *layer_island_get_layer(const layer_island_handle *me);
 
 /*
-Linked islands on adjacent object layers.
+Borrow overlap links to islands on adjacent object layers. Counts are zero for
+null input; indexed access returns null out of range. Links are derived caches
+and become stale when either layer's islands or overlap graph is rebuilt.
 */
 SLIC3R_HOST_API uint32_t layer_island_count_lower_island(const layer_island_handle *me);
 SLIC3R_HOST_API const layer_island_handle *layer_island_get_lower_island(const layer_island_handle *me, uint32_t idx);
@@ -433,10 +569,19 @@ SLIC3R_HOST_API const layer_island_handle *layer_island_get_upper_island(const l
 
 /* ========================= LAYER REGION ISLAND ========================= */
 
+/* Return the zero-based extruder id, or -1 for null/no single extruder. */
 SLIC3R_HOST_API int32_t layer_region_island_extruder_id(const layer_region_island_handle *me);
+/* Null handles report no extrusions. */
 SLIC3R_HOST_API int32_t layer_region_island_has_extrusions(const layer_region_island_handle *me);
+/* Report whether this bucket contains an extrusion root for role. */
 SLIC3R_HOST_API int32_t layer_region_island_has_extrusion(const layer_region_island_handle *me, raw_extrusion_role role);
+/*
+Borrow the mutable extrusion collection for role, creating the role bucket when
+needed. Null returns null. Mutating its tree may invalidate descendant extrusion
+handles; do not free the returned root.
+*/
 SLIC3R_HOST_API extrusion_entity_handle *layer_region_island_get_mutable_extrusion(layer_region_island_handle *me, raw_extrusion_role role);
+/* Borrow the role's extrusion root, or return null when that role is absent. */
 SLIC3R_HOST_API const extrusion_entity_handle *layer_region_island_get_extrusion(const layer_region_island_handle *me,
                                                           raw_extrusion_role role);
 
@@ -446,10 +591,18 @@ later surface-processing steps. LayerRegion no longer exposes these caches in
 the plugin ABI; plugins should read/write fill surfaces through the
 LayerRegionIsland that owns the infill work.
 */
+/*
+Borrow the complete fill-surface collection. A valid group may return an empty
+collection; null input returns null. Replacing or editing fill surfaces may
+invalidate Surface handles previously obtained from this group.
+*/
 SLIC3R_HOST_API const surface_collection_handle *layer_region_island_get_fill_surfaces(const layer_region_island_handle *me);
+/* Null groups have zero fill surfaces. */
 SLIC3R_HOST_API uint32_t layer_region_island_count_fill_surface(const layer_region_island_handle *me);
+/* Borrow one fill Surface; return null for null or out-of-range input. */
 SLIC3R_HOST_API const surface_handle *layer_region_island_get_fill_surface(const layer_region_island_handle *me, uint32_t idx);
 
+/* Borrow this work bucket's mutable metadata container; null returns null. */
 SLIC3R_HOST_API plugin_property_container_handle *layer_region_island_get_properties(const layer_region_island_handle *me);
 
 /*
@@ -461,7 +614,7 @@ zero. This function does not allocate or mutate the group.
 SLIC3R_HOST_API uint32_t layer_region_island_count_region(const layer_region_island_handle *me);
 
 /*
-Borrow the LayerRegion at the group's current iteration index. The returned
+Borrow the LayerRegion at idx within this group. The returned
 handle must not be freed and may be invalidated by later data-tree mutations.
 A null group or out-of-range index returns null. Region ordering is host-owned;
 callers must not treat idx as a persistent identifier.
@@ -471,26 +624,50 @@ SLIC3R_HOST_API const layer_region_handle *layer_region_island_get_region(const 
 
 /* ========================= PRINT REGION ========================= */
 
+/*
+Borrow a PrintRegion's effective configuration. Null returns null. The mutable
+form edits host-owned configuration and is valid only in steps that permit that
+mutation. It edits the live configuration without cloning or persisting it;
+neither handle may be freed or retained after its PrintRegion dies.
+*/
 SLIC3R_HOST_API config_handle *print_region_get_config_mutable(print_region_handle *me);
 SLIC3R_HOST_API const config_handle *print_region_get_config(const print_region_handle *me);
 
 /* ========================= OBJECT ========================= */
 
+/*
+Borrow the Object configuration. Mutable access edits the live configuration,
+without making a copy or persisting it. Null returns null; neither handle may
+be freed or retained after its Object dies.
+*/
 SLIC3R_HOST_API config_handle *object_get_config_mutable(object_handle *me);
 SLIC3R_HOST_API const config_handle *object_get_config(const object_handle *me);
+/* Borrow the Object's mutable metadata container, even from a const Object view. */
 SLIC3R_HOST_API plugin_property_container_handle *object_get_properties(const object_handle *me);
 
-// Deprecated: if not useful, it will be deleted
+/*
+Deprecated legacy object-local maximum Z in scaled coord_t units. Model-backed Objects use
+the source ModelObject maximum; the hidden auxiliary Object uses its current
+height. The value does not include instance placement and mixes two definitions,
+so new slicing code should use the step-specific maximum Z or the last Layer's
+print_z/height according to its purpose. Null returns zero.
+*/
 SLIC3R_HOST_API coord_t object_get_max_z(const object_handle *me);
 
 /*
 Transformation from the source model object into this printable Object.
 
-This is the same transform as native PrintObject::trafo(): rotation / scaling /
-mirroring / Z translation are included, but the temporary XY centering offset
-used to keep Clipper coordinates small is not. To reproduce trafo_centered(),
-apply object_get_center_offset() as a pre-translation:
-    centered = translate(-unscaled(center.x), -unscaled(center.y), 0) * transform
+The row-major c_matrix4d uses unscaled millimeter coordinates and is applied to
+a model-space homogeneous column vector. It is the native PrintObject::trafo():
+rotation, scaling, mirroring and Z translation are included, but the temporary
+XY centering offset used to keep Clipper coordinates small is not. For a source
+point p_model in millimeters, reproduce trafo_centered() as:
+
+    center_mm = (unscaled(center.x), unscaled(center.y), 0)
+    p_centered = translation(-center_mm) * object_get_transform(me) * p_model
+
+where center is object_get_center_offset(). Instance XY shifts are separate and
+remain scaled c_point values. Null returns a zero-initialized matrix.
 */
 SLIC3R_HOST_API c_matrix4d object_get_transform(const object_handle *me);
 
@@ -517,13 +694,17 @@ Print and are not persistent object identifiers.
 */
 SLIC3R_HOST_API c_point object_get_instance_shift(const object_handle *me, uint32_t idx);
 
+/*
+Enumerate normal object Layers. Null has count zero and indexed access returns
+null out of range. Handles must not be freed and remain valid only while the
+Object's layer collection is unchanged; mutable access does not transfer
+ownership.
+*/
 SLIC3R_HOST_API uint32_t object_count_layer(const object_handle *me);
 SLIC3R_HOST_API layer_handle *object_get_layer_mutable(object_handle *me, uint32_t idx);
 SLIC3R_HOST_API const layer_handle *object_get_layer(const object_handle *me, uint32_t idx);
 /*
-Auxiliary layers are exposed as read-only Layer views.
-
-They share the Layer shape used by normal object layers: print_z, height,
+Auxiliary layers share the Layer shape used by normal object layers: print_z, height,
 slices(), islands(), and plugin properties work the same way. A plugin should
 treat them as geometry already produced by earlier steps and must not assume
 that their indices match normal object layer indices.
@@ -533,6 +714,7 @@ property on the Layer. Read it through layer_get_properties() and the generic
 plugin_property_* functions; an auxiliary layer without that property is not a
 support layer.
 */
+/* Null Objects contain zero auxiliary layers. Indices follow ascending print Z. */
 SLIC3R_HOST_API uint32_t object_count_auxiliary_layer(const object_handle *me);
 /*
 Return a mutable auxiliary Layer.
@@ -542,6 +724,9 @@ const object_handle because plugins often receive read-only Object views while
 still being responsible for generated helper geometry such as support, skirt,
 brim or wipe tower. Mutability is intentionally limited to the returned Layer
 and its plugin/public layer APIs; it does not make normal object layers mutable.
+The handle is borrowed, must not be freed, and is null for an invalid index.
+Adding or removing a layer may change indices, but handles to other auxiliary
+Layer objects remain valid until those particular layers are removed.
 */
 SLIC3R_HOST_API layer_handle *object_get_auxiliary_layer(const object_handle *me, uint32_t idx);
 /*
@@ -551,7 +736,10 @@ Object's PrintRegions.
 height, print_z and slice_z are scaled slicer coordinates. slice_z may equal
 print_z when the helper geometry lives on the print plane. The new layer is not
 automatically filled; callers should write raw LayerRegion slices and then call
-layer_recompute_slices_and_islands_from_layer_regions().
+layer_recompute_slices_and_islands_from_layer_regions(). The returned handle is
+borrowed from the Object. Null Object, non-positive height or non-positive
+print_z returns null. Insertion keeps print-Z order and may change indices of
+existing auxiliary layers.
 */
 SLIC3R_HOST_API layer_handle *object_add_auxiliary_layer(const object_handle *me,
                                                          coord_t height,
@@ -559,7 +747,10 @@ SLIC3R_HOST_API layer_handle *object_add_auxiliary_layer(const object_handle *me
                                                          coord_t slice_z);
 /*
 Remove an auxiliary Layer previously returned by object_get_auxiliary_layer() or
-object_add_auxiliary_layer(). Returns non-zero on success.
+object_add_auxiliary_layer(). Returns non-zero on success and immediately
+invalidates layer plus every descendant handle borrowed from it. Other
+auxiliary Layer objects remain alive, but indices after the removed position
+shift down by one. Null, foreign or already removed handles return zero.
 */
 SLIC3R_HOST_API int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *layer);
 
@@ -570,21 +761,63 @@ These functions are intentionally not tied to STEP_POST_SLICING. A plugin that
 creates an auxiliary layer in a later step still has to rebuild the Layer's
 cached island list after writing LayerRegion raw slices. If the layer should be
 used by perimeter/surface/infill code immediately, call
-layer_add_regions_to_islands() after recomputing. Do not call it on an empty
-layer.
+layer_add_regions_to_islands() after recomputing; it ignores layers without
+islands. Reconstruction must run before the island layout is locked by
+layer_add_regions_to_islands(). Do not mutate this geometry while later steps
+are consuming it.
+*/
+/*
+Borrow the mutable merged-slice collection owned by me. Null returns null.
+Editing it invalidates handles to its ExPolygons and may desynchronize islands
+and LayerRegion slices. layer_recompute_slices_from_islands() overwrites these
+edits with the current island geometry; it does not propagate them to islands.
+To rebuild islands, edit raw LayerRegion slices instead and call
+layer_recompute_slices_and_islands_from_layer_regions().
 */
 SLIC3R_HOST_API expolygon_collection_handle *layer_borrow_mutable_slices(layer_handle *me);
+/*
+Borrow mutable raw slices from a LayerRegion, including through a const region
+view. Null returns null. Editing invalidates element handles and leaves the
+owning Layer's merged slices and islands stale.
+*/
 SLIC3R_HOST_API expolygon_collection_handle *layer_region_borrow_mutable_slices(const layer_region_handle *me);
+/*
+Replace Layer merged slices with copies of the current island slices. Existing
+LayerIsland objects and their handles remain valid; handles to elements of the
+Layer slice collection become invalid. This does not recompute island bounding
+boxes, region membership, infill areas or extrusions. Null is ignored.
+*/
 SLIC3R_HOST_API void layer_recompute_slices_from_islands(layer_handle *me);
+/*
+Rebuild and replace the Layer merged slices and every LayerIsland from current
+LayerRegion raw slices. All previously borrowed LayerIsland, LayerRegionIsland
+and Layer-slice element handles become invalid. LayerRegion objects remain the
+inputs and are not replaced. Null is ignored.
+*/
 SLIC3R_HOST_API void layer_recompute_slices_and_islands_from_layer_regions(layer_handle *me);
+/*
+Populate each existing island's region membership after reconstruction. This
+locks the island layout for downstream processing. Existing LayerRegionIsland
+work buckets are not replaced. Null Layers and Layers without islands are
+ignored.
+*/
 SLIC3R_HOST_API void layer_add_regions_to_islands(layer_handle *me);
 
+/*
+Enumerate PrintRegions used by this Object. Counts are zero for null; accessors
+return null for invalid indices. Handles and configurations are borrowed from
+the Print and must not be freed. Mutable access does not transfer ownership.
+*/
 SLIC3R_HOST_API uint32_t object_count_region(const object_handle *me);
 SLIC3R_HOST_API print_region_handle *object_get_print_region_mutable(object_handle *me, uint32_t idx);
 SLIC3R_HOST_API const print_region_handle *object_get_print_region(const object_handle *me, uint32_t idx);
 
 /* ========================= PRINT ========================= */
 
+/*
+Borrow the Print configuration; null returns null and ownership stays with Print.
+Mutable access edits the live configuration without cloning or persisting it.
+*/
 SLIC3R_HOST_API config_handle *print_get_config_mutable(print_handle *me);
 SLIC3R_HOST_API const config_handle *print_get_config(const print_handle *me);
 
@@ -600,14 +833,28 @@ Channel mutation is not thread-safe. Build or update records from a sequential
 pipeline callback, then keep them unchanged while parallel callbacks read them.
 Only print_records_allocate_id() may be called concurrently.
 */
+/*
+Return a borrowed thread-local snapshot of channel names. Its array and strings
+remain valid until the next call on the same thread; copy them to retain them
+longer. Do not free them. A null Print returns an empty list.
+*/
 SLIC3R_HOST_API const_strings_t print_records_channels(const print_handle *me);
+/* Borrow the channel configuration, or return null if absent. */
 SLIC3R_HOST_API const config_handle *print_records_get(const print_handle *me, const char *channel);
+/* Create or borrow the mutable channel configuration. */
 SLIC3R_HOST_API config_handle *print_records_get_or_add(const print_handle *me, const char *channel);
+/* Remove the channel and invalidate its previously returned config handle. */
 SLIC3R_HOST_API int32_t print_records_remove(const print_handle *me, const char *channel);
 SLIC3R_HOST_API print_record_id print_records_allocate_id(const print_handle *me);
 
+/* Null Prints contain zero printable Objects. */
 SLIC3R_HOST_API uint32_t print_count_object(const print_handle *me);
 
+/*
+Borrow printable Object idx. Null or out-of-range input returns null. The handle
+must not be freed and remains valid only while the Print owns that Object;
+mutable access does not transfer ownership.
+*/
 SLIC3R_HOST_API object_handle *print_get_object_mutable(print_handle *me, uint32_t idx);
 SLIC3R_HOST_API const object_handle *print_get_object(const print_handle *me, uint32_t idx);
 /*
@@ -618,7 +865,8 @@ print_get_object(). It exists only so plugins can store global helper geometry
 with the same Object auxiliary-layer API used by object-local support, brim,
 skirt and future generated layers. The returned Object is mutable because
 auxiliary layers are plugin-owned work data; normal model-derived objects stay
-reachable only through the regular object list above.
+reachable only through the regular object list above. The handle is borrowed
+from Print and becomes invalid when that Print is cleared or destroyed.
 */
 SLIC3R_HOST_API object_handle *print_get_auxiliary_object(const print_handle *me);
 
