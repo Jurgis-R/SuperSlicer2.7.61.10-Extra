@@ -1,0 +1,313 @@
+///|/ Copyright (c) SuperSlicer 2026 Durand Remi @supermerill
+///|/
+///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
+///|/
+
+#include "FixedDirectionSeamPlacer.hpp"
+
+#include <array>
+#include <cstdint>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
+#include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
+#include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
+
+/*
+Fixed-direction seam placement
+==============================
+
+This provider chooses one vertex already stored by an extrusion loop. The
+configured compass direction defines the primary projection. A clockwise
+perpendicular projection breaks ties, and the original tree/point order is the
+final deterministic tie-break. Arcs are deliberately not sampled: only their
+stored endpoints can become seams.
+
+The direction is read from the LayerRegion passed with every request, so one
+immutable session serves a complete PrintingPlan even when its regions use
+different settings. The provider ignores the incoming tool position because
+its policy is geometric rather than travel based.
+*/
+
+namespace slic3r_api { namespace SeamPlacement { namespace FixedDirectionPlugin {
+namespace {
+
+const char *const k_plugin_id = "seam_placer.fixed";
+const char *const k_group_id = "seam_placer_plugin";
+const char *const k_direction_key = "seam_fixed_direction";
+const char *const k_no_dependencies[] = { nullptr };
+
+/*
+The array order is part of the runtime contract: ConfigOptionEnum stores the
+zero-based index, so it must remain aligned with FixedDirection and
+direction_vector(). The strings are the stable serialized profile values.
+*/
+const key_value_string_pair_t k_direction_values[] = {
+    { "rear", "Rear (+Y)" },
+    { "front", "Front (-Y)" },
+    { "right", "Right (+X)" },
+    { "left", "Left (-X)" },
+    { "rear_right", "Rear right (+Y +X)" },
+    { "rear_left", "Rear left (+Y -X)" },
+    { "front_right", "Front right (-Y +X)" },
+    { "front_left", "Front left (-Y -X)" }
+};
+
+const raw_used_config_key k_used_config_keys[] = {
+    { k_direction_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT }
+};
+
+enum class FixedDirection : int32_t {
+    Rear = 0,
+    Front,
+    Right,
+    Left,
+    RearRight,
+    RearLeft,
+    FrontRight,
+    FrontLeft
+};
+
+struct DirectionVector {
+    int32_t x;
+    int32_t y;
+};
+
+struct SelectedVertex {
+    /* Updated during one depth-first traversal; strict comparisons preserve ties. */
+    bool valid = false;
+    c_point point = {};
+    long double primary = -std::numeric_limits<long double>::infinity();
+    long double secondary = -std::numeric_limits<long double>::infinity();
+};
+
+class FixedDirectionSession;
+class FixedDirectionSeamPlacer;
+
+/* Convert one enum index into its primary projection vector, defaulting to Rear. */
+DirectionVector direction_vector(int32_t direction);
+
+/*
+Compare every stored vertex recursively and retain the deterministic best.
+
+The traversal visits local points before children and children by index. Since
+exact ties do not replace selected, this order is the final stable tie-break.
+*/
+void select_vertex(const ExtrusionEntity &entity,
+                   DirectionVector direction,
+                   SelectedVertex &selected);
+
+class FixedDirectionSession final : public SeamPlacerSession
+{
+public:
+    /* Validate the plan; this policy needs no plan-wide cache. */
+    void initialize(const PrintingPlan &plan) override;
+
+    /* Read the regional direction and select one stored loop vertex. */
+    c_point place_seam(const ExtrusionEntity &loop,
+                       const LayerRegion &layer_region,
+                       c_point start_position) const override;
+};
+
+class FixedDirectionSeamPlacer final : public PluginBase
+{
+public:
+    static FixedDirectionSeamPlacer &instance(orchestrator_handle *orchestrator);
+    explicit FixedDirectionSeamPlacer(orchestrator_handle *orchestrator) : PluginBase(orchestrator) {}
+
+private:
+    const char *id_impl() const noexcept override;
+    const char *name_impl() const noexcept override;
+    const char *description_impl() const noexcept override;
+    const char *exclusive_group_impl() const noexcept override;
+    const char *exclusive_group_label_impl() const noexcept override;
+    const char *exclusive_group_tooltip_impl() const noexcept override;
+    slicing_step_t step_impl() const noexcept override;
+    const char *const *dependencies_impl() const noexcept override;
+    int32_t priority_impl() const noexcept override;
+    int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *storage) const override;
+    void run_impl(const plugin_run_context *run_context) const override;
+};
+
+DirectionVector direction_vector(const int32_t direction)
+{
+    /* Keep this table aligned with k_direction_values and FixedDirection. */
+    static const std::array<DirectionVector, 8> directions = {{
+        { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 },
+        { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }
+    }};
+    if (direction < 0 || direction >= static_cast<int32_t>(directions.size()))
+        return directions[static_cast<size_t>(FixedDirection::Rear)];
+    return directions[static_cast<size_t>(direction)];
+}
+
+void select_vertex(const ExtrusionEntity &entity,
+                   const DirectionVector direction,
+                   SelectedVertex &selected)
+{
+    // Rotating (x, y) clockwise gives (y, -x). It supplies the documented
+    // secondary direction, for example Rear (+Y) breaks ties toward Right.
+    const DirectionVector clockwise = { direction.y, -direction.x };
+    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx) {
+        const c_point point = entity.point(point_idx);
+        const long double primary = static_cast<long double>(point.x) * direction.x +
+                                    static_cast<long double>(point.y) * direction.y;
+        const long double secondary = static_cast<long double>(point.x) * clockwise.x +
+                                      static_cast<long double>(point.y) * clockwise.y;
+        if (!selected.valid || primary > selected.primary ||
+            (primary == selected.primary && secondary > selected.secondary)) {
+            selected.valid = true;
+            selected.point = point;
+            selected.primary = primary;
+            selected.secondary = secondary;
+        }
+    }
+
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        select_vertex(entity.child(child_idx), direction, selected);
+}
+
+void FixedDirectionSession::initialize(const PrintingPlan &plan)
+{
+    // No plan data is retained: every mutable choice is regional and read in
+    // place_seam(). The validation still catches a malformed service request
+    // before the session is published to consumers.
+    if (!plan.valid())
+        throw std::invalid_argument("Fixed-direction seam placement needs a valid PrintingPlan.");
+}
+
+c_point FixedDirectionSession::place_seam(const ExtrusionEntity &loop,
+                                          const LayerRegion &layer_region,
+                                          const c_point) const
+{
+    // The incoming position is intentionally unnamed: unlike travel-based
+    // policies, this provider must return the same vertex from any approach.
+    if (!loop.is_loop())
+        throw std::invalid_argument(
+            "Fixed-direction seam placement needs a non-empty fixed continuous closed loop.");
+    if (!layer_region.valid())
+        throw std::invalid_argument(
+            "Fixed-direction seam placement needs a LayerRegion with a PrintRegion.");
+
+    // LayerRegion references the source PrintRegion whose Config contains the
+    // effective per-region value. No configuration is cached in the session,
+    // so different regions may use different directions in the same plan.
+    const Config config = layer_region.print_region().config();
+    const int32_t configured_direction = config.enum_or_default(
+        k_direction_key, int32_t(FixedDirection::Rear));
+    SelectedVertex selected;
+    select_vertex(loop, direction_vector(configured_direction), selected);
+    if (!selected.valid)
+        throw std::runtime_error("Fixed-direction seam placement found no stored loop vertex.");
+    return selected.point;
+}
+
+FixedDirectionSeamPlacer &FixedDirectionSeamPlacer::instance(orchestrator_handle *orchestrator)
+{
+    /* Plugin metadata is process-wide; per-plan mutable state lives in sessions. */
+    static FixedDirectionSeamPlacer plugin(orchestrator);
+    return plugin;
+}
+
+const char *FixedDirectionSeamPlacer::id_impl() const noexcept { return k_plugin_id; }
+const char *FixedDirectionSeamPlacer::name_impl() const noexcept { return "Fixed direction"; }
+
+const char *FixedDirectionSeamPlacer::description_impl() const noexcept
+{
+    return "Places each seam on the stored loop vertex furthest in a configured direction.";
+}
+
+const char *FixedDirectionSeamPlacer::exclusive_group_impl() const noexcept { return k_group_id; }
+const char *FixedDirectionSeamPlacer::exclusive_group_label_impl() const noexcept { return "Seam placement"; }
+
+const char *FixedDirectionSeamPlacer::exclusive_group_tooltip_impl() const noexcept
+{
+    return "Selects the service used to choose the starting point of closed extrusion loops.";
+}
+
+slicing_step_t FixedDirectionSeamPlacer::step_impl() const noexcept { return SEAM_PLACER; }
+const char *const *FixedDirectionSeamPlacer::dependencies_impl() const noexcept { return k_no_dependencies; }
+int32_t FixedDirectionSeamPlacer::priority_impl() const noexcept { return 1000; }
+
+int32_t FixedDirectionSeamPlacer::used_config_keys(raw_used_config_key *keys) const noexcept
+{
+    // Reporting the read dependency lets the orchestrator invalidate ordering
+    // when a region changes its fixed direction.
+    if (keys != nullptr)
+        keys[0] = k_used_config_keys[0];
+    return int32_t(std::size(k_used_config_keys));
+}
+
+int32_t FixedDirectionSeamPlacer::defined_config_keys(const char **keys) const noexcept
+{
+    /* Declare ownership of the option definition registered during initialize. */
+    if (keys != nullptr)
+        keys[0] = k_direction_key;
+    return 1;
+}
+
+void FixedDirectionSeamPlacer::inilialize_impl(storage_handle *) const
+{
+    // Register a regional enum so each LayerRegion can resolve its own value.
+    // STEP_ORDERING is the first plan stage that consumes seam placement here.
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = k_direction_key;
+    def.type = RAW_CO_ENUM;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.gui_type = RAW_GUI_TYPE_SELECT_CLOSE;
+    def.printer_technology = RAW_PT_FFF;
+    def.label = "Fixed seam direction";
+    def.full_label = "Fixed seam direction";
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.invalidates_step = STEP_ORDERING;
+    def.tooltip = "Choose the platter direction in which the stored loop vertex is selected.";
+    def.mode = RAW_CONFIG_OPTION_MODE_SIM_ADV_EXP | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "rear";
+    def.enum_def.value_label_pairs.items = k_direction_values;
+    def.enum_def.value_label_pairs.count = uint32_t(std::size(k_direction_values));
+    if (orchestrator_create_option_def(m_orchestrator, &def) != OPTION_DEF_ERROR_OK)
+        throw std::runtime_error("Cannot register seam_fixed_direction.");
+
+    // Insert only the plugin-owned setting into the existing Seam group. The
+    // legacy seam_position setting remains a separate G-code-era control.
+    orchestrator_add_ui_fragment(
+        m_orchestrator,
+        "print.ui",
+        k_plugin_id,
+        "page:Perimeters & Shell\n"
+        "group:Seam\n"
+        "setting:seam_fixed_direction\n",
+        1);
+}
+
+void FixedDirectionSeamPlacer::run_impl(const plugin_run_context *run_context) const
+{
+    // SEAM_PLACER run() is a factory invocation, not a placement request. It
+    // initializes one session and transfers its ownership into the payload;
+    // ordering consumers will take and eventually destroy that instance.
+    run_ctx_seam_placer *context = plugin_ctx_as_seam_placer(run_context);
+    if (context == nullptr || context->plan == nullptr)
+        throw std::invalid_argument("Fixed-direction seam placement received an invalid run context.");
+    context->instance = make_seam_placer_instance(
+        std::unique_ptr<SeamPlacerSession>(new FixedDirectionSession()),
+        PrintingPlan(context->plan));
+}
+
+} // namespace
+
+void register_fixed_direction_seam_placer_plugin(orchestrator_handle *orchestrator)
+{
+    /* Registration exposes the singleton; session creation remains per run(). */
+    orchestrator_register_plugin(
+        orchestrator, FixedDirectionSeamPlacer::instance(orchestrator).c_instance());
+}
+
+}}} // namespace slic3r_api::SeamPlacement::FixedDirectionPlugin

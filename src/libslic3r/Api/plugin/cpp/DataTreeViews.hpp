@@ -252,8 +252,18 @@ public:
 
     c_bounding_box bounding_box() const { return layer_region_get_bounding_box(handle()); }
 
+    /*
+    Return the configuration owner associated with this sliced region.
+
+    The returned view is borrowed from the LayerRegion and must not outlive it.
+    A detached or synthetic LayerRegion without a PrintRegion is rejected
+    instead of exposing an invalid Config view to callers such as SeamPlacers.
+    */
     PrintRegion print_region() const {
-        return PrintRegion(layer_region_get_print_region(handle()));
+        const print_region_handle *region_config_handle = layer_region_get_print_region(handle());
+        if (region_config_handle == nullptr)
+            throw std::invalid_argument("LayerRegion needs a PrintRegion.");
+        return PrintRegion(region_config_handle);
     }
 
     Layer layer() const;

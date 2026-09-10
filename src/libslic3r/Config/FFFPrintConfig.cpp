@@ -6777,16 +6777,16 @@ void init_fff_params(PrintConfigDef &definition)
                     "\n Scattered: seam is placed at a random position on external perimeters"
                     "\n Random: seam is placed at a random position for all perimeters"
                     "\n Aligned: seams are grouped in the best place possible (minimum 6 layers per group)"
-                    "\n Contiguous: seam is placed over a seam from the previous layer (useful with enforcers)"
-                    "\n Rear: seam is placed at the far side (highest Y coordinates)");
+                    "\n Contiguous: seam is placed over a seam from the previous layer (useful with enforcers)");
+    // The static SeamPosition map near the top of this file still parses
+    // "rear" from old profiles. Omit it only from this visible legacy control;
+    // the fixed-direction plugin exposes its regional replacement.
     def->set_enum<SeamPosition>({
         { "cost",       L("Cost-based") },
         { "random",     L("Scattered") },
         { "allrandom",  L("Random") },
         { "aligned",    L("Aligned") },
-        { "contiguous", L("Contiguous") },
-
-        { "rear",       L("Rear") }
+        { "contiguous", L("Contiguous") }
     });
     def->mode = comSimpleAE | comPrusa | comSuSi;
     def->set_default_value(new ConfigOptionEnum<SeamPosition>(spCost));

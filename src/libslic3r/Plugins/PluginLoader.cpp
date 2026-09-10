@@ -122,6 +122,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Perimeter/RemoveGapFillOnOverhangs.hpp"
 #include "libslic3r/Plugins/Perimeter/SeparateHoleContour.hpp"
 #include "libslic3r/Plugins/Perimeter/SimplePerimeterGenerator.hpp"
+#include "libslic3r/Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp"
 #include "libslic3r/Plugins/SliceVolume.hpp"
 #include "libslic3r/Plugins/StandardLayerHeightGenerator.hpp"
 #include "libslic3r/Plugins/Surface/CleanInfillSurfaces.hpp"
@@ -676,6 +677,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::PostInfillGapFillPlugin::register_post_infill_gap_fill_plugin);
     register_builtin_plugin(orchestrator, "ordering.default",
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins);
+    register_builtin_plugin(orchestrator, "seam_placer.fixed",
+        slic3r_api::SeamPlacement::FixedDirectionPlugin::register_fixed_direction_seam_placer_plugin);
     register_builtin_plugin(orchestrator, "layer_extrusion_edit.toolchange.default",
         slic3r_api::LayerExtrusionEdit::CreateToolChangePlugin::register_create_tool_change_plugin);
     register_builtin_plugin(orchestrator, "layer_extrusion_edit.transition_scope.default",

@@ -98,6 +98,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         sys.path.insert(0, cls.generated_directory.name)
         cls.generated = importlib.import_module("slic3r_api_generated")
         cls.seam = importlib.import_module("steps.seam_placer")
+        cls.datatree = importlib.import_module("slic3r_datatree_views")
         cls.extrusion = importlib.import_module("slic3r_extrusion_views")
         cls.printing_plan = importlib.import_module("slic3r_printing_plan_views")
 
@@ -160,6 +161,9 @@ class PythonSeamPlacerTests(unittest.TestCase):
         instance = self.seam.make_seam_placer_instance(session, plan)
         return self.seam.SeamPlacer(self.api, instance)
 
+    def region(self, handle=201):
+        return self.datatree.LayerRegion(self.api, handle)
+
     def test_context_initializes_once_and_transfers_unique_ownership(self):
         destroyed = []
 
@@ -171,7 +175,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
                 self.initialize_count += 1
                 self.plan_address = plan.address
 
-            def place_seam(self, loop, start_position):
+            def place_seam(self, loop, _layer_region, start_position):
                 return loop.front()
 
             def __del__(self):
@@ -213,7 +217,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
             def initialize(self, _plan):
                 raise RuntimeError("initialization failed")
 
-            def place_seam(self, _loop, _start_position):
+            def place_seam(self, _loop, _layer_region, _start_position):
                 return (0, 0)
 
         plan = self.printing_plan.PrintingPlan(self.api, 77)
@@ -228,7 +232,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
             def initialize(self, _plan):
                 self.initialize_count += 1
 
-            def place_seam(self, _loop, _start_position):
+            def place_seam(self, _loop, _layer_region, _start_position):
                 return (0, 0)
 
         plan = self.printing_plan.PrintingPlan(self.api, 77)
@@ -246,12 +250,14 @@ class PythonSeamPlacerTests(unittest.TestCase):
         square = self.add_square()
         arc = self.add_arc_loop()
         composite = self.add_composite_loop()
+        received_regions = []
 
         class Session(self.seam.SeamPlacerSession):
             def initialize(self, _plan):
                 pass
 
-            def place_seam(self, loop, _start_position):
+            def place_seam(self, loop, layer_region, _start_position):
+                received_regions.append(layer_region.address)
                 if loop.address == square.address:
                     return (500, 0)
                 if loop.address == composite.address:
@@ -259,25 +265,27 @@ class PythonSeamPlacerTests(unittest.TestCase):
                 return (0, -1000)
 
         with self.publish(Session()) as placer:
-            line_result = placer.place_seam(square, (0, 0))
-            arc_result = placer.place_seam(arc, (-2000, 0))
-            composite_result = placer.place_seam(composite, (0, 0))
+            region = self.region()
+            line_result = placer.place_seam(square, region, (0, 0))
+            arc_result = placer.place_seam(arc, region, (-2000, 0))
+            composite_result = placer.place_seam(composite, region, (0, 0))
             self.assertEqual((line_result.x, line_result.y), (500, 0))
             self.assertEqual((arc_result.x, arc_result.y), (0, -1000))
             self.assertEqual(
                 (composite_result.x, composite_result.y), (1000, 500)
             )
+            self.assertEqual(received_regions, [region.address] * 3)
 
         class OutsideSession(self.seam.SeamPlacerSession):
             def initialize(self, _plan):
                 pass
 
-            def place_seam(self, _loop, _start_position):
+            def place_seam(self, _loop, _layer_region, _start_position):
                 return (500, 500)
 
         with self.publish(OutsideSession()) as placer:
             with self.assertRaisesRegex(RuntimeError, "outside the loop path"):
-                placer.place_seam(square, (0, 0))
+                placer.place_seam(square, self.region(), (0, 0))
 
     def test_provider_exceptions_have_isolated_diagnostics(self):
         square = self.add_square()
@@ -287,14 +295,14 @@ class PythonSeamPlacerTests(unittest.TestCase):
             def initialize(self, _plan):
                 pass
 
-            def place_seam(self, _loop, start_position):
+            def place_seam(self, _loop, _layer_region, start_position):
                 barrier.wait(timeout=5)
                 raise RuntimeError(f"seam failure {start_position.x}")
 
         with self.publish(FailingSession()) as placer:
             def invoke(value):
                 try:
-                    placer.place_seam(square, (value, 0))
+                    placer.place_seam(square, self.region(), (value, 0))
                 except RuntimeError as exc:
                     return str(exc)
                 return ""
@@ -314,12 +322,13 @@ class PythonSeamPlacerTests(unittest.TestCase):
             def initialize(self, _plan):
                 pass
 
-            def place_seam(self, _loop, _start_position):
+            def place_seam(self, _loop, _layer_region, _start_position):
                 raise RuntimeError("native thread seam failure")
 
         fixture = ctypes.CDLL(str(fixture_path))
         fixture.python_seam_placer_native_probe_create.argtypes = [
             ctypes.POINTER(self.generated.RawSeamPlacerInstance),
+            ctypes.c_void_p,
             ctypes.c_void_p,
             self.generated.CPoint,
         ]
@@ -341,7 +350,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         probe = None
         try:
             probe = fixture.python_seam_placer_native_probe_create(
-                ctypes.byref(instance), square.c_handle(), self.point(0, 0)
+                ctypes.byref(instance), square.c_handle(), self.region().c_handle(), self.point(0, 0)
             )
             self.assertTrue(probe)
             self.assertEqual(
@@ -368,13 +377,13 @@ class PythonSeamPlacerTests(unittest.TestCase):
             def initialize(self, _plan):
                 pass
 
-            def place_seam(self, loop, _start_position):
+            def place_seam(self, loop, _layer_region, _start_position):
                 return loop.front()
 
         with self.publish(Session()) as placer:
             self.host.loops.remove(square.address)
             with self.assertRaisesRegex(ValueError, "fixed continuous closed loop"):
-                placer.place_seam(square, (0, 0))
+                placer.place_seam(square, self.region(), (0, 0))
 
         incomplete = self.generated.RawSeamPlacerInstance()
         incomplete.struct_size = ctypes.sizeof(self.generated.RawSeamPlacerInstance)
@@ -411,7 +420,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         def destroy(session):
             calls.append(address(session))
 
-        def place(_session, _loop, _start, result):
+        def place(_session, _loop, _layer_region, _start, result):
             result.contents.status = self.generated.RAW_SEAM_PLACER_STATUS_SUCCESS
             result.contents.point = self.point(0, 0)
 

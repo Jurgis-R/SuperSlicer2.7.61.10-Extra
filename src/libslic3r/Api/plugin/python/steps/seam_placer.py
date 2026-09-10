@@ -25,10 +25,11 @@ exceptions are contained at the C boundary and diagnostics are stored per
 calling native thread in session-owned storage that survives temporary Python
 thread states.
 
-Printing plans and extrusion entities are borrowed host views. They must outlive
-the session and must never be freed by provider code. The consumer validates
-that every returned point belongs to a line or analytic arc of the loop within
-``SCALED_EPSILON``; it never projects an invalid result silently.
+Printing plans, extrusion entities and layer regions are borrowed host views.
+They must outlive the session and must never be freed by provider code. The
+consumer validates that every returned point belongs to a line or analytic arc
+of the loop within ``SCALED_EPSILON``; it never projects an invalid result
+silently.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ from slic3r_api_generated import (
     SEAM_PLACER_PLACE,
 )
 from slic3r_extrusion_views import ExtrusionEntity
+from slic3r_datatree_views import LayerRegion
 from slic3r_geometry_views import as_point
 from slic3r_printing_plan_views import PrintingPlan
 
@@ -90,8 +92,10 @@ class SeamPlacerSession:
 
     ``initialize()`` receives a borrowed plan and is called once before the
     session becomes visible to consumers. ``place_seam()`` receives a borrowed,
-    nonempty, fixed, continuous and closed extrusion entity. Its result may be
-    a ``CPoint`` or a two-coordinate value accepted by ``as_point()``.
+    nonempty, fixed, continuous and closed extrusion entity together with the
+    source region selected for its surrounding ``PrintingExtrusion``. Its
+    result may be a ``CPoint`` or a two-coordinate value accepted by
+    ``as_point()``.
 
     The plan and loops remain host-owned. Implementations may retain their
     handles only while the documented host lifetimes are respected; they must
@@ -102,8 +106,15 @@ class SeamPlacerSession:
         """Build immutable provider state for one borrowed PrintingPlan."""
         raise NotImplementedError
 
-    def place_seam(self, loop: ExtrusionEntity, start_position: CPoint):
-        """Return a stable point on ``loop`` for this scaled start position."""
+    def place_seam(
+        self, loop: ExtrusionEntity, layer_region: LayerRegion, start_position: CPoint
+    ):
+        """Return a stable point for a borrowed loop and its selected region.
+
+        ``layer_region`` exposes the effective regional configuration. Both
+        views are borrowed and must not be retained beyond their host lifetime.
+        ``start_position`` uses scaled platter coordinates and may be ignored.
+        """
         raise NotImplementedError
 
 
@@ -150,10 +161,17 @@ def _destroy_published_session(session_address) -> None:
 def _place_published_seam(
     session_address,
     loop_address,
+    layer_region_address,
     start_position: CPoint,
     result_pointer,
 ) -> None:
-    """Invoke one Python provider while containing every exception at the ABI."""
+    """Translate one native callback into a safe Python provider invocation.
+
+    The opaque session address locates the unique registry entry. The loop and
+    region addresses become borrowed views only for this call. A normal return
+    is converted to ``CPoint``; every Python exception is converted to an ABI
+    error whose UTF-8 buffer remains owned by the session and native thread.
+    """
     published = None
     native_thread_id = threading.get_native_id()
     try:
@@ -166,20 +184,24 @@ def _place_published_seam(
 
         key = _address(session_address)
         loop_handle = _address(loop_address)
+        layer_region_handle = _address(layer_region_address)
         with _published_lock:
             published = _published_sessions.get(key)
             if published is not None:
                 published.diagnostics.pop(native_thread_id, None)
-        if published is None or not loop_handle:
+        if published is None or not loop_handle or not layer_region_handle:
             result.status = RAW_SEAM_PLACER_STATUS_INVALID_ARGUMENT
             return
 
         loop = ExtrusionEntity(published.api, loop_handle)
+        layer_region = LayerRegion(published.api, layer_region_handle)
         if not loop.is_loop():
             result.status = RAW_SEAM_PLACER_STATUS_INVALID_ARGUMENT
             return
 
-        result.point = as_point(published.session.place_seam(loop, start_position))
+        result.point = as_point(
+            published.session.place_seam(loop, layer_region, start_position)
+        )
         result.status = RAW_SEAM_PLACER_STATUS_SUCCESS
     except BaseException as exc:
         # result_pointer and its declared size were validated above whenever
@@ -202,6 +224,8 @@ def _place_published_seam(
             return
 
 
+# These module-level ctypes objects must outlive every published instance: the
+# C vtable stores their native callback addresses rather than Python references.
 _destroy_callback = SEAM_PLACER_DESTROY(_destroy_published_session)
 _place_callback = SEAM_PLACER_PLACE(_place_published_seam)
 _session_vtable = RawSeamPlacerVTable(
@@ -219,11 +243,12 @@ def make_seam_placer_instance(
     """Initialize and transfer one Python provider session to a C instance.
 
     ``session`` is consumed by this call, including when initialization raises,
-    and cannot be submitted a second time. After success, the caller must
-    publish or destroy the returned instance and discard every other reference
-    to the session. An initialization exception creates no C instance and is
-    propagated to ``PluginBase``, which reports it through the normal plugin
-    error channel.
+    and cannot be submitted a second time. Initialization runs before registry
+    publication, so consumers cannot observe a partially initialized object.
+    After success, the caller must publish or destroy the returned instance and
+    discard every other reference to the session. An initialization exception
+    creates no C instance and is propagated to ``PluginBase``, which reports it
+    through the normal plugin error channel.
 
     The borrowed ``plan`` is not retained as an owning object. Its host storage
     and every queried loop must remain valid until the instance is destroyed.
@@ -254,7 +279,7 @@ def make_seam_placer_instance(
 
 
 def _instance_vtable(instance: RawSeamPlacerInstance):
-    """Return a complete callable vtable pointer or ``None``."""
+    """Validate the ABI-sized instance and return its callable vtable."""
     if int(instance.struct_size) < ctypes.sizeof(RawSeamPlacerInstance):
         return None
     if not _address(instance.session) or not _address(instance.vtable):
@@ -413,13 +438,18 @@ class SeamPlacer:
             self._instance = RawSeamPlacerInstance()
 
     @abi_requires_headers("steps/slic3r_step_seam_placer.h")
-    def place_seam(self, loop: ExtrusionEntity, start_position) -> CPoint:
+    def place_seam(
+        self, loop: ExtrusionEntity, layer_region: LayerRegion, start_position
+    ) -> CPoint:
         """Return a validated seam on one borrowed loop in scaled coordinates.
 
-        The loop must use this API instance and belong to the plan used to
-        initialize the provider. Plan membership is a caller precondition: the
-        generic C API has no index that can verify it cheaply. Provider failures
-        become ``RuntimeError`` and points outside the path are rejected without
+        The loop and ``layer_region`` must use this API instance. The loop must
+        belong to the plan used to initialize the provider, and the region must
+        be the source region selected for its surrounding ``PrintingExtrusion``.
+        Those relationships are caller preconditions because the generic C API
+        has no index that can verify them cheaply. ``start_position`` and the
+        result use scaled platter coordinates. Provider failures become
+        ``RuntimeError`` and points outside the path are rejected without
         projection.
         """
         vtable = _instance_vtable(self._instance)
@@ -429,6 +459,10 @@ class SeamPlacer:
             raise TypeError("loop must be an ExtrusionEntity")
         if loop.api is not self.api:
             raise ValueError("loop must use this API instance")
+        if not isinstance(layer_region, LayerRegion) or not layer_region:
+            raise ValueError("layer_region must be a valid LayerRegion")
+        if layer_region.api is not self.api:
+            raise ValueError("layer_region must use this API instance")
         if not loop.is_loop():
             raise ValueError(
                 "seam placement needs a nonempty fixed continuous closed loop"
@@ -439,6 +473,7 @@ class SeamPlacer:
         vtable.contents.place_seam(
             ctypes.c_void_p(_address(self._instance.session)),
             loop.c_handle(),
+            layer_region.c_handle(),
             as_point(start_position),
             ctypes.byref(result),
         )
@@ -477,7 +512,12 @@ class SeamPlacer:
 
 @abi_requires_headers("steps/slic3r_step_seam_placer.h")
 class SeamPlacerContext:
-    """Borrowed ``run_ctx_seam_placer`` used by a Python provider's run hook."""
+    """Borrowed ``run_ctx_seam_placer`` used by a Python provider's run hook.
+
+    The wrapper aliases callback memory and must not escape ``run()``. A
+    provider reads the plan, creates one session, and publishes it exactly once;
+    later seam requests do not re-enter this context.
+    """
 
     def __init__(
         self, api, common: PluginRunContext, payload: RunCtxSeamPlacer
@@ -510,7 +550,11 @@ class SeamPlacerContext:
 
     @abi_requires_headers("steps/slic3r_step_seam_placer.h")
     def publish_seam_placer(self, session: SeamPlacerSession) -> None:
-        """Initialize and transfer one provider session into this payload."""
+        """Initialize and transfer one provider session into this empty payload.
+
+        On success the consumer owns destruction through the published vtable.
+        Publishing twice is rejected so no previously owned session is lost.
+        """
         if self.payload.instance.session or self.payload.instance.vtable:
             raise ValueError("the seam placer payload already owns a session")
         self.payload.instance = make_seam_placer_instance(

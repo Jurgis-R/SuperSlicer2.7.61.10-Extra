@@ -42,6 +42,9 @@ class ActivePluginGuard;
 /* Return a borrowed plugin API view for one core extrusion entity. */
 static slic3r_api::ExtrusionEntity extrusion_view(const ExtrusionEntity &entity);
 
+/* Return a stable borrowed region token; the recording provider never dereferences it. */
+static slic3r_api::LayerRegion layer_region_view();
+
 /* Build a fixed square loop made only of straight segments. */
 static ExtrusionEntity make_square_loop();
 
@@ -60,6 +63,7 @@ struct SeamTestState
     std::atomic<uint32_t> place_count { 0 };
     std::atomic<uint32_t> destroy_count { 0 };
     const printing_plan_handle *initialized_plan = nullptr;
+    std::atomic<const layer_region_handle *> received_region { nullptr };
     c_point result {};
     bool throw_initialize = false;
     bool throw_place = false;
@@ -70,6 +74,7 @@ struct SeamTestState
         place_count.store(0, std::memory_order_relaxed);
         destroy_count.store(0, std::memory_order_relaxed);
         initialized_plan = nullptr;
+        received_region.store(nullptr, std::memory_order_relaxed);
         result = {};
         throw_initialize = false;
         throw_place = false;
@@ -86,6 +91,7 @@ public:
 
     void initialize(const slic3r_api::PrintingPlan &plan) override;
     c_point place_seam(const slic3r_api::ExtrusionEntity &loop,
+                       const slic3r_api::LayerRegion &layer_region,
                        c_point start_position) const override;
 
 private:
@@ -108,11 +114,13 @@ void TestSeamSession::initialize(const slic3r_api::PrintingPlan &plan)
 }
 
 c_point TestSeamSession::place_seam(const slic3r_api::ExtrusionEntity &loop,
+                                    const slic3r_api::LayerRegion &layer_region,
                                     c_point start_position) const
 {
     if (!loop.is_loop())
         throw std::invalid_argument("test provider received a non-loop");
     m_state.place_count.fetch_add(1, std::memory_order_relaxed);
+    m_state.received_region.store(layer_region.handle(), std::memory_order_relaxed);
     if (m_state.throw_place)
         throw std::runtime_error("seam failure " + std::to_string(start_position.x));
     return m_state.result;
@@ -206,6 +214,13 @@ static slic3r_api::ExtrusionEntity extrusion_view(const ExtrusionEntity &entity)
 {
     return slic3r_api::ExtrusionEntity(
         reinterpret_cast<const extrusion_entity_handle *>(&entity));
+}
+
+static slic3r_api::LayerRegion layer_region_view()
+{
+    static int region_token = 0;
+    return slic3r_api::LayerRegion(
+        reinterpret_cast<const layer_region_handle *>(&region_token));
 }
 
 static ExtrusionEntity make_square_loop()
@@ -319,25 +334,31 @@ TEST_CASE("A seam placer accepts points on straight and arc loop segments",
     slic3r_api::SeamPlacer placer = execute_seam_provider(print);
 
     ExtrusionEntity square = make_square_loop();
+    const slic3r_api::LayerRegion layer_region = layer_region_view();
     g_seam_state.result = { 500, 0 };
-    const c_point straight = placer.place_seam(extrusion_view(square), { 0, 0 });
+    const c_point straight = placer.place_seam(extrusion_view(square), layer_region, { 0, 0 });
     CHECK(straight.x == 500);
     CHECK(straight.y == 0);
 
     ExtrusionEntity arcs = make_arc_loop();
     g_seam_state.result = { 0, -1000 };
-    const c_point arc = placer.place_seam(extrusion_view(arcs), { -2000, 0 });
+    const c_point arc = placer.place_seam(extrusion_view(arcs), layer_region, { -2000, 0 });
     CHECK(arc.x == 0);
     CHECK(arc.y == -1000);
 
     g_seam_state.result = { 500, 500 };
     CHECK_THROWS_WITH(
-        placer.place_seam(extrusion_view(square), { 0, 0 }),
+        placer.place_seam(extrusion_view(square), layer_region, { 0, 0 }),
         "The seam placer returned a point outside the loop path.");
 
     ExtrusionEntity open(false, ArcPolyline(Points { Point(0, 0), Point(1000, 0) }));
     CHECK_THROWS_AS(
-        placer.place_seam(extrusion_view(open), { 0, 0 }),
+        placer.place_seam(extrusion_view(open), layer_region, { 0, 0 }),
+        std::invalid_argument);
+    CHECK(g_seam_state.received_region.load(std::memory_order_relaxed) == layer_region.handle());
+
+    CHECK_THROWS_AS(
+        placer.place_seam(extrusion_view(square), slic3r_api::LayerRegion(), { 0, 0 }),
         std::invalid_argument);
 }
 
@@ -370,19 +391,20 @@ TEST_CASE("Seam placer failures remain contained and diagnostics are thread loca
     slic3r_api::SeamPlacer placer = execute_seam_provider(print);
     ExtrusionEntity square = make_square_loop();
     const slic3r_api::ExtrusionEntity loop = extrusion_view(square);
+    const slic3r_api::LayerRegion layer_region = layer_region_view();
     g_seam_state.throw_place = true;
 
-    std::future<std::string> first = std::async(std::launch::async, [&placer, loop]() {
+    std::future<std::string> first = std::async(std::launch::async, [&placer, loop, layer_region]() {
         try {
-            placer.place_seam(loop, { 11, 0 });
+            placer.place_seam(loop, layer_region, { 11, 0 });
         } catch (const std::exception &exception) {
             return std::string(exception.what());
         }
         return std::string();
     });
-    std::future<std::string> second = std::async(std::launch::async, [&placer, loop]() {
+    std::future<std::string> second = std::async(std::launch::async, [&placer, loop, layer_region]() {
         try {
-            placer.place_seam(loop, { 22, 0 });
+            placer.place_seam(loop, layer_region, { 22, 0 });
         } catch (const std::exception &exception) {
             return std::string(exception.what());
         }

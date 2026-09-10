@@ -5,7 +5,7 @@
 #ifndef slic3r_step_seam_placer_h_
 #define slic3r_step_seam_placer_h_
 
-#define SLIC3R_PLUGIN_API_STEP_SEAM_PLACER_MAJOR 1u
+#define SLIC3R_PLUGIN_API_STEP_SEAM_PLACER_MAJOR 2u
 #define SLIC3R_PLUGIN_API_STEP_SEAM_PLACER_MINOR 0u
 
 #include <stdint.h>
@@ -22,14 +22,22 @@ extern "C" {
 Seam placer service contract
 ============================
 
-A SEAM_PLACER plugin creates one initialized session for the PrintingPlan in
-run_ctx_seam_placer. The consumer selects and executes the provider through the
-generic orchestrator API, then takes ownership of the published instance.
+A SEAM_PLACER call follows one ownership-preserving sequence:
 
-The session callback may be called concurrently. Its result and diagnostic
-pointers are borrowed until the next callback on the same thread or until the
-session is destroyed. Providers must not allow C++ exceptions to cross this
-interface.
+1. The consumer puts a borrowed PrintingPlan in run_ctx_seam_placer.
+2. The orchestrator executes the selected provider to create a session for that
+   plan.
+3. The provider initializes that session once and publishes it in instance.
+4. The consumer calls place_seam for loops from that plan, then calls destroy
+   exactly once when the plan no longer needs the service.
+
+Publishing instance transfers ownership of session to the consumer. It does
+not transfer ownership of the plugin, plan, loops, or layer regions.
+
+The session callback may be called concurrently. Result storage remains owned
+by the caller; only error_message is borrowed until the next callback on the
+same thread or until the session is destroyed. Providers must not allow C++
+exceptions to cross this interface.
 */
 
 typedef enum raw_seam_placer_status {
@@ -37,13 +45,20 @@ typedef enum raw_seam_placer_status {
     RAW_SEAM_PLACER_STATUS_UNSET = 0,
     /* point contains a valid proposed seam. */
     RAW_SEAM_PLACER_STATUS_SUCCESS,
-    /* The instance, loop, or output structure was invalid. */
+    /* The instance, loop, layer region, or output structure was invalid. */
     RAW_SEAM_PLACER_STATUS_INVALID_ARGUMENT,
     /* The provider failed; error_message may describe the failure. */
     RAW_SEAM_PLACER_STATUS_ERROR
 } raw_seam_placer_status;
 
-/* Output storage initialized by the caller before invoking place_seam. */
+/*
+Output storage supplied by the caller for one place_seam invocation.
+
+The caller zero-initializes the structure and sets struct_size. A provider that
+can write the complete declared structure resets the remaining fields, then
+publishes one terminal status. point is meaningful only for SUCCESS and
+error_message is optional for ERROR.
+*/
 typedef struct raw_seam_placer_result {
     /* Set to sizeof(raw_seam_placer_result) by the caller. */
     uint32_t struct_size;
@@ -53,23 +68,36 @@ typedef struct raw_seam_placer_result {
     const char *error_message;
 } raw_seam_placer_result;
 
-/* Release one provider-owned session. */
+/* Release one published session; the consumer calls this exactly once. */
 typedef void (*seam_placer_destroy_fn)(void *session);
 
-/* Ask one initialized session to choose a point on loop. */
+/*
+Ask one initialized session to choose a point on loop for layer_region.
+
+loop is geometry from the initialized plan. layer_region is the source region
+chosen for the surrounding PrintingExtrusion and supplies its effective
+per-region configuration. Both handles remain host-owned and are valid for the
+duration of the callback; the provider must neither free nor retain them past
+their owner lifetimes. start_position is the current tool position in scaled
+platter coordinates and may be ignored by a position-independent policy.
+*/
 typedef void (*seam_placer_place_fn)(
     const void *session,
     const extrusion_entity_handle *loop,
+    const layer_region_handle *layer_region,
     c_point start_position,
     raw_seam_placer_result *result);
 
 typedef struct raw_seam_placer_vtable {
+    /* Set to sizeof(raw_seam_placer_vtable) by the provider. */
     uint32_t struct_size;
     seam_placer_destroy_fn destroy;
     seam_placer_place_fn place_seam;
 } raw_seam_placer_vtable;
 
+/* Move-only service value published by a provider and consumed by one owner. */
 typedef struct raw_seam_placer_instance {
+    /* Set to sizeof(raw_seam_placer_instance) by the provider. */
     uint32_t struct_size;
     /* Provider-owned state transferred to the consumer. */
     void *session;
@@ -81,15 +109,21 @@ typedef struct raw_seam_placer_instance {
 Single payload used to create a seam placer session.
 
 plan is borrowed and remains owned by the caller. A successful provider writes
-a complete instance into instance during run(). Ownership then transfers to the
-consumer, which must eventually invoke instance.vtable->destroy(instance.session).
+a complete instance into an initially zeroed instance during run(). Ownership
+then transfers to the consumer, which must clear or otherwise invalidate the
+source value and eventually invoke instance.vtable->destroy(instance.session).
 */
 typedef struct run_ctx_seam_placer {
     const printing_plan_handle *plan;
     raw_seam_placer_instance instance;
 } run_ctx_seam_placer;
 
-/* Return the service payload only while a SEAM_PLACER plugin is executing. */
+/*
+Return the borrowed service payload only while a SEAM_PLACER plugin is running.
+
+The returned pointer aliases plugin_run_context::data. It must not be freed or
+retained after the run callback and is NULL for every other step.
+*/
 static inline run_ctx_seam_placer *
 plugin_ctx_as_seam_placer(const plugin_run_context *ctx)
 {

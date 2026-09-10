@@ -295,6 +295,8 @@ set(SLIC3R_SOURCES
 	Plugins/PrintingPlan/PrintingLayerEntryStateProperties.h
 	Plugins/PrintingPlan/PrintingExtrusionScopeProperty.h
 	Plugins/PrintingPlan/PrintingLayerTimeProperty.h
+	Plugins/SeamPlacer/FixedDirectionSeamPlacer.cpp
+	Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp
 	Plugins/SkirtBrim/AdhesionLayerHelpers.cpp
 	Plugins/SkirtBrim/AdhesionLayerHelpers.hpp
 	Plugins/SkirtBrim/DefaultBrimGenerator.cpp

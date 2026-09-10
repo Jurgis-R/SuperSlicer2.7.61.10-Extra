@@ -146,9 +146,15 @@ void apply_child_permutation(MutableExtrusionEntity parent,
 void spatially_order_plan(const PrintingPlan &plan,
                           const EntityBoundsCache &cache);
 
-/* Fix one tree from the real incoming position and return its exact exit. */
+/*
+Fix one tree from the real incoming position and return its exact exit.
+
+The LayerRegion belongs to the surrounding PrintingExtrusion and is reused for
+all loops in its cloned root; descendants are not independently region-mapped.
+*/
 c_point finalize_entity(MutableExtrusionEntity entity,
                         c_point current_position,
+                        const LayerRegion &layer_region,
                         const SeamPlacer &seam_placer,
                         storage_handle *scratch_storage);
 
@@ -472,6 +478,7 @@ void spatially_order_plan(const PrintingPlan &plan,
 
 c_point finalize_entity(MutableExtrusionEntity entity,
                         const c_point current_position,
+                        const LayerRegion &layer_region,
                         const SeamPlacer &seam_placer,
                         storage_handle *scratch_storage)
 {
@@ -481,7 +488,7 @@ c_point finalize_entity(MutableExtrusionEntity entity,
     }
     if (entity.readonly().is_loop()) {
         const c_point seam = seam_placer.place_seam(
-            entity.readonly(), current_position);
+            entity.readonly(), layer_region, current_position);
         TreeOrderingGeometry::rotate_loop_to_seam(
             scratch_storage, entity, seam);
         TreeOrderingGeometry::disable_ordering_flags_recursively(entity);
@@ -496,7 +503,7 @@ c_point finalize_entity(MutableExtrusionEntity entity,
     c_point position = current_position;
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         position = finalize_entity(
-            entity.child_mutable(child_idx), position,
+            entity.child_mutable(child_idx), position, layer_region,
             seam_placer, scratch_storage);
     entity.disable_sort();
     entity.disable_reverse();
@@ -519,16 +526,24 @@ void finalize_plan_geometry(
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0;
                      extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
-                    MutableExtrusionEntity root =
-                        tool_group.extrusion(extrusion_idx).mutable_root();
+                    const PrintingExtrusion extrusion =
+                        tool_group.extrusion(extrusion_idx);
+                    MutableExtrusionEntity root = extrusion.mutable_root();
                     if (root.empty()) {
                         entry_point_key.remove(root);
                         TreeOrderingGeometry::disable_ordering_flags_recursively(root);
                         progress.increment();
                         continue;
                     }
+                    // Spatial ordering operates on the plan clone, but seam
+                    // settings belong to its unshifted source LayerRegion.
+                    // Resolve that association once before descending the root.
+                    const LayerRegion layer_region =
+                        TreeOrderingGeometry::resolve_source_layer_region(
+                            scratch_storage, extrusion);
                     current_position = finalize_entity(
-                        root, current_position, seam_placer, scratch_storage);
+                        root, current_position, layer_region,
+                        seam_placer, scratch_storage);
                     EntryPointProperty &property = entry_point_key.get_or_add(root);
                     property.entry = root.front();
                     property.exit = root.back();

@@ -12,16 +12,21 @@
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "perimeter_test_helpers.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
+#include "libslic3r/Layer.hpp"
+#include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Plugins/PrintingPlan/EntryPointProperty.h"
 
@@ -75,6 +80,31 @@ struct SeamServiceState
 };
 
 SeamServiceState g_seam_state;
+std::vector<std::unique_ptr<LayerRegionIsland>> g_source_islands;
+
+/*
+Keep one real broad LayerRegion alive for synthetic plan source buckets.
+
+Ordering now resolves regional seam settings from the source island. The broad
+slice associates every synthetic extrusion with one real PrintRegion while the
+static PreparedPerimeterPrint preserves all borrowed lifetimes for the suite.
+*/
+const LayerRegion &broad_source_region()
+{
+    using namespace Slic3r::Test::PerimeterPluginTests;
+    static std::unique_ptr<PreparedPerimeterPrint> prepared = []() {
+        std::unique_ptr<PreparedPerimeterPrint> value(new PreparedPerimeterPrint());
+        prepare_cube_print(*value, perimeter_config({}));
+        LayerRegion &region = value->print.object(0).layer(0).region(0);
+        ExPolygons &raw_slices = ApiInternal::LayerRegionAccess::slices_mutable(region);
+        raw_slices = ExPolygons{
+            rectangle_expolygon(-1000.0, -1000.0, 1000.0, 1000.0)};
+        ApiInternal::LayerRegionAccess::surfaces_mutable(region).set(
+            raw_slices, stPosInternal | stDensSolid);
+        return value;
+    }();
+    return prepared->print.object(0).layer(0).region(0);
+}
 
 double squared_distance(const c_point lhs, const c_point rhs)
 {
@@ -141,6 +171,7 @@ public:
     }
 
     c_point place_seam(const slic3r_api::ExtrusionEntity &loop,
+                       const slic3r_api::LayerRegion &,
                        const c_point start_position) const override
     {
         m_state.place_count.fetch_add(1, std::memory_order_relaxed);
@@ -208,6 +239,7 @@ public:
             m_orchestrator.set_plugin_active(plugin, true);
         m_orchestrator.reset_plugin_cancel();
         g_seam_state.reset();
+        g_source_islands.clear();
     }
 
 private:
@@ -218,6 +250,7 @@ private:
 void ensure_ordering_seam_provider_registered()
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    (void)broad_source_region();
     Orchestrator &orchestrator = Orchestrator::instance();
     if (orchestrator.get_plugin(k_seam_plugin) != nullptr)
         return;
@@ -313,10 +346,20 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
                                     ExtrusionEntityUPtr root,
                                     const uint16_t identity)
 {
+    // Mirror production data: retain source geometry in the role bucket, then
+    // give PrintingExtrusion an independently owned clone to reorder.
+    std::unique_ptr<LayerRegionIsland> source(new LayerRegionIsland(
+        LayerRegionSetCPtrs{&broad_source_region()}, tool.extruder_id));
+    if (root != nullptr && !root->empty())
+        source->mutable_extrusion(LayerRegionIsland::PERIMETERS).append(*root);
+
     PrintingExtrusion extrusion;
+    extrusion.region_island = source.get();
     extrusion.root = std::move(root);
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
     extrusion.object_instance_idx = identity;
+    tool.region_islands.push_back(source.get());
+    g_source_islands.push_back(std::move(source));
     tool.extrusions.push_back(std::move(extrusion));
     return tool.extrusions.back();
 }

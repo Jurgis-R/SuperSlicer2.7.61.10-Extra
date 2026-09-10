@@ -50,6 +50,7 @@
 #include "libslic3r/Plugins/LayerExtrusionEdit/DefaultTravelDeceleration.hpp"
 #include "libslic3r/Plugins/Ordering/DefaultOrdering.hpp"
 #include "libslic3r/Plugins/PluginLoader.hpp"
+#include "libslic3r/Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimSkirtTrim.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimGenerator.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultSkirtGenerator.hpp"
@@ -380,6 +381,8 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::FlatAreaLayerHeightPlugin::register_flat_area_layer_height_plugin(orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
+        slic3r_api::SeamPlacement::FixedDirectionPlugin::register_fixed_direction_seam_placer_plugin(
+            orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateToolChangePlugin::register_create_tool_change_plugin(
             orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateTransitionScopePlugin::register_create_transition_scope_plugin(
@@ -490,6 +493,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.custom_gcode_event_tools");
         activate_plugin_or_fail(orchestrator, "ordering.printing_extrusion.presort.default");
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
+        activate_plugin_or_fail(orchestrator, "seam_placer.fixed");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.transition_scope.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.entry_state.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.speed.default");

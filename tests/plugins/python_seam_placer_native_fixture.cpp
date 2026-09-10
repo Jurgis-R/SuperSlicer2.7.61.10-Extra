@@ -50,6 +50,7 @@ extern "C" {
 SLIC3R_TEST_EXPORT void *python_seam_placer_native_probe_create(
     const raw_seam_placer_instance *instance,
     const extrusion_entity_handle *loop,
+    const layer_region_handle *layer_region,
     c_point start_position);
 
 // Return the status written by the completed callback.
@@ -65,6 +66,7 @@ SLIC3R_TEST_EXPORT void python_seam_placer_native_probe_destroy(void *probe);
 SLIC3R_TEST_EXPORT void *python_seam_placer_native_probe_create(
     const raw_seam_placer_instance *instance,
     const extrusion_entity_handle *loop,
+    const layer_region_handle *layer_region,
     c_point start_position)
 {
     if (instance == nullptr || instance->session == nullptr || instance->vtable == nullptr ||
@@ -75,9 +77,9 @@ SLIC3R_TEST_EXPORT void *python_seam_placer_native_probe_create(
     NativeSeamProbe *raw_probe = probe.get();
     const void *session = instance->session;
     const seam_placer_place_fn place_seam = instance->vtable->place_seam;
-    raw_probe->worker = std::thread([raw_probe, session, place_seam, loop, start_position]() {
+    raw_probe->worker = std::thread([raw_probe, session, place_seam, loop, layer_region, start_position]() {
         raw_probe->result.struct_size = sizeof(raw_seam_placer_result);
-        place_seam(session, loop, start_position, &raw_probe->result);
+        place_seam(session, loop, layer_region, start_position, &raw_probe->result);
 
         std::unique_lock<std::mutex> lock(raw_probe->mutex);
         raw_probe->callback_finished = true;

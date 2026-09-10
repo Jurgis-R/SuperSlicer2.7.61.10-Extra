@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 
 namespace slic3r_api { namespace Ordering { namespace TreeOrderingGeometry {
@@ -24,6 +25,12 @@ forward or backward. This module performs those decisions without adding a
 second policy layer. Tree reversal preserves every existing handle. Loop
 rotation projects an already validated seam onto lines or arcs, splits only the
 containing path when necessary, and keeps segment metadata aligned.
+
+The same module also connects plan geometry to its source LayerRegion. A
+PrintingExtrusion owns a transformed clone for printing, while its
+LayerRegionIsland retains the unshifted source extrusion and region slices.
+Matching those two source-side objects avoids mixing coordinate systems before
+the selected region is passed to a SeamPlacer.
 */
 
 /* Find the nearest point on any local line or arc in one entity subtree. */
@@ -39,6 +46,16 @@ void rotate_local_loop_to_seam(storage_handle *scratch_storage,
 
 /* Compare two points without converting their scaled coordinates. */
 double squared_distance(c_point lhs, c_point rhs);
+
+/*
+Return whether any source path overlaps or lies inside one region slice.
+
+Temporary linearized paths and Clipper outputs belong to scratch_storage. The
+input tree and region remain borrowed and are never mutated.
+*/
+bool entity_intersects_region(storage_handle *scratch_storage,
+                              const ExtrusionEntity &entity,
+                              const LayerRegion &region);
 
 bool projected_point_on_entity(const ExtrusionEntity &entity,
                                const c_point requested,
@@ -127,6 +144,50 @@ double squared_distance(const c_point lhs, const c_point rhs)
     const double dx = double(lhs.x) - double(rhs.x);
     const double dy = double(lhs.y) - double(rhs.y);
     return dx * dx + dy * dy;
+}
+
+bool entity_intersects_region(storage_handle *scratch_storage,
+                              const ExtrusionEntity &entity,
+                              const LayerRegion &region)
+{
+    const ExPolygonCollection slices = region.slices();
+    if (entity.has_polyline() && !slices.empty()) {
+        // Region matching needs the complete geometric arc, unlike fixed-direction seam
+        // selection which deliberately considers only stored vertices. This is
+        // private built-in code, so it may inspect and linearize the native
+        // source path without changing the public extrusion tree.
+        const Slic3r::ExtrusionEntity *source =
+            reinterpret_cast<const Slic3r::ExtrusionEntity *>(entity.handle());
+        const Slic3r::Polyline linearized = source->as_polyline().to_polyline();
+        StoredPolyline path(scratch_storage);
+        for (const Slic3r::Point &point : linearized.points)
+            path.push_back(c_point{point.x(), point.y()});
+
+        const StoredPolylineCollection overlap =
+            clipper_intersection_polyline_expolygons(
+                scratch_storage, path.readonly(), slices);
+        for (uint32_t overlap_idx = 0; overlap_idx < overlap.size(); ++overlap_idx) {
+            if (!overlap[overlap_idx].empty())
+                return true;
+        }
+
+        // A path reduced to boundary contacts may produce no line fragment.
+        // Point containment keeps such a geometrically associated region from
+        // being lost without widening the test to an arbitrary tolerance.
+        for (uint32_t point_idx = 0; point_idx < path.size(); ++point_idx) {
+            for (uint32_t slice_idx = 0; slice_idx < slices.size(); ++slice_idx) {
+                if (slices[slice_idx].contains(path[point_idx]))
+                    return true;
+            }
+        }
+    }
+
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        if (entity_intersects_region(
+                scratch_storage, entity.child(child_idx), region))
+            return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -245,6 +306,37 @@ void disable_ordering_flags_recursively(MutableExtrusionEntity entity)
         disable_ordering_flags_recursively(entity.child_mutable(child_idx));
     entity.disable_sort();
     entity.disable_reverse();
+}
+
+LayerRegion resolve_source_layer_region(storage_handle *scratch_storage,
+                                        const PrintingExtrusion &extrusion)
+{
+    if (scratch_storage == nullptr || !extrusion.valid())
+        throw std::invalid_argument(
+            "LayerRegion resolution needs storage and a valid PrintingExtrusion.");
+
+    // The source island groups both candidate regions and role-specific source
+    // extrusions. The plan root is a clone and may already carry an instance
+    // transform, so it is deliberately not used for this spatial test.
+    const LayerRegionIsland source_island = extrusion.region_island();
+    const extrusion_entity_handle *source_handle = source_island.valid() ?
+        source_island.extrusion(extrusion.role()) : nullptr;
+    if (source_handle == nullptr)
+        throw std::runtime_error(
+            "A PrintingExtrusion has no source geometry for LayerRegion resolution.");
+
+    const ExtrusionEntity source(source_handle);
+    // Island order is the public deterministic tie-break when one path touches
+    // several regions. Return a borrowed view; scratch data may be cleared.
+    for (uint32_t region_idx = 0; region_idx < source_island.region_count(); ++region_idx) {
+        const LayerRegion region = source_island.region(region_idx);
+        if (region.valid() &&
+            entity_intersects_region(scratch_storage, source, region))
+            return region;
+    }
+
+    throw std::runtime_error(
+        "A PrintingExtrusion does not intersect any LayerRegion from its source island.");
 }
 
 }}} // namespace slic3r_api::Ordering::TreeOrderingGeometry

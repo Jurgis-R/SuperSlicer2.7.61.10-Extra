@@ -16,10 +16,12 @@
 #include "libslic3r/Point.hpp"
 
 /*
-This file implements both sides of the C++/C seam placer bridge. Provider
-callbacks are contained here so exceptions and temporary diagnostics never
-cross the C ABI. The consumer side validates the provider result against the
-original arc-aware extrusion path before returning it to an ordering plugin.
+This file implements both directions of the C++/C seam placer bridge. On the
+provider side, make_seam_placer_instance() initializes a C++ session and wraps
+it in C callbacks. On the consumer side, SeamPlacer takes that instance,
+invokes the callbacks, and validates the result against the original arc-aware
+extrusion path. The bridge contains exceptions and temporary diagnostics so
+neither crosses the C ABI.
 */
 
 namespace slic3r_api {
@@ -36,6 +38,7 @@ static void destroy_session(void *opaque) noexcept;
 /* Invoke the C++ provider while containing all exceptions at the C boundary. */
 static void place_seam_thunk(const void *opaque,
                              const extrusion_entity_handle *loop,
+                             const layer_region_handle *layer_region,
                              c_point start_position,
                              raw_seam_placer_result *result) noexcept;
 
@@ -50,13 +53,16 @@ static bool point_belongs_to_loop(const ExtrusionEntity &loop, c_point point);
 
 struct SeamPlacerSessionHolder
 {
+    /* The opaque C session points here; deleting the holder releases the C++ session. */
     std::unique_ptr<SeamPlacerSession> session;
 };
 
+/* Keep one diagnostic alive until this native thread's next callback. */
 thread_local std::string g_seam_placer_error;
 
 static void initialize_result(raw_seam_placer_result *result) noexcept
 {
+    /* struct_size remains caller-owned input used to negotiate the writable prefix. */
     result->status = RAW_SEAM_PLACER_STATUS_UNSET;
     result->point = {};
     result->error_message = nullptr;
@@ -69,6 +75,7 @@ static void destroy_session(void *opaque) noexcept
 
 static void place_seam_thunk(const void *opaque,
                              const extrusion_entity_handle *loop,
+                             const layer_region_handle *layer_region,
                              c_point start_position,
                              raw_seam_placer_result *result) noexcept
 {
@@ -78,16 +85,20 @@ static void place_seam_thunk(const void *opaque,
         return;
 
     initialize_result(result);
-    if (opaque == nullptr || loop == nullptr || extrusion_is_loop(loop) == 0) {
+    if (opaque == nullptr || loop == nullptr || layer_region == nullptr ||
+        extrusion_is_loop(loop) == 0) {
         result->status = RAW_SEAM_PLACER_STATUS_INVALID_ARGUMENT;
         return;
     }
 
+    // Rebuild non-owning C++ views only for the duration of this invocation.
+    // The holder is the sole object whose lifetime belongs to the C instance.
     const SeamPlacerSessionHolder *holder =
         static_cast<const SeamPlacerSessionHolder *>(opaque);
     try {
         g_seam_placer_error.clear();
-        result->point = holder->session->place_seam(ExtrusionEntity(loop), start_position);
+        result->point = holder->session->place_seam(
+            ExtrusionEntity(loop), LayerRegion(layer_region), start_position);
         result->status = RAW_SEAM_PLACER_STATUS_SUCCESS;
     } catch (const std::exception &exception) {
         g_seam_placer_error = exception.what();
@@ -102,6 +113,7 @@ static void place_seam_thunk(const void *opaque,
 
 static const raw_seam_placer_vtable &session_vtable()
 {
+    /* Static storage satisfies the C contract that the table outlive every session. */
     static const raw_seam_placer_vtable vtable = {
         sizeof(raw_seam_placer_vtable),
         &destroy_session,
@@ -196,17 +208,22 @@ bool SeamPlacer::valid() const noexcept
 }
 
 c_point SeamPlacer::place_seam(const ExtrusionEntity &loop,
+                               const LayerRegion &layer_region,
                                c_point start_position) const
 {
     if (!valid())
         throw std::logic_error("The seam placer instance is invalid.");
     if (!loop.is_loop())
         throw std::invalid_argument("Seam placement needs a non-empty fixed continuous closed loop.");
+    if (!layer_region.valid())
+        throw std::invalid_argument("Seam placement needs a valid LayerRegion.");
 
     raw_seam_placer_result result = {};
     result.struct_size = sizeof(result);
+    // The callback owns the result only for this call. Copy the point or error
+    // before any later call is allowed to replace its borrowed diagnostic.
     m_instance.vtable->place_seam(
-        m_instance.session, loop.handle(), start_position, &result);
+        m_instance.session, loop.handle(), layer_region.handle(), start_position, &result);
 
     if (result.status != RAW_SEAM_PLACER_STATUS_SUCCESS) {
         const char *message = result.error_message != nullptr ?

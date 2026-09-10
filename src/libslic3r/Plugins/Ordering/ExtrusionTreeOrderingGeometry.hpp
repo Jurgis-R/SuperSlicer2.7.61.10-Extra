@@ -7,6 +7,7 @@
 #define slic3r_Plugins_Ordering_ExtrusionTreeOrderingGeometry_hpp_
 
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 
 namespace slic3r_api { namespace Ordering { namespace TreeOrderingGeometry {
 
@@ -29,6 +30,19 @@ void rotate_loop_to_seam(storage_handle *scratch_storage,
 
 /* Remove sorting and reversal permissions from an entity and all descendants. */
 void disable_ordering_flags_recursively(MutableExtrusionEntity entity);
+
+/*
+Resolve the first source LayerRegion touched by a PrintingExtrusion.
+
+The geometric test uses the unshifted source extrusion retained by
+LayerRegionIsland, not the instance-shifted plan clone. This keeps both the
+path and region slices in the source object's coordinate system. Region order
+supplies the deterministic result when a path crosses several regions. The
+scratch storage owns only temporary Clipper results and may be cleared after
+this call; the returned LayerRegion remains borrowed from the source island.
+*/
+LayerRegion resolve_source_layer_region(storage_handle *scratch_storage,
+                                        const PrintingExtrusion &extrusion);
 
 }}} // namespace slic3r_api::Ordering::TreeOrderingGeometry
 
