@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <iostream>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -685,4 +687,178 @@ TEST_CASE("Seam constraint boundaries and degenerate segments remain classified"
     CHECK(result.y==0);
     CHECK(unscaled(result.x)==Approx(6).margin(0.00001));
     CHECK(storage.size()==0);
+}
+
+
+TEST_CASE("Seam AABB rejects distant painted edges and their infinite extensions", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    TriangleMesh mesh;
+    // Diagonal supporting lines cross the loop although the finite edges are
+    // far away. One dense annotated mesh avoids a separate volume per fragment.
+    for (int i=0;i<128;++i) {
+        TriangleMesh cube=make_cube(0.5,0.5,1);
+        cube.rotate_z(float(3.14159265358979323846/4));
+        cube.translate(Vec3f(float(30+i),float(30+i),0));
+        mesh.merge(cube);
+    }
+    PrintObject &object=fixture.prepared.print.object(0);
+    mesh.transform(object.trafo_centered().inverse());
+    ModelVolume *volume=const_cast<ModelObject *>(object.model_object())->add_volume(std::move(mesh),ModelVolumeType::MODEL_PART,false);
+    TriangleSelector selector(volume->mesh());
+    for (size_t i=0;i<volume->mesh().its.indices.size();++i) selector.set_facet(int(i),EnforcerBlockerType::ENFORCER);
+    volume->facets_annotation_mutable("builtin:seam").set(selector);
+    const bool arc=GENERATE(false,true);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(arc?constraint_arc_loop():square_loop());
+    PluginStorage storage;
+    slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+    constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                           reinterpret_cast<storage_handle *>(&storage));
+    const slic3r_api::SeamPlacement::SeamPlacementConstraints::Result result=constraints.portions(extrusion.root(),fixture.view());
+    CHECK_FALSE(result.relevant);
+    // Only the two endpoints and one open interval per segment are necessary.
+    CHECK(result.portions.size()==3*extrusion.root().segment_count());
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point seam=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{}));
+    CHECK(same_point(seam,arc?mm_point(0,10):mm_point(10,10)));
+    CHECK(storage.size()==0);
+}
+
+TEST_CASE("Indexed seam classification preserves reversed paint fragments and deep interiors", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    fixture.box(-20,-20,50,50,ModelVolumeType::MODEL_PART,EnforcerBlockerType::ENFORCER);
+    PrintObject &object=fixture.prepared.print.object(0);
+    TriangleMesh reversed=make_cube(50,50,1);
+    reversed.translate(Vec3f(-20,-20,0));
+    for (stl_triangle_vertex_indices &face:reversed.its.indices) std::swap(face[0],face[1]);
+    reversed.transform(object.trafo_centered().inverse());
+    ModelVolume *volume=const_cast<ModelObject *>(object.model_object())->add_volume(std::move(reversed),ModelVolumeType::MODEL_PART,false);
+    TriangleSelector selector(volume->mesh());
+    for (size_t i=0;i<volume->mesh().its.indices.size();++i) selector.set_facet(int(i),EnforcerBlockerType::ENFORCER);
+    volume->facets_annotation_mutable("builtin:seam").set(selector);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    PluginStorage storage;
+    slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+    constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                           reinterpret_cast<storage_handle *>(&storage));
+    const slic3r_api::SeamPlacement::SeamPlacementConstraints::Result result=constraints.portions(extrusion.root(),fixture.view());
+    REQUIRE(result.relevant);
+    for (const slic3r_api::SeamPlacement::SeamPlacementConstraints::Portion &portion:result.portions)
+        CHECK(portion.status==slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Enforced);
+}
+
+TEST_CASE("Indexed paint capsule endpoints bound admissible line portions", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture("right");
+    fixture.box(4,0.3,2,0.1,ModelVolumeType::MODEL_PART,EnforcerBlockerType::ENFORCER,0,1);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    c_extrusion_property_attributes *attributes=static_cast<c_extrusion_property_attributes *>(
+        extrusion.mutable_root().get_or_add_property_data_mutable(
+            reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
+    REQUIRE(attributes!=nullptr);
+    attributes->width=0.5f;
+    attributes->role=RAW_EXTRUSION_ROLE_PERIMETER;
+    // The rightmost feasible point is on the endpoint cap, not the infinite
+    // offset line: (x-6)^2 + 0.3^2 = 0.5^2, giving x=6.4.
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point seam=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{}));
+    CHECK(unscaled(seam.x)==Approx(6.4).margin(0.0001));
+    CHECK(seam.y==0);
+}
+
+
+TEST_CASE("Seam index bounds major arcs beyond both stored endpoints", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture("right");
+    fixture.box(19.8,9.9,0.4,0.2,ModelVolumeType::SEAM_POSITION_INSIDE);
+    Geometry::ArcWelder::Path path;
+    path.emplace_back(Point::new_scale(10,0),0.f,Geometry::ArcWelder::Orientation::Unknown);
+    // Negative radius encodes the major CCW arc, centered at (10,10).
+    path.emplace_back(Point::new_scale(0,10),-float(scale_i(10)),Geometry::ArcWelder::Orientation::CCW);
+    path.emplace_back(Point::new_scale(10,0),0.f,Geometry::ArcWelder::Orientation::Unknown);
+    ArcPolyline polyline(path);
+    ApiInternal::ArcPolylineAccess::refresh_after_bulk_replace(polyline);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(ExtrusionEntity(false,polyline));
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point seam=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{}));
+    CHECK(unscaled(seam.x)==Approx(20).margin(0.0001));
+    CHECK(unscaled(seam.y)==Approx(10).margin(0.0001));
+}
+
+
+// Opt-in benchmark against the pre-index exhaustive paint classification. The
+// reference consumes the same native projection, including opposite winding.
+TEST_CASE("Seam dense painting index benchmark", "[.][plugins][seam-index-benchmark]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    for (int count:{64,256,1024}) {
+        ConstraintFixture fixture;
+        TriangleMesh mesh;
+        for (int i=0;i<count;++i) {
+            TriangleMesh cube=make_cube(0.25,0.25,1);
+            cube.translate(Vec3f(float(20+(i%32)*0.6),float((i/32)*0.6),0));
+            mesh.merge(cube);
+        }
+        PrintObject &object=fixture.prepared.print.object(0);
+        mesh.transform(object.trafo_centered().inverse());
+        ModelVolume *volume=const_cast<ModelObject *>(object.model_object())->add_volume(std::move(mesh),ModelVolumeType::MODEL_PART,false);
+        TriangleSelector selector(volume->mesh());
+        for (size_t i=0;i<volume->mesh().its.indices.size();++i) selector.set_facet(int(i),EnforcerBlockerType::ENFORCER);
+        volume->facets_annotation_mutable("builtin:seam").set(selector);
+        const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+        PluginStorage storage;
+        slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+        const std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
+        constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                               reinterpret_cast<storage_handle *>(&storage));
+        const std::chrono::steady_clock::time_point built=std::chrono::steady_clock::now();
+        const slic3r_api::Object source=fixture.view().layer().object();
+        const std::vector<slic3r_api::StoredPolygonCollection> projected=slic3r_api::project_painting_to_polygons(
+            reinterpret_cast<storage_handle *>(&storage),source,RAW_FACET_PAINTING_SEAM,RAW_FACET_PAINTING_ENFORCER);
+        std::vector<std::vector<c_point>> rings;
+        size_t edge_count=0;
+        for (uint32_t i=0;i<projected.front().size();++i) {
+            rings.push_back(projected.front().at(i).points());
+            edge_count+=rings.back().size();
+        }
+        const double margin=scale_d(0.4);
+        const c_point shift=source.instance_shift(0);
+        std::vector<c_point> points;
+        for (int i=0;i<512;++i)
+            points.push_back(mm_point(19.5+(i%37)*0.51,-0.5+((i*17)%37)*0.51));
+        std::vector<bool> fast,slow;
+        const std::chrono::steady_clock::time_point query_start=std::chrono::steady_clock::now();
+        for (c_point p:points)
+            fast.push_back(constraints.classify_point(extrusion.root(),{p.x+shift.x,p.y+shift.y},margin)==
+                slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Enforced);
+        const std::chrono::steady_clock::time_point queried=std::chrono::steady_clock::now();
+        for (c_point p:points) {
+            bool inside=false;
+            for (const std::vector<c_point> &ring:rings) {
+                int winding=0;
+                for (size_t i=0;i<ring.size();++i) {
+                    const c_point a=ring[i],b=ring[(i+1)%ring.size()];
+                    const double dx=double(b.x)-a.x,dy=double(b.y)-a.y,length2=dx*dx+dy*dy;
+                    const double t=length2==0?0:std::clamp(((double(p.x)-a.x)*dx+(double(p.y)-a.y)*dy)/length2,0.,1.);
+                    if (std::hypot(double(p.x)-a.x-t*dx,double(p.y)-a.y-t*dy)<=margin+1e-5) {inside=true;break;}
+                    const double cross=dx*(double(p.y)-a.y)-dy*(double(p.x)-a.x);
+                    if (a.y<=p.y && b.y>p.y && cross>0) ++winding;
+                    if (a.y>p.y && b.y<=p.y && cross<0) --winding;
+                }
+                if (inside || winding!=0) {inside=true;break;}
+            }
+            slow.push_back(inside);
+        }
+        const std::chrono::steady_clock::time_point done=std::chrono::steady_clock::now();
+        CHECK(fast==slow);
+        std::cout << "Seam paint fragments=" << rings.size() << " edges=" << edge_count
+                  << " prepare_ms=" << std::chrono::duration<double,std::milli>(built-start).count()
+                  << " indexed_ms=" << std::chrono::duration<double,std::milli>(queried-query_start).count()
+                  << " exhaustive_ms=" << std::chrono::duration<double,std::milli>(done-queried).count() << '\n';
+    }
 }

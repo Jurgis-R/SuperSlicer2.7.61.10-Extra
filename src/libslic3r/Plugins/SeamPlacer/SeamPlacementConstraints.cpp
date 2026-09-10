@@ -14,7 +14,7 @@ During initialize(), walk the printing plan to associate each extrusion and its
 descendants with a source layer, instance shift and inherited extrusion properties.
 For each referenced object, project enforcer and blocker paint separately. Slice
 only SEAM_POSITION_INSIDE volumes at layer print heights, composing the volume and
-object transforms with the object's XY recentering. Copy all contours into private
+object transforms with the object's XY recentering. Copy all contours and build their owned AABB indexes in private
 layer caches before temporary storage owners are destroyed. Volume winding preserves
 holes and disconnected contours; painted fragments are treated independently so
 oppositely oriented faces cannot cancel one another.
@@ -27,8 +27,8 @@ and volume enforcers, and finally free space. The helper reports these categorie
 the calling seam policy decides how to select candidates and apply its fallback.
 
 Straight segments and signed minor/major arcs are partitioned analytically against
-polygon edges and the lines/circles bounding the paint margin. Extra intersections
-may add redundant cuts. Midpoint tests classify the resulting open intervals, while
+indexed finite polygon edges and the sides/caps of the paint margin. AABB
+queries bound the actual arcs and retain exact floating-point classification. Midpoint tests classify the resulting open intervals, while
 separate endpoint tests keep closed blocker boundaries excluded from admissible
 portions. This avoids uniform sampling that could skip a narrow constraint between
 samples. Curves returned to callers are restored to platter coordinates and retain
@@ -50,6 +50,7 @@ caches allow concurrent reads while the host keeps borrowed inputs stable.
 #include <map>
 #include <stdexcept>
 #include "libslic3r/Api/plugin/cpp/VolumeViews.hpp"
+#include "libslic3r/Api/plugin/cpp/LineDistancer.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_property.h"
 
 
@@ -59,8 +60,10 @@ constexpr double pi = 3.14159265358979323846;
 using Curve = SeamPlacementConstraints::Curve;
 using Status = SeamPlacementConstraints::Status;
 using Result = SeamPlacementConstraints::Result;
-using Ring = std::vector<c_point>;
-using Shape = std::vector<Ring>;
+// Indices match the distancer insertion order. Everything is owned by the
+// session; no index stores pointers into vectors or borrowed host polygons.
+struct Edge { c_point a, b; size_t ring; };
+struct Shape { std::vector<Edge> edges; LineDistancer index; };
 struct XY { double x, y; };
 struct Zones { Shape enforced, blocked; std::vector<Shape> volumes; };
 struct Binding {
@@ -75,6 +78,12 @@ Shape copy_shape(const PolygonCollection &polygons);
 /* Construct the signed minor/major arc encoded by the public segment. */
 Curve curve_from(c_extrusion_segment segment);
 XY position(const Curve &curve, double t);
+/* Round broad-phase boxes outwards; exact tests retain floating query points. */
+coord_t bounded_coordinate(double value, bool upper);
+c_point lower_bound(XY point);
+c_point upper_bound(XY point);
+/* Bound the actual arc including cardinal extrema, never just its chord. */
+std::pair<c_point,c_point> curve_bounds(const Curve &curve,double margin);
 /* Closed nonzero-winding containment plus Euclidean dilation. */
 bool contains(const Shape &shape, XY point, double margin, bool independent_rings = false);
 Status classify(const Zones &zones, XY point, double margin);
@@ -89,13 +98,16 @@ void visit_segments(const ExtrusionEntity &entity, const Zones &zones, c_point s
 Shape copy_shape(const PolygonCollection &polygons)
 {
     Shape result;
-    for (uint32_t i = 0; i < polygons.size(); ++i) {
-        const Polygon polygon = polygons.at(i);
-        Ring ring;
-        for (uint32_t j = 0; j < polygon.size(); ++j)
-            ring.push_back(polygon.at(j));
-        if (ring.size() >= 3) result.push_back(std::move(ring));
+    for (uint32_t i=0;i<polygons.size();++i) {
+        const Polygon polygon=polygons.at(i);
+        if (polygon.size()<3) continue;
+        for (uint32_t j=0;j<polygon.size();++j) {
+            const c_point a=polygon.at(j), b=polygon.at((j+1)%polygon.size());
+            result.edges.push_back({a,b,i});
+            result.index.append_segment(a,b);
+        }
     }
+    result.index.build_index();
     return result;
 }
 
@@ -134,28 +146,76 @@ XY position(const Curve &c, double t)
             c.cy + c.radius * std::sin(c.start + t * c.sweep)};
 }
 
+coord_t bounded_coordinate(double value, bool upper)
+{
+    // double(INT64_MAX) rounds upwards: saturate before any integer conversion.
+    if (value>=double(std::numeric_limits<coord_t>::max())) return std::numeric_limits<coord_t>::max();
+    if (value<=double(std::numeric_limits<coord_t>::lowest())) return std::numeric_limits<coord_t>::lowest();
+    return coord_t(upper?std::ceil(value):std::floor(value));
+}
+
+c_point lower_bound(XY p)
+{
+    return {bounded_coordinate(p.x,false),bounded_coordinate(p.y,false)};
+}
+
+c_point upper_bound(XY p)
+{
+    return {bounded_coordinate(p.x,true),bounded_coordinate(p.y,true)};
+}
+
+std::pair<c_point,c_point> curve_bounds(const Curve &curve,double margin)
+{
+    const XY a=position(curve,0), b=position(curve,1);
+    XY min{std::min(a.x,b.x),std::min(a.y,b.y)}, max{std::max(a.x,b.x),std::max(a.y,b.y)};
+    if (curve.radius>0) {
+        for (int i=0;i<4;++i) {
+            const double t=curve.parameter(i*pi/2);
+            if (t<0 || t>1) continue;
+            const XY p=position(curve,t);
+            min.x=std::min(min.x,p.x); min.y=std::min(min.y,p.y);
+            max.x=std::max(max.x,p.x); max.y=std::max(max.y,p.y);
+        }
+    }
+    return {lower_bound({min.x-margin,min.y-margin}),upper_bound({max.x+margin,max.y+margin})};
+}
+
 bool contains(const Shape &shape, XY p, double margin, bool independent_rings)
 {
-    // Nonzero winding preserves holes and accepts disconnected contours.
-    // Edge distance dilates both outside contours and the inside of holes.
-    int winding = 0;
-    for (const Ring &ring : shape) {
-        const int previous_winding = winding;
-        for (size_t i = 0; i < ring.size(); ++i) {
-            const c_point a = ring[i], b = ring[(i + 1) % ring.size()];
-            const double dx = double(b.x) - a.x, dy = double(b.y) - a.y;
-            const double length2 = dx * dx + dy * dy;
-            const double t = length2 == 0 ? 0 : std::clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/length2, 0., 1.);
-            if (std::hypot(p.x-a.x-t*dx, p.y-a.y-t*dy) <= margin + 1e-5) return true;
-            const double cross = dx*(p.y-a.y)-dy*(p.x-a.x);
-            if (a.y <= p.y && b.y > p.y && cross > 0) ++winding;
-            if (a.y > p.y && b.y <= p.y && cross < 0) --winding;
-        }
-        // Paint projections are independent triangle fragments, not holes.
-        // Oppositely oriented painted faces must not cancel each other.
-        if (independent_rings && winding != previous_winding) return true;
+    // AABB selection is conservative; retain the previous exact boundary test
+    // at the floating point, including its scaled-coordinate tolerance.
+    const double radius=margin+1e-5;
+    const std::vector<size_t> nearby=shape.index.all_lines_in_box(
+        lower_bound({p.x-radius,p.y-radius}),upper_bound({p.x+radius,p.y+radius}));
+    for (size_t idx:nearby) {
+        const Edge &edge=shape.edges[idx];
+        const c_point a=edge.a,b=edge.b;
+        const double dx=double(b.x)-a.x,dy=double(b.y)-a.y,length2=dx*dx+dy*dy;
+        const double t=length2==0?0:std::clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/length2,0.,1.);
+        if (std::hypot(p.x-a.x-t*dx,p.y-a.y-t*dy)<=radius) return true;
     }
-    return winding != 0;
+    // A horizontal ray also recognizes interiors far from every boundary.
+    // Independent paint fragments use per-ring winding, volumes total winding.
+    const std::vector<size_t> crossing=shape.index.all_lines_in_box(
+        lower_bound(p),upper_bound({double(std::numeric_limits<coord_t>::max()),p.y}));
+    int winding=0;
+    std::map<size_t,int> rings;
+    for (size_t idx:crossing) {
+        const Edge &edge=shape.edges[idx];
+        const c_point a=edge.a,b=edge.b;
+        const double cross=(double(b.x)-a.x)*(p.y-a.y)-(double(b.y)-a.y)*(p.x-a.x);
+        int delta=0;
+        if (a.y<=p.y && b.y>p.y && cross>0) delta=1;
+        if (a.y>p.y && b.y<=p.y && cross<0) delta=-1;
+        winding+=delta;
+        if (independent_rings && delta!=0) rings[edge.ring]+=delta;
+    }
+    if (independent_rings) {
+        for (const std::pair<const size_t,int> &ring:rings)
+            if (ring.second!=0) return true;
+        return false;
+    }
+    return winding!=0;
 }
 
 Status classify(const Zones &zones, XY point, double margin)
@@ -215,21 +275,41 @@ void cut_circle(const Curve &c, XY center, double radius, std::vector<double> &c
 
 void cut_shape(const Curve &c, const Shape &shape, double margin, std::vector<double> &cuts)
 {
-    // A dilated edge is a capsule: two parallel lines and endpoint circles.
-    // Intersections outside the finite edge only add redundant split points.
-    for (const Ring &ring : shape) {
-        for (size_t i=0;i<ring.size();++i) {
-            const c_point a=ring[i],b=ring[(i+1)%ring.size()];
-            const XY n={double(a.y)-b.y,double(b.x)-a.x};
-            const double norm=std::hypot(n.x,n.y), offset=n.x*a.x+n.y*a.y;
-            if (norm > 0) {
-                cut_line(c,n,offset,cuts);
-                if (margin > 0) {
-                    cut_line(c,n,offset+margin*norm,cuts);
-                    cut_line(c,n,offset-margin*norm,cuts);
+    const std::pair<c_point,c_point> box=curve_bounds(c,margin+1e-5);
+    const std::vector<size_t> candidates=shape.index.all_lines_in_box(box.first,box.second);
+    for (size_t idx:candidates) {
+        const Edge &edge=shape.edges[idx];
+        const c_point a=edge.a,b=edge.b;
+        const XY n={double(a.y)-b.y,double(b.x)-a.x};
+        const double dx=double(b.x)-a.x,dy=double(b.y)-a.y;
+        const double norm=std::hypot(n.x,n.y),offset=n.x*a.x+n.y*a.y;
+        std::vector<double> events;
+        if (norm>0) {
+            if (margin>0) {
+                cut_line(c,n,offset+margin*norm,events);
+                cut_line(c,n,offset-margin*norm,events);
+            } else cut_line(c,n,offset,events);
+            // Parallel capsule sides terminate at the endpoint normal planes.
+            // With zero margin the finite edge itself is the boundary.
+            for (double t:events) {
+                const XY p=position(c,t);
+                const double along=((p.x-a.x)*dx+(p.y-a.y)*dy)/norm;
+                if (along>=-1e-5 && along<=norm+1e-5) add_cut(cuts,t);
+            }
+        }
+        if (margin>0) {
+            for (int endpoint=0;endpoint<2;++endpoint) {
+                if (norm==0 && endpoint==1) continue;
+                events.clear();
+                const c_point center=endpoint==0?a:b;
+                cut_circle(c,{double(center.x),double(center.y)},margin,events);
+                for (double t:events) {
+                    const XY p=position(c,t);
+                    const double along=(p.x-center.x)*dx+(p.y-center.y)*dy;
+                    // Only the outward semicircle belongs to the capsule boundary.
+                    if (norm==0 || (endpoint==0?along<=1e-5*norm:along>=-1e-5*norm)) add_cut(cuts,t);
                 }
             }
-            if (margin > 0) cut_circle(c,{double(a.x),double(a.y)},margin,cuts);
         }
     }
 }
@@ -376,7 +456,7 @@ SeamPlacementConstraints::Result SeamPlacementConstraints::portions(const Extrus
     }
     const std::map<const layer_handle *,Zones>::const_iterator zones=m_impl->layers.find(binding->second.layer);
     if (zones==m_impl->layers.end()) return result;
-    if (zones->second.enforced.empty() && zones->second.blocked.empty() && zones->second.volumes.empty()) return result;
+    if (zones->second.enforced.edges.empty() && zones->second.blocked.edges.empty() && zones->second.volumes.empty()) return result;
     if (region.layer().handle()!=binding->second.layer)
         throw std::invalid_argument("Seam loop and source region belong to different layers.");
     visit_segments(loop,zones->second,binding->second.shift,binding->second.width,binding->second.role,region,result);
