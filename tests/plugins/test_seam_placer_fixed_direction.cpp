@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -15,6 +16,7 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
+#include "libslic3r/Api/internal/ArcPolylineAccess.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
@@ -349,4 +351,338 @@ TEST_CASE("Ordering resolves the first intersecting source LayerRegion",
         slic3r_api::Ordering::TreeOrderingGeometry::resolve_source_layer_region(
             storage, extrusion),
         "A PrintingExtrusion does not intersect any LayerRegion from its source island.");
+}
+
+#include <future>
+#include "libslic3r/TriangleSelector.hpp"
+#include "libslic3r/Api/plugin/cpp/VolumeViews.hpp"
+#include "libslic3r/Plugins/SeamPlacer/SeamPlacementConstraints.hpp"
+
+namespace {
+/* Quarter arcs avoid the native diagnostic orientation ambiguity at exactly
+   180 degrees; their caches are initialized before applying an instance shift. */
+ExtrusionEntity constraint_arc_loop()
+{
+    const coord_t radius=scale_i(10.0);
+    Geometry::ArcWelder::Path path;
+    path.emplace_back(Point(-radius,0),0.f,Geometry::ArcWelder::Orientation::Unknown);
+    path.emplace_back(Point(0,-radius),float(radius),Geometry::ArcWelder::Orientation::CCW);
+    path.emplace_back(Point(radius,0),float(radius),Geometry::ArcWelder::Orientation::CCW);
+    path.emplace_back(Point(0,radius),float(radius),Geometry::ArcWelder::Orientation::CCW);
+    path.emplace_back(Point(-radius,0),float(radius),Geometry::ArcWelder::Orientation::CCW);
+    ArcPolyline polyline(path);
+    ApiInternal::ArcPolylineAccess::refresh_after_bulk_replace(polyline);
+    return ExtrusionEntity(false,polyline);
+}
+
+/* Own real source metadata and a plan clone; modifier meshes are expressed in
+   centered object coordinates then converted back to model coordinates. */
+struct ConstraintFixture : DirectionRegionFixture
+{
+    ConstraintFixture(const char *direction = "rear") : DirectionRegionFixture(direction), source({region},0) {}
+    LayerRegionIsland source;
+
+    ModelVolume *box(double x,double y,double sx,double sy,ModelVolumeType type,
+                     EnforcerBlockerType painting=EnforcerBlockerType::NONE,double z=0,double sz=30)
+    {
+        PrintObject &object=prepared.print.object(0);
+        TriangleMesh mesh=make_cube(sx,sy,sz);
+        mesh.translate(Vec3f(float(x),float(y),float(z)));
+        mesh.transform(object.trafo_centered().inverse());
+        ModelVolume *volume=const_cast<ModelObject *>(object.model_object())->add_volume(std::move(mesh),type,false);
+        if (painting!=EnforcerBlockerType::NONE) {
+            TriangleSelector selector(volume->mesh());
+            for (size_t i=0;i<volume->mesh().its.indices.size();++i) selector.set_facet(int(i),painting);
+            volume->facets_annotation_mutable("builtin:seam").set(selector);
+        }
+        return volume;
+    }
+
+    slic3r_api::PrintingExtrusion add(const ExtrusionEntity &loop, uint16_t instance=0)
+    {
+        slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&prepared.print.mutable_printing_plan()));
+        if (plan.group_count()==0) {
+            plan.append_group().append_layer_group(view().layer().print_z()).append_tool_group(0);
+        }
+        slic3r_api::PrintingExtrusion extrusion=plan.group(0).layer_group(0).tool_group(0).append_extrusion_clone(
+            slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&source)),
+            RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(loop),instance);
+        const c_point shift=view().layer().object().instance_shift(instance);
+        std::function<void(slic3r_api::MutableExtrusionEntity)> translate;
+        translate=[&](slic3r_api::MutableExtrusionEntity entity) {
+            if (entity.point_count()>0) REQUIRE(entity.translate(shift));
+            for (uint32_t i=0;i<entity.child_count();++i) translate(entity.child_mutable(i));
+        };
+        translate(extrusion.mutable_root());
+        return extrusion;
+    }
+
+    c_point local(c_point point, uint16_t instance=0) const
+    {
+        const c_point shift=view().layer().object().instance_shift(instance);
+        return {point.x-shift.x,point.y-shift.y};
+    }
+};
+}
+
+TEST_CASE("Fixed seam constraints enforce narrow interior segments and true arcs", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture("right");
+    const bool arc=GENERATE(false,true);
+    fixture.box(arc?5.9:4.9,arc?7.8:-0.1,0.2,0.4,ModelVolumeType::SEAM_POSITION_INSIDE);
+    ExtrusionEntity loop=arc?constraint_arc_loop():square_loop();
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(loop);
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point point=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{0,0}));
+    CHECK(unscaled(point.x)>= (arc?5.899:4.899));
+    CHECK(unscaled(point.x)<= (arc?6.101:5.101));
+    if (arc) {
+        CHECK(std::hypot(unscaled(point.x),unscaled(point.y))==Approx(10).margin(0.0001));
+        CHECK(unscaled(point.y)>7.8);
+    } else CHECK(point.y==0);
+    CHECK(extrusion_view(loop).point_count()==extrusion.root().point_count());
+}
+
+TEST_CASE("Fixed seam constraints prioritize paint blockers over paint and volume enforcers", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    const bool volume=GENERATE(false,true);
+    fixture.box(4,-1,2,2,volume?ModelVolumeType::SEAM_POSITION_INSIDE:ModelVolumeType::MODEL_PART,
+                volume?EnforcerBlockerType::NONE:EnforcerBlockerType::ENFORCER);
+    const bool block=GENERATE(false,true);
+    if (block) fixture.box(3,-2,4,4,ModelVolumeType::MODEL_PART,EnforcerBlockerType::BLOCKER);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point point=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{0,0}));
+    if (block) CHECK(same_point(point,mm_point(10,10)));
+    else {
+        CHECK(point.y==0);
+        CHECK(unscaled(point.x)>3);
+        CHECK(unscaled(point.x)<7);
+    }
+}
+
+TEST_CASE("Fixed seam constraints ignore attractors and absent layers and fall back when fully blocked", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    const int mode=GENERATE(0,1,2,3,4);
+    if (mode<3) fixture.box(4,-1,2,2,mode==0?ModelVolumeType::SEAM_POSITION_CENTER:
+        mode==1?ModelVolumeType::SEAM_POSITION_CENTER_Z:ModelVolumeType::SEAM_POSITION_INSIDE_CENTER);
+    if (mode==3) fixture.box(4,-1,2,2,ModelVolumeType::SEAM_POSITION_INSIDE,EnforcerBlockerType::NONE,25,5);
+    if (mode==4) fixture.box(-10,-10,40,40,ModelVolumeType::MODEL_PART,EnforcerBlockerType::BLOCKER);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    CHECK(same_point(fixture.local(session.place_seam(extrusion.root(),fixture.view(),{0,0})),mm_point(10,10)));
+    if (mode==4) {
+        PluginStorage storage;
+        slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+        constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                               reinterpret_cast<storage_handle *>(&storage));
+        const slic3r_api::SeamPlacement::SeamPlacementConstraints::Result result=constraints.portions(extrusion.root(),fixture.view());
+        REQUIRE(result.relevant);
+        for (const slic3r_api::SeamPlacement::SeamPlacementConstraints::Portion &portion:result.portions)
+            CHECK(portion.status==slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Blocked);
+    }
+}
+
+TEST_CASE("Fixed seam constraint cache is immutable across parallel requests", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    fixture.box(4,-1,2,2,ModelVolumeType::SEAM_POSITION_INSIDE);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(composed_loop());
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point expected=session.place_seam(extrusion.root(),fixture.view(),{0,0});
+    std::vector<std::future<c_point>> futures;
+    for (int i=0;i<8;++i) futures.push_back(std::async(std::launch::async,[&session,&fixture,&extrusion,i] {
+        return session.place_seam(extrusion.root(),fixture.view(),{i*100,i*300});
+    }));
+    for (std::future<c_point> &future:futures) CHECK(same_point(future.get(),expected));
+}
+
+TEST_CASE("Seam constraints use the plan instance rather than the incoming position", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    PrintObject &object=fixture.prepared.print.object(0);
+    // Synthetic second placement: keep the sliced source tree unchanged.
+    PrintInstances &instances=const_cast<PrintInstances &>(object.instances());
+    instances.push_back(instances.front());
+    instances.back().shift+=Point::new_scale(100,-50);
+    fixture.box(4,-1,2,2,ModelVolumeType::SEAM_POSITION_INSIDE);
+    fixture.add(square_loop(),0);
+    fixture.add(square_loop(),1);
+    slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan()));
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    for (uint16_t i=0;i<2;++i) {
+        const slic3r_api::PrintingExtrusion extrusion=plan.group(0).layer_group(0).tool_group(0).extrusion(i);
+        const c_point point=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{-100000,200000}),i);
+        CHECK(point.y==0);
+        CHECK(unscaled(point.x)==Approx(6).margin(0.001));
+    }
+}
+
+TEST_CASE("Seam volume slices preserve holes and disconnected contours", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture("left");
+    TriangleMesh mesh=make_cube(8,4,30);
+    mesh.translate(Vec3f(1,-2,0));
+    TriangleMesh hole=make_cube(4,2,30);
+    hole.translate(Vec3f(3,-1,0));
+    for (stl_triangle_vertex_indices &face:hole.its.indices) std::swap(face[0],face[1]);
+    mesh.merge(hole);
+    TriangleMesh separate=make_cube(0.2,0.2,30);
+    separate.translate(Vec3f(-0.1f,4,0));
+    mesh.merge(separate);
+    PrintObject &object=fixture.prepared.print.object(0);
+    mesh.transform(object.trafo_centered().inverse());
+    const_cast<ModelObject *>(object.model_object())->add_volume(std::move(mesh),ModelVolumeType::SEAM_POSITION_INSIDE,false);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    PluginStorage storage;
+    slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+    constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                           reinterpret_cast<storage_handle *>(&storage));
+    CHECK(storage.size()==0);
+    const c_point shift=fixture.view().layer().object().instance_shift(0);
+    const std::pair<c_point,slic3r_api::SeamPlacement::SeamPlacementConstraints::Status> checks[]={
+        {mm_point(2,0),slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Enforced},
+        {mm_point(5,0),slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Free},
+        {mm_point(0,4.1),slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Enforced}
+    };
+    for (const std::pair<c_point,slic3r_api::SeamPlacement::SeamPlacementConstraints::Status> &check:checks)
+        CHECK(constraints.classify_point(extrusion.root(),{check.first.x+shift.x,check.first.y+shift.y},0)==check.second);
+}
+
+TEST_CASE("Seam volume transformations are composed in object space", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    PrintObject &object=fixture.prepared.print.object(0);
+    TriangleMesh mesh=make_cube(2,0.2,30);
+    ModelVolume *volume=const_cast<ModelObject *>(object.model_object())->add_volume(std::move(mesh),ModelVolumeType::SEAM_POSITION_INSIDE,false);
+    Transform3d placement=Transform3d::Identity();
+    placement.translate(Vec3d(5.1,-1,0));
+    placement.rotate(Eigen::AngleAxisd(3.14159265358979323846/2,Vec3d::UnitZ()));
+    volume->set_transformation(object.trafo_centered().inverse()*placement);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point point=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{0,0}));
+    CHECK(point.y==0);
+    CHECK(unscaled(point.x)==Approx(5.1).margin(0.001));
+}
+
+TEST_CASE("Seam paint margins inherit width and fall back to regional flow", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    fixture.box(4,0.5,2,0.1,ModelVolumeType::MODEL_PART,EnforcerBlockerType::ENFORCER);
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(composed_loop());
+    const bool explicit_width=GENERATE(false,true);
+    if (explicit_width) {
+        orchestrator_handle *orch=reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance());
+        c_extrusion_property_attributes *parent=static_cast<c_extrusion_property_attributes *>(
+            extrusion.mutable_root().get_or_add_property_data_mutable(orch,EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
+        REQUIRE(parent!=nullptr);
+        parent->width=0.8f;
+        parent->role=RAW_EXTRUSION_ROLE_PERIMETER;
+        c_extrusion_property_attributes *child=static_cast<c_extrusion_property_attributes *>(
+            extrusion.mutable_root().child_mutable(1).get_or_add_property_data_mutable(orch,EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
+        REQUIRE(child!=nullptr);
+        child->width=0.2f;
+        child->role=RAW_EXTRUSION_ROLE_PERIMETER;
+    }
+    PluginStorage storage;
+    slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+    constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                           reinterpret_cast<storage_handle *>(&storage));
+    const slic3r_api::SeamPlacement::SeamPlacementConstraints::Result portions=constraints.portions(extrusion.root(),fixture.view());
+    REQUIRE_FALSE(portions.portions.empty());
+    CHECK(portions.portions.front().paint_margin==Approx(explicit_width?Slic3r::scale_d(0.8f):fixture.view().flow(RAW_EXTRUSION_ROLE_PERIMETER).width));
+    if (explicit_width) {
+        bool narrow=false;
+        for (const slic3r_api::SeamPlacement::SeamPlacementConstraints::Portion &portion:portions.portions)
+            narrow|=std::abs(portion.paint_margin-Slic3r::scale_d(0.2f))<1;
+        CHECK(narrow);
+        const c_point shift=fixture.view().layer().object().instance_shift(0),point=mm_point(5,0);
+        CHECK(constraints.classify_point(extrusion.root(),{point.x+shift.x,point.y+shift.y},Slic3r::scale_d(0.8f))==
+            slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Enforced);
+        CHECK(constraints.classify_point(extrusion.root(),{point.x+shift.x,point.y+shift.y},Slic3r::scale_d(0.2f))==
+            slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Free);
+    }
+    CHECK(storage.size()==0);
+}
+
+TEST_CASE("Seam constraints isolate source objects and layers in one plan", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture first, second;
+    first.box(4,-1,2,2,ModelVolumeType::SEAM_POSITION_INSIDE,EnforcerBlockerType::NONE,0,1);
+    second.box(1,-1,1,2,ModelVolumeType::SEAM_POSITION_INSIDE);
+    const slic3r_api::PrintingExtrusion low=first.add(square_loop());
+    PrintObject &object=first.prepared.print.object(0);
+    LayerRegion &upper=object.layer(object.layer_count()-1).region(0);
+    LayerRegionIsland upper_source({&upper},0);
+    slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&first.prepared.print.mutable_printing_plan()));
+    const slic3r_api::LayerRegion upper_view(reinterpret_cast<const layer_region_handle *>(&upper));
+    const ExtrusionEntity square=square_loop();
+    const slic3r_api::PrintingExtrusion high=plan.group(0).append_layer_group(upper_view.layer().print_z()).append_tool_group(0).append_extrusion_clone(
+        slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&upper_source)),
+        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),0);
+    REQUIRE(high.mutable_root().translate(upper_view.layer().object().instance_shift(0)));
+    // A second independently sliced source object shares this synthetic plan.
+    const slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
+        slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&second.source)),
+        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),0);
+    REQUIRE(other.mutable_root().translate(second.view().layer().object().instance_shift(0)));
+    slic3r_api::SeamPlacer session=create_fixed_session(first.prepared.print);
+    CHECK(same_point(first.local(session.place_seam(low.root(),first.view(),{0,0})),mm_point(6,0)));
+    CHECK(same_point(first.local(session.place_seam(high.root(),upper_view,{0,0})),mm_point(10,10)));
+    const c_point other_point=second.local(session.place_seam(other.root(),second.view(),{0,0}));
+    CHECK(other_point.y==0);
+    CHECK(unscaled(other_point.x)==Approx(2).margin(0.00001));
+}
+
+TEST_CASE("Seam constraint boundaries and degenerate segments remain classified", "[plugins][seam-placer][fixed][constraints]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    fixture.box(4,-1,2,2,ModelVolumeType::SEAM_POSITION_INSIDE);
+    slic3r_api::SeamPlacement::SeamPlacementConstraints::Curve degenerate;
+    degenerate.segment.point_a=degenerate.segment.point_b=mm_point(4,0);
+    CHECK(same_point(degenerate.point(0.5),mm_point(4,0)));
+    const ExtrusionEntity loop(false,ArcPolyline(Points{Point::new_scale(0,0),
+        Point::new_scale(10,0),Point::new_scale(10,10),Point::new_scale(0,10),Point::new_scale(0,0)}));
+    const slic3r_api::PrintingExtrusion extrusion=fixture.add(loop);
+    PluginStorage storage;
+    slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+    constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                           reinterpret_cast<storage_handle *>(&storage));
+    const c_point shift=fixture.view().layer().object().instance_shift(0);
+    {
+        const slic3r_api::Object object=fixture.view().layer().object();
+        const slic3r_api::Volume volume=object.volume(object.volume_count()-1);
+        const c_point center=object.center_offset();
+        const c_matrix4d transform=matrix4d_mul(
+            matrix4d_translation(-unscaled(center.x),-unscaled(center.y),0),object.transform());
+        // Use actual sliced boundaries, including native float-to-integer rounding.
+        const std::vector<slic3r_api::StoredPolygonCollection> slices=volume.mesh().slice_to_polygons(
+            reinterpret_cast<storage_handle *>(&storage),matrix4d_mul(transform,volume_get_matrix(volume.handle())),
+            {float(unscaled(fixture.view().layer().print_z()))});
+        REQUIRE(slices.front().readonly().size()>0);
+        const slic3r_api::Polygon polygon=slices.front().readonly().at(0);
+        for (uint32_t i=0;i<polygon.size();++i) {
+            const c_point point=polygon.at(i);
+            CHECK(constraints.classify_point(extrusion.root(),{point.x+shift.x,point.y+shift.y},0)==
+                slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Enforced);
+        }
+    }
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
+    const c_point result=fixture.local(session.place_seam(extrusion.root(),fixture.view(),{0,0}));
+    CHECK(result.y==0);
+    CHECK(unscaled(result.x)==Approx(6).margin(0.00001));
+    CHECK(storage.size()==0);
 }

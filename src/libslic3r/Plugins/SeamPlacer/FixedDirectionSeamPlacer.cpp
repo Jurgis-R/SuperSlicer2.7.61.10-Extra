@@ -4,8 +4,11 @@
 ///|/
 
 #include "FixedDirectionSeamPlacer.hpp"
+#include "SeamPlacementConstraints.hpp"
 
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -22,11 +25,14 @@
 Fixed-direction seam placement
 ==============================
 
-This provider chooses one vertex already stored by an extrusion loop. The
+Without applicable constraints this provider chooses a stored loop vertex.
+Painted and volume constraints restrict eligible line/arc portions. The
 configured compass direction defines the primary projection. A clockwise
 perpendicular projection breaks ties, and the original tree/point order is the
-final deterministic tie-break. Arcs are deliberately not sampled: only their
-stored endpoints can become seams.
+final deterministic tie-break. Constraint boundaries and directional extrema
+provide extra candidates on true segments and arcs; no chord approximation is
+used. Blockers override enforcers. Free portions are the second choice; fully
+blocked loops fall back to stored vertices.
 
 The direction is read from the LayerRegion passed with every request, so one
 immutable session serves a complete PrintingPlan even when its regions use
@@ -105,13 +111,17 @@ void select_vertex(const ExtrusionEntity &entity,
 class FixedDirectionSession final : public SeamPlacerSession
 {
 public:
-    /* Validate the plan; this policy needs no plan-wide cache. */
+    explicit FixedDirectionSession(storage_handle *storage) : m_storage(storage) {}
+    /* Prepare immutable constraint caches before publishing the session. */
     void initialize(const PrintingPlan &plan) override;
 
-    /* Read the regional direction and select one stored loop vertex. */
+    /* Select the directional best admissible point without changing geometry. */
     c_point place_seam(const ExtrusionEntity &loop,
                        const LayerRegion &layer_region,
                        c_point start_position) const override;
+private:
+    storage_handle *m_storage;
+    SeamPlacementConstraints m_constraints;
 };
 
 class FixedDirectionSeamPlacer final : public PluginBase
@@ -176,11 +186,12 @@ void select_vertex(const ExtrusionEntity &entity,
 
 void FixedDirectionSession::initialize(const PrintingPlan &plan)
 {
-    // No plan data is retained: every mutable choice is regional and read in
-    // place_seam(). The validation still catches a malformed service request
-    // before the session is published to consumers.
+    // Initialization copies all shapes and releases temporary storage before
+    // queries can run concurrently. Only borrowed plan identities are retained.
     if (!plan.valid())
         throw std::invalid_argument("Fixed-direction seam placement needs a valid PrintingPlan.");
+    m_constraints.initialize(plan, m_storage);
+    m_storage = nullptr;
 }
 
 c_point FixedDirectionSession::place_seam(const ExtrusionEntity &loop,
@@ -203,7 +214,44 @@ c_point FixedDirectionSession::place_seam(const ExtrusionEntity &loop,
     const int32_t configured_direction = config.enum_or_default(
         k_direction_key, int32_t(FixedDirection::Rear));
     SelectedVertex selected;
-    select_vertex(loop, direction_vector(configured_direction), selected);
+    const DirectionVector direction = direction_vector(configured_direction);
+    const SeamPlacementConstraints::Result constraints = m_constraints.portions(loop, layer_region);
+    SeamPlacementConstraints::Status best_status = SeamPlacementConstraints::Status::Blocked;
+    if (constraints.relevant) {
+        for (const SeamPlacementConstraints::Portion &portion : constraints.portions) {
+            if (portion.status == SeamPlacementConstraints::Status::Blocked) continue;
+            const SeamPlacementConstraints::Curve &curve = portion.curve;
+            const double length = curve.radius > 0 ? std::abs(curve.radius * curve.sweep) :
+                std::hypot(double(curve.segment.point_b.x) - curve.segment.point_a.x,
+                           double(curve.segment.point_b.y) - curve.segment.point_a.y);
+            const double inset = length > 0 ? std::min((portion.end - portion.begin) / 2, 2 / length) : 0;
+            const double begin = portion.begin + (portion.include_begin ? 0 : inset);
+            const double end = portion.end - (portion.include_end ? 0 : inset);
+            // Inward alternatives survive integer rounding at closed boundaries.
+            std::vector<double> candidates = {begin, end, (begin + end) / 2,
+                std::min(end, begin + inset), std::max(begin, end - inset)};
+            if (curve.radius > 0) {
+                const double extremum = curve.parameter(std::atan2(double(direction.y), double(direction.x)));
+                if (extremum >= begin && extremum <= end) candidates.push_back(extremum);
+            }
+            std::sort(candidates.begin(), candidates.end());
+            for (double t : candidates) {
+                const c_point point = curve.point(t);
+                if (m_constraints.classify_point(loop, point, portion.paint_margin) != portion.status) continue;
+                const long double primary = static_cast<long double>(point.x) * direction.x +
+                                            static_cast<long double>(point.y) * direction.y;
+                const long double secondary = static_cast<long double>(point.x) * direction.y -
+                                              static_cast<long double>(point.y) * direction.x;
+                if (!selected.valid || portion.status > best_status ||
+                    (portion.status == best_status && (primary > selected.primary ||
+                    (primary == selected.primary && secondary > selected.secondary)))) {
+                    selected = {true, point, primary, secondary};
+                    best_status = portion.status;
+                }
+            }
+        }
+    }
+    if (!selected.valid) select_vertex(loop, direction, selected);
     if (!selected.valid)
         throw std::runtime_error("Fixed-direction seam placement found no stored loop vertex.");
     return selected.point;
@@ -221,7 +269,7 @@ const char *FixedDirectionSeamPlacer::name_impl() const noexcept { return "Fixed
 
 const char *FixedDirectionSeamPlacer::description_impl() const noexcept
 {
-    return "Places each seam on the stored loop vertex furthest in a configured direction.";
+    return "Places seams in a fixed direction, respecting painted seam constraints and inside seam volumes.";
 }
 
 const char *FixedDirectionSeamPlacer::exclusive_group_impl() const noexcept { return k_group_id; }
@@ -268,7 +316,7 @@ void FixedDirectionSeamPlacer::inilialize_impl(storage_handle *) const
     def.full_label = "Fixed seam direction";
     def.category = RAW_OPTION_CATEGORY_PERIMETER;
     def.invalidates_step = STEP_ORDERING;
-    def.tooltip = "Choose the platter direction in which the stored loop vertex is selected.";
+    def.tooltip = "Choose the platter direction for seam placement within painted or volume constraints.";
     def.mode = RAW_CONFIG_OPTION_MODE_SIM_ADV_EXP | RAW_CONFIG_OPTION_MODE_SUSI;
     def.default_serialized_value = "rear";
     def.enum_def.value_label_pairs.items = k_direction_values;
@@ -297,7 +345,7 @@ void FixedDirectionSeamPlacer::run_impl(const plugin_run_context *run_context) c
     if (context == nullptr || context->plan == nullptr)
         throw std::invalid_argument("Fixed-direction seam placement received an invalid run context.");
     context->instance = make_seam_placer_instance(
-        std::unique_ptr<SeamPlacerSession>(new FixedDirectionSession()),
+        std::unique_ptr<SeamPlacerSession>(new FixedDirectionSession(run_context->plugin_storage)),
         PrintingPlan(context->plan));
 }
 

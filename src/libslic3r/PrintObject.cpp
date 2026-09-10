@@ -5001,7 +5001,7 @@ std::vector<Polygons> PrintObject::project_and_append_custom_facets(
         bool seam, EnforcerBlockerType type) const
 {
     if (seam)
-        return this->project_and_append_custom_facets("builtin:seam", type);
+        return this->project_and_append_custom_facets(std::string("builtin:seam"), type);
 
     std::vector<Polygons> out;
     for (const ModelVolume* mv : this->model_object()->volumes) {

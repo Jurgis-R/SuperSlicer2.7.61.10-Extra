@@ -1047,8 +1047,14 @@ void ArcPolyline::append(const Geometry::ArcWelder::Segment &arc)
 
 void ArcPolyline::translate(const Vector &vector)
 {
-    for (auto &seg : m_path)
+    for (Geometry::ArcWelder::Segment &seg : m_path) {
         seg.point += vector;
+#ifdef _DEBUG
+        // Translation preserves radius and length, but the diagnostic center
+        // must follow the endpoints before is_valid() compares both arcs.
+        if (!seg.linear()) seg.center += vector;
+#endif
+    }
     assert(is_valid());
 }
 void ArcPolyline::rotate(double angle)
