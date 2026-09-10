@@ -299,6 +299,8 @@ set(SLIC3R_SOURCES
 	Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp
 	Plugins/SeamPlacer/SeamPlacementConstraints.cpp
 	Plugins/SeamPlacer/SeamPlacementConstraints.hpp
+	Plugins/SeamPlacer/SeamPlacerRouter.cpp
+	Plugins/SeamPlacer/SeamPlacerRouter.hpp
 	Plugins/SkirtBrim/AdhesionLayerHelpers.cpp
 	Plugins/SkirtBrim/AdhesionLayerHelpers.hpp
 	Plugins/SkirtBrim/DefaultBrimGenerator.cpp

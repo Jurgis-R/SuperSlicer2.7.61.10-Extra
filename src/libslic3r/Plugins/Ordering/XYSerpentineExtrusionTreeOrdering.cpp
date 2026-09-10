@@ -18,12 +18,10 @@
 #include "ExtrusionTreeOrderingGeometry.hpp"
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
-#include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
-#include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
-#include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 #include "libslic3r/Plugins/PrintingPlan/EntryPointProperty.h"
+#include "libslic3r/Plugins/SeamPlacer/SeamPlacerRouter.hpp"
 
 namespace slic3r_api { namespace Ordering { namespace DefaultOrderingPlugin {
 namespace {
@@ -48,9 +46,9 @@ height.
 
 Spatial ordering never guesses a printable endpoint. Once every permutation is
 fixed, one sequential pass follows the real PrintingPlan order. Reversible
-trees face the incoming position, loops ask the shared SeamPlacer for an exact
-entry, and every ordering flag is disabled. The resulting root front/back pair
-replaces the coarse EntryPointProperty.
+trees face the incoming position, loops ask the immutable regional seam router
+for an exact entry, and every ordering flag is disabled. The resulting root
+front/back pair replaces the coarse EntryPointProperty.
 
 The normal call flow is:
 
@@ -63,13 +61,12 @@ The normal call flow is:
     `-- finalize_plan_geometry()
         `-- finalize_entity()
             |-- reverse_tree() for nearer reversible exits
-            |-- SeamPlacer::place_seam() for atomic loops
+            |-- SeamPlacerRouter::place_seam() for atomic loops
             `-- disable_ordering_flags_recursively()
 */
 
 const char *k_no_dependencies[] = { nullptr };
 const char *k_exclusive_group = "ordering.extrusion_tree";
-const char *k_seam_placer_group = "seam_placer_plugin";
 
 struct EntityBounds
 {
@@ -94,11 +91,6 @@ struct SpatialItem
     uint32_t original_index = 0;
     c_point center = {};
 };
-
-/* Select and initialize the active seam-placement service for this plan. */
-SeamPlacer create_seam_placer(orchestrator_handle *orchestrator,
-                              const Print &print,
-                              const PrintingPlan &plan);
 
 /* Return the optional print start in scaled PrintingPlan coordinates. */
 c_point initial_print_position(const Print &print);
@@ -146,23 +138,17 @@ void apply_child_permutation(MutableExtrusionEntity parent,
 void spatially_order_plan(const PrintingPlan &plan,
                           const EntityBoundsCache &cache);
 
-/*
-Fix one tree from the real incoming position and return its exact exit.
-
-The LayerRegion belongs to the surrounding PrintingExtrusion and is reused for
-all loops in its cloned root; descendants are not independently region-mapped.
-*/
+/* Fix one tree using each loop's precomputed regional provider route. */
 c_point finalize_entity(MutableExtrusionEntity entity,
-                        c_point current_position,
-                        const LayerRegion &layer_region,
-                        const SeamPlacer &seam_placer,
-                        storage_handle *scratch_storage);
+                         c_point current_position,
+                         const SeamPlacement::SeamPlacerRouter &seam_router,
+                         storage_handle *scratch_storage);
 
 /* Materialize seams/orientations and publish exact root endpoints. */
 void finalize_plan_geometry(
     const PrintingPlan &plan,
     c_point initial_position,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
     PluginProgress &progress);
@@ -172,32 +158,6 @@ uint32_t extrusion_count(const PrintingPlan &plan);
 
 /* Squared distance is sufficient for strict orientation comparisons. */
 double squared_distance(c_point lhs, c_point rhs);
-
-SeamPlacer create_seam_placer(orchestrator_handle *orchestrator,
-                              const Print &print,
-                              const PrintingPlan &plan)
-{
-    OrchestratorView orchestrator_view(orchestrator);
-    const PluginView provider = orchestrator_view.select_plugin(
-        print.config().handle(), SEAM_PLACER, k_seam_placer_group);
-    if (!provider.valid())
-        throw std::runtime_error(
-            "XY-serpentine ordering requires an active SEAM_PLACER provider.");
-
-    run_ctx_seam_placer context = {};
-    context.plan = plan.handle();
-    const raw_plugin_execution_status status = orchestrator_view.execute(
-        provider, print.handle(), context);
-    if (status != RAW_PLUGIN_EXECUTION_SUCCESS)
-        throw std::runtime_error(
-            "The selected SEAM_PLACER provider could not initialize its session.");
-
-    SeamPlacer seam_placer(context.instance);
-    if (!seam_placer.valid())
-        throw std::runtime_error(
-            "The selected SEAM_PLACER provider published an invalid session.");
-    return seam_placer;
-}
 
 c_point initial_print_position(const Print &print)
 {
@@ -478,8 +438,7 @@ void spatially_order_plan(const PrintingPlan &plan,
 
 c_point finalize_entity(MutableExtrusionEntity entity,
                         const c_point current_position,
-                        const LayerRegion &layer_region,
-                        const SeamPlacer &seam_placer,
+                        const SeamPlacement::SeamPlacerRouter &seam_router,
                         storage_handle *scratch_storage)
 {
     if (entity.empty()) {
@@ -487,8 +446,8 @@ c_point finalize_entity(MutableExtrusionEntity entity,
         return current_position;
     }
     if (entity.readonly().is_loop()) {
-        const c_point seam = seam_placer.place_seam(
-            entity.readonly(), layer_region, current_position);
+        const c_point seam = seam_router.place_seam(
+            entity.readonly(), current_position);
         TreeOrderingGeometry::rotate_loop_to_seam(
             scratch_storage, entity, seam);
         TreeOrderingGeometry::disable_ordering_flags_recursively(entity);
@@ -503,8 +462,8 @@ c_point finalize_entity(MutableExtrusionEntity entity,
     c_point position = current_position;
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         position = finalize_entity(
-            entity.child_mutable(child_idx), position, layer_region,
-            seam_placer, scratch_storage);
+            entity.child_mutable(child_idx), position, seam_router,
+            scratch_storage);
     entity.disable_sort();
     entity.disable_reverse();
     return entity.point_count() > 0 ? entity.back() : position;
@@ -513,7 +472,7 @@ c_point finalize_entity(MutableExtrusionEntity entity,
 void finalize_plan_geometry(
     const PrintingPlan &plan,
     c_point current_position,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
     PluginProgress &progress)
@@ -535,15 +494,8 @@ void finalize_plan_geometry(
                         progress.increment();
                         continue;
                     }
-                    // Spatial ordering operates on the plan clone, but seam
-                    // settings belong to its unshifted source LayerRegion.
-                    // Resolve that association once before descending the root.
-                    const LayerRegion layer_region =
-                        TreeOrderingGeometry::resolve_source_layer_region(
-                            scratch_storage, extrusion);
                     current_position = finalize_entity(
-                        root, current_position, layer_region,
-                        seam_placer, scratch_storage);
+                        root, current_position, seam_router, scratch_storage);
                     EntryPointProperty &property = entry_point_key.get_or_add(root);
                     property.entry = root.front();
                     property.exit = root.back();
@@ -639,14 +591,15 @@ private:
 
         const Print print(ctx->print);
         const PrintingPlan plan(ctx->plan);
-        SeamPlacer seam_placer = create_seam_placer(m_orchestrator, print, plan);
+        const SeamPlacement::SeamPlacerRouter seam_router(
+            m_orchestrator, print, plan, run_ctx->plugin_storage);
         EntityBoundsCache bounds;
         build_bounds_for_plan(plan, bounds);
         spatially_order_plan(plan, bounds);
 
         progress().add_max(extrusion_count(plan));
         finalize_plan_geometry(
-            plan, initial_print_position(print), seam_placer,
+            plan, initial_print_position(print), seam_router,
             run_ctx->plugin_storage, m_entry_point_key, progress());
     }
 

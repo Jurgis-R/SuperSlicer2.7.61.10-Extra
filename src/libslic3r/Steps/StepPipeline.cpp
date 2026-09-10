@@ -366,7 +366,8 @@ StepExclusiveGroup make_plugin_exclusive_group(const Orchestrator &orchestrator,
                                                const std::string &group_id,
                                                const Plugin &first_plugin)
 {
-    const std::string key = option_key_for_plugin_group(orchestrator, step, group_id);
+    const std::string key = plugin_exclusive_group_option_key(
+        orchestrator, step, group_id);
     const std::string label = first_plugin.get_exclusive_group_label().empty() ?
         group_id :
         first_plugin.get_exclusive_group_label();
@@ -387,6 +388,22 @@ StepExclusiveGroup make_plugin_exclusive_group(const Orchestrator &orchestrator,
         group.option_def.invalidates_step = step_info->invalidates_step;
     else if (!is_known_builtin_step(step))
         group.option_def.invalidates_step = STEP_ANY;
+
+    /*
+    Seam placement is selected by the effective PrintRegion configuration.
+    Other plugin groups keep their project-level selector because their
+    consumers execute one implementation for the complete print.
+    */
+    if (step == SEAM_PLACER && group_id == "seam_placer_plugin") {
+        group.option_def.container_type = RAW_CONTAINER_TYPE_REGION;
+        group.option_def.invalidates_step = STEP_ORDERING;
+        group.ui_fragment =
+            "page:Perimeters & Shell\n"
+            "group:Seam\n"
+            "line:" + label + "\n"
+            "setting:" + key + "\n"
+            "end_line\n";
+    }
     group.refresh_storage_pointers();
     return group;
 }
@@ -404,7 +421,20 @@ void apply_plugin_group_text(StepExclusiveGroup &group, const std::vector<Plugin
 
         if (!plugin->get_exclusive_group_label().empty()) {
             group.label_storage = plugin->get_exclusive_group_label();
-            group.ui_fragment = exclusive_group_ui_fragment(group.option_key_storage, group.label_storage);
+            if (group.step == SEAM_PLACER &&
+                group.group_id == "seam_placer_plugin") {
+                // Keep this regional service selector beside the other seam
+                // settings even when a provider supplies a friendlier label.
+                group.ui_fragment =
+                    "page:Perimeters & Shell\n"
+                    "group:Seam\n"
+                    "line:" + group.label_storage + "\n"
+                    "setting:" + group.option_key_storage + "\n"
+                    "end_line\n";
+            } else {
+                group.ui_fragment = exclusive_group_ui_fragment(
+                    group.option_key_storage, group.label_storage);
+            }
         }
         if (!plugin->get_exclusive_group_tooltip().empty())
             group.tooltip_storage = plugin->get_exclusive_group_tooltip();
@@ -440,6 +470,13 @@ inline std::map<slicing_step_t, int> slicingstep_2_percent = {
 };
 
 } // namespace
+
+std::string plugin_exclusive_group_option_key(const Orchestrator &orchestrator,
+                                              const slicing_step_t step,
+                                              const std::string &group_id)
+{
+    return option_key_for_plugin_group(orchestrator, step, group_id);
+}
 
 void StepExclusiveGroup::refresh_storage_pointers()
 {
@@ -569,8 +606,15 @@ Plugin *selected_plugin_from_group(const StepExclusiveGroup &group,
         return plugins.front();
 
     const int32_t selected_idx = option->get_int();
-    if (selected_idx < 0 || size_t(selected_idx) >= plugins.size())
+    if (selected_idx < 0 || size_t(selected_idx) >= plugins.size()) {
+        // Regional seam selection is part of the printed geometry contract: an
+        // explicit stale value must fail instead of silently changing where a
+        // seam is placed. Preserve the historical fallback for other groups.
+        if (group.step == SEAM_PLACER &&
+            group.group_id == "seam_placer_plugin")
+            return nullptr;
         return plugins.front();
+    }
 
     return plugins[size_t(selected_idx)];
 }

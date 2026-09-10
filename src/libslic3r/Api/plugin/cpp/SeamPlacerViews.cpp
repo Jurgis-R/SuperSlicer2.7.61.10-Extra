@@ -6,6 +6,7 @@
 #include "SeamPlacerViews.hpp"
 
 #include <cstddef>
+#include <cmath>
 #include <exception>
 #include <stdexcept>
 #include <string>
@@ -32,8 +33,17 @@ struct SeamPlacerSessionHolder;
 /* Prepare a writable result before invoking provider code. */
 static void initialize_result(raw_seam_placer_result *result) noexcept;
 
+/* Prepare a writable priority result before invoking provider code. */
+static void initialize_priority_result(raw_seam_placer_priority_result *result) noexcept;
+
 /* Delete the provider session owned by one published C instance. */
 static void destroy_session(void *opaque) noexcept;
+
+/* Invoke the C++ priority hook while containing all exceptions at the C boundary. */
+static void get_priority_thunk(const void *opaque,
+                               const extrusion_entity_handle *loop,
+                               const layer_region_handle *layer_region,
+                               raw_seam_placer_priority_result *result) noexcept;
 
 /* Invoke the C++ provider while containing all exceptions at the C boundary. */
 static void place_seam_thunk(const void *opaque,
@@ -68,9 +78,51 @@ static void initialize_result(raw_seam_placer_result *result) noexcept
     result->error_message = nullptr;
 }
 
+static void initialize_priority_result(raw_seam_placer_priority_result *result) noexcept
+{
+    result->status = RAW_SEAM_PLACER_STATUS_UNSET;
+    result->priority = 0.f;
+    result->error_message = nullptr;
+}
+
 static void destroy_session(void *opaque) noexcept
 {
     delete static_cast<SeamPlacerSessionHolder *>(opaque);
+}
+
+static void get_priority_thunk(const void *opaque,
+                               const extrusion_entity_handle *loop,
+                               const layer_region_handle *layer_region,
+                               raw_seam_placer_priority_result *result) noexcept
+{
+    if (result == nullptr || result->struct_size < sizeof(raw_seam_placer_priority_result))
+        return;
+
+    initialize_priority_result(result);
+    if (opaque == nullptr || loop == nullptr || layer_region == nullptr ||
+        extrusion_is_loop(loop) == 0) {
+        result->status = RAW_SEAM_PLACER_STATUS_INVALID_ARGUMENT;
+        return;
+    }
+
+    const SeamPlacerSessionHolder *holder =
+        static_cast<const SeamPlacerSessionHolder *>(opaque);
+    try {
+        g_seam_placer_error.clear();
+        result->priority = holder->session->get_priority(
+            ExtrusionEntity(loop), LayerRegion(layer_region));
+        if (!std::isfinite(result->priority))
+            throw std::runtime_error("The seam placer returned a non-finite priority.");
+        result->status = RAW_SEAM_PLACER_STATUS_SUCCESS;
+    } catch (const std::exception &exception) {
+        g_seam_placer_error = exception.what();
+        result->status = RAW_SEAM_PLACER_STATUS_ERROR;
+        result->error_message = g_seam_placer_error.c_str();
+    } catch (...) {
+        g_seam_placer_error = "Unknown exception in the seam placer priority callback.";
+        result->status = RAW_SEAM_PLACER_STATUS_ERROR;
+        result->error_message = g_seam_placer_error.c_str();
+    }
 }
 
 static void place_seam_thunk(const void *opaque,
@@ -117,6 +169,7 @@ static const raw_seam_placer_vtable &session_vtable()
     static const raw_seam_placer_vtable vtable = {
         sizeof(raw_seam_placer_vtable),
         &destroy_session,
+        &get_priority_thunk,
         &place_seam_thunk
     };
     return vtable;
@@ -128,6 +181,7 @@ static bool instance_is_complete(const raw_seam_placer_instance &instance) noexc
            instance.session != nullptr && instance.vtable != nullptr &&
            instance.vtable->struct_size >= sizeof(raw_seam_placer_vtable) &&
            instance.vtable->destroy != nullptr &&
+           instance.vtable->get_priority != nullptr &&
            instance.vtable->place_seam != nullptr;
 }
 
@@ -153,7 +207,8 @@ static bool point_belongs_to_loop(const ExtrusionEntity &loop, c_point point)
 
 raw_seam_placer_instance make_seam_placer_instance(
     std::unique_ptr<SeamPlacerSession> session,
-    const PrintingPlan &plan)
+    const PrintingPlan &plan,
+    const std::vector<PrintRegion> &print_regions)
 {
     if (!session)
         throw std::invalid_argument("A seam placer instance needs a session object.");
@@ -162,7 +217,11 @@ raw_seam_placer_instance make_seam_placer_instance(
 
     // Initialization happens before ownership crosses the C boundary. If it
     // throws, the local unique_ptr destroys the partially initialized session.
-    session->initialize(plan);
+    for (const PrintRegion &print_region : print_regions)
+        if (!print_region.valid())
+            throw std::invalid_argument(
+                "A seam placer instance received an invalid PrintRegion.");
+    session->initialize(plan, print_regions);
 
     detail::SeamPlacerSessionHolder *holder = new detail::SeamPlacerSessionHolder();
     holder->session = std::move(session);
@@ -233,6 +292,30 @@ c_point SeamPlacer::place_seam(const ExtrusionEntity &loop,
     if (!detail::point_belongs_to_loop(loop, result.point))
         throw std::runtime_error("The seam placer returned a point outside the loop path.");
     return result.point;
+}
+
+float SeamPlacer::get_priority(const ExtrusionEntity &loop,
+                               const LayerRegion &layer_region) const
+{
+    if (!valid())
+        throw std::logic_error("The seam placer instance is invalid.");
+    if (!loop.is_loop())
+        throw std::invalid_argument("Seam priority needs a non-empty fixed continuous closed loop.");
+    if (!layer_region.valid())
+        throw std::invalid_argument("Seam priority needs a valid LayerRegion.");
+
+    raw_seam_placer_priority_result result = {};
+    result.struct_size = sizeof(result);
+    m_instance.vtable->get_priority(
+        m_instance.session, loop.handle(), layer_region.handle(), &result);
+    if (result.status != RAW_SEAM_PLACER_STATUS_SUCCESS) {
+        const char *message = result.error_message != nullptr ?
+            result.error_message : "The seam placer priority callback failed.";
+        throw std::runtime_error(message);
+    }
+    if (!std::isfinite(result.priority))
+        throw std::runtime_error("The seam placer returned a non-finite priority.");
+    return result.priority;
 }
 
 void SeamPlacer::reset() noexcept

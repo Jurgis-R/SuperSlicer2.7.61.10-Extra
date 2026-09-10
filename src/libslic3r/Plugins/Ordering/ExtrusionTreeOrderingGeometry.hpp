@@ -6,6 +6,8 @@
 #ifndef slic3r_Plugins_Ordering_ExtrusionTreeOrderingGeometry_hpp_
 #define slic3r_Plugins_Ordering_ExtrusionTreeOrderingGeometry_hpp_
 
+#include <vector>
+
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 
@@ -43,6 +45,18 @@ this call; the returned LayerRegion remains borrowed from the source island.
 */
 LayerRegion resolve_source_layer_region(storage_handle *scratch_storage,
                                         const PrintingExtrusion &extrusion);
+
+/*
+Resolve every source LayerRegion touched by one atomic loop from the plan.
+
+loop uses platter coordinates, while the region slices use object coordinates;
+the PrintingExtrusion instance shift is removed only for this test. Results
+preserve source-island order and remain borrowed after scratch data is freed.
+*/
+std::vector<LayerRegion> resolve_source_layer_regions(
+    storage_handle *scratch_storage,
+    const PrintingExtrusion &extrusion,
+    const ExtrusionEntity &loop);
 
 }}} // namespace slic3r_api::Ordering::TreeOrderingGeometry
 

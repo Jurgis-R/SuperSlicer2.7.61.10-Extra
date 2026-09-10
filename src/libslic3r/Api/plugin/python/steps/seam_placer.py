@@ -18,12 +18,13 @@ and executes the plugin through :class:`OrchestratorView`, then transfers the
 payload instance into :class:`SeamPlacer`. Closing that wrapper invokes the C
 destroy callback exactly once.
 
-Initialization is sequential and occurs exactly once before publication.
-``place_seam()`` may subsequently be called by several native worker threads,
-so provider implementations must protect mutable state themselves. Callback
-exceptions are contained at the C boundary and diagnostics are stored per
-calling native thread in session-owned storage that survives temporary Python
-thread states.
+Initialization is sequential and occurs exactly once before publication. It
+receives the PrintRegions whose selectors chose this provider. ``get_priority``
+and ``place_seam()`` may subsequently be called by several native worker
+threads, so provider implementations must protect mutable state themselves.
+Callback exceptions are contained at the C boundary and diagnostics are stored
+per calling native thread in session-owned storage that survives temporary
+Python thread states.
 
 Printing plans, extrusion entities and layer regions are borrowed host views.
 They must outlive the session and must never be freed by provider code. The
@@ -49,15 +50,17 @@ from slic3r_api_generated import (
     RAW_SEAM_PLACER_STATUS_SUCCESS,
     RAW_SEAM_PLACER_STATUS_UNSET,
     RawSeamPlacerInstance,
+    RawSeamPlacerPriorityResult,
     RawSeamPlacerResult,
     RunCtxSeamPlacer,
     SCALED_EPSILON,
     SEAM_PLACER,
     SEAM_PLACER_DESTROY,
     SEAM_PLACER_PLACE,
+    SEAM_PLACER_PRIORITY,
 )
 from slic3r_extrusion_views import ExtrusionEntity
-from slic3r_datatree_views import LayerRegion
+from slic3r_datatree_views import LayerRegion, PrintRegion
 from slic3r_geometry_views import as_point
 from slic3r_printing_plan_views import PrintingPlan
 
@@ -82,6 +85,7 @@ class RawSeamPlacerVTable(ctypes.Structure):
     _fields_ = [
         ("struct_size", ctypes.c_uint32),
         ("destroy", SEAM_PLACER_DESTROY),
+        ("get_priority", SEAM_PLACER_PRIORITY),
         ("place_seam", SEAM_PLACER_PLACE),
     ]
 
@@ -90,20 +94,34 @@ class RawSeamPlacerVTable(ctypes.Structure):
 class SeamPlacerSession:
     """Base class implemented by Python seam-placement providers.
 
-    ``initialize()`` receives a borrowed plan and is called once before the
-    session becomes visible to consumers. ``place_seam()`` receives a borrowed,
-    nonempty, fixed, continuous and closed extrusion entity together with the
-    source region selected for its surrounding ``PrintingExtrusion``. Its
-    result may be a ``CPoint`` or a two-coordinate value accepted by
-    ``as_point()``.
+    ``initialize()`` receives a borrowed plan and the borrowed PrintRegions
+    assigned to this provider. It is called once before the session becomes
+    visible to consumers. ``get_priority()`` ranks overlapping LayerRegions;
+    ``place_seam()`` receives the region selected by that ranking.
 
     The plan and loops remain host-owned. Implementations may retain their
     handles only while the documented host lifetimes are respected; they must
     not free either object. A session is uniquely owned after publication.
     """
 
-    def initialize(self, plan: PrintingPlan) -> None:
-        """Build immutable provider state for one borrowed PrintingPlan."""
+    def initialize(
+        self, plan: PrintingPlan, print_regions: tuple[PrintRegion, ...]
+    ) -> None:
+        """Build immutable state for one plan and its assigned regions.
+
+        The tuple and every view in it are borrowed. Copy any values needed by
+        later callbacks; do not free the host-owned regions.
+        """
+        raise NotImplementedError
+
+    def get_priority(
+        self, loop: ExtrusionEntity, layer_region: LayerRegion
+    ) -> float:
+        """Return a finite ranking for one loop/region candidate.
+
+        Higher values win. The router does not call this hook when only one
+        LayerRegion owns the loop, and preserves source order on an exact tie.
+        """
         raise NotImplementedError
 
     def place_seam(
@@ -139,6 +157,13 @@ def _set_result_defaults(result: RawSeamPlacerResult) -> None:
     """Initialize every writable result field before calling provider code."""
     result.status = RAW_SEAM_PLACER_STATUS_UNSET
     result.point = CPoint()
+    result.error_message = None
+
+
+def _set_priority_result_defaults(result: RawSeamPlacerPriorityResult) -> None:
+    """Initialize every writable priority-result field."""
+    result.status = RAW_SEAM_PLACER_STATUS_UNSET
+    result.priority = 0.0
     result.error_message = None
 
 
@@ -224,13 +249,76 @@ def _place_published_seam(
             return
 
 
+def _get_published_priority(
+    session_address,
+    loop_address,
+    layer_region_address,
+    result_pointer,
+) -> None:
+    """Translate one native priority request and retain its diagnostic safely."""
+    published = None
+    native_thread_id = threading.get_native_id()
+    try:
+        if not result_pointer:
+            return
+        result = result_pointer.contents
+        if int(result.struct_size) < ctypes.sizeof(RawSeamPlacerPriorityResult):
+            return
+        _set_priority_result_defaults(result)
+
+        key = _address(session_address)
+        loop_handle = _address(loop_address)
+        layer_region_handle = _address(layer_region_address)
+        with _published_lock:
+            published = _published_sessions.get(key)
+            if published is not None:
+                # Either callback invalidates the preceding diagnostic on this
+                # native thread, exactly as required by the shared C contract.
+                published.diagnostics.pop(native_thread_id, None)
+        if published is None or not loop_handle or not layer_region_handle:
+            result.status = RAW_SEAM_PLACER_STATUS_INVALID_ARGUMENT
+            return
+
+        loop = ExtrusionEntity(published.api, loop_handle)
+        layer_region = LayerRegion(published.api, layer_region_handle)
+        if not loop.is_loop():
+            result.status = RAW_SEAM_PLACER_STATUS_INVALID_ARGUMENT
+            return
+
+        priority = float(published.session.get_priority(loop, layer_region))
+        if not math.isfinite(priority):
+            raise ValueError("the seam placer returned a non-finite priority")
+        result.priority = priority
+        result.status = RAW_SEAM_PLACER_STATUS_SUCCESS
+    except BaseException as exc:
+        try:
+            if result_pointer and int(result_pointer.contents.struct_size) >= ctypes.sizeof(
+                RawSeamPlacerPriorityResult
+            ):
+                result_pointer.contents.status = RAW_SEAM_PLACER_STATUS_ERROR
+                message = str(exc) or exc.__class__.__name__
+                diagnostic = ctypes.create_string_buffer(
+                    message.encode("utf-8", errors="replace")
+                )
+                if published is not None:
+                    with _published_lock:
+                        published.diagnostics[native_thread_id] = diagnostic
+                    result_pointer.contents.error_message = ctypes.cast(
+                        diagnostic, ctypes.c_char_p
+                    )
+        except BaseException:
+            return
+
+
 # These module-level ctypes objects must outlive every published instance: the
 # C vtable stores their native callback addresses rather than Python references.
 _destroy_callback = SEAM_PLACER_DESTROY(_destroy_published_session)
+_priority_callback = SEAM_PLACER_PRIORITY(_get_published_priority)
 _place_callback = SEAM_PLACER_PLACE(_place_published_seam)
 _session_vtable = RawSeamPlacerVTable(
     ctypes.sizeof(RawSeamPlacerVTable),
     _destroy_callback,
+    _priority_callback,
     _place_callback,
 )
 _session_vtable_pointer = ctypes.pointer(_session_vtable)
@@ -238,7 +326,9 @@ _session_vtable_pointer = ctypes.pointer(_session_vtable)
 
 @abi_requires_headers("steps/slic3r_step_seam_placer.h")
 def make_seam_placer_instance(
-    session: SeamPlacerSession, plan: PrintingPlan
+    session: SeamPlacerSession,
+    plan: PrintingPlan,
+    print_regions: tuple[PrintRegion, ...] | list[PrintRegion],
 ) -> RawSeamPlacerInstance:
     """Initialize and transfer one Python provider session to a C instance.
 
@@ -257,13 +347,19 @@ def make_seam_placer_instance(
         raise TypeError("session must derive from SeamPlacerSession")
     if not isinstance(plan, PrintingPlan) or not plan.valid():
         raise ValueError("a seam placer instance needs a valid PrintingPlan")
+    regions = tuple(print_regions)
+    for region in regions:
+        if not isinstance(region, PrintRegion) or not region:
+            raise ValueError("print_regions must contain valid PrintRegion views")
+        if region.api is not plan.api:
+            raise ValueError("print_regions must use the plan API instance")
 
     with _published_lock:
         if getattr(session, "_slic3r_seam_placer_consumed", False):
             raise ValueError("the seam placer session has already been consumed")
         session._slic3r_seam_placer_consumed = True
 
-    session.initialize(plan)
+    session.initialize(plan, regions)
     published = _PublishedSession(plan.api, session)
     key = id(published)
     with _published_lock:
@@ -290,7 +386,11 @@ def _instance_vtable(instance: RawSeamPlacerInstance):
     )
     if int(pointer.contents.struct_size) < ctypes.sizeof(RawSeamPlacerVTable):
         return None
-    if not pointer.contents.destroy or not pointer.contents.place_seam:
+    if (
+        not pointer.contents.destroy
+        or not pointer.contents.get_priority
+        or not pointer.contents.place_seam
+    ):
         return None
     return pointer
 
@@ -438,6 +538,45 @@ class SeamPlacer:
             self._instance = RawSeamPlacerInstance()
 
     @abi_requires_headers("steps/slic3r_step_seam_placer.h")
+    def get_priority(
+        self, loop: ExtrusionEntity, layer_region: LayerRegion
+    ) -> float:
+        """Return the provider's finite priority for one candidate region."""
+        vtable = _instance_vtable(self._instance)
+        if vtable is None:
+            raise RuntimeError("the seam placer instance is invalid")
+        if not isinstance(loop, ExtrusionEntity) or loop.api is not self.api:
+            raise ValueError("loop must be an ExtrusionEntity from this API instance")
+        if not isinstance(layer_region, LayerRegion) or not layer_region:
+            raise ValueError("layer_region must be a valid LayerRegion")
+        if layer_region.api is not self.api:
+            raise ValueError("layer_region must use this API instance")
+        if not loop.is_loop():
+            raise ValueError(
+                "seam priority needs a nonempty fixed continuous closed loop"
+            )
+
+        result = RawSeamPlacerPriorityResult()
+        result.struct_size = ctypes.sizeof(RawSeamPlacerPriorityResult)
+        vtable.contents.get_priority(
+            ctypes.c_void_p(_address(self._instance.session)),
+            loop.c_handle(),
+            layer_region.c_handle(),
+            ctypes.byref(result),
+        )
+        if int(result.status) != int(RAW_SEAM_PLACER_STATUS_SUCCESS):
+            message = (
+                result.error_message.decode("utf-8", errors="replace")
+                if result.error_message
+                else "the seam placer priority callback failed"
+            )
+            raise RuntimeError(message)
+        priority = float(result.priority)
+        if not math.isfinite(priority):
+            raise RuntimeError("the seam placer returned a non-finite priority")
+        return priority
+
+    @abi_requires_headers("steps/slic3r_step_seam_placer.h")
     def place_seam(
         self, loop: ExtrusionEntity, layer_region: LayerRegion, start_position
     ) -> CPoint:
@@ -549,6 +688,30 @@ class SeamPlacerContext:
         return PrintingPlan(self.api, self.payload.plan)
 
     @abi_requires_headers("steps/slic3r_step_seam_placer.h")
+    def seam_placer_regions(self) -> tuple[PrintRegion, ...]:
+        """Borrow the distinct PrintRegions assigned to this provider.
+
+        The pointer array exists only during ``run()``. Returned views remain
+        host-owned and must not be freed; providers should copy configuration
+        values needed after initialization rather than retaining the array.
+        """
+        count = int(self.payload.region_count)
+        if count == 0:
+            return ()
+        if not self.payload.regions:
+            raise ValueError("the seam placer context has no PrintRegion array")
+        addresses = ctypes.cast(
+            self.payload.regions, ctypes.POINTER(ctypes.c_void_p)
+        )
+        result = []
+        for index in range(count):
+            address = _address(addresses[index])
+            if not address:
+                raise ValueError("the seam placer context contains an invalid PrintRegion")
+            result.append(PrintRegion(self.api, address))
+        return tuple(result)
+
+    @abi_requires_headers("steps/slic3r_step_seam_placer.h")
     def publish_seam_placer(self, session: SeamPlacerSession) -> None:
         """Initialize and transfer one provider session into this empty payload.
 
@@ -558,7 +721,7 @@ class SeamPlacerContext:
         if self.payload.instance.session or self.payload.instance.vtable:
             raise ValueError("the seam placer payload already owns a session")
         self.payload.instance = make_seam_placer_instance(
-            session, self.seam_placer_plan()
+            session, self.seam_placer_plan(), self.seam_placer_regions()
         )
 
 

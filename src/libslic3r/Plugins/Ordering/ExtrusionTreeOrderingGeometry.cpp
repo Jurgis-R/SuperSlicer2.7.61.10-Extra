@@ -55,7 +55,8 @@ input tree and region remain borrowed and are never mutated.
 */
 bool entity_intersects_region(storage_handle *scratch_storage,
                               const ExtrusionEntity &entity,
-                              const LayerRegion &region);
+                              const LayerRegion &region,
+                              c_point shift);
 
 bool projected_point_on_entity(const ExtrusionEntity &entity,
                                const c_point requested,
@@ -148,7 +149,8 @@ double squared_distance(const c_point lhs, const c_point rhs)
 
 bool entity_intersects_region(storage_handle *scratch_storage,
                               const ExtrusionEntity &entity,
-                              const LayerRegion &region)
+                              const LayerRegion &region,
+                              const c_point shift)
 {
     const ExPolygonCollection slices = region.slices();
     if (entity.has_polyline() && !slices.empty()) {
@@ -161,7 +163,7 @@ bool entity_intersects_region(storage_handle *scratch_storage,
         const Slic3r::Polyline linearized = source->as_polyline().to_polyline();
         StoredPolyline path(scratch_storage);
         for (const Slic3r::Point &point : linearized.points)
-            path.push_back(c_point{point.x(), point.y()});
+            path.push_back(c_point{point.x() - shift.x, point.y() - shift.y});
 
         const StoredPolylineCollection overlap =
             clipper_intersection_polyline_expolygons(
@@ -184,7 +186,7 @@ bool entity_intersects_region(storage_handle *scratch_storage,
 
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
         if (entity_intersects_region(
-                scratch_storage, entity.child(child_idx), region))
+                scratch_storage, entity.child(child_idx), region, shift))
             return true;
     }
     return false;
@@ -331,12 +333,50 @@ LayerRegion resolve_source_layer_region(storage_handle *scratch_storage,
     for (uint32_t region_idx = 0; region_idx < source_island.region_count(); ++region_idx) {
         const LayerRegion region = source_island.region(region_idx);
         if (region.valid() &&
-            entity_intersects_region(scratch_storage, source, region))
+            entity_intersects_region(scratch_storage, source, region, {}))
             return region;
     }
 
     throw std::runtime_error(
         "A PrintingExtrusion does not intersect any LayerRegion from its source island.");
+}
+
+std::vector<LayerRegion> resolve_source_layer_regions(
+    storage_handle *scratch_storage,
+    const PrintingExtrusion &extrusion,
+    const ExtrusionEntity &loop)
+{
+    if (scratch_storage == nullptr || !extrusion.valid() || !loop.is_loop())
+        throw std::invalid_argument(
+            "Loop LayerRegion resolution needs storage, a PrintingExtrusion, and an atomic loop.");
+
+    const LayerRegionIsland source_island = extrusion.region_island();
+    if (!source_island.valid() || source_island.region_count() == 0)
+        throw std::runtime_error(
+            "A PrintingExtrusion loop has no source LayerRegionIsland.");
+
+    const LayerRegion first_region = source_island.region(0);
+    if (!first_region.valid())
+        throw std::runtime_error(
+            "A PrintingExtrusion loop has an invalid first source LayerRegion.");
+    const Object object = first_region.layer().object();
+    if (!object.valid() || extrusion.object_instance_idx() >= object.instance_count())
+        throw std::runtime_error(
+            "A PrintingExtrusion loop has an invalid source object instance.");
+    const c_point shift = object.instance_shift(extrusion.object_instance_idx());
+
+    std::vector<LayerRegion> result;
+    result.reserve(source_island.region_count());
+    for (uint32_t region_idx = 0; region_idx < source_island.region_count(); ++region_idx) {
+        const LayerRegion region = source_island.region(region_idx);
+        if (region.valid() &&
+            entity_intersects_region(scratch_storage, loop, region, shift))
+            result.push_back(region);
+    }
+    if (result.empty())
+        throw std::runtime_error(
+            "A PrintingExtrusion loop does not intersect any LayerRegion from its source island.");
+    return result;
 }
 
 }}} // namespace slic3r_api::Ordering::TreeOrderingGeometry

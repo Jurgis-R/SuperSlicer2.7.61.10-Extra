@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <future>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,9 @@ static slic3r_api::ExtrusionEntity extrusion_view(const ExtrusionEntity &entity)
 /* Return a stable borrowed region token; the recording provider never dereferences it. */
 static slic3r_api::LayerRegion layer_region_view();
 
+/* Return a stable borrowed PrintRegion token for initialization-list tests. */
+static slic3r_api::PrintRegion print_region_view();
+
 /* Build a fixed square loop made only of straight segments. */
 static ExtrusionEntity make_square_loop();
 
@@ -61,22 +65,30 @@ struct SeamTestState
 {
     std::atomic<uint32_t> initialize_count { 0 };
     std::atomic<uint32_t> place_count { 0 };
+    std::atomic<uint32_t> priority_count { 0 };
     std::atomic<uint32_t> destroy_count { 0 };
     const printing_plan_handle *initialized_plan = nullptr;
+    std::vector<const print_region_handle *> initialized_regions;
     std::atomic<const layer_region_handle *> received_region { nullptr };
     c_point result {};
+    float priority = 0.f;
     bool throw_initialize = false;
+    bool throw_priority = false;
     bool throw_place = false;
 
     void reset()
     {
         initialize_count.store(0, std::memory_order_relaxed);
         place_count.store(0, std::memory_order_relaxed);
+        priority_count.store(0, std::memory_order_relaxed);
         destroy_count.store(0, std::memory_order_relaxed);
         initialized_plan = nullptr;
+        initialized_regions.clear();
         received_region.store(nullptr, std::memory_order_relaxed);
         result = {};
+        priority = 0.f;
         throw_initialize = false;
+        throw_priority = false;
         throw_place = false;
     }
 };
@@ -89,7 +101,11 @@ public:
     explicit TestSeamSession(SeamTestState &state);
     ~TestSeamSession() override;
 
-    void initialize(const slic3r_api::PrintingPlan &plan) override;
+    void initialize(
+        const slic3r_api::PrintingPlan &plan,
+        const std::vector<slic3r_api::PrintRegion> &print_regions) override;
+    float get_priority(const slic3r_api::ExtrusionEntity &loop,
+                       const slic3r_api::LayerRegion &layer_region) const override;
     c_point place_seam(const slic3r_api::ExtrusionEntity &loop,
                        const slic3r_api::LayerRegion &layer_region,
                        c_point start_position) const override;
@@ -105,12 +121,29 @@ TestSeamSession::~TestSeamSession()
     m_state.destroy_count.fetch_add(1, std::memory_order_relaxed);
 }
 
-void TestSeamSession::initialize(const slic3r_api::PrintingPlan &plan)
+void TestSeamSession::initialize(
+    const slic3r_api::PrintingPlan &plan,
+    const std::vector<slic3r_api::PrintRegion> &print_regions)
 {
     m_state.initialize_count.fetch_add(1, std::memory_order_relaxed);
     m_state.initialized_plan = plan.handle();
+    for (const slic3r_api::PrintRegion &region : print_regions)
+        m_state.initialized_regions.push_back(region.handle());
     if (m_state.throw_initialize)
         throw std::runtime_error("intentional seam initialization failure");
+}
+
+float TestSeamSession::get_priority(
+    const slic3r_api::ExtrusionEntity &loop,
+    const slic3r_api::LayerRegion &layer_region) const
+{
+    if (!loop.is_loop() || !layer_region.valid())
+        throw std::invalid_argument("test priority received invalid borrowed views");
+    m_state.priority_count.fetch_add(1, std::memory_order_relaxed);
+    m_state.received_region.store(layer_region.handle(), std::memory_order_relaxed);
+    if (m_state.throw_priority)
+        throw std::runtime_error("intentional seam priority failure");
+    return m_state.priority;
 }
 
 c_point TestSeamSession::place_seam(const slic3r_api::ExtrusionEntity &loop,
@@ -173,12 +206,18 @@ void TestSeamPlugin::run_impl(const plugin_run_context *run_context) const
     run_ctx_seam_placer *context = plugin_ctx_as_seam_placer(run_context);
     if (context == nullptr || context->plan == nullptr)
         throw std::invalid_argument("The seam placer test needs a PrintingPlan payload.");
+    if (context->region_count > 0 && context->regions == nullptr)
+        throw std::invalid_argument("The seam placer test needs its PrintRegion array.");
     if (context->instance.session != nullptr)
         throw std::invalid_argument("The seam placer payload already owns a session.");
 
+    std::vector<slic3r_api::PrintRegion> regions;
+    regions.reserve(context->region_count);
+    for (uint32_t region_idx = 0; region_idx < context->region_count; ++region_idx)
+        regions.push_back(slic3r_api::PrintRegion(context->regions[region_idx]));
     context->instance = slic3r_api::make_seam_placer_instance(
         std::unique_ptr<slic3r_api::SeamPlacerSession>(new TestSeamSession(g_seam_state)),
-        slic3r_api::PrintingPlan(context->plan));
+        slic3r_api::PrintingPlan(context->plan), regions);
 }
 
 class ActivePluginGuard
@@ -221,6 +260,13 @@ static slic3r_api::LayerRegion layer_region_view()
     static int region_token = 0;
     return slic3r_api::LayerRegion(
         reinterpret_cast<const layer_region_handle *>(&region_token));
+}
+
+static slic3r_api::PrintRegion print_region_view()
+{
+    static int region_token = 0;
+    return slic3r_api::PrintRegion(
+        reinterpret_cast<const print_region_handle *>(&region_token));
 }
 
 static ExtrusionEntity make_square_loop()
@@ -269,6 +315,9 @@ static slic3r_api::SeamPlacer execute_seam_provider(Print &print)
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
     run_ctx_seam_placer context = {};
     context.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
+    const print_region_handle *regions[] = { print_region_view().handle() };
+    context.regions = regions;
+    context.region_count = 1;
     REQUIRE(orchestrator_view.execute(
                 provider,
                 reinterpret_cast<const print_handle *>(&print),
@@ -294,6 +343,8 @@ TEST_CASE("A seam placer service publishes one initialized owned session",
         CHECK(g_seam_state.initialize_count.load(std::memory_order_relaxed) == 1);
         CHECK(g_seam_state.initialized_plan ==
               reinterpret_cast<const printing_plan_handle *>(&plan));
+        REQUIRE(g_seam_state.initialized_regions.size() == 1);
+        CHECK(g_seam_state.initialized_regions.front() == print_region_view().handle());
 
         slic3r_api::SeamPlacer moved(std::move(placer));
         CHECK_FALSE(placer.valid());
@@ -336,6 +387,8 @@ TEST_CASE("A seam placer accepts points on straight and arc loop segments",
     ExtrusionEntity square = make_square_loop();
     const slic3r_api::LayerRegion layer_region = layer_region_view();
     g_seam_state.result = { 500, 0 };
+    g_seam_state.priority = 3.5f;
+    CHECK(placer.get_priority(extrusion_view(square), layer_region) == Approx(3.5f));
     const c_point straight = placer.place_seam(extrusion_view(square), layer_region, { 0, 0 });
     CHECK(straight.x == 500);
     CHECK(straight.y == 0);
@@ -374,6 +427,9 @@ TEST_CASE("Seam placer failures remain contained and diagnostics are thread loca
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
     run_ctx_seam_placer failed_context = {};
     failed_context.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
+    const print_region_handle *regions[] = { print_region_view().handle() };
+    failed_context.regions = regions;
+    failed_context.region_count = 1;
     slic3r_api::OrchestratorView orchestrator_view(
         reinterpret_cast<orchestrator_handle *>(&orchestrator));
     const slic3r_api::PluginView provider =
@@ -412,6 +468,17 @@ TEST_CASE("Seam placer failures remain contained and diagnostics are thread loca
     });
     CHECK(first.get() == "seam failure 11");
     CHECK(second.get() == "seam failure 22");
+
+    g_seam_state.throw_place = false;
+    g_seam_state.throw_priority = true;
+    CHECK_THROWS_WITH(
+        placer.get_priority(loop, layer_region),
+        "intentional seam priority failure");
+    g_seam_state.throw_priority = false;
+    g_seam_state.priority = std::numeric_limits<float>::infinity();
+    CHECK_THROWS_WITH(
+        placer.get_priority(loop, layer_region),
+        "The seam placer returned a non-finite priority.");
 }
 
 TEST_CASE("SeamPlacer rejects incomplete instances without taking ownership",

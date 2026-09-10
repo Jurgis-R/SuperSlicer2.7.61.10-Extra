@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
@@ -113,7 +114,12 @@ class FixedDirectionSession final : public SeamPlacerSession
 public:
     explicit FixedDirectionSession(storage_handle *storage) : m_storage(storage) {}
     /* Prepare immutable constraint caches before publishing the session. */
-    void initialize(const PrintingPlan &plan) override;
+    void initialize(const PrintingPlan &plan,
+                    const std::vector<PrintRegion> &print_regions) override;
+
+    /* Every region uses the same fixed-direction policy rank. */
+    float get_priority(const ExtrusionEntity &loop,
+                       const LayerRegion &layer_region) const override;
 
     /* Select the directional best admissible point without changing geometry. */
     c_point place_seam(const ExtrusionEntity &loop,
@@ -184,7 +190,8 @@ void select_vertex(const ExtrusionEntity &entity,
         select_vertex(entity.child(child_idx), direction, selected);
 }
 
-void FixedDirectionSession::initialize(const PrintingPlan &plan)
+void FixedDirectionSession::initialize(const PrintingPlan &plan,
+                                       const std::vector<PrintRegion> &)
 {
     // Initialization copies all shapes and releases temporary storage before
     // queries can run concurrently. Only borrowed plan identities are retained.
@@ -192,6 +199,14 @@ void FixedDirectionSession::initialize(const PrintingPlan &plan)
         throw std::invalid_argument("Fixed-direction seam placement needs a valid PrintingPlan.");
     m_constraints.initialize(plan, m_storage);
     m_storage = nullptr;
+}
+
+float FixedDirectionSession::get_priority(const ExtrusionEntity &,
+                                          const LayerRegion &) const
+{
+    // Fixed direction has no preference between overlapping regions. The
+    // router therefore keeps the source island's deterministic region order.
+    return 50.f;
 }
 
 c_point FixedDirectionSession::place_seam(const ExtrusionEntity &loop,
@@ -342,11 +357,16 @@ void FixedDirectionSeamPlacer::run_impl(const plugin_run_context *run_context) c
     // initializes one session and transfers its ownership into the payload;
     // ordering consumers will take and eventually destroy that instance.
     run_ctx_seam_placer *context = plugin_ctx_as_seam_placer(run_context);
-    if (context == nullptr || context->plan == nullptr)
+    if (context == nullptr || context->plan == nullptr ||
+        (context->region_count != 0 && context->regions == nullptr))
         throw std::invalid_argument("Fixed-direction seam placement received an invalid run context.");
+    std::vector<PrintRegion> print_regions;
+    print_regions.reserve(context->region_count);
+    for (uint32_t region_idx = 0; region_idx < context->region_count; ++region_idx)
+        print_regions.emplace_back(context->regions[region_idx]);
     context->instance = make_seam_placer_instance(
         std::unique_ptr<SeamPlacerSession>(new FixedDirectionSession(run_context->plugin_storage)),
-        PrintingPlan(context->plan));
+        PrintingPlan(context->plan), print_regions);
 }
 
 } // namespace

@@ -53,6 +53,13 @@ struct StepExclusivePluginGroup
 };
 
 const std::map<slicing_step_t, StepExclusiveGroup> &get_exclusive_steps();
+
+// Return the stable generated option key used by a plugin-defined exclusive
+// group. Consumers use this to report the exact regional selector that failed.
+std::string plugin_exclusive_group_option_key(const Orchestrator &orchestrator,
+                                              slicing_step_t step,
+                                              const std::string &group_id);
+
 std::vector<StepExclusivePluginGroup> active_exclusive_plugin_groups(Orchestrator &orchestrator);
 std::vector<Plugin *> selected_or_active_plugins_for_step(Orchestrator &orchestrator,
                                                           slicing_step_t step,

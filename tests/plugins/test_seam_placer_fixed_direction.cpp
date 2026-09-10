@@ -6,6 +6,8 @@
 #include <iostream>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -19,8 +21,10 @@
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/internal/ArcPolylineAccess.hpp"
+#include "libslic3r/Api/internal/LayerAccess.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
@@ -28,9 +32,12 @@
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Plugins/Ordering/ExtrusionTreeOrderingGeometry.hpp"
+#include "libslic3r/Plugins/SeamPlacer/SeamPlacerRouter.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
+#include "libslic3r/PrintObjectRegion.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
+#include "libslic3r/Steps/StepPipeline.hpp"
 
 /*
 Fixed-direction seam placer tests
@@ -52,6 +59,122 @@ using namespace Slic3r::Test::PerimeterPluginTests;
 const char *const k_fixed_plugin = "seam_placer.fixed";
 const char *const k_seam_group = "seam_placer_plugin";
 const char *const k_direction_key = "seam_fixed_direction";
+const char *const k_routing_plugin = "slic3r.test.seam_placer.regional";
+
+struct RoutingProviderState
+{
+    std::vector<const print_region_handle *> initialized_regions;
+    uint32_t initialize_count = 0;
+    uint32_t priority_count = 0;
+    uint32_t place_count = 0;
+    float priority = 0.f;
+
+    void reset()
+    {
+        initialized_regions.clear();
+        initialize_count = 0;
+        priority_count = 0;
+        place_count = 0;
+        priority = 0.f;
+    }
+};
+
+RoutingProviderState g_routing_provider;
+
+class RoutingSeamSession final : public slic3r_api::SeamPlacerSession
+{
+public:
+    void initialize(
+        const slic3r_api::PrintingPlan &,
+        const std::vector<slic3r_api::PrintRegion> &regions) override
+    {
+        ++g_routing_provider.initialize_count;
+        for (const slic3r_api::PrintRegion &region : regions)
+            g_routing_provider.initialized_regions.push_back(region.handle());
+    }
+
+    float get_priority(const slic3r_api::ExtrusionEntity &,
+                       const slic3r_api::LayerRegion &) const override
+    {
+        ++g_routing_provider.priority_count;
+        return g_routing_provider.priority;
+    }
+
+    c_point place_seam(const slic3r_api::ExtrusionEntity &loop,
+                       const slic3r_api::LayerRegion &,
+                       c_point) const override
+    {
+        ++g_routing_provider.place_count;
+        return loop.front();
+    }
+};
+
+class RoutingSeamPlugin final : public slic3r_api::PluginBase
+{
+public:
+    explicit RoutingSeamPlugin(orchestrator_handle *orchestrator) :
+        PluginBase(orchestrator) {}
+
+private:
+    const char *id_impl() const noexcept override { return k_routing_plugin; }
+    const char *exclusive_group_impl() const noexcept override { return k_seam_group; }
+    slicing_step_t step_impl() const noexcept override { return SEAM_PLACER; }
+    const char *const *dependencies_impl() const noexcept override
+    {
+        static const char *dependencies[] = { nullptr };
+        return dependencies;
+    }
+    int32_t priority_impl() const noexcept override { return 2000; }
+
+    void run_impl(const plugin_run_context *run_context) const override
+    {
+        run_ctx_seam_placer *context = plugin_ctx_as_seam_placer(run_context);
+        if (context == nullptr || context->plan == nullptr ||
+            (context->region_count != 0 && context->regions == nullptr))
+            throw std::invalid_argument("The regional seam fixture received an invalid context.");
+        std::vector<slic3r_api::PrintRegion> regions;
+        regions.reserve(context->region_count);
+        for (uint32_t idx = 0; idx < context->region_count; ++idx)
+            regions.emplace_back(context->regions[idx]);
+        context->instance = slic3r_api::make_seam_placer_instance(
+            std::unique_ptr<slic3r_api::SeamPlacerSession>(new RoutingSeamSession()),
+            slic3r_api::PrintingPlan(context->plan), regions);
+    }
+};
+
+class ScopedSeamProviders
+{
+public:
+    explicit ScopedSeamProviders(std::initializer_list<const char *> ids) :
+        m_orchestrator(Orchestrator::instance())
+    {
+        const auto &active = m_orchestrator.active_plugins();
+        m_previous.assign(active.begin(), active.end());
+        // Keep the slicing pipeline available while the real regional fixture
+        // is prepared; only add the providers exercised by this test.
+        for (const char *id : ids)
+            REQUIRE(m_orchestrator.set_plugin_active(id, true));
+    }
+
+    ~ScopedSeamProviders()
+    {
+        m_orchestrator.clear_active_plugins();
+        for (Plugin *plugin : m_previous)
+            m_orchestrator.set_plugin_active(plugin, true);
+        g_routing_provider.reset();
+    }
+
+private:
+    Orchestrator &m_orchestrator;
+    std::vector<Plugin *> m_previous;
+};
+
+void ensure_routing_provider_registered()
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    REQUIRE(orchestrator.get_plugin(k_routing_plugin) != nullptr);
+}
 
 /* Own one sliced cube whose first LayerRegion carries a requested direction. */
 struct DirectionRegionFixture
@@ -137,8 +260,18 @@ slic3r_api::SeamPlacer create_fixed_session(Print &print)
     REQUIRE(provider.valid());
 
     PrintingPlan &plan = print.mutable_printing_plan();
+    const slic3r_api::Print print_view(
+        reinterpret_cast<const print_handle *>(&print));
+    std::vector<const print_region_handle *> regions;
+    for (uint32_t object_idx = 0; object_idx < print_view.object_count(); ++object_idx) {
+        const slic3r_api::Object object = print_view.object(object_idx);
+        for (uint32_t region_idx = 0; region_idx < object.print_region_count(); ++region_idx)
+            regions.push_back(object.print_region(region_idx).handle());
+    }
     run_ctx_seam_placer context = {};
     context.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
+    context.regions = regions.empty() ? nullptr : regions.data();
+    context.region_count = uint32_t(regions.size());
     REQUIRE(view.execute(
                 provider,
                 reinterpret_cast<const print_handle *>(&print),
@@ -157,7 +290,214 @@ c_point mm_point(const double x, const double y)
     return c_point{scale_i(x), scale_i(y)};
 }
 
+/*
+Own two real PrintRegions and one synthetic plan loop that may reference one or
+both LayerRegions. The plan stores platter coordinates; source slices remain in
+object coordinates so the router must remove the real instance shift.
+*/
+struct RegionalRouterFixture
+{
+    explicit RegionalRouterFixture(const bool include_fixed_candidate)
+    {
+        prepare_cube_print(prepared, perimeter_config({{k_direction_key, "rear"}}));
+        PrintObject &object = prepared.print.object(0);
+        Layer &layer = object.layer(0);
+        fixed_region = &layer.region(0);
+
+        const std::string selector_key = Slic3r::Steps::plugin_exclusive_group_option_key(
+            Orchestrator::instance(), SEAM_PLACER, k_seam_group);
+        const ConfigOptionDef *selector_definition =
+            PrintConfigDef::instance().get(selector_key);
+        REQUIRE(selector_definition != nullptr);
+
+        PrintRegion &fixed_print_region =
+            const_cast<PrintRegion &>(fixed_region->region());
+        PrintRegionConfig fixed_config = fixed_print_region.config();
+        fixed_config.add_plugin_option(
+            *const_cast<ConfigOptionDef *>(selector_definition));
+        REQUIRE(fixed_config.opt<ConfigOptionInt>(selector_key) != nullptr);
+        fixed_config.opt<ConfigOptionInt>(selector_key)->set_int(0);
+        fixed_print_region.set_config(std::move(fixed_config));
+
+        PrintRegionConfig routed_config = fixed_print_region.config();
+        REQUIRE(routed_config.opt<ConfigOptionInt>(selector_key) != nullptr);
+        routed_config.opt<ConfigOptionInt>(selector_key)->set_int(1);
+        PrintObjectRegions *shared_regions =
+            const_cast<PrintObjectRegions *>(object.shared_regions());
+        shared_regions->all_regions.emplace_back(
+            new PrintRegion(std::move(routed_config)));
+        routed_print_region = shared_regions->all_regions.back().get();
+        ApiInternal::LayerAccess::add_region(layer, *routed_print_region);
+        routed_region = &layer.region(layer.region_count() - 1);
+
+        // Both source regions cover the test loop. Candidate membership is
+        // controlled by LayerRegionIsland, just as it is in a production plan.
+        const ExPolygons areas = ApiInternal::LayerRegionAccess::slices_mutable(
+            *fixed_region);
+        ExPolygons &routed_slices = ApiInternal::LayerRegionAccess::slices_mutable(
+            *routed_region);
+        routed_slices = areas;
+        ApiInternal::LayerRegionAccess::surfaces_mutable(*routed_region).set(
+            routed_slices, stPosInternal | stDensSolid);
+
+        LayerRegionSetCPtrs candidates;
+        if (include_fixed_candidate)
+            candidates.insert(fixed_region);
+        candidates.insert(routed_region);
+
+        if (include_fixed_candidate && *candidates.begin() == routed_region) {
+            // LayerRegionSetCPtrs defines encounter order. Assign Fixed to its
+            // actual first element so the fixture does not depend on addresses.
+            PrintRegionConfig first_config = routed_print_region->config();
+            first_config.opt<ConfigOptionInt>(selector_key)->set_int(0);
+            routed_print_region->set_config(std::move(first_config));
+
+            PrintRegionConfig second_config = fixed_print_region.config();
+            second_config.opt<ConfigOptionInt>(selector_key)->set_int(1);
+            fixed_print_region.set_config(std::move(second_config));
+            routed_print_region = &fixed_print_region;
+        }
+        source.reset(new LayerRegionIsland(candidates, 0));
+
+        const Point shift = object.instances().front().shift;
+        std::unique_ptr<ExtrusionEntity> loop(new ExtrusionEntity(
+            false, ArcPolyline(Points{
+                shift + Point::new_scale(-5.0, -1.0),
+                shift + Point::new_scale(5.0, -1.0),
+                shift + Point::new_scale(5.0, 1.0),
+                shift + Point::new_scale(-5.0, 1.0),
+                shift + Point::new_scale(-5.0, -1.0)})));
+        source->mutable_extrusion(LayerRegionIsland::PERIMETERS).append(*loop);
+
+        PrintingPlan &plan = prepared.print.mutable_printing_plan();
+        plan.groups.emplace_back();
+        plan.groups.back().layers.emplace_back();
+        plan.groups.back().layers.back().tool_groups.emplace_back();
+        PrintingToolGroup &tool = plan.groups.back().layers.back().tool_groups.back();
+        tool.region_islands.push_back(source.get());
+        PrintingExtrusion extrusion;
+        extrusion.region_island = source.get();
+        extrusion.root = std::move(loop);
+        extrusion.sregion_island_role = LayerRegionIsland::PERIMETERS;
+        extrusion.object_instance_idx = 0;
+        tool.extrusions.push_back(std::move(extrusion));
+    }
+
+    slic3r_api::Print print_view() const
+    {
+        return slic3r_api::Print(
+            reinterpret_cast<const print_handle *>(&prepared.print));
+    }
+
+    slic3r_api::PrintingPlan plan_view()
+    {
+        return slic3r_api::PrintingPlan(
+            reinterpret_cast<printing_plan_handle *>(
+                &prepared.print.mutable_printing_plan()));
+    }
+
+    slic3r_api::ExtrusionEntity loop_view()
+    {
+        PrintingExtrusion &extrusion = prepared.print.mutable_printing_plan()
+            .groups.front().layers.front().tool_groups.front().extrusions.front();
+        return slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(extrusion.root.get()));
+    }
+
+    /* Add a second region assigned to the routing provider but unused by loops. */
+    PrintRegion *add_unused_routing_region()
+    {
+        PrintObject &object = prepared.print.object(0);
+        Layer &layer = object.layer(0);
+        PrintRegionConfig config = routed_print_region->config();
+        PrintObjectRegions *shared_regions =
+            const_cast<PrintObjectRegions *>(object.shared_regions());
+        shared_regions->all_regions.emplace_back(new PrintRegion(std::move(config)));
+        PrintRegion *added = shared_regions->all_regions.back().get();
+        ApiInternal::LayerAccess::add_region(layer, *added);
+        return added;
+    }
+
+    /*
+    Replace the plan root with two disjoint loops. The first island region is
+    configured for Fixed and covers the left loop; the second is configured for
+    the recording provider and covers the right loop.
+    */
+    std::array<slic3r_api::ExtrusionEntity, 2> replace_with_split_root()
+    {
+        REQUIRE(source->regions().size() == 2);
+        LayerRegion *first = const_cast<LayerRegion *>(*source->regions().begin());
+        LayerRegion *second = const_cast<LayerRegion *>(*std::next(source->regions().begin()));
+
+        const ExPolygons left_area = {ExPolygon{Polygon::new_scale(
+            {{-9.0, -3.0}, {-1.0, -3.0}, {-1.0, 3.0}, {-9.0, 3.0}})}};
+        const ExPolygons right_area = {ExPolygon{Polygon::new_scale(
+            {{1.0, -3.0}, {9.0, -3.0}, {9.0, 3.0}, {1.0, 3.0}})}};
+        ApiInternal::LayerRegionAccess::slices_mutable(*first) = left_area;
+        ApiInternal::LayerRegionAccess::surfaces_mutable(*first).set(
+            left_area, stPosInternal | stDensSolid);
+        ApiInternal::LayerRegionAccess::slices_mutable(*second) = right_area;
+        ApiInternal::LayerRegionAccess::surfaces_mutable(*second).set(
+            right_area, stPosInternal | stDensSolid);
+
+        const Point shift = prepared.print.object(0).instances().front().shift;
+        auto shifted_loop = [shift](const double center_x) {
+            return std::unique_ptr<ExtrusionEntity>(new ExtrusionEntity(
+                false, ArcPolyline(Points{
+                    shift + Point::new_scale(center_x - 1.0, -1.0),
+                    shift + Point::new_scale(center_x + 1.0, -1.0),
+                    shift + Point::new_scale(center_x + 1.0, 1.0),
+                    shift + Point::new_scale(center_x - 1.0, 1.0),
+                    shift + Point::new_scale(center_x - 1.0, -1.0)})));
+        };
+        ExtrusionEntity::Children children;
+        children.emplace_back(shifted_loop(-5.0));
+        children.emplace_back(shifted_loop(5.0));
+
+        PrintingExtrusion &extrusion = prepared.print.mutable_printing_plan()
+            .groups.front().layers.front().tool_groups.front().extrusions.front();
+        extrusion.root.reset(new ExtrusionEntity(
+            std::move(children), false, false, false));
+        return {{
+            extrusion_view(extrusion.root->child(0)),
+            extrusion_view(extrusion.root->child(1))}};
+    }
+
+    void set_routed_selector(const int32_t selected_provider)
+    {
+        const std::string selector_key = Slic3r::Steps::plugin_exclusive_group_option_key(
+            Orchestrator::instance(), SEAM_PLACER, k_seam_group);
+        PrintRegionConfig config = routed_print_region->config();
+        ConfigOptionInt *selector = config.opt<ConfigOptionInt>(selector_key);
+        REQUIRE(selector != nullptr);
+        selector->set_int(selected_provider);
+        routed_print_region->set_config(std::move(config));
+    }
+
+    PreparedPerimeterPrint prepared;
+    LayerRegion *fixed_region = nullptr;
+    LayerRegion *routed_region = nullptr;
+    PrintRegion *routed_print_region = nullptr;
+    std::unique_ptr<LayerRegionIsland> source;
+    PluginStorage scratch_storage;
+};
+
 } // namespace
+
+namespace Slic3r::Test::Plugins {
+
+void register_regional_seam_test_provider(orchestrator_handle *orchestrator)
+{
+    Orchestrator &host = *reinterpret_cast<Orchestrator *>(orchestrator);
+    if (host.get_plugin(k_routing_plugin) != nullptr)
+        return;
+    static std::unique_ptr<RoutingSeamPlugin> plugin;
+    plugin.reset(new RoutingSeamPlugin(orchestrator));
+    if (!host.register_plugin(plugin->c_instance()))
+        throw std::runtime_error("Could not register the regional SeamPlacer test provider.");
+}
+
+} // namespace Slic3r::Test::Plugins
 
 TEST_CASE("Fixed-direction seam placer registers its regional contract",
           "[plugins][seam-placer][fixed][config]")
@@ -199,6 +539,135 @@ TEST_CASE("Fixed-direction seam placer registers its regional contract",
     std::ostringstream contents;
     contents << stream.rdbuf();
     CHECK(contents.str().find("seam_placer.fixed = 1") != std::string::npos);
+
+    const std::vector<Slic3r::Steps::StepExclusivePluginGroup> active_groups =
+        Slic3r::Steps::active_exclusive_plugin_groups(orchestrator);
+    CHECK(std::none_of(
+        active_groups.begin(), active_groups.end(),
+        [](const Slic3r::Steps::StepExclusivePluginGroup &candidate) {
+            return candidate.group.step == SEAM_PLACER &&
+                   candidate.group.group_id == k_seam_group;
+        }));
+}
+
+TEST_CASE("Regional seam routing initializes providers and ranks overlapping regions",
+          "[plugins][seam-placer][router]")
+{
+    ensure_routing_provider_registered();
+    ScopedSeamProviders active({k_fixed_plugin, k_routing_plugin});
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    const std::vector<Slic3r::Steps::StepExclusivePluginGroup> groups =
+        Slic3r::Steps::active_exclusive_plugin_groups(orchestrator);
+    const auto group = std::find_if(
+        groups.begin(), groups.end(), [](const Slic3r::Steps::StepExclusivePluginGroup &candidate) {
+            return candidate.group.step == SEAM_PLACER &&
+                   candidate.group.group_id == k_seam_group;
+        });
+    REQUIRE(group != groups.end());
+    CHECK(group->group.option_def.container_type == RAW_CONTAINER_TYPE_REGION);
+    CHECK(group->group.option_def.invalidates_step == STEP_ORDERING);
+    CHECK(group->group.ui_fragment.find("group:Seam\n") != std::string::npos);
+
+    SECTION("a strictly higher priority selects the later region")
+    {
+        g_routing_provider.reset();
+        g_routing_provider.priority = 100.f;
+        RegionalRouterFixture fixture(true);
+        slic3r_api::SeamPlacement::SeamPlacerRouter router(
+            reinterpret_cast<orchestrator_handle *>(&orchestrator),
+            fixture.print_view(), fixture.plan_view(),
+            reinterpret_cast<storage_handle *>(&fixture.scratch_storage));
+
+        REQUIRE(g_routing_provider.initialized_regions.size() == 1);
+        CHECK(g_routing_provider.initialized_regions.front() ==
+              reinterpret_cast<const print_region_handle *>(fixture.routed_print_region));
+        const c_point expected = fixture.loop_view().front();
+        CHECK(same_point(router.place_seam(fixture.loop_view(), {}), expected));
+        CHECK(g_routing_provider.priority_count == 1);
+        CHECK(g_routing_provider.place_count == 1);
+    }
+
+    SECTION("one provider is initialized once with all of its regions in order")
+    {
+        g_routing_provider.reset();
+        RegionalRouterFixture fixture(true);
+        PrintRegion *second_routed_region = fixture.add_unused_routing_region();
+        slic3r_api::SeamPlacement::SeamPlacerRouter router(
+            reinterpret_cast<orchestrator_handle *>(&orchestrator),
+            fixture.print_view(), fixture.plan_view(),
+            reinterpret_cast<storage_handle *>(&fixture.scratch_storage));
+
+        CHECK(g_routing_provider.initialize_count == 1);
+        REQUIRE(g_routing_provider.initialized_regions.size() == 2);
+        CHECK(g_routing_provider.initialized_regions[0] ==
+              reinterpret_cast<const print_region_handle *>(fixture.routed_print_region));
+        CHECK(g_routing_provider.initialized_regions[1] ==
+              reinterpret_cast<const print_region_handle *>(second_routed_region));
+    }
+
+    SECTION("one extrusion root may route different loops to different providers")
+    {
+        g_routing_provider.reset();
+        RegionalRouterFixture fixture(true);
+        const std::array<slic3r_api::ExtrusionEntity, 2> loops =
+            fixture.replace_with_split_root();
+        slic3r_api::SeamPlacement::SeamPlacerRouter router(
+            reinterpret_cast<orchestrator_handle *>(&orchestrator),
+            fixture.print_view(), fixture.plan_view(),
+            reinterpret_cast<storage_handle *>(&fixture.scratch_storage));
+
+        const c_point fixed_seam = router.place_seam(loops[0], {});
+        const c_point routed_seam = router.place_seam(loops[1], {});
+        CHECK(fixed_seam.y == loops[0].back().y + scale_i(2.0));
+        CHECK(same_point(routed_seam, loops[1].front()));
+        CHECK(g_routing_provider.priority_count == 0);
+        CHECK(g_routing_provider.place_count == 1);
+    }
+
+    SECTION("an exact tie preserves the first LayerRegion")
+    {
+        g_routing_provider.reset();
+        g_routing_provider.priority = 50.f;
+        RegionalRouterFixture fixture(true);
+        slic3r_api::SeamPlacement::SeamPlacerRouter router(
+            reinterpret_cast<orchestrator_handle *>(&orchestrator),
+            fixture.print_view(), fixture.plan_view(),
+            reinterpret_cast<storage_handle *>(&fixture.scratch_storage));
+
+        (void)router.place_seam(fixture.loop_view(), {});
+        CHECK(g_routing_provider.priority_count == 1);
+        CHECK(g_routing_provider.place_count == 0);
+    }
+
+    SECTION("one candidate bypasses priority")
+    {
+        g_routing_provider.reset();
+        g_routing_provider.priority = 5.f;
+        RegionalRouterFixture fixture(false);
+        slic3r_api::SeamPlacement::SeamPlacerRouter router(
+            reinterpret_cast<orchestrator_handle *>(&orchestrator),
+            fixture.print_view(), fixture.plan_view(),
+            reinterpret_cast<storage_handle *>(&fixture.scratch_storage));
+
+        (void)router.place_seam(fixture.loop_view(), {});
+        CHECK(g_routing_provider.priority_count == 0);
+        CHECK(g_routing_provider.place_count == 1);
+    }
+
+    SECTION("an explicit unavailable provider does not fall back")
+    {
+        g_routing_provider.reset();
+        RegionalRouterFixture fixture(false);
+        fixture.set_routed_selector(99);
+        CHECK_THROWS_WITH(
+            slic3r_api::SeamPlacement::SeamPlacerRouter(
+                reinterpret_cast<orchestrator_handle *>(&orchestrator),
+                fixture.print_view(), fixture.plan_view(),
+                reinterpret_cast<storage_handle *>(&fixture.scratch_storage)),
+            Catch::Matchers::Contains(
+                "exclusive_group_10250_seam_placer_plugin_plugin' = '99'"));
+    }
 }
 
 TEST_CASE("Legacy rear seam values remain readable but are hidden from choices",

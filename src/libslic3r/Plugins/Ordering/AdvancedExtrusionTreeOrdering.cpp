@@ -16,15 +16,13 @@
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
-#include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
-#include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ParallelFor.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
-#include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 #include "libslic3r/Plugins/Ordering/ExtrusionTreeOrderingGeometry.hpp"
 #include "libslic3r/Plugins/Ordering/KDTreeOrderingEngine.hpp"
 #include "libslic3r/Plugins/PrintingPlan/EntryPointProperty.h"
+#include "libslic3r/Plugins/SeamPlacer/SeamPlacerRouter.hpp"
 
 namespace slic3r_api { namespace Ordering { namespace DefaultOrderingPlugin {
 namespace {
@@ -36,8 +34,8 @@ Parallel seam-aware extrusion-tree ordering
 PrintingExtrusionPreSort has already fixed the order of complete
 PrintingExtrusion objects inside every tool visit and attached approximate
 entry and exit points to their roots. This provider creates one seam-placement
-session for the whole plan and gives each PrintingToolGroup to an independent
-worker.
+route for every atomic loop, initializes one session per regional provider,
+and gives each PrintingToolGroup to an independent worker.
 
 The pre-sort exits are copied before the first parallel pass. That pass creates
 real seams and orientations inside every PrintingExtrusion, but deliberately
@@ -45,8 +43,8 @@ keeps all ordering flags available. A sequential barrier then orders each
 tool-group's PrintingExtrusion vector from those newly published endpoints and
 rebuilds the start position of every tool-group job. The final parallel pass
 refines each tree and fixes all remaining ordering flags. Workers share only
-the const, thread-safe SeamPlacer and OrderingEngine instances; each worker
-receives an independent scratch storage.
+the const, thread-safe SeamPlacerRouter and OrderingEngine instances; each
+worker receives an independent scratch storage.
 
 Ordering one PrintingExtrusion has two complementary passes. The post-order
 analysis does not mutate the tree. A loop is one atomic seam-placement unit,
@@ -82,12 +80,12 @@ The normal call flow is:
                 |-- build_entry_exit_estimates(root)
                 |   `-- estimate_entity_entry_exit(entity)
                 |       |-- loop: estimate_loop_entry_exit()
-                |       |   `-- SeamPlacer::place_seam() for four probes
+                |       |   `-- SeamPlacerRouter::place_seam() for four probes
                 |       |-- open leaf: estimate_leaf_entry_exit()
                 |       |-- sortable node: recurse, then summarize children
                 |       `-- fixed node: recurse, then propagate boundaries
                 `-- coarsely_order_entity_descending(root)
-                    |-- loop: SeamPlacer::place_seam()
+                    |-- loop: SeamPlacerRouter::place_seam()
                     |   `-- rotate_loop_to_seam()
                     |-- open or fixed reversible entity:
                     |   `-- reverse_entity_tree()
@@ -115,7 +113,6 @@ and extreme-point helpers do not change the traversal order.
 
 const char *k_no_dependencies[] = { nullptr };
 const char *k_exclusive_group = "ordering.extrusion_tree";
-const char *k_seam_placer_group = "seam_placer_plugin";
 const coord_t k_cardinal_probe_offset = scale_i(5.0);
 
 /* Four deterministic real vertices delimiting one entity's geometry. */
@@ -144,11 +141,6 @@ struct ToolGroupOrderingJob
     PrintingToolGroup tool_group;
     c_point start_position;
 };
-
-/* Select, initialize and take ownership of the seam service for this plan. */
-SeamPlacer create_seam_placer(orchestrator_handle *orchestrator,
-                              const Print &print,
-                              const PrintingPlan &plan);
 
 /* Build immutable job inputs while the pre-sort entry points are stable. */
 std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
@@ -183,22 +175,15 @@ void apply_printing_extrusion_permutation(
     PrintingToolGroup tool_group,
     const std::vector<uint32_t> &target_original_indices);
 
-/*
-Analyze one complete tree and require a usable estimate for its root.
-
-layer_region is resolved once for the surrounding PrintingExtrusion and is
-propagated to every atomic loop in that cloned tree.
-*/
+/* Analyze one complete tree and require a usable estimate for its root. */
 EntryExitEstimateCache build_entry_exit_estimates(
     const ExtrusionEntity &root,
-    const LayerRegion &layer_region,
-    const SeamPlacer &seam_placer);
+    const SeamPlacement::SeamPlacerRouter &seam_router);
 
 /* Populate estimates below entity, then publish entity's own post-order result. */
 void estimate_entity_entry_exit(
     const ExtrusionEntity &entity,
-    const LayerRegion &layer_region,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     EntryExitEstimateCache &estimates);
 
 /*
@@ -209,8 +194,7 @@ a fixed provider may intentionally collapse all four probes to one seam.
 */
 EntryExitEstimates estimate_loop_entry_exit(
     const ExtrusionEntity &loop,
-    const LayerRegion &layer_region,
-    const SeamPlacer &seam_placer);
+    const SeamPlacement::SeamPlacerRouter &seam_router);
 
 /* Describe the current direction alternatives of one open leaf. */
 EntryExitEstimates estimate_leaf_entry_exit(const ExtrusionEntity &leaf);
@@ -263,10 +247,9 @@ selects its actual orientation or seam from the position left by its predecessor
 c_point coarsely_order_entity_descending(
     MutableExtrusionEntity entity,
     c_point current_position,
-    const LayerRegion &layer_region,
     EntryExitEstimateCache &estimates,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage);
 
 /* Build at most sixteen approximate entry/exit pairs for each non-empty child. */
@@ -310,9 +293,8 @@ order afterwards. All flags are disabled as each call returns.
 c_point finalize_entity_descending(
     MutableExtrusionEntity entity,
     c_point current_position,
-    const LayerRegion &layer_region,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage);
 
 /* Reorder direct children from current endpoints and optionally apply reversal. */
@@ -347,7 +329,7 @@ void coarsely_order_printing_extrusion(
     EntryPointProperty &entry_points,
     c_point start_position,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage);
 
 /* Process one pre-described tool visit without accessing another job. */
@@ -357,7 +339,7 @@ void coarsely_order_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacer *seam_placer);
+    const SeamPlacement::SeamPlacerRouter *seam_router);
 
 /* Finalize one root and publish the exact entry and exit left by that pass. */
 void finalize_printing_extrusion(
@@ -365,7 +347,7 @@ void finalize_printing_extrusion(
     EntryPointProperty &entry_points,
     c_point start_position,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage);
 
 /* Process one rebuilt tool-group job during the final parallel pass. */
@@ -375,33 +357,7 @@ void finalize_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacer *seam_placer);
-
-SeamPlacer create_seam_placer(orchestrator_handle *orchestrator,
-                              const Print &print,
-                              const PrintingPlan &plan)
-{
-    OrchestratorView orchestrator_view(orchestrator);
-    const PluginView provider = orchestrator_view.select_plugin(
-        print.config().handle(), SEAM_PLACER, k_seam_placer_group);
-    if (!provider.valid())
-        throw std::runtime_error(
-            "Advanced extrusion-tree ordering requires an active SEAM_PLACER provider.");
-
-    run_ctx_seam_placer context = {};
-    context.plan = plan.handle();
-    const raw_plugin_execution_status status = orchestrator_view.execute(
-        provider, print.handle(), context);
-    if (status != RAW_PLUGIN_EXECUTION_SUCCESS)
-        throw std::runtime_error(
-            "The selected SEAM_PLACER provider could not initialize its session.");
-
-    SeamPlacer seam_placer(context.instance);
-    if (!seam_placer.valid())
-        throw std::runtime_error(
-            "The selected SEAM_PLACER provider published an invalid session.");
-    return seam_placer;
-}
+    const SeamPlacement::SeamPlacerRouter *seam_router);
 
 std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
     const PrintingPlan &plan,
@@ -579,11 +535,10 @@ void apply_printing_extrusion_permutation(
 
 EntryExitEstimateCache build_entry_exit_estimates(
     const ExtrusionEntity &root,
-    const LayerRegion &layer_region,
-    const SeamPlacer &seam_placer)
+    const SeamPlacement::SeamPlacerRouter &seam_router)
 {
     EntryExitEstimateCache estimates;
-    estimate_entity_entry_exit(root, layer_region, seam_placer, estimates);
+    estimate_entity_entry_exit(root, seam_router, estimates);
 
     const EntryExitEstimateCache::const_iterator root_estimate =
         estimates.find(root.handle());
@@ -597,8 +552,7 @@ EntryExitEstimateCache build_entry_exit_estimates(
 
 void estimate_entity_entry_exit(
     const ExtrusionEntity &entity,
-    const LayerRegion &layer_region,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     EntryExitEstimateCache &estimates)
 {
     if (entity.empty())
@@ -612,7 +566,7 @@ void estimate_entity_entry_exit(
     if (entity.is_loop()) {
         estimates.emplace(
             entity.handle(), estimate_loop_entry_exit(
-                entity, layer_region, seam_placer));
+                entity, seam_router));
         return;
     }
 
@@ -622,7 +576,7 @@ void estimate_entity_entry_exit(
     */
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         estimate_entity_entry_exit(
-            entity.child(child_idx), layer_region, seam_placer, estimates);
+            entity.child(child_idx), seam_router, estimates);
 
     /*
     Reuse child extrema while unwinding the post-order recursion. Local points
@@ -662,8 +616,7 @@ void estimate_entity_entry_exit(
 
 EntryExitEstimates estimate_loop_entry_exit(
     const ExtrusionEntity &loop,
-    const LayerRegion &layer_region,
-    const SeamPlacer &seam_placer)
+    const SeamPlacement::SeamPlacerRouter &seam_router)
 {
     ExtremePoints extremes;
     collect_extreme_points(loop, extremes);
@@ -676,7 +629,7 @@ EntryExitEstimates estimate_loop_entry_exit(
     const std::array<c_point, 4> probes = cardinal_probe_points(extremes);
     for (const c_point probe : probes)
         append_distinct_point(
-            result.entries, seam_placer.place_seam(loop, layer_region, probe));
+            result.entries, seam_router.place_seam(loop, probe));
 
     /* A closed loop exits at the selected seam, so both bounded sets match. */
     result.exits = result.entries;
@@ -886,10 +839,9 @@ double squared_distance(const c_point lhs, const c_point rhs)
 c_point coarsely_order_entity_descending(
     MutableExtrusionEntity entity,
     const c_point current_position,
-    const LayerRegion &layer_region,
     EntryExitEstimateCache &estimates,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage)
 {
     if (entity.empty())
@@ -901,8 +853,8 @@ c_point coarsely_order_entity_descending(
     seams used by the post-order pass with the seam that will actually print.
     */
     if (entity.is_loop()) {
-        const c_point seam = seam_placer.place_seam(
-            entity.readonly(), layer_region, current_position);
+        const c_point seam = seam_router.place_seam(
+            entity.readonly(), current_position);
         TreeOrderingGeometry::rotate_loop_to_seam(
             scratch_storage, entity, seam);
         return entity.back();
@@ -931,8 +883,8 @@ c_point coarsely_order_entity_descending(
         c_point child_position = current_position;
         for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
             child_position = coarsely_order_entity_descending(
-                entity.child_mutable(child_idx), child_position, layer_region, estimates,
-                ordering_engine, seam_placer, scratch_storage);
+                entity.child_mutable(child_idx), child_position, estimates,
+                ordering_engine, seam_router, scratch_storage);
         return child_position;
     }
 
@@ -954,8 +906,8 @@ c_point coarsely_order_entity_descending(
     c_point child_position = current_position;
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         child_position = coarsely_order_entity_descending(
-            entity.child_mutable(child_idx), child_position, layer_region, estimates,
-            ordering_engine, seam_placer, scratch_storage);
+            entity.child_mutable(child_idx), child_position, estimates,
+            ordering_engine, seam_router, scratch_storage);
     return child_position;
 }
 
@@ -1114,9 +1066,8 @@ void reverse_cached_estimates(
 c_point finalize_entity_descending(
     MutableExtrusionEntity entity,
     const c_point current_position,
-    const LayerRegion &layer_region,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage)
 {
     if (entity.empty()) {
@@ -1131,8 +1082,8 @@ c_point finalize_entity_descending(
     produced the complete final subtree.
     */
     if (entity.is_loop()) {
-        const c_point seam = seam_placer.place_seam(
-            entity.readonly(), layer_region, current_position);
+        const c_point seam = seam_router.place_seam(
+            entity.readonly(), current_position);
         TreeOrderingGeometry::rotate_loop_to_seam(
             scratch_storage, entity, seam);
         TreeOrderingGeometry::disable_ordering_flags_recursively(entity);
@@ -1162,8 +1113,8 @@ c_point finalize_entity_descending(
         c_point child_position = current_position;
         for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
             child_position = finalize_entity_descending(
-                entity.child_mutable(child_idx), child_position, layer_region,
-                ordering_engine, seam_placer, scratch_storage);
+                entity.child_mutable(child_idx), child_position,
+                ordering_engine, seam_router, scratch_storage);
         entity.disable_sort();
         entity.disable_reverse();
         return child_position;
@@ -1178,8 +1129,8 @@ c_point finalize_entity_descending(
     c_point child_position = current_position;
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         child_position = finalize_entity_descending(
-            entity.child_mutable(child_idx), child_position, layer_region,
-            ordering_engine, seam_placer, scratch_storage);
+            entity.child_mutable(child_idx), child_position,
+            ordering_engine, seam_router, scratch_storage);
 
     /*
     The second order sees final child geometry. It may move complete children,
@@ -1292,26 +1243,20 @@ void coarsely_order_printing_extrusion(
     EntryPointProperty &entry_points,
     const c_point start_position,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage)
 {
     /*
-    Keep this cache local to the independent PrintingExtrusion job. The source
-    LayerRegion is also resolved here and propagated through the whole cloned
-    root: one PrintingExtrusion comes from one role bucket in one source island.
-    Later ordering phases consume both before returning from this function, so
-    no borrowed entity handle, region view, or seam estimate needs cross-thread
-    ownership.
+    Keep this cache local to the independent PrintingExtrusion job. The router
+    has already associated every atomic loop with its own source LayerRegion,
+    so this pass retains only estimates and borrowed entity handles.
     */
-    const LayerRegion layer_region =
-        TreeOrderingGeometry::resolve_source_layer_region(
-            scratch_storage, extrusion);
     EntryExitEstimateCache estimates = build_entry_exit_estimates(
-        extrusion.root(), layer_region, seam_placer);
+        extrusion.root(), seam_router);
     MutableExtrusionEntity root = extrusion.mutable_root();
     coarsely_order_entity_descending(
-        root, start_position, layer_region, estimates, ordering_engine,
-        seam_placer, scratch_storage);
+        root, start_position, estimates, ordering_engine,
+        seam_router, scratch_storage);
 
     /* Publish only endpoints that now exist in the mutated root geometry. */
     entry_points.entry = root.front();
@@ -1324,12 +1269,12 @@ void coarsely_order_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacer *seam_placer)
+    const SeamPlacement::SeamPlacerRouter *seam_router)
 {
     assert(jobs != nullptr);
     assert(entry_point_key != nullptr);
     assert(ordering_engine != nullptr);
-    assert(seam_placer != nullptr);
+    assert(seam_router != nullptr);
     assert(job_idx < jobs->size());
 
     const ToolGroupOrderingJob &job = (*jobs)[job_idx];
@@ -1355,7 +1300,7 @@ void coarsely_order_tool_group_job(
 
         coarsely_order_printing_extrusion(
             extrusion, *entry_points, current_position,
-            *ordering_engine, *seam_placer, scratch_storage);
+            *ordering_engine, *seam_router, scratch_storage);
         current_position = entry_points->exit;
     }
 }
@@ -1365,19 +1310,12 @@ void finalize_printing_extrusion(
     EntryPointProperty &entry_points,
     const c_point start_position,
     const OrderingEngine &ordering_engine,
-    const SeamPlacer &seam_placer,
+    const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage)
 {
     MutableExtrusionEntity root = extrusion.mutable_root();
-    // Resolve again after the sequential barrier instead of retaining a
-    // borrowed LayerRegion from the parallel coarse pass. This keeps every
-    // borrowed view scoped to the job in which it is consumed.
-    const LayerRegion layer_region =
-        TreeOrderingGeometry::resolve_source_layer_region(
-            scratch_storage, extrusion);
     finalize_entity_descending(
-        root, start_position, layer_region, ordering_engine,
-        seam_placer, scratch_storage);
+        root, start_position, ordering_engine, seam_router, scratch_storage);
 
     /* The barrier estimates are replaced by the completely fixed root ends. */
     entry_points.entry = root.front();
@@ -1390,12 +1328,12 @@ void finalize_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacer *seam_placer)
+    const SeamPlacement::SeamPlacerRouter *seam_router)
 {
     assert(jobs != nullptr);
     assert(entry_point_key != nullptr);
     assert(ordering_engine != nullptr);
-    assert(seam_placer != nullptr);
+    assert(seam_router != nullptr);
     assert(job_idx < jobs->size());
 
     const ToolGroupOrderingJob &job = (*jobs)[job_idx];
@@ -1420,7 +1358,7 @@ void finalize_tool_group_job(
 
         finalize_printing_extrusion(
             extrusion, *entry_points, current_position,
-            *ordering_engine, *seam_placer, scratch_storage);
+            *ordering_engine, *seam_router, scratch_storage);
         current_position = entry_points->exit;
     }
 }
@@ -1486,7 +1424,8 @@ private:
 
         const Print print(ctx->print);
         const PrintingPlan plan(ctx->plan);
-        SeamPlacer seam_placer = create_seam_placer(m_orchestrator, print, plan);
+        const SeamPlacement::SeamPlacerRouter seam_router(
+            m_orchestrator, print, plan, run_ctx->plugin_storage);
         const KDTreeOrderingEngine ordering_engine;
         const c_point print_start = initial_print_position(print);
         const std::vector<ToolGroupOrderingJob> coarse_jobs =
@@ -1501,7 +1440,7 @@ private:
         parallel_for_storage_with_progress(
             0, uint32_t(coarse_jobs.size()), run_ctx, &progress(),
             coarsely_order_tool_group_job, &coarse_jobs, &m_entry_point_key,
-            &ordering_engine, &seam_placer);
+            &ordering_engine, &seam_router);
 
         const std::vector<ToolGroupOrderingJob> final_jobs =
             reorder_printing_extrusions_and_make_jobs(
@@ -1513,7 +1452,7 @@ private:
         parallel_for_storage_with_progress(
             0, uint32_t(final_jobs.size()), run_ctx, &progress(),
             finalize_tool_group_job, &final_jobs, &m_entry_point_key,
-            &ordering_engine, &seam_placer);
+            &ordering_engine, &seam_router);
     }
 
     PluginPropertyKey<EntryPointProperty> m_entry_point_key;

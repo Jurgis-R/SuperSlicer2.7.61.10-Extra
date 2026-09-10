@@ -5,7 +5,7 @@
 #ifndef slic3r_step_seam_placer_h_
 #define slic3r_step_seam_placer_h_
 
-#define SLIC3R_PLUGIN_API_STEP_SEAM_PLACER_MAJOR 2u
+#define SLIC3R_PLUGIN_API_STEP_SEAM_PLACER_MAJOR 3u
 #define SLIC3R_PLUGIN_API_STEP_SEAM_PLACER_MINOR 0u
 
 #include <stdint.h>
@@ -24,7 +24,8 @@ Seam placer service contract
 
 A SEAM_PLACER call follows one ownership-preserving sequence:
 
-1. The consumer puts a borrowed PrintingPlan in run_ctx_seam_placer.
+1. The consumer puts a borrowed PrintingPlan and the PrintRegions assigned to
+   this provider in run_ctx_seam_placer.
 2. The orchestrator executes the selected provider to create a session for that
    plan.
 3. The provider initializes that session once and publishes it in instance.
@@ -34,10 +35,10 @@ A SEAM_PLACER call follows one ownership-preserving sequence:
 Publishing instance transfers ownership of session to the consumer. It does
 not transfer ownership of the plugin, plan, loops, or layer regions.
 
-The session callback may be called concurrently. Result storage remains owned
-by the caller; only error_message is borrowed until the next callback on the
-same thread or until the session is destroyed. Providers must not allow C++
-exceptions to cross this interface.
+After initialization, get_priority and place_seam may be called concurrently.
+Result storage remains owned by the caller; only error_message is borrowed
+until the next callback of either kind on the same thread or until the session
+is destroyed. Providers must not allow C++ exceptions to cross this interface.
 */
 
 typedef enum raw_seam_placer_status {
@@ -68,6 +69,21 @@ typedef struct raw_seam_placer_result {
     const char *error_message;
 } raw_seam_placer_result;
 
+/*
+Output storage supplied by the caller for one get_priority invocation.
+
+The caller zero-initializes the structure and sets struct_size. priority is
+meaningful only for SUCCESS and must be finite. Larger values win; exact ties
+are resolved by the consumer's stable LayerRegion order. error_message follows
+the same borrowed lifetime as raw_seam_placer_result::error_message.
+*/
+typedef struct raw_seam_placer_priority_result {
+    uint32_t struct_size;
+    raw_seam_placer_status status;
+    float priority;
+    const char *error_message;
+} raw_seam_placer_priority_result;
+
 /* Release one published session; the consumer calls this exactly once. */
 typedef void (*seam_placer_destroy_fn)(void *session);
 
@@ -88,10 +104,25 @@ typedef void (*seam_placer_place_fn)(
     c_point start_position,
     raw_seam_placer_result *result);
 
+/*
+Rank one candidate LayerRegion for loop when several regions own its geometry.
+
+The loop and region are borrowed from the initialized plan. The callback must
+not mutate either object. It may inspect regional configuration and immutable
+session caches. Consumers do not call this callback when only one candidate
+region exists.
+*/
+typedef void (*seam_placer_priority_fn)(
+    const void *session,
+    const extrusion_entity_handle *loop,
+    const layer_region_handle *layer_region,
+    raw_seam_placer_priority_result *result);
+
 typedef struct raw_seam_placer_vtable {
     /* Set to sizeof(raw_seam_placer_vtable) by the provider. */
     uint32_t struct_size;
     seam_placer_destroy_fn destroy;
+    seam_placer_priority_fn get_priority;
     seam_placer_place_fn place_seam;
 } raw_seam_placer_vtable;
 
@@ -108,13 +139,18 @@ typedef struct raw_seam_placer_instance {
 /*
 Single payload used to create a seam placer session.
 
-plan is borrowed and remains owned by the caller. A successful provider writes
-a complete instance into an initially zeroed instance during run(). Ownership
-then transfers to the consumer, which must clear or otherwise invalidate the
-source value and eventually invoke instance.vtable->destroy(instance.session).
+plan and regions are borrowed and remain owned by the caller. regions contains
+the distinct PrintRegions whose regional selector chose this provider, in
+stable first-encounter order. The array is valid only for run(), while the
+pointed-to PrintRegions remain valid with the Print. A successful provider
+writes a complete instance into an initially zeroed instance during run().
+Ownership then transfers to the consumer, which must clear or otherwise
+invalidate the source value and eventually invoke destroy exactly once.
 */
 typedef struct run_ctx_seam_placer {
     const printing_plan_handle *plan;
+    const print_region_handle *const *regions;
+    uint32_t region_count;
     raw_seam_placer_instance instance;
 } run_ctx_seam_placer;
 

@@ -1,0 +1,49 @@
+///|/ Copyright (c) SuperSlicer 2026 Durand Remi @supermerill
+///|/
+///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
+///|/
+#ifndef slic3r_SeamPlacerRouter_hpp_
+#define slic3r_SeamPlacerRouter_hpp_
+
+#include <memory>
+
+#include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
+
+struct orchestrator_handle;
+
+namespace slic3r_api { namespace SeamPlacement {
+
+/*
+Regional seam-provider router used by extrusion-tree ordering plugins.
+
+Construction reads every PrintRegion selector, creates one shared session per
+selected provider, and resolves every atomic plan loop to one LayerRegion. The
+resulting tables are immutable, so place_seam() may be called concurrently by
+ordering workers. The Print, PrintingPlan, regions, and loop handles are all
+borrowed and must outlive the router.
+*/
+class SeamPlacerRouter
+{
+public:
+    SeamPlacerRouter(orchestrator_handle *orchestrator,
+                     const Print &print,
+                     const PrintingPlan &plan,
+                     storage_handle *scratch_storage);
+    ~SeamPlacerRouter();
+
+    SeamPlacerRouter(const SeamPlacerRouter &) = delete;
+    SeamPlacerRouter &operator=(const SeamPlacerRouter &) = delete;
+
+    /* Ask the provider preselected for loop to choose its final seam. */
+    c_point place_seam(const ExtrusionEntity &loop,
+                       c_point start_position) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+};
+
+}} // namespace slic3r_api::SeamPlacement
+
+#endif // slic3r_SeamPlacerRouter_hpp_

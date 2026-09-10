@@ -6,6 +6,7 @@
 #define slic3r_Api_plugin_cpp_SeamPlacerViews_hpp_
 
 #include <memory>
+#include <vector>
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
@@ -43,7 +44,18 @@ public:
     its own parallelism. The plan remains host-owned and must outlive the
     resulting session; implementations must not free it.
     */
-    virtual void initialize(const PrintingPlan &plan) = 0;
+    virtual void initialize(const PrintingPlan &plan,
+                            const std::vector<PrintRegion> &print_regions) = 0;
+
+    /*
+    Rank one candidate region when a loop belongs to several LayerRegions.
+
+    Larger finite values have precedence. Calls may run concurrently and must
+    not mutate the loop, region, or shared session state without synchronization.
+    Consumers deliberately skip this callback for a single candidate.
+    */
+    virtual float get_priority(const ExtrusionEntity &loop,
+                               const LayerRegion &layer_region) const = 0;
 
     /*
     Select one point on loop in layer_region when approaching it from
@@ -71,7 +83,8 @@ owns the session until its destroy callback is invoked, normally by SeamPlacer.
 */
 raw_seam_placer_instance make_seam_placer_instance(
     std::unique_ptr<SeamPlacerSession> session,
-    const PrintingPlan &plan);
+    const PrintingPlan &plan,
+    const std::vector<PrintRegion> &print_regions);
 
 class SeamPlacer
 {
@@ -116,6 +129,10 @@ public:
     c_point place_seam(const ExtrusionEntity &loop,
                        const LayerRegion &layer_region,
                        c_point start_position) const;
+
+    /* Return the provider's finite ranking for one loop/region candidate. */
+    float get_priority(const ExtrusionEntity &loop,
+                       const LayerRegion &layer_region) const;
 
 private:
     /* Destroy the owned session and restore the invalid state. */

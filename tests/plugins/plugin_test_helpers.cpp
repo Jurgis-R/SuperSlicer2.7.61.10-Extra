@@ -383,6 +383,7 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
         slic3r_api::SeamPlacement::FixedDirectionPlugin::register_fixed_direction_seam_placer_plugin(
             orchestrator_handle_value);
+        register_regional_seam_test_provider(orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateToolChangePlugin::register_create_tool_change_plugin(
             orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateTransitionScopePlugin::register_create_transition_scope_plugin(
@@ -494,6 +495,9 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.printing_extrusion.presort.default");
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
         activate_plugin_or_fail(orchestrator, "seam_placer.fixed");
+        // Keep a second SeamPlacer active only while the generated regional
+        // selector is registered and initialized for its dedicated tests.
+        activate_plugin_or_fail(orchestrator, "slic3r.test.seam_placer.regional");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.transition_scope.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.entry_state.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.speed.default");
@@ -540,6 +544,7 @@ void ensure_plugin_test_runtime_initialized()
         register_exclusive_step_group_options(orchestrator);
         orchestrator.initialize_plugins();
         register_exclusive_step_group_ui_fragments(orchestrator);
+        orchestrator.set_plugin_active("slic3r.test.seam_placer.regional", false);
         initialize_fff_print_config_cache();
         initialize_sla_print_config_cache();
         PrintConfigDef::instance_mutable().finalize();

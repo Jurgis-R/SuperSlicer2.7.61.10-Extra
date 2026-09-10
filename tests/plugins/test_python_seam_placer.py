@@ -158,11 +158,14 @@ class PythonSeamPlacerTests(unittest.TestCase):
 
     def publish(self, session):
         plan = self.printing_plan.PrintingPlan(self.api, 77)
-        instance = self.seam.make_seam_placer_instance(session, plan)
+        instance = self.seam.make_seam_placer_instance(session, plan, ())
         return self.seam.SeamPlacer(self.api, instance)
 
     def region(self, handle=201):
         return self.datatree.LayerRegion(self.api, handle)
+
+    def print_region(self, handle=301):
+        return self.datatree.PrintRegion(self.api, handle)
 
     def test_context_initializes_once_and_transfers_unique_ownership(self):
         destroyed = []
@@ -171,9 +174,15 @@ class PythonSeamPlacerTests(unittest.TestCase):
             def __init__(self):
                 self.initialize_count = 0
 
-            def initialize(self, plan):
+            def initialize(self, plan, print_regions):
                 self.initialize_count += 1
                 self.plan_address = plan.address
+                self.region_addresses = tuple(
+                    region.address for region in print_regions
+                )
+
+            def get_priority(self, _loop, _layer_region):
+                return 4.5
 
             def place_seam(self, loop, _layer_region, start_position):
                 return loop.front()
@@ -183,6 +192,11 @@ class PythonSeamPlacerTests(unittest.TestCase):
 
         payload = self.generated.RunCtxSeamPlacer()
         payload.plan = ctypes.c_void_p(77)
+        region_addresses = (ctypes.c_void_p * 2)(301, 302)
+        payload.regions = ctypes.cast(
+            region_addresses, ctypes.POINTER(ctypes.c_void_p)
+        )
+        payload.region_count = 2
         common = self.generated.PluginRunContext()
         common.step = self.generated.SEAM_PLACER
         common.data = ctypes.addressof(payload)
@@ -196,6 +210,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         context.publish_seam_placer(session)
         self.assertEqual(session.initialize_count, 1)
         self.assertEqual(session.plan_address, 77)
+        self.assertEqual(session.region_addresses, (301, 302))
 
         placer = self.seam.SeamPlacer(self.api, payload.instance)
         self.assertTrue(placer)
@@ -214,7 +229,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
 
     def test_initialization_failure_does_not_publish_an_instance(self):
         class FailingSession(self.seam.SeamPlacerSession):
-            def initialize(self, _plan):
+            def initialize(self, _plan, _print_regions):
                 raise RuntimeError("initialization failed")
 
             def place_seam(self, _loop, _layer_region, _start_position):
@@ -222,14 +237,14 @@ class PythonSeamPlacerTests(unittest.TestCase):
 
         plan = self.printing_plan.PrintingPlan(self.api, 77)
         with self.assertRaisesRegex(RuntimeError, "initialization failed"):
-            self.seam.make_seam_placer_instance(FailingSession(), plan)
+            self.seam.make_seam_placer_instance(FailingSession(), plan, ())
 
     def test_one_session_cannot_be_initialized_or_published_twice(self):
         class Session(self.seam.SeamPlacerSession):
             def __init__(self):
                 self.initialize_count = 0
 
-            def initialize(self, _plan):
+            def initialize(self, _plan, _print_regions):
                 self.initialize_count += 1
 
             def place_seam(self, _loop, _layer_region, _start_position):
@@ -237,11 +252,11 @@ class PythonSeamPlacerTests(unittest.TestCase):
 
         plan = self.printing_plan.PrintingPlan(self.api, 77)
         session = Session()
-        instance = self.seam.make_seam_placer_instance(session, plan)
+        instance = self.seam.make_seam_placer_instance(session, plan, ())
         placer = self.seam.SeamPlacer(self.api, instance)
         try:
             with self.assertRaisesRegex(ValueError, "already been consumed"):
-                self.seam.make_seam_placer_instance(session, plan)
+                self.seam.make_seam_placer_instance(session, plan, ())
             self.assertEqual(session.initialize_count, 1)
         finally:
             placer.close()
@@ -253,8 +268,11 @@ class PythonSeamPlacerTests(unittest.TestCase):
         received_regions = []
 
         class Session(self.seam.SeamPlacerSession):
-            def initialize(self, _plan):
+            def initialize(self, _plan, _print_regions):
                 pass
+
+            def get_priority(self, _loop, layer_region):
+                return float(layer_region.address)
 
             def place_seam(self, loop, layer_region, _start_position):
                 received_regions.append(layer_region.address)
@@ -266,6 +284,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
 
         with self.publish(Session()) as placer:
             region = self.region()
+            self.assertEqual(placer.get_priority(square, region), 201.0)
             line_result = placer.place_seam(square, region, (0, 0))
             arc_result = placer.place_seam(arc, region, (-2000, 0))
             composite_result = placer.place_seam(composite, region, (0, 0))
@@ -277,7 +296,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
             self.assertEqual(received_regions, [region.address] * 3)
 
         class OutsideSession(self.seam.SeamPlacerSession):
-            def initialize(self, _plan):
+            def initialize(self, _plan, _print_regions):
                 pass
 
             def place_seam(self, _loop, _layer_region, _start_position):
@@ -292,7 +311,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         barrier = threading.Barrier(2)
 
         class FailingSession(self.seam.SeamPlacerSession):
-            def initialize(self, _plan):
+            def initialize(self, _plan, _print_regions):
                 pass
 
             def place_seam(self, _loop, _layer_region, start_position):
@@ -319,7 +338,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         square = self.add_square()
 
         class FailingSession(self.seam.SeamPlacerSession):
-            def initialize(self, _plan):
+            def initialize(self, _plan, _print_regions):
                 pass
 
             def place_seam(self, _loop, _layer_region, _start_position):
@@ -345,7 +364,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         fixture.python_seam_placer_native_probe_destroy.restype = None
 
         plan = self.printing_plan.PrintingPlan(self.api, 77)
-        instance = self.seam.make_seam_placer_instance(FailingSession(), plan)
+        instance = self.seam.make_seam_placer_instance(FailingSession(), plan, ())
         published = self.seam._published_sessions[address(instance.session)]
         probe = None
         try:
@@ -374,7 +393,7 @@ class PythonSeamPlacerTests(unittest.TestCase):
         square = self.add_square()
 
         class Session(self.seam.SeamPlacerSession):
-            def initialize(self, _plan):
+            def initialize(self, _plan, _print_regions):
                 pass
 
             def place_seam(self, loop, _layer_region, _start_position):
@@ -399,9 +418,11 @@ class PythonSeamPlacerTests(unittest.TestCase):
             lambda session: destroy_calls.append(address(session))
         )
         missing_place = self.generated.SEAM_PLACER_PLACE()
+        missing_priority = self.generated.SEAM_PLACER_PRIORITY()
         vtable = self.seam.RawSeamPlacerVTable(
             ctypes.sizeof(self.seam.RawSeamPlacerVTable),
             destroy_callback,
+            missing_priority,
             missing_place,
         )
         incomplete_vtable_instance = self.generated.RawSeamPlacerInstance(
@@ -424,11 +445,17 @@ class PythonSeamPlacerTests(unittest.TestCase):
             result.contents.status = self.generated.RAW_SEAM_PLACER_STATUS_SUCCESS
             result.contents.point = self.point(0, 0)
 
+        def priority(_session, _loop, _layer_region, result):
+            result.contents.status = self.generated.RAW_SEAM_PLACER_STATUS_SUCCESS
+            result.contents.priority = 0.0
+
         destroy_callback = self.generated.SEAM_PLACER_DESTROY(destroy)
+        priority_callback = self.generated.SEAM_PLACER_PRIORITY(priority)
         place_callback = self.generated.SEAM_PLACER_PLACE(place)
         vtable = self.seam.RawSeamPlacerVTable(
             ctypes.sizeof(self.seam.RawSeamPlacerVTable),
             destroy_callback,
+            priority_callback,
             place_callback,
         )
         instance = self.generated.RawSeamPlacerInstance(

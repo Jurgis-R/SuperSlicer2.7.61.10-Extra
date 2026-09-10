@@ -5,6 +5,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -39,8 +40,9 @@ parallel pass, sequential PrintingExtrusion barrier and final parallel pass.
 The fixtures use small deterministic trees so each ordering decision remains
 visible without duplicating the ordering engine's own tests.
 
-PrintingExtrusion values move during the barrier. Tests reacquire them through
-object_instance_idx and retain only stable extrusion-tree handles.
+PrintingExtrusion values move during the barrier. Tests identify them through
+a side table keyed by their stable extrusion-tree handles; object_instance_idx
+therefore remains valid production metadata throughout regional routing.
 */
 
 namespace {
@@ -81,6 +83,7 @@ struct SeamServiceState
 
 SeamServiceState g_seam_state;
 std::vector<std::unique_ptr<LayerRegionIsland>> g_source_islands;
+std::map<const ExtrusionEntity *, uint16_t> g_extrusion_identities;
 
 /*
 Keep one real broad LayerRegion alive for synthetic plan source buckets.
@@ -89,7 +92,7 @@ Ordering now resolves regional seam settings from the source island. The broad
 slice associates every synthetic extrusion with one real PrintRegion while the
 static PreparedPerimeterPrint preserves all borrowed lifetimes for the suite.
 */
-const LayerRegion &broad_source_region()
+Print &broad_source_print()
 {
     using namespace Slic3r::Test::PerimeterPluginTests;
     static std::unique_ptr<PreparedPerimeterPrint> prepared = []() {
@@ -103,7 +106,12 @@ const LayerRegion &broad_source_region()
             raw_slices, stPosInternal | stDensSolid);
         return value;
     }();
-    return prepared->print.object(0).layer(0).region(0);
+    return prepared->print;
+}
+
+const LayerRegion &broad_source_region()
+{
+    return broad_source_print().object(0).layer(0).region(0);
 }
 
 double squared_distance(const c_point lhs, const c_point rhs)
@@ -161,13 +169,21 @@ public:
         m_state.destroy_count.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void initialize(const slic3r_api::PrintingPlan &plan) override
+    void initialize(
+        const slic3r_api::PrintingPlan &plan,
+        const std::vector<slic3r_api::PrintRegion> &) override
     {
         m_state.initialize_count.fetch_add(1, std::memory_order_relaxed);
         m_state.initialized_plan = plan.handle();
         if (m_state.mode == SeamPublishMode::ThrowDuringInitialization)
             throw std::runtime_error(
                 "intentional ordering seam initialization failure");
+    }
+
+    float get_priority(const slic3r_api::ExtrusionEntity &,
+                       const slic3r_api::LayerRegion &) const override
+    {
+        return 0.f;
     }
 
     c_point place_seam(const slic3r_api::ExtrusionEntity &loop,
@@ -211,10 +227,14 @@ private:
                 "The ordering seam fixture requires a PrintingPlan.");
         if (g_seam_state.mode == SeamPublishMode::Empty)
             return;
+        std::vector<slic3r_api::PrintRegion> regions;
+        regions.reserve(context->region_count);
+        for (uint32_t region_idx = 0; region_idx < context->region_count; ++region_idx)
+            regions.push_back(slic3r_api::PrintRegion(context->regions[region_idx]));
         context->instance = slic3r_api::make_seam_placer_instance(
             std::unique_ptr<slic3r_api::SeamPlacerSession>(
                 new OrderingSeamSession(g_seam_state)),
-            slic3r_api::PrintingPlan(context->plan));
+            slic3r_api::PrintingPlan(context->plan), regions);
     }
 };
 
@@ -240,6 +260,7 @@ public:
         m_orchestrator.reset_plugin_cancel();
         g_seam_state.reset();
         g_source_islands.clear();
+        g_extrusion_identities.clear();
     }
 
 private:
@@ -357,7 +378,11 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
     extrusion.region_island = source.get();
     extrusion.root = std::move(root);
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
-    extrusion.object_instance_idx = identity;
+    // object_instance_idx is production metadata and must remain a valid index.
+    // Keep the test-only identity beside the stable extrusion root instead.
+    extrusion.object_instance_idx = 0;
+    if (extrusion.root != nullptr)
+        g_extrusion_identities.emplace(extrusion.root.get(), identity);
     tool.region_islands.push_back(source.get());
     g_source_islands.push_back(std::move(source));
     tool.extrusions.push_back(std::move(extrusion));
@@ -367,9 +392,17 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
 PrintingExtrusion &find_extrusion(PrintingToolGroup &tool, const uint16_t identity)
 {
     for (PrintingExtrusion &extrusion : tool.extrusions)
-        if (extrusion.object_instance_idx == identity)
+        if (extrusion.root != nullptr &&
+            g_extrusion_identities.at(extrusion.root.get()) == identity)
             return extrusion;
     throw std::runtime_error("The expected PrintingExtrusion was not found.");
+}
+
+uint16_t extrusion_identity(const PrintingExtrusion &extrusion)
+{
+    if (extrusion.root == nullptr)
+        throw std::runtime_error("An empty extrusion has no test identity.");
+    return g_extrusion_identities.at(extrusion.root.get());
 }
 
 PluginPropertyKey<EntryPointProperty> entry_point_key()
@@ -418,7 +451,9 @@ raw_plugin_execution_status run_advanced_ordering(Print &print)
     REQUIRE(plugin.valid());
     PrintingPlan &plan = print.mutable_printing_plan();
     run_ctx_extrusion_ordering context = {};
-    context.print = reinterpret_cast<const print_handle *>(&print);
+    // Regional routing reads PrintRegions from the real prepared Print while
+    // the ordering provider mutates the deliberately synthetic plan below.
+    context.print = reinterpret_cast<const print_handle *>(&broad_source_print());
     context.plan = reinterpret_cast<printing_plan_handle *>(&plan);
     return view.execute(plugin, context.print, context);
 }
@@ -518,9 +553,9 @@ TEST_CASE("Advanced ordering uses its sequential barrier before final refinement
     PrintingToolGroup &ordered_first_tool = plan.groups[0].layers[0].tool_groups[0];
     PrintingToolGroup &ordered_second_tool = plan.groups[0].layers[0].tool_groups[1];
     REQUIRE(ordered_first_tool.extrusions.size() == 3);
-    CHECK(ordered_first_tool.extrusions[0].object_instance_idx == 20);
-    CHECK(ordered_first_tool.extrusions[1].object_instance_idx == 99);
-    CHECK(ordered_first_tool.extrusions[2].object_instance_idx == 10);
+    CHECK(extrusion_identity(ordered_first_tool.extrusions[0]) == 20);
+    CHECK(extrusion_identity(ordered_first_tool.extrusions[1]) == 99);
+    CHECK(extrusion_identity(ordered_first_tool.extrusions[2]) == 10);
 
     PrintingExtrusion &ordered = find_extrusion(ordered_first_tool, 20);
     REQUIRE(ordered.root->child_count() == 2);

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -33,9 +34,9 @@ XY-serpentine ordering tests
 ============================
 
 The fixtures expose each subtree centre through small paths and identify moved
-PrintingExtrusion values by object_instance_idx. A deterministic seam service
-keeps spatial-order assertions independent from seam policy while still
-exercising line, arc and composed-loop materialization through the provider.
+PrintingExtrusion values through a side table keyed by stable root handles. A
+deterministic seam service keeps spatial-order assertions independent from seam
+policy while object_instance_idx remains valid production routing metadata.
 */
 
 namespace {
@@ -71,6 +72,7 @@ struct SeamState
 
 SeamState g_seam;
 std::vector<std::unique_ptr<LayerRegionIsland>> g_source_islands;
+std::map<const ExtrusionEntity *, uint16_t> g_extrusion_identities;
 
 /*
 Keep one real broad LayerRegion alive for synthetic plan source buckets.
@@ -79,7 +81,7 @@ Ordering now resolves regional seam settings from the source island. The broad
 slice associates every synthetic extrusion with one real PrintRegion while the
 static PreparedPerimeterPrint preserves all borrowed lifetimes for the suite.
 */
-const LayerRegion &broad_source_region()
+Print &broad_source_print()
 {
     using namespace Slic3r::Test::PerimeterPluginTests;
     static std::unique_ptr<PreparedPerimeterPrint> prepared = []() {
@@ -93,7 +95,12 @@ const LayerRegion &broad_source_region()
             raw_slices, stPosInternal | stDensSolid);
         return value;
     }();
-    return prepared->print.object(0).layer(0).region(0);
+    return prepared->print;
+}
+
+const LayerRegion &broad_source_region()
+{
+    return broad_source_print().object(0).layer(0).region(0);
 }
 
 class SerpentineSeamSession final : public slic3r_api::SeamPlacerSession
@@ -104,9 +111,17 @@ public:
         g_seam.destroy_count.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void initialize(const slic3r_api::PrintingPlan &) override
+    void initialize(
+        const slic3r_api::PrintingPlan &,
+        const std::vector<slic3r_api::PrintRegion> &) override
     {
         g_seam.initialize_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    float get_priority(const slic3r_api::ExtrusionEntity &,
+                       const slic3r_api::LayerRegion &) const override
+    {
+        return 0.f;
     }
 
     c_point place_seam(const slic3r_api::ExtrusionEntity &loop,
@@ -142,10 +157,14 @@ private:
             throw std::invalid_argument("The seam fixture needs a PrintingPlan.");
         if (g_seam.mode == SeamMode::Empty)
             return;
+        std::vector<slic3r_api::PrintRegion> regions;
+        regions.reserve(context->region_count);
+        for (uint32_t region_idx = 0; region_idx < context->region_count; ++region_idx)
+            regions.push_back(slic3r_api::PrintRegion(context->regions[region_idx]));
         context->instance = slic3r_api::make_seam_placer_instance(
             std::unique_ptr<slic3r_api::SeamPlacerSession>(
                 new SerpentineSeamSession()),
-            slic3r_api::PrintingPlan(context->plan));
+            slic3r_api::PrintingPlan(context->plan), regions);
     }
 };
 
@@ -171,6 +190,7 @@ public:
         m_orchestrator.reset_plugin_cancel();
         g_seam.reset();
         g_source_islands.clear();
+        g_extrusion_identities.clear();
     }
 
 private:
@@ -300,11 +320,22 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
     extrusion.region_island = source.get();
     extrusion.root = std::move(root);
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
-    extrusion.object_instance_idx = identity;
+    // object_instance_idx is production metadata and must remain a valid index.
+    // Keep the test-only identity beside the stable extrusion root instead.
+    extrusion.object_instance_idx = 0;
+    if (extrusion.root != nullptr)
+        g_extrusion_identities.emplace(extrusion.root.get(), identity);
     tool.region_islands.push_back(source.get());
     g_source_islands.push_back(std::move(source));
     tool.extrusions.push_back(std::move(extrusion));
     return tool.extrusions.back();
+}
+
+uint16_t extrusion_identity(const PrintingExtrusion &extrusion)
+{
+    if (extrusion.root == nullptr)
+        throw std::runtime_error("An empty extrusion has no test identity.");
+    return g_extrusion_identities.at(extrusion.root.get());
 }
 
 slic3r_api::MutableExtrusionEntity mutable_root(PrintingExtrusion &extrusion)
@@ -343,7 +374,9 @@ raw_plugin_execution_status run_serpentine(Print &print)
     REQUIRE(provider.valid());
     PrintingPlan &plan = print.mutable_printing_plan();
     run_ctx_extrusion_ordering context = {};
-    context.print = reinterpret_cast<const print_handle *>(&print);
+    // Regional routing reads PrintRegions from the real prepared Print while
+    // the ordering provider mutates the deliberately synthetic plan below.
+    context.print = reinterpret_cast<const print_handle *>(&broad_source_print());
     context.plan = reinterpret_cast<printing_plan_handle *>(&plan);
     return view.execute(provider, context.print, context);
 }
@@ -387,10 +420,10 @@ TEST_CASE("XY-serpentine ordering follows its directed weighted sweep",
 
     REQUIRE(run_serpentine(print) == RAW_PLUGIN_EXECUTION_SUCCESS);
     REQUIRE(tool.extrusions.size() == 4);
-    CHECK(tool.extrusions[0].object_instance_idx == 0);
-    CHECK(tool.extrusions[1].object_instance_idx == 10);
-    CHECK(tool.extrusions[2].object_instance_idx == 100);
-    CHECK(tool.extrusions[3].object_instance_idx == 12);
+    CHECK(extrusion_identity(tool.extrusions[0]) == 0);
+    CHECK(extrusion_identity(tool.extrusions[1]) == 10);
+    CHECK(extrusion_identity(tool.extrusions[2]) == 100);
+    CHECK(extrusion_identity(tool.extrusions[3]) == 12);
     CHECK(g_seam.initialize_count.load(std::memory_order_relaxed) == 1);
     CHECK(g_seam.destroy_count.load(std::memory_order_relaxed) == 1);
 }
@@ -414,9 +447,9 @@ TEST_CASE("XY-serpentine ordering uses bounding-box centres",
     append_extrusion(tool, make_open_path(69.5, 0.0, 70.5, 0.0), 70);
 
     REQUIRE(run_serpentine(print) == RAW_PLUGIN_EXECUTION_SUCCESS);
-    CHECK(tool.extrusions[0].object_instance_idx == 0);
-    CHECK(tool.extrusions[1].object_instance_idx == 50);
-    CHECK(tool.extrusions[2].object_instance_idx == 70);
+    CHECK(extrusion_identity(tool.extrusions[0]) == 0);
+    CHECK(extrusion_identity(tool.extrusions[1]) == 50);
+    CHECK(extrusion_identity(tool.extrusions[2]) == 70);
 }
 
 TEST_CASE("XY-serpentine ordering respects ownership and empty slots",
@@ -443,11 +476,11 @@ TEST_CASE("XY-serpentine ordering respects ownership and empty slots",
     append_extrusion(second, make_open_path(9.5, 0.0, 10.5, 0.0), 10);
 
     REQUIRE(run_serpentine(print) == RAW_PLUGIN_EXECUTION_SUCCESS);
-    CHECK(first.extrusions[0].object_instance_idx == 0);
-    CHECK(first.extrusions[1].object_instance_idx == 99);
-    CHECK(first.extrusions[2].object_instance_idx == 50);
-    CHECK(second.extrusions[0].object_instance_idx == 10);
-    CHECK(second.extrusions[1].object_instance_idx == 20);
+    CHECK(extrusion_identity(first.extrusions[0]) == 0);
+    CHECK(extrusion_identity(first.extrusions[1]) == 99);
+    CHECK(extrusion_identity(first.extrusions[2]) == 50);
+    CHECK(extrusion_identity(second.extrusions[0]) == 10);
+    CHECK(extrusion_identity(second.extrusions[1]) == 20);
     CHECK(entry_point_key().get(mutable_root(first.extrusions[1])) == nullptr);
 }
 
@@ -526,7 +559,7 @@ TEST_CASE("XY-serpentine ordering chooses strict reversible orientations",
         append_extrusion(tool, std::move(collection), 2);
 
         REQUIRE(run_serpentine(print) == RAW_PLUGIN_EXECUTION_SUCCESS);
-        REQUIRE(tool.extrusions[1].object_instance_idx == 2);
+        REQUIRE(extrusion_identity(tool.extrusions[1]) == 2);
         CHECK(tool.extrusions[1].root->children()[0].get() == second);
         CHECK(tool.extrusions[1].root->children()[1].get() == first);
         CHECK(tool.extrusions[1].root->first_point() == Point::new_scale(30.0, 0.0));
