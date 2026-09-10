@@ -297,6 +297,8 @@ set(SLIC3R_SOURCES
 	Plugins/PrintingPlan/PrintingLayerTimeProperty.h
 	Plugins/SeamPlacer/FixedDirectionSeamPlacer.cpp
 	Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp
+	Plugins/SeamPlacer/RandomSeamPlacer.cpp
+	Plugins/SeamPlacer/RandomSeamPlacer.hpp
 	Plugins/SeamPlacer/SeamPlacementConstraints.cpp
 	Plugins/SeamPlacer/SeamPlacementConstraints.hpp
 	Plugins/SeamPlacer/SeamPlacerRouter.cpp

@@ -58,6 +58,14 @@ public:
            rounded to scaled integer XY. No host geometry is changed. */
         c_point point(double t) const;
         double parameter(double angle) const;
+        /* Snapshot a public segment; lengths and closest-point queries use
+           the true arc, including clockwise and major arcs. */
+        static Curve from_segment(c_extrusion_segment segment);
+        double length() const;
+        double closest_parameter(c_point point, double begin = 0, double end = 1) const;
+        /* Partition against the supporting line/circle of another curve.
+           Extra cuts outside its finite extent are harmless for containment. */
+        void intersection_cuts(const Curve &other, std::vector<double> &cuts) const;
     };
     struct Portion {
         Curve curve;
@@ -78,8 +86,12 @@ public:
     /* Called once, before publication. storage is borrowed only for this call. */
     void initialize(const PrintingPlan &plan, storage_handle *storage);
     /* Classify true segments in tree order, inheriting extrusion width/role.
-       Blockers override enforcers; boundaries belong to the closed zone. */
-    Result portions(const ExtrusionEntity &loop, const LayerRegion &region) const;
+       Blockers override enforcers; boundaries belong to the closed zone.
+       include_unconstrained also returns full segments when no zone applies,
+       for policies that need arclength or original vertices. It does not change
+       Result::relevant and never adds host geometry. */
+    Result portions(const ExtrusionEntity &loop, const LayerRegion &region,
+                    bool include_unconstrained = false) const;
     /* Recheck integer-rounded candidates against the same closed zones. */
     Status classify_point(const ExtrusionEntity &loop, c_point point, double paint_margin) const;
 private:

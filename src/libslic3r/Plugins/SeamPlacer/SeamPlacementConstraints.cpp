@@ -326,8 +326,14 @@ void visit_segments(const ExtrusionEntity &entity, const Zones &zones, c_point s
     // Like the legacy proximity radius, use the full extrusion width.
     // Width is inherited down the tree; the regional flow is the last fallback.
     const double margin = width > 0 ? width : double(region.flow(role).width);
-    for (uint32_t i=0;i<entity.segment_count();++i) {
-        c_extrusion_segment segment=entity.segment(i);
+    // A one-point path is a valid degenerate closed loop in the host contract.
+    // Give it one zero-length segment so point-only policies can still use it.
+    const uint32_t count=entity.segment_count();
+    for (uint32_t i=0;i<(count==0 && entity.point_count()==1 ? 1u : count);++i) {
+        c_extrusion_segment original{};
+        if (count>0) original=entity.segment(i);
+        else original.point_a=original.point_b=entity.point(0);
+        c_extrusion_segment segment=original;
         segment.point_a.x-=shift.x; segment.point_a.y-=shift.y;
         segment.point_b.x-=shift.x; segment.point_b.y-=shift.y;
         const Curve curve=curve_from(segment);
@@ -338,7 +344,7 @@ void visit_segments(const ExtrusionEntity &entity, const Zones &zones, c_point s
         std::sort(cuts.begin(),cuts.end());
         cuts.erase(std::unique(cuts.begin(),cuts.end(),[](double a,double b){return std::abs(a-b)<1e-12;}),cuts.end());
         Curve platter=curve;
-        platter.segment=entity.segment(i);
+        platter.segment=original;
         platter.cx+=shift.x; platter.cy+=shift.y;
         for (size_t j=0;j<cuts.size();++j) {
             const Status endpoint=classify(zones,position(curve,cuts[j]),margin);
@@ -446,7 +452,7 @@ void SeamPlacementConstraints::initialize(const PrintingPlan &plan, storage_hand
     m_impl=std::move(prepared);
 }
 
-SeamPlacementConstraints::Result SeamPlacementConstraints::portions(const ExtrusionEntity &loop,const LayerRegion &region) const
+SeamPlacementConstraints::Result SeamPlacementConstraints::portions(const ExtrusionEntity &loop,const LayerRegion &region, bool include_unconstrained) const
 {
     Result result;
     const std::map<const extrusion_entity_handle *,Binding>::const_iterator binding=m_impl->bindings.find(loop.handle());
@@ -456,7 +462,7 @@ SeamPlacementConstraints::Result SeamPlacementConstraints::portions(const Extrus
     }
     const std::map<const layer_handle *,Zones>::const_iterator zones=m_impl->layers.find(binding->second.layer);
     if (zones==m_impl->layers.end()) return result;
-    if (zones->second.enforced.edges.empty() && zones->second.blocked.edges.empty() && zones->second.volumes.empty()) return result;
+    if (!include_unconstrained && zones->second.enforced.edges.empty() && zones->second.blocked.edges.empty() && zones->second.volumes.empty()) return result;
     if (region.layer().handle()!=binding->second.layer)
         throw std::invalid_argument("Seam loop and source region belong to different layers.");
     visit_segments(loop,zones->second,binding->second.shift,binding->second.width,binding->second.role,region,result);
@@ -471,6 +477,47 @@ SeamPlacementConstraints::Status SeamPlacementConstraints::classify_point(
     const std::map<const layer_handle *,Zones>::const_iterator zones=m_impl->layers.find(binding->second.layer);
     if (zones==m_impl->layers.end()) return Status::Free;
     return classify(zones->second,{double(point.x)-binding->second.shift.x,double(point.y)-binding->second.shift.y},paint_margin);
+}
+
+SeamPlacementConstraints::Curve SeamPlacementConstraints::Curve::from_segment(c_extrusion_segment segment)
+{
+    return curve_from(segment);
+}
+
+double SeamPlacementConstraints::Curve::length() const
+{
+    return radius > 0 ? std::abs(radius*sweep) :
+        std::hypot(double(segment.point_b.x)-segment.point_a.x,double(segment.point_b.y)-segment.point_a.y);
+}
+
+double SeamPlacementConstraints::Curve::closest_parameter(c_point target, double begin, double end) const
+{
+    double t = begin;
+    if (radius > 0) {
+        t = parameter(std::atan2(double(target.y)-cy,double(target.x)-cx));
+    } else {
+        const double dx=double(segment.point_b.x)-segment.point_a.x, dy=double(segment.point_b.y)-segment.point_a.y;
+        const double norm=dx*dx+dy*dy;
+        if (norm > 0) t=((double(target.x)-segment.point_a.x)*dx+(double(target.y)-segment.point_a.y)*dy)/norm;
+    }
+    if (t >= begin && t <= end) return t;
+    const XY a=position(*this,begin), b=position(*this,end);
+    return std::hypot(a.x-target.x,a.y-target.y) <= std::hypot(b.x-target.x,b.y-target.y) ? begin : end;
+}
+
+void SeamPlacementConstraints::Curve::intersection_cuts(const Curve &other, std::vector<double> &cuts) const
+{
+    // Collinear lines and concentric arcs can overlap without an isolated
+    // line/circle intersection. Their finite endpoints still partition us.
+    add_cut(cuts,closest_parameter(other.segment.point_a));
+    add_cut(cuts,closest_parameter(other.segment.point_b));
+    if (other.radius > 0) cut_circle(*this,{other.cx,other.cy},other.radius,cuts);
+    else {
+        const XY n={double(other.segment.point_a.y)-other.segment.point_b.y,
+                    double(other.segment.point_b.x)-other.segment.point_a.x};
+        if (n.x != 0 || n.y != 0)
+            cut_line(*this,n,n.x*other.segment.point_a.x+n.y*other.segment.point_a.y,cuts);
+    }
 }
 
 }} // namespace slic3r_api::SeamPlacement

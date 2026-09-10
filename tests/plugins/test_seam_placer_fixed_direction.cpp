@@ -251,12 +251,14 @@ ExtrusionEntity arc_loop()
 }
 
 /* Execute the built-in provider and take ownership of its published session. */
-slic3r_api::SeamPlacer create_fixed_session(Print &print)
+slic3r_api::SeamPlacer create_fixed_session(Print &print, const char *provider_id = k_fixed_plugin)
 {
     Orchestrator &orchestrator = Orchestrator::instance();
     slic3r_api::OrchestratorView view(
         reinterpret_cast<orchestrator_handle *>(&orchestrator));
-    const slic3r_api::PluginView provider = view.find_plugin(k_fixed_plugin);
+    std::unique_ptr<ScopedSeamProviders> active;
+    if (std::string(provider_id)!="seam_placer.fixed") active.reset(new ScopedSeamProviders({provider_id}));
+    const slic3r_api::PluginView provider = view.find_plugin(provider_id);
     REQUIRE(provider.valid());
 
     PrintingPlan &plan = print.mutable_printing_plan();
@@ -572,8 +574,11 @@ TEST_CASE("Regional seam routing initializes providers and ranks overlapping reg
     SECTION("a strictly higher priority selects the later region")
     {
         g_routing_provider.reset();
-        g_routing_provider.priority = 100.f;
         RegionalRouterFixture fixture(true);
+        // Test a strictly higher rank without assuming Fixed's numeric policy.
+        slic3r_api::SeamPlacer fixed=create_fixed_session(fixture.prepared.print);
+        g_routing_provider.priority = fixed.get_priority(fixture.loop_view(),
+            slic3r_api::LayerRegion(reinterpret_cast<const layer_region_handle *>(fixture.fixed_region))) + 5.f;
         slic3r_api::SeamPlacement::SeamPlacerRouter router(
             reinterpret_cast<orchestrator_handle *>(&orchestrator),
             fixture.print_view(), fixture.plan_view(),
@@ -828,13 +833,14 @@ TEST_CASE("Ordering resolves the first intersecting source LayerRegion",
 #include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/Api/plugin/cpp/VolumeViews.hpp"
 #include "libslic3r/Plugins/SeamPlacer/SeamPlacementConstraints.hpp"
+#include "libslic3r/Plugins/SeamPlacer/RandomSeamPlacer.hpp"
 
 namespace {
 /* Quarter arcs avoid the native diagnostic orientation ambiguity at exactly
    180 degrees; their caches are initialized before applying an instance shift. */
-ExtrusionEntity constraint_arc_loop()
+ExtrusionEntity constraint_arc_loop(double radius_mm = 10)
 {
-    const coord_t radius=scale_i(10.0);
+    const coord_t radius=scale_i(radius_mm);
     Geometry::ArcWelder::Path path;
     path.emplace_back(Point(-radius,0),0.f,Geometry::ArcWelder::Orientation::Unknown);
     path.emplace_back(Point(0,-radius),float(radius),Geometry::ArcWelder::Orientation::CCW);
@@ -1330,4 +1336,371 @@ TEST_CASE("Seam dense painting index benchmark", "[.][plugins][seam-index-benchm
                   << " indexed_ms=" << std::chrono::duration<double,std::milli>(queried-query_start).count()
                   << " exhaustive_ms=" << std::chrono::duration<double,std::milli>(done-queried).count() << '\n';
     }
+}
+
+
+namespace {
+/* Real source configs expose the dynamic plugin definitions even in their
+   static object/region containers. Mutations are confined to test fixtures. */
+void random_options(ConstraintFixture &fixture, bool vertices, bool align, int seed=42)
+{
+    PrintRegionConfig &region=const_cast<PrintRegionConfig &>(fixture.region->region().config());
+    REQUIRE_NOTHROW(region.set_deserialize_strict("seam_random_vertices_only",vertices?"1":"0"));
+    REQUIRE_NOTHROW(region.set_deserialize_strict("seam_random_align_inner_seams",align?"1":"0"));
+    PrintObjectConfig &object=const_cast<PrintObjectConfig &>(fixture.prepared.print.object(0).config());
+    REQUIRE_NOTHROW(object.set_deserialize_strict("seam_random_seed",std::to_string(seed)));
+}
+
+/* Attach public inherited role, width and hole properties to a plan clone. */
+void random_tags(slic3r_api::MutableExtrusionEntity entity, bool external, bool hole=false, float width=0.4f)
+{
+    orchestrator_handle *orch=reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance());
+    c_extrusion_property_attributes *attributes=static_cast<c_extrusion_property_attributes *>(
+        entity.get_or_add_property_data_mutable(orch,EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
+    REQUIRE(attributes!=nullptr);
+    attributes->role=external?RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER:RAW_EXTRUSION_ROLE_PERIMETER;
+    attributes->width=width;
+    c_extrusion_property_perimeter *perimeter=static_cast<c_extrusion_property_perimeter *>(
+        entity.get_or_add_property_data_mutable(orch,EXTRUSION_PROPERTY_TYPE_PERIMETER));
+    REQUIRE(perimeter!=nullptr);
+    perimeter->perimeter_flags=C_EXTRUSION_PERIMETER_FLAG_LOOP | (hole?C_EXTRUSION_PERIMETER_FLAG_HOLE:0);
+}
+
+ExtrusionEntity random_rectangle(double x, double y, double sx, double sy)
+{
+    return ExtrusionEntity(false,ArcPolyline(Points{Point::new_scale(x,y),Point::new_scale(x+sx,y),
+        Point::new_scale(x+sx,y+sy),Point::new_scale(x,y+sy),Point::new_scale(x,y)}));
+}
+}
+
+TEST_CASE("Random seam registers regional switches and an object seed", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orch=Orchestrator::instance();
+    REQUIRE(orch.get_plugin("seam_placer.random")!=nullptr);
+    raw_config_option_def definition{};
+    REQUIRE(orchestrator_get_option_def(reinterpret_cast<orchestrator_handle *>(&orch),"seam_random_seed",&definition));
+    CHECK(definition.container_type==RAW_CONTAINER_TYPE_OBJECT);
+    CHECK(definition.type==RAW_CO_INT);
+    CHECK(std::string(definition.default_serialized_value)=="42");
+    CHECK(definition.has_min);
+    CHECK(definition.min_value==0);
+    PrintObjectConfig object;
+    CHECK(object.has("seam_random_seed"));
+    PrintRegionConfig region;
+    CHECK(region.opt_bool("seam_random_vertices_only"));
+    CHECK(region.opt_bool("seam_random_align_inner_seams"));
+    const std::string selector=Slic3r::Steps::plugin_exclusive_group_option_key(orch,SEAM_PLACER,"seam_placer_plugin");
+    REQUIRE(region.option(selector)!=nullptr);
+    CHECK(region.option(selector)->serialize()=="seam_placer.fixed");
+}
+
+TEST_CASE("Random seams deduplicate joins and remain stable across calls and sessions", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    random_options(fixture,true,false);
+    std::vector<slic3r_api::ExtrusionEntity> loops;
+    for (int i=0;i<256;++i) loops.push_back(fixture.add(composed_loop()).root());
+    slic3r_api::SeamPlacer first=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    // Its edge support lines cross the loop, but the actual zone is far away.
+    // Auxiliary analytic cuts must not become extra vertex-mode candidates.
+    fixture.box(4,40,2,1,ModelVolumeType::SEAM_POSITION_INSIDE);
+    slic3r_api::SeamPlacer second=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    std::map<std::pair<coord_t,coord_t>,int> histogram;
+    for (const slic3r_api::ExtrusionEntity &loop:loops) {
+        const c_point point=first.place_seam(loop,fixture.view(),{0,0});
+        CHECK(same_point(point,second.place_seam(loop,fixture.view(),{100,200})));
+        const c_point local=fixture.local(point);
+        CHECK((local.x==0 || local.x==scale_i(10)));
+        CHECK((local.y==0 || local.y==scale_i(10)));
+        ++histogram[{local.x,local.y}];
+        CHECK(loop.child_count()==3);
+    }
+    REQUIRE(histogram.size()==4);
+    for (const std::pair<const std::pair<coord_t,coord_t>,int> &entry:histogram) {
+        CHECK(entry.second>40);
+        CHECK(entry.second<90);
+    }
+    std::vector<std::future<c_point>> futures;
+    for (int i=0;i<8;++i) futures.push_back(std::async(std::launch::async,[&first,&loops,&fixture,i] {
+        return first.place_seam(loops.front(),fixture.view(),{i*100,-i*300});
+    }));
+    for (std::future<c_point> &future:futures) CHECK(same_point(future.get(),first.place_seam(loops.front(),fixture.view(),{0,0})));
+    random_options(fixture,true,false,43);
+    slic3r_api::SeamPlacer changed=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    size_t differences=0;
+    for (const slic3r_api::ExtrusionEntity &loop:loops)
+        differences+=!same_point(first.place_seam(loop,fixture.view(),{0,0}),changed.place_seam(loop,fixture.view(),{0,0}));
+    CHECK(differences>100);
+}
+
+TEST_CASE("Random continuous seams are weighted by true segment length", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    random_options(fixture,false,false);
+    std::vector<slic3r_api::ExtrusionEntity> loops;
+    for (int i=0;i<256;++i) loops.push_back(fixture.add(random_rectangle(0,0,20,2)).root());
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    int horizontal=0, intermediate=0;
+    for (const slic3r_api::ExtrusionEntity &loop:loops) {
+        const c_point point=fixture.local(session.place_seam(loop,fixture.view(),{0,0}));
+        horizontal+=point.y==0 || point.y==scale_i(2);
+        intermediate+=(point.x!=0 && point.x!=scale_i(20)) || (point.y!=0 && point.y!=scale_i(2));
+    }
+    CHECK(horizontal>215);
+    CHECK(horizontal<250);
+    CHECK(intermediate==256);
+}
+
+TEST_CASE("Random seams include narrow constraint boundaries on lines and arcs", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    const bool vertices=GENERATE(false,true), arc=GENERATE(false,true);
+    random_options(fixture,vertices,false);
+    fixture.box(arc?5.9:4.9,arc?7.8:-0.1,0.2,0.4,ModelVolumeType::SEAM_POSITION_INSIDE);
+    const slic3r_api::ExtrusionEntity loop=fixture.add(arc?constraint_arc_loop():square_loop()).root();
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    const c_point point=fixture.local(session.place_seam(loop,fixture.view(),{0,0}));
+    CHECK(unscaled(point.x)>=(arc?5.899:4.899));
+    CHECK(unscaled(point.x)<=(arc?6.101:5.101));
+    if (arc) CHECK(std::hypot(unscaled(point.x),unscaled(point.y))==Approx(10).margin(0.00001));
+    else CHECK(point.y==0);
+    if (vertices) CHECK(std::min(std::abs(unscaled(point.x)-(arc?5.9:4.9)),std::abs(unscaled(point.x)-(arc?6.1:5.1)))<0.00001);
+}
+
+TEST_CASE("Random seams respect painting priority and the fully blocked fallback", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    random_options(fixture,true,false);
+    const bool fully_blocked=GENERATE(false,true);
+    fixture.box(4,-1,2,2,ModelVolumeType::SEAM_POSITION_INSIDE);
+    fixture.box(fully_blocked?-10:3,fully_blocked?-10:-2,fully_blocked?40:4,fully_blocked?40:4,
+                ModelVolumeType::MODEL_PART,EnforcerBlockerType::BLOCKER);
+    const slic3r_api::ExtrusionEntity loop=fixture.add(square_loop()).root();
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    const c_point point=session.place_seam(loop,fixture.view(),{0,0});
+    PluginStorage storage;
+    slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
+    constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+                           reinterpret_cast<storage_handle *>(&storage));
+    CHECK(constraints.classify_point(loop,point,fixture.view().flow(RAW_EXTRUSION_ROLE_PERIMETER).width)==
+        (fully_blocked?slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Blocked:slic3r_api::SeamPlacement::SeamPlacementConstraints::Status::Free));
+    CHECK(storage.size()==0);
+}
+
+TEST_CASE("Random inner seams align by projection or nearby vertex", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    random_options(fixture,true,true);
+    const float width=GENERATE(0.1f,10.f);
+    const slic3r_api::PrintingExtrusion outer=fixture.add(random_rectangle(0,0,20,20));
+    random_tags(outer.mutable_root(),true);
+    const slic3r_api::ExtrusionEntity outer_loop=outer.root();
+    const slic3r_api::PrintingExtrusion inner=fixture.add(random_rectangle(2,2,16,16));
+    random_tags(inner.mutable_root(),false,false,width);
+    // Force the external seam to the middle of its right edge, without
+    // intersecting the internal loop. Projection must then be between vertices.
+    fixture.box(19.9,9.9,0.2,0.2,ModelVolumeType::SEAM_POSITION_INSIDE);
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    const c_point external=fixture.local(session.place_seam(outer_loop,fixture.view(),{0,0}));
+    const c_point internal=fixture.local(session.place_seam(inner.root(),fixture.view(),{0,0}));
+    CHECK(unscaled(internal.x)==Approx(18).margin(0.00001));
+    if (width<1) CHECK(internal.y==external.y);
+    else CHECK((internal.y==scale_i(2) || internal.y==scale_i(18)));
+}
+
+TEST_CASE("Random seed zero stays stable during a session and unknown loops are rejected", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    random_options(fixture,false,false,0);
+    const slic3r_api::ExtrusionEntity loop=fixture.add(constraint_arc_loop()).root();
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    const c_point first=session.place_seam(loop,fixture.view(),{0,0});
+    for (int i=0;i<16;++i) CHECK(same_point(first,session.place_seam(loop,fixture.view(),{i,2*i})));
+    CHECK(std::hypot(unscaled(fixture.local(first).x),unscaled(fixture.local(first).y))==Approx(10).margin(0.00001));
+    const ExtrusionEntity unrelated=square_loop();
+    CHECK_THROWS(session.place_seam(extrusion_view(unrelated),fixture.view(),{0,0}));
+}
+
+
+TEST_CASE("Random alignment prefers contours unless holes improve by a third width", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    random_options(fixture,true,true);
+    const double improvement=GENERATE(0.99,1.0,1.01);
+    const bool contour_present=GENERATE(false,true);
+    slic3r_api::ExtrusionEntity contour;
+    if (contour_present) {
+        const slic3r_api::PrintingExtrusion external=fixture.add(random_rectangle(0,-22,20,64));
+        random_tags(external.mutable_root(),true);
+        contour=external.root();
+        fixture.box(19.9,9.999,0.2,0.002,ModelVolumeType::SEAM_POSITION_INSIDE);
+    }
+    const double right=16+improvement;
+    const slic3r_api::PrintingExtrusion hole=fixture.add(random_rectangle(5,5,right-5,10));
+    random_tags(hole.mutable_root(),true,true);
+    const slic3r_api::ExtrusionEntity hole_loop=hole.root();
+    fixture.box(right-0.001,11.999,0.002,0.002,ModelVolumeType::SEAM_POSITION_INSIDE);
+    const slic3r_api::PrintingExtrusion farther_hole=fixture.add(random_rectangle(5,0,3,3));
+    random_tags(farther_hole.mutable_root(),true,true);
+    const slic3r_api::PrintingExtrusion inner=fixture.add(random_rectangle(2,-20,16,60));
+    random_tags(inner.mutable_root(),false,false,3.f);
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    const c_point h=fixture.local(session.place_seam(hole_loop,fixture.view(),{0,0}));
+    const c_point result=fixture.local(session.place_seam(inner.root(),fixture.view(),{0,0}));
+    CHECK(unscaled(h.x)==Approx(right).margin(0.00001));
+    CHECK(unscaled(result.x)==Approx(18).margin(0.00001));
+    if (!contour_present) CHECK(result.y==h.y);
+    else {
+        const c_point c=fixture.local(session.place_seam(contour,fixture.view(),{0,0}));
+        // Compare actual integer coordinates, including native mesh slicing
+        // round-off. Width 3 mm makes the threshold exactly 1 mm.
+        const bool use_hole=(double(c.x)-scale_i(18))-(scale_i(18)-double(h.x))>=scale_i(1);
+        CHECK(result.y==(use_hole?h.y:c.y));
+        if (improvement<1) CHECK_FALSE(use_hole);
+        if (improvement>1) CHECK(use_hole);
+    }
+}
+
+TEST_CASE("Random alignment handles nested real arcs and excludes crossing contours", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    random_options(fixture,true,true);
+    const slic3r_api::PrintingExtrusion external=fixture.add(constraint_arc_loop());
+    random_tags(external.mutable_root(),true);
+    const slic3r_api::ExtrusionEntity outer=external.root();
+    const bool crossing=GENERATE(false,true);
+    // A circle of radius 8 fits inside radius 10; a shifted circle crosses it.
+    ArcPolyline path=constraint_arc_loop(8).as_polyline();
+    if (crossing) path.translate(Point::new_scale(6,0));
+    const ExtrusionEntity smaller(false,std::move(path));
+    const slic3r_api::PrintingExtrusion internal=fixture.add(smaller);
+    random_tags(internal.mutable_root(),false,false,0.1f);
+    slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    const c_point point=fixture.local(session.place_seam(internal.root(),fixture.view(),{0,0}));
+    if (!crossing) {
+        const c_point master=fixture.local(session.place_seam(outer,fixture.view(),{0,0}));
+        CHECK(unscaled(point.x)==Approx(unscaled(master.x)*0.8).margin(0.00001));
+        CHECK(unscaled(point.y)==Approx(unscaled(master.y)*0.8).margin(0.00001));
+    } else {
+        random_options(fixture,true,false);
+        slic3r_api::SeamPlacer independent=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+        CHECK(same_point(point,fixture.local(independent.place_seam(internal.root(),fixture.view(),{0,0}))));
+    }
+}
+
+
+TEST_CASE("Random seed entropy is consumed only once per zero-seeded object", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture fixture;
+    const bool zero=GENERATE(false,true);
+    random_options(fixture,false,false,zero?0:42);
+    std::vector<slic3r_api::ExtrusionEntity> loops;
+    for (int i=0;i<4;++i) loops.push_back(fixture.add(square_loop()).root());
+    PluginStorage storage;
+    int calls=0;
+    std::vector<c_point> previous;
+    for (int run=0;run<2;++run) {
+        raw_seam_placer_instance instance=slic3r_api::make_seam_placer_instance(
+            slic3r_api::SeamPlacement::RandomPlugin::make_random_seam_session(reinterpret_cast<storage_handle *>(&storage),[&] {
+                ++calls; return uint64_t(12345);
+            }),
+            slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+            {fixture.view().print_region()});
+        slic3r_api::SeamPlacer session(instance);
+        for (size_t i=0;i<loops.size();++i) {
+            const c_point point=session.place_seam(loops[i],fixture.view(),{0,0});
+            if (run==0) previous.push_back(point);
+            else CHECK(same_point(point,previous[i]));
+        }
+        CHECK(storage.size()==0);
+        CHECK(calls==(zero?run+1:0));
+    }
+}
+
+TEST_CASE("Random seams keep independent instance coordinates and object seeds", "[plugins][seam-placer][random]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConstraintFixture first, second;
+    random_options(first,false,false,41);
+    random_options(second,false,false,83);
+    PrintInstances &instances=const_cast<PrintInstances &>(first.prepared.print.object(0).instances());
+    instances.push_back(instances.front());
+    instances.back().shift+=Point::new_scale(100,-50);
+    const slic3r_api::ExtrusionEntity a=first.add(square_loop(),0).root();
+    const slic3r_api::ExtrusionEntity b=first.add(square_loop(),1).root();
+    slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&first.prepared.print.mutable_printing_plan()));
+    const ExtrusionEntity square=square_loop();
+    const slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
+        slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&second.source)),
+        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),0);
+    REQUIRE(other.mutable_root().translate(second.view().layer().object().instance_shift(0)));
+    PluginStorage storage;
+    const std::function<slic3r_api::SeamPlacer()> create=[&] {
+        raw_seam_placer_instance instance=slic3r_api::make_seam_placer_instance(
+            slic3r_api::SeamPlacement::RandomPlugin::make_random_seam_session(reinterpret_cast<storage_handle *>(&storage)),
+            plan,{first.view().print_region(),second.view().print_region()});
+        return slic3r_api::SeamPlacer(instance);
+    };
+    slic3r_api::SeamPlacer session=create();
+    const c_point original=session.place_seam(a,first.view(),{0,0});
+    for (const std::pair<slic3r_api::ExtrusionEntity,uint16_t> &entry:{std::make_pair(a,uint16_t(0)),std::make_pair(b,uint16_t(1))}) {
+        const c_point point=first.local(session.place_seam(entry.first,first.view(),{0,0}),entry.second);
+        CHECK(point.x>=0); CHECK(point.x<=scale_i(10)); CHECK(point.y>=0); CHECK(point.y<=scale_i(10));
+    }
+    const c_point other_original=session.place_seam(other.root(),second.view(),{0,0});
+    random_options(second,false,false,84);
+    slic3r_api::SeamPlacer changed=create();
+    CHECK(same_point(original,changed.place_seam(a,first.view(),{0,0})));
+    CHECK_FALSE(same_point(other_original,changed.place_seam(other.root(),second.view(),{0,0})));
+    CHECK(storage.size()==0);
+}
+
+
+TEST_CASE("Random curve utilities handle degenerate segments and clockwise major arcs", "[plugins][seam-placer][random]")
+{
+    using Curve=slic3r_api::SeamPlacement::SeamPlacementConstraints::Curve;
+    c_extrusion_segment segment{};
+    segment.point_a=segment.point_b=mm_point(3,4);
+    const Curve point=Curve::from_segment(segment);
+    CHECK(point.length()==0);
+    CHECK(same_point(point.point(point.closest_parameter(mm_point(10,10))),mm_point(3,4)));
+    segment.point_a=mm_point(10,0);
+    segment.point_b=mm_point(0,10);
+    segment.radius=-float(scale_i(10));
+    segment.orientation=RAW_EXTRUSION_ARC_ORIENTATION_CW;
+    const Curve major=Curve::from_segment(segment);
+    CHECK(major.length()==Approx(scale_i(10)*3*3.14159265358979323846/2));
+    CHECK(same_point(major.point(major.closest_parameter(mm_point(-20,0))),mm_point(-10,0)));
+}
+
+
+TEST_CASE("Regional seam router selects the configured Random provider", "[plugins][seam-placer][random][router]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ScopedSeamProviders active({"seam_placer.random"});
+    ConstraintFixture fixture;
+    random_options(fixture,false,false);
+    const std::string selector=Slic3r::Steps::plugin_exclusive_group_option_key(Orchestrator::instance(),SEAM_PLACER,"seam_placer_plugin");
+    PrintRegionConfig &config=const_cast<PrintRegionConfig &>(fixture.region->region().config());
+    REQUIRE_NOTHROW(config.set_deserialize_strict(selector,"seam_placer.random"));
+    const slic3r_api::ExtrusionEntity loop=fixture.add(square_loop()).root();
+    slic3r_api::SeamPlacer reference=create_fixed_session(fixture.prepared.print,"seam_placer.random");
+    PluginStorage storage;
+    slic3r_api::SeamPlacement::SeamPlacerRouter router(
+        reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+        slic3r_api::Print(reinterpret_cast<const print_handle *>(&fixture.prepared.print)),
+        slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
+        reinterpret_cast<storage_handle *>(&storage));
+    CHECK(same_point(router.place_seam(loop,{0,0}),reference.place_seam(loop,fixture.view(),{100,200})));
+    CHECK(storage.size()==0);
 }

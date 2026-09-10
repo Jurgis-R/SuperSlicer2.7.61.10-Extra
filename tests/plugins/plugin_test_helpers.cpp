@@ -51,6 +51,7 @@
 #include "libslic3r/Plugins/Ordering/DefaultOrdering.hpp"
 #include "libslic3r/Plugins/PluginLoader.hpp"
 #include "libslic3r/Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp"
+#include "libslic3r/Plugins/SeamPlacer/RandomSeamPlacer.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimSkirtTrim.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimGenerator.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultSkirtGenerator.hpp"
@@ -383,6 +384,7 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
         slic3r_api::SeamPlacement::FixedDirectionPlugin::register_fixed_direction_seam_placer_plugin(
             orchestrator_handle_value);
+        slic3r_api::SeamPlacement::RandomPlugin::register_random_seam_placer_plugin(orchestrator_handle_value);
         register_regional_seam_test_provider(orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateToolChangePlugin::register_create_tool_change_plugin(
             orchestrator_handle_value);
@@ -495,6 +497,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.printing_extrusion.presort.default");
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
         activate_plugin_or_fail(orchestrator, "seam_placer.fixed");
+        activate_plugin_or_fail(orchestrator, "seam_placer.random");
         // Keep a second SeamPlacer active only while the generated regional
         // selector is registered and initialized for its dedicated tests.
         activate_plugin_or_fail(orchestrator, "slic3r.test.seam_placer.regional");
@@ -545,6 +548,7 @@ void ensure_plugin_test_runtime_initialized()
         orchestrator.initialize_plugins();
         register_exclusive_step_group_ui_fragments(orchestrator);
         orchestrator.set_plugin_active("slic3r.test.seam_placer.regional", false);
+        orchestrator.set_plugin_active("seam_placer.random", false);
         initialize_fff_print_config_cache();
         initialize_sla_print_config_cache();
         PrintConfigDef::instance_mutable().finalize();
