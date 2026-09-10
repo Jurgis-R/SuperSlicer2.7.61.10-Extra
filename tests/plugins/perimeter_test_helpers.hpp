@@ -81,7 +81,6 @@ struct PreparedPerimeterPrint
 {
     Model model;
     Print print;
-    std::vector<std::unique_ptr<PrintRegion>> extra_regions;
 };
 
 struct PerimeterRegionOverride

@@ -8012,8 +8012,6 @@ void GCodeGenerator::extrude_infill(const ExtrudeArgs& print_args, const LayerRe
         const LayerRegion &layerm = **region_island.regions().begin(); //FIXME now you can have multiple region, to have different speeds
         // PrintObjects own the PrintRegions, thus the pointer to PrintRegion would be unique to a PrintObject, they would not
                 // identify the content of PrintRegion accross the whole print uniquely. Translate to a Print specific PrintRegion.
-        assert(&print.print_region(layerm.region().print_region_id()) == &layerm.region());
-        //m_region = &print.print_region(layerm.region().print_region_id());
         m_region = &layerm.region();
         if (m_region->config().infill_first == is_infill_first) {
             temp_fill_extrusions.clear();
@@ -8042,7 +8040,7 @@ void GCodeGenerator::extrude_ironing(const ExtrudeArgs &print_args, const LayerR
         const LayerRegion &layerm = **region_island.regions().begin(); //FIXME now you can have multiple region, to have different speeds
         // PrintObjects own the PrintRegions, thus the pointer to PrintRegion would be unique to a PrintObject, they would not
                 // identify the content of PrintRegion accross the whole print uniquely. Translate to a Print specific PrintRegion.
-        m_region = &print.print_region(layerm.region().print_region_id());
+        m_region = &layerm.region();
         temp_fill_extrusions.clear();
         const ExtrusionEntityCollection &eec = region_island.extrusion(LayerRegionIsland::IRONINGS);
         if (shall_print_this_extrusion_collection(print_args, &eec, layerm.region())) {

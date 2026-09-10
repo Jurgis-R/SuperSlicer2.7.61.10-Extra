@@ -63,7 +63,7 @@ using PrintInstances = std::vector<PrintInstance>;
 using PrintObjectRegionsPtr = std::shared_ptr<PrintObjectRegions>;
 using PrintRegionUPtr = std::unique_ptr<PrintRegion>;
 using PrintRegionUPtrs = std::vector<PrintRegionUPtr>;
-using PrintRegionPtrs = std::vector<PrintRegion*>;
+using PrintRegionPtrs = std::vector<const PrintRegion*>;
 
 template<class T>
 using SpanOfConstPtrs = tcb::span<const T* const>;

@@ -113,6 +113,24 @@ class PythonDataTreeViewTests(unittest.TestCase):
     def make_api(self):
         return type("Api", (), {"host": DataTreeHost(self.generated)})()
 
+    def test_region_registration_and_immutable_public_surface(self):
+        api = self.make_api()
+        calls = []
+        def register(printer, config):
+            calls.append((address(printer), address(config)))
+            return 901
+        api.host.print_register_print_region_config = register
+        region = self.views.Print(api, 11).register_print_region_config(self.views.Config(api, 21))
+        self.assertEqual(region.address, 901)
+        self.assertEqual(calls, [(11, 21)])
+        self.assertFalse(hasattr(self.views, "MutablePrintRegion"))
+        self.assertFalse(hasattr(self.views.MutableObject, "print_region_mutable"))
+        self.assertTrue(hasattr(self.views.MutablePrint, "config_mutable"))
+        self.assertTrue(hasattr(self.views.MutableObject, "config_mutable"))
+        api.host.print_register_print_region_config = lambda *args: None
+        with self.assertRaises(ValueError):
+            self.views.Print(api, 11).register_print_region_config(self.views.Config(api, 21))
+
     def test_layer_region_flows_and_region_island_iteration(self):
         api = self.make_api()
         layer_region = self.views.LayerRegion(api, 20)

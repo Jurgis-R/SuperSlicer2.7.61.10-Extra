@@ -130,8 +130,7 @@ void add_region_with_settings(PreparedPerimeterPrint &prepared,
     for (const std::pair<std::string, std::string> &setting : settings)
         config.set_deserialize_strict(setting.first, setting.second);
 
-    prepared.extra_regions.push_back(std::make_unique<PrintRegion>(config));
-    ApiInternal::LayerAccess::add_region(layer, *prepared.extra_regions.back());
+    ApiInternal::LayerAccess::add_region(layer, prepared.print.register_print_region(config));
     set_region_area(layer.region(layer.region_count() - 1), area);
 }
 

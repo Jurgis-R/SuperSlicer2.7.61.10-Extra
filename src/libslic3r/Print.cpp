@@ -204,6 +204,53 @@ void Print::reset_printing_plan()
     m_printing_plan.reset();
 }
 
+// Own complete immutable snapshots until clear(). The mutex serializes only
+// registry lookup/insertion; apply/clear and changes to defaults require idle workers.
+const PrintRegion &Print::register_print_region(const PrintRegionConfig &config)
+{
+    const size_t hash = config.hash();
+    std::lock_guard<std::mutex> lock(m_region_registry_mutex);
+    std::vector<std::unique_ptr<const PrintRegion>> &bucket = m_region_registry[hash];
+    for (const std::unique_ptr<const PrintRegion> &region : bucket)
+        if (region->config() == config)
+            return *region;
+    bucket.push_back(std::make_unique<const PrintRegion>(config, hash));
+    return *bucket.back();
+}
+
+// Validation and copying finish before interning, so a rejected partial config
+// cannot leave a partially populated snapshot in the registry.
+const PrintRegion *Print::register_print_region_config(const ConfigBase &config)
+{
+    PrintRegionConfig complete = m_default_region_config;
+    for (const std::string &key : config.keys()) {
+        const ConfigOption *source = config.optptr(key);
+        ConfigOption *target = complete.optptr(key, true);
+        if (source == nullptr || target == nullptr || source->type() != target->type())
+            return nullptr;
+        target->set(*source);
+    }
+    return &register_print_region(complete);
+}
+
+// Registered historical configurations are deliberately absent here. Traverse
+// active associations in model order, with the hidden auxiliary object last.
+void Print::rebuild_active_print_regions()
+{
+    m_print_regions.clear();
+    std::set<const PrintRegion*> seen;
+    const auto append_object = [this, &seen](const PrintObject &object) {
+        for (const PrintRegion &region : object.all_regions())
+            if (seen.insert(&region).second)
+                m_print_regions.push_back(&region);
+    };
+    for (const PrintObjectUPtr &object : m_objects)
+        if (object->shared_regions() != nullptr)
+            append_object(*object);
+    if (m_auxiliary_object != nullptr)
+        append_object(*m_auxiliary_object);
+}
+
 PrintObject &Print::mutable_auxiliary_object()
 {
     if (m_auxiliary_object)
@@ -216,35 +263,10 @@ PrintObject &Print::mutable_auxiliary_object()
     see it. Plugins reach it through an explicit data-tree API.
     */
     std::shared_ptr<PrintObjectRegions> shared_regions = std::make_shared<PrintObjectRegions>();
-    shared_regions->all_regions.emplace_back(std::make_unique<PrintRegion>(
-        m_default_region_config,
-        m_default_region_config.hash(),
-        0));
-
-    /*
-    Region zero is always the fallback region. If the real print already has an
-    equivalent global PrintRegion, keep its global id; otherwise the fallback is
-    still usable for auxiliary-only geometry that does not need a print-global
-    region id.
-    */
-    for (const PrintRegion *region : m_print_regions) {
-        if (region != nullptr && *shared_regions->all_regions.front() == *region) {
-            shared_regions->all_regions.front()->m_print_region_id = region->print_region_id();
-            break;
-        }
-    }
-
-    for (const PrintRegion *region : m_print_regions) {
-        if (region == nullptr || *shared_regions->all_regions.front() == *region)
-            continue;
-
-        const int print_object_region_id = int(shared_regions->all_regions.size());
-        shared_regions->all_regions.emplace_back(std::make_unique<PrintRegion>(
-            region->config(),
-            region->config_hash(),
-            print_object_region_id));
-        shared_regions->all_regions.back()->m_print_region_id = region->print_region_id();
-    }
+    shared_regions->all_regions.push_back(&register_print_region(m_default_region_config));
+    for (const PrintRegion *region : m_print_regions)
+        if (region != shared_regions->all_regions.front())
+            shared_regions->all_regions.push_back(region);
 
     /*
     The hidden object covers the print bed in XY for diagnostics and future
@@ -259,12 +281,14 @@ PrintObject &Print::mutable_auxiliary_object()
         scale_i(m_config.max_print_height.value));
 
     m_auxiliary_object.reset(new PrintObject(this, size, std::move(shared_regions)));
+    rebuild_active_print_regions();
     return *m_auxiliary_object;
 }
 
 void Print::reset_auxiliary_object()
 {
     m_auxiliary_object.reset();
+    rebuild_active_print_regions();
 }
 
 void Print::set_task(const TaskParams &params)
@@ -357,13 +381,16 @@ void Print::clear() {
     std::scoped_lock<std::mutex> lock(this->state_mutex());
     // The following call should stop background processing if it is running.
     this->invalidate_all_steps();
+    // Plans borrow islands and layers; release them before their owners.
+    this->reset_printing_plan();
+    this->reset_step_execution_plan_all();
     m_objects.clear();
     this->reset_auxiliary_object();
     m_print_regions.clear();
     m_model.clear_objects();
     m_records.clear();
-    this->reset_printing_plan();
-    this->reset_step_execution_plan_all();
+    std::lock_guard<std::mutex> registry_lock(m_region_registry_mutex);
+    m_region_registry.clear();
 }
 
 void Print::mark_step_for_execution(slicing_step_t step)

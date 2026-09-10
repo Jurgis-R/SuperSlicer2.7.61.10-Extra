@@ -16,17 +16,27 @@
 
 namespace Slic3r {
 
-PrintRegion::PrintRegion(const PrintRegionConfig& config) : PrintRegion(config, config.hash()) {}
-PrintRegion::PrintRegion(const PrintRegionConfig &config, const size_t config_hash, int print_object_region_id)
-    : m_config(config), m_config_hash(config_hash), m_print_object_region_id(print_object_region_id) {}
-PrintRegion::PrintRegion(PrintRegionConfig &&config) : PrintRegion(std::move(config), config.hash()) {}
-PrintRegion::PrintRegion(PrintRegionConfig &&config, const size_t config_hash, int print_object_region_id)
-    : m_config(std::move(config)), m_config_hash(config_hash), m_print_object_region_id(print_object_region_id) {}
-
-void PrintRegion::set_config(PrintRegionConfig &&config) {
-    m_config = std::move(config);
-    m_config_hash = m_config.hash();
+// Detach fallback lookup from caller-owned configs. Every registered regional
+// option is copied; unrelated parent options are not part of regional identity.
+static PrintRegionConfig snapshot_config(const PrintRegionConfig &config);
+static PrintRegionConfig snapshot_config(const PrintRegionConfig &config)
+{
+    PrintRegionConfig snapshot(config);
+    snapshot.parent = nullptr;
+    return snapshot;
 }
+
+PrintRegion::PrintRegion(const PrintRegionConfig &config) : PrintRegion(config, config.hash()) {}
+PrintRegion::PrintRegion(const PrintRegionConfig &config, const size_t config_hash)
+    : m_config(snapshot_config(config)), m_config_hash(config_hash)
+{
+    // keys_ref() lazily populates a mutable cache. Warm it before publication,
+    // so concurrent const readers never try to initialize it together.
+    m_config.keys_ref();
+}
+PrintRegion::PrintRegion(PrintRegionConfig &&config) : PrintRegion(config, config.hash()) {}
+PrintRegion::PrintRegion(PrintRegionConfig &&config, const size_t config_hash)
+    : PrintRegion(static_cast<const PrintRegionConfig &>(config), config_hash) {}
 
 // 1-based extruder identifier for this region and role.
 uint16_t PrintRegion::extruder(FlowRole role, const PrintObject &object) const {
@@ -123,8 +133,9 @@ Flow PrintRegion::flow(const PrintObject &object, FlowRole role, double layer_he
     // Get the configured nozzle_diameter for the extruder associated to the flow role requested.
     // Here this->extruder(role) - 1 may underflow to MAX_INT, but then the get_at() will follback to zero'th element, so everything is all right.
     double nozzle_diameter = object.print()->config().nozzle_diameter.get_at(this->extruder(role, object) - 1);
+    // Filament settings belong to the current Print, not the regional snapshot.
     Flow flow = Flow::new_from_config_width(role, config_width, config_spacing,(float)nozzle_diameter, (float)layer_height,
-        (float)std::min(overlap, this->config().get_computed_value("filament_max_overlap", this->extruder(role, object) - 1)) );
+        (float)std::min(overlap, object.print()->config().get_computed_value("filament_max_overlap", this->extruder(role, object) - 1)) );
         //bridge ? (float)m_config.bridge_flow_ratio.get_effective_value(1) : 0.0f);
     if (value_oddlayer > 0) {
         flow = flow.with_spacing(is_ratio_oddlayer ? flow.spacing() * value_oddlayer : value_oddlayer);

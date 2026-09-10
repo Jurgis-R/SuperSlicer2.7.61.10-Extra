@@ -39,7 +39,7 @@ struct ProviderBatch;
 struct LoopRoute;
 
 /* Enumerate unique PrintRegions in stable object/region order. */
-std::vector<PrintRegion> collect_print_regions(const Print &print);
+std::vector<PrintRegion> collect_print_regions(const Print &print, const PrintingPlan &plan);
 
 /* Group regions by the active provider selected from their configurations. */
 std::vector<ProviderBatch> group_regions_by_provider(
@@ -80,7 +80,7 @@ struct LoopRoute
     std::shared_ptr<SeamPlacer> session;
 };
 
-std::vector<PrintRegion> collect_print_regions(const Print &print)
+std::vector<PrintRegion> collect_print_regions(const Print &print, const PrintingPlan &plan)
 {
     std::vector<PrintRegion> result;
     std::map<const print_region_handle *, bool> seen;
@@ -90,6 +90,24 @@ std::vector<PrintRegion> collect_print_regions(const Print &print)
             const PrintRegion region = object.print_region(region_idx);
             if (region.valid() && seen.emplace(region.handle(), true).second)
                 result.push_back(region);
+        }
+    }
+    for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        const PrintingGroup group = plan.group(group_idx);
+        for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                for (uint32_t idx = 0; idx < tool.extrusion_count(); ++idx) {
+                    const LayerRegionIsland island = tool.extrusion(idx).region_island();
+                    if (!island.valid()) continue;
+                    for (uint32_t region_idx = 0; region_idx < island.region_count(); ++region_idx) {
+                        const PrintRegion region = island.region(region_idx).print_region();
+                        if (region.valid() && seen.emplace(region.handle(), true).second)
+                            result.push_back(region);
+                    }
+                }
+            }
         }
     }
     return result;
@@ -270,7 +288,7 @@ SeamPlacerRouter::SeamPlacerRouter(orchestrator_handle *orchestrator,
     if (orchestrator == nullptr || !print.valid() || !plan.valid() || scratch_storage == nullptr)
         throw std::invalid_argument(
             "SeamPlacerRouter needs an orchestrator, Print, PrintingPlan, and scratch storage.");
-    const std::vector<PrintRegion> regions = collect_print_regions(print);
+    const std::vector<PrintRegion> regions = collect_print_regions(print, plan);
     m_impl->batches = group_regions_by_provider(orchestrator, regions);
     m_impl->sessions = create_sessions(orchestrator, print, plan, m_impl->batches);
     m_impl->routes = build_plan_routes(scratch_storage, plan, m_impl->sessions);

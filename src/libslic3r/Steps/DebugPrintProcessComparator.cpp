@@ -11,6 +11,7 @@
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/PrintRegion.hpp"
+#include "libslic3r/PrintObjectRegion.hpp"
 #include "libslic3r/Surface.hpp"
 #include "libslic3r/SurfaceCollection.hpp"
 
@@ -96,7 +97,7 @@ std::vector<int> region_ids(const LayerRegionSetCPtrs &regions)
     std::vector<int> out;
     out.reserve(regions.size());
     for (const LayerRegion *region : regions)
-        out.push_back(region == nullptr ? -1 : region->region().print_object_region_id());
+        out.push_back(region == nullptr ? -1 : region->layer()->object()->shared_regions()->region_index(&region->region()));
     return out;
 }
 
@@ -195,7 +196,7 @@ bool same_layer_region(const LayerRegion &lhs,
                        std::string &out_error,
                        const std::string &path)
 {
-    if (!same_value(lhs.region().print_object_region_id(), rhs.region().print_object_region_id(), out_error, path, "print_object_region_id"))
+    if (!same_value(lhs.layer()->object()->shared_regions()->region_index(&lhs.region()), rhs.layer()->object()->shared_regions()->region_index(&rhs.region()), out_error, path, "local_region_index"))
         return false;
     if (!same_expolygons(lhs.get_raw_slices(), rhs.get_raw_slices(), out_error, path + ".raw_slices"))
         return false;

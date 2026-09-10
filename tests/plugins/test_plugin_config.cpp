@@ -27,6 +27,9 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "libslic3r/Print.hpp"
+#include "libslic3r/PrintRegion.hpp"
+#include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
@@ -971,4 +974,115 @@ TEST_CASE("Configuration definition snapshots are isolated between threads",
     REQUIRE(succeeded[1]);
     CHECK(before == after);
     CHECK(addresses[0] != addresses[1]);
+}
+
+
+namespace {
+// Deliberately collide two unequal dynamic values to exercise the equality
+// check inside a hash bucket, independently of the platform hash algorithm.
+class CollidingRegionOption : public Slic3r::ConfigOptionInt
+{
+public:
+    explicit CollidingRegionOption(int32_t value) : ConfigOptionInt(value) {}
+    size_t hash() const noexcept override { return 17; }
+    Slic3r::ConfigOption *clone() const override { return new CollidingRegionOption(*this); }
+};
+}
+
+TEST_CASE("Print registry validates and owns immutable regional snapshots", "[plugins][config][print-region-registry]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    print_handle *handle = reinterpret_cast<print_handle *>(&print);
+    DynamicPrintConfig overrides;
+    overrides.set_key_value("perimeters", new ConfigOptionInt(7));
+    const config_handle *input = ApiHost::to_config_handle(&overrides);
+    const print_region_handle *first = print_register_print_region_config(handle, input);
+    REQUIRE(first != nullptr);
+    CHECK(print_register_print_region_config(handle, input) == first);
+    CHECK(print.num_print_regions() == 0); // registration does not activate geometry
+    const PrintRegion &native = *reinterpret_cast<const PrintRegion *>(first);
+    CHECK(native.config().perimeters.value == 7);
+    CHECK(native.config().fill_density == print.default_region_config().fill_density);
+    overrides.set_key_value("perimeters", new ConfigOptionInt(8));
+    CHECK(native.config().perimeters.value == 7);
+    CHECK(print_register_print_region_config(handle, input) != first);
+    CHECK(print_register_print_region_config(nullptr, input) == nullptr);
+    CHECK(print_register_print_region_config(handle, nullptr) == nullptr);
+
+    SECTION("invalid options do not alter existing snapshots") {
+        for (const std::string &key : {std::string("not_a_region_option"), std::string("bed_shape")}) {
+            DynamicPrintConfig invalid;
+            invalid.set_key_value(key, new ConfigOptionInt(1));
+            CHECK(print_register_print_region_config(handle, ApiHost::to_config_handle(&invalid)) == nullptr);
+        }
+        DynamicPrintConfig wrong_type;
+        wrong_type.set_key_value("perimeters", new ConfigOptionString("7"));
+        CHECK(print_register_print_region_config(handle, ApiHost::to_config_handle(&wrong_type)) == nullptr);
+        CHECK(native.config().perimeters.value == 7);
+    }
+    SECTION("registered plugin options participate in the snapshot") {
+        DynamicPrintConfig dynamic;
+        dynamic.set_deserialize_strict("seam_fixed_direction", "front");
+        const print_region_handle *front = print_register_print_region_config(handle, ApiHost::to_config_handle(&dynamic));
+        REQUIRE(front != nullptr);
+        const PrintRegion &front_region = *reinterpret_cast<const PrintRegion *>(front);
+        const std::string saved_value = front_region.config().optptr("seam_fixed_direction")->serialize();
+        dynamic.set_deserialize_strict("seam_fixed_direction", "rear");
+        CHECK(print_register_print_region_config(handle, ApiHost::to_config_handle(&dynamic)) != front);
+        CHECK(front_region.config().optptr("seam_fixed_direction")->serialize() == saved_value);
+    }
+    SECTION("simultaneous registrations return one canonical handle") {
+        std::array<const print_region_handle *, 16> results{};
+        std::vector<std::thread> threads;
+        for (size_t idx = 0; idx < results.size(); ++idx)
+            threads.emplace_back([&, idx]() {
+                results[idx] = print_register_print_region_config(handle, input);
+                if (results[idx] != nullptr)
+                    reinterpret_cast<const PrintRegion *>(results[idx])->config().keys();
+            });
+        for (std::thread &thread : threads) thread.join();
+        REQUIRE(results.front() != nullptr);
+        for (const print_region_handle *result : results) CHECK(result == results.front());
+    }
+    SECTION("C++ wrapper uses the same native registry") {
+        const slic3r_api::Print view(handle);
+        const slic3r_api::PrintRegion region = view.register_print_region_config(slic3r_api::Config(input));
+        CHECK(region.handle() == print_register_print_region_config(handle, input));
+    }
+    print.clear();
+    CHECK(print.num_print_regions() == 0);
+    // Old handles are invalid now; do not dereference them or compare allocation addresses.
+    REQUIRE(print_register_print_region_config(handle, input) != nullptr);
+}
+
+TEST_CASE("Print registry distinguishes equal hashes and detaches parent configs", "[plugins][config][print-region-registry]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ConfigOptionDef definition;
+    definition.opt_key = "test_registry_collision";
+    definition.type = coInt;
+    definition.container_type = ConfigOptionContainerType::Region;
+    definition.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    definition.set_default_value(new CollidingRegionOption(1));
+    PrintRegionConfig first;
+    first.add_plugin_option(definition);
+    PrintRegionConfig second = first;
+    REQUIRE(second.optptr(definition.opt_key) != nullptr);
+    second.optptr(definition.opt_key)->set_int(2);
+    REQUIRE(first.hash() == second.hash());
+    REQUIRE(first != second);
+    Print print;
+    const PrintRegion *a = &print.register_print_region(first);
+    const PrintRegion *b = &print.register_print_region(second);
+    CHECK(a != b);
+    CHECK(&print.register_print_region(first) == a);
+    CHECK(&print.register_print_region(second) == b);
+    DynamicPrintConfig parent;
+    parent.set_key_value("test_parent_only", new ConfigOptionInt(9));
+    first.parent = &parent;
+    Print other_print;
+    CHECK(other_print.register_print_region(first).config().parent == nullptr);
 }

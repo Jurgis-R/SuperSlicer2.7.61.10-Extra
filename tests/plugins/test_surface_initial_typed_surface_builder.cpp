@@ -225,8 +225,7 @@ void add_region_with_infill_extruder(PreparedPerimeterPrint &prepared,
 {
     PrintRegionConfig config = layer.region(0).region().config();
     config.set_deserialize_strict("infill_extruder", std::to_string(infill_extruder));
-    prepared.extra_regions.push_back(std::make_unique<PrintRegion>(config));
-    ApiInternal::LayerAccess::add_region(layer, *prepared.extra_regions.back());
+    ApiInternal::LayerAccess::add_region(layer, prepared.print.register_print_region(config));
     set_region_area(layer.region(layer.region_count() - 1), area);
 }
 

@@ -35,23 +35,22 @@ namespace Slic3r {
 class Print;
 class PrintObject;
 
+// Regional configuration snapshot. Print owns registered snapshots until clear();
+// object/layer associations borrow them and keep their own dense slicing indices.
 class PrintRegion
 {
 public:
-    PrintRegion() = default;
+    PrintRegion() : PrintRegion(PrintRegionConfig{}) {}
     PrintRegion(const PrintRegionConfig &config);
-    PrintRegion(const PrintRegionConfig &config, const size_t config_hash, int print_object_region_id = -1);
+    PrintRegion(const PrintRegionConfig &config, const size_t config_hash);
     PrintRegion(PrintRegionConfig &&config);
-    PrintRegion(PrintRegionConfig &&config, const size_t config_hash, int print_object_region_id = -1);
+    PrintRegion(PrintRegionConfig &&config, const size_t config_hash);
     ~PrintRegion() = default;
 
 // Methods NOT modifying the PrintRegion's state:
 public:
     const PrintRegionConfig&    config() const throw() { return m_config; }
     size_t                      config_hash() const throw() { return m_config_hash; }
-    // Identifier of this PrintRegion in the list of Print::m_print_regions.
-    int                         print_region_id() const throw() { return m_print_region_id; }
-    int                         print_object_region_id() const throw() { return m_print_object_region_id; }
 	// 1-based extruder identifier for this region and role.
     uint16_t 				    extruder(FlowRole role, const PrintObject& object) const;
     Flow                        flow(const PrintObject &object, FlowRole role, double layer_height, size_t layer_id) const;
@@ -63,23 +62,11 @@ public:
 	void                        collect_object_printing_extruders(const Print& print, std::set<uint16_t> &object_extruders) const;
 	static void                 collect_object_printing_extruders(const PrintConfig &print_config, const PrintObjectConfig &object_config, const PrintRegionConfig &region_config, std::set<uint16_t> &object_extruders);
 
-// Methods modifying the PrintRegion's state:
-public:
-    void                        set_config(const PrintRegionConfig &config) { m_config = config; m_config_hash = m_config.hash(); }
-    void set_config(PrintRegionConfig &&config);
-    void                        config_apply_only(const ConfigBase &other, const t_config_option_keys &keys, bool ignore_nonexistent = false)
-                                        { m_config.apply_only(other, keys, ignore_nonexistent); m_config_hash = m_config.hash(); }
 private:
-    friend Print;
-    friend void print_region_ref_inc(PrintRegion&);
-    friend void print_region_ref_reset(PrintRegion&);
-    friend int  print_region_ref_cnt(const PrintRegion&);
+    // Immutable snapshot: copies belong to this region, never to its caller.
+    const PrintRegionConfig m_config;
+    const size_t m_config_hash;
 
-    PrintRegionConfig  m_config;
-    size_t             m_config_hash;
-    int                m_print_region_id { -1 };
-    int                m_print_object_region_id { -1 };
-    int                m_ref_cnt { 0 };
 };
 
 inline bool operator==(const PrintRegion &lhs, const PrintRegion &rhs) { return lhs.config_hash() == rhs.config_hash() && lhs.config() == rhs.config(); }

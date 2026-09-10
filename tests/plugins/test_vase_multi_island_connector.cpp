@@ -131,7 +131,6 @@ struct PreparedVasePrint
 {
     Model model;
     Print print;
-    std::vector<std::unique_ptr<PrintRegion>> extra_regions;
 };
 
 void run_until_post_slicing(PreparedVasePrint &prepared,
@@ -379,8 +378,8 @@ TEST_CASE("Vase multi-island connector keeps region slices disjoint across bridg
     const ExPolygon first_island = first_layer.island(0).get_slice();
     const ExPolygon second_island = first_layer.island(1).get_slice();
 
-    prepared.extra_regions.push_back(std::make_unique<PrintRegion>(first_layer.region(0).region().config()));
-    ApiInternal::LayerAccess::add_region(first_layer, *prepared.extra_regions.back());
+    ApiInternal::LayerAccess::add_region(first_layer,
+        prepared.print.register_print_region(first_layer.region(0).region().config()));
     ApiInternal::LayerRegionAccess::slices_mutable(first_layer.region(0)) = ExPolygons{first_island};
     ApiInternal::LayerRegionAccess::slices_mutable(first_layer.region(1)) = ExPolygons{second_island};
     ApiInternal::LayerAccess::recompute_slices_from_layer_regions(first_layer);

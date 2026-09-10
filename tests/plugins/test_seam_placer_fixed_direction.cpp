@@ -38,6 +38,8 @@
 #include "libslic3r/PrintObjectRegion.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepLayerHeightGeneration.hpp"
+#include "libslic3r/Steps/StepSlicing.hpp"
 
 /*
 Fixed-direction seam placer tests
@@ -297,6 +299,28 @@ Own two real PrintRegions and one synthetic plan loop that may reference one or
 both LayerRegions. The plan stores platter coordinates; source slices remain in
 object coordinates so the router must remove the real instance shift.
 */
+// Replace fixture associations without modifying any published snapshot.
+const PrintRegion *replace_region_config(LayerRegion &layer_region, const PrintRegionConfig &config)
+{
+    PrintObject &object = *layer_region.layer()->object();
+    Print &print = *object.print();
+    const PrintRegion *old_region = &layer_region.region();
+    const PrintRegion *replacement = &print.register_print_region(config);
+    PrintObjectRegions &associations = *const_cast<PrintObjectRegions *>(object.shared_regions());
+    for (const PrintRegion *&region : associations.all_regions)
+        if (region == old_region) region = replacement;
+    for (Layer &layer : object.layers())
+        for (LayerRegion &region : layer.regions())
+            if (&region.region() == old_region)
+                ApiInternal::LayerRegionAccess::set_print_region(region, *replacement);
+    for (Layer &layer : object.auxiliary_layers())
+        for (LayerRegion &region : layer.regions())
+            if (&region.region() == old_region)
+                ApiInternal::LayerRegionAccess::set_print_region(region, *replacement);
+    print.rebuild_active_print_regions();
+    return replacement;
+}
+
 struct RegionalRouterFixture
 {
     explicit RegionalRouterFixture(const bool include_fixed_candidate)
@@ -312,23 +336,22 @@ struct RegionalRouterFixture
             PrintConfigDef::instance().get(selector_key);
         REQUIRE(selector_definition != nullptr);
 
-        PrintRegion &fixed_print_region =
-            const_cast<PrintRegion &>(fixed_region->region());
-        PrintRegionConfig fixed_config = fixed_print_region.config();
+        const PrintRegion *fixed_print_region = &fixed_region->region();
+        PrintRegionConfig fixed_config = fixed_print_region->config();
         fixed_config.add_plugin_option(
             *const_cast<ConfigOptionDef *>(selector_definition));
         REQUIRE(fixed_config.opt<ConfigOptionInt>(selector_key) != nullptr);
         fixed_config.opt<ConfigOptionInt>(selector_key)->set_int(0);
-        fixed_print_region.set_config(std::move(fixed_config));
+        fixed_print_region = replace_region_config(*fixed_region, fixed_config);
 
-        PrintRegionConfig routed_config = fixed_print_region.config();
+        PrintRegionConfig routed_config = fixed_print_region->config();
         REQUIRE(routed_config.opt<ConfigOptionInt>(selector_key) != nullptr);
         routed_config.opt<ConfigOptionInt>(selector_key)->set_int(1);
         PrintObjectRegions *shared_regions =
             const_cast<PrintObjectRegions *>(object.shared_regions());
         shared_regions->all_regions.emplace_back(
-            new PrintRegion(std::move(routed_config)));
-        routed_print_region = shared_regions->all_regions.back().get();
+            &prepared.print.register_print_region(routed_config));
+        routed_print_region = shared_regions->all_regions.back();
         ApiInternal::LayerAccess::add_region(layer, *routed_print_region);
         routed_region = &layer.region(layer.region_count() - 1);
 
@@ -350,14 +373,10 @@ struct RegionalRouterFixture
         if (include_fixed_candidate && *candidates.begin() == routed_region) {
             // LayerRegionSetCPtrs defines encounter order. Assign Fixed to its
             // actual first element so the fixture does not depend on addresses.
-            PrintRegionConfig first_config = routed_print_region->config();
-            first_config.opt<ConfigOptionInt>(selector_key)->set_int(0);
-            routed_print_region->set_config(std::move(first_config));
+            ApiInternal::LayerRegionAccess::set_print_region(*routed_region, *fixed_print_region);
 
-            PrintRegionConfig second_config = fixed_print_region.config();
-            second_config.opt<ConfigOptionInt>(selector_key)->set_int(1);
-            fixed_print_region.set_config(std::move(second_config));
-            routed_print_region = &fixed_print_region;
+            ApiInternal::LayerRegionAccess::set_print_region(*fixed_region, *routed_print_region);
+            std::swap(shared_regions->all_regions.front(), shared_regions->all_regions.back());
         }
         source.reset(new LayerRegionIsland(candidates, 0));
 
@@ -407,15 +426,16 @@ struct RegionalRouterFixture
     }
 
     /* Add a second region assigned to the routing provider but unused by loops. */
-    PrintRegion *add_unused_routing_region()
+    const PrintRegion *add_unused_routing_region()
     {
         PrintObject &object = prepared.print.object(0);
         Layer &layer = object.layer(0);
         PrintRegionConfig config = routed_print_region->config();
+        config.perimeters.value += 1;
         PrintObjectRegions *shared_regions =
             const_cast<PrintObjectRegions *>(object.shared_regions());
-        shared_regions->all_regions.emplace_back(new PrintRegion(std::move(config)));
-        PrintRegion *added = shared_regions->all_regions.back().get();
+        shared_regions->all_regions.emplace_back(&prepared.print.register_print_region(config));
+        const PrintRegion *added = shared_regions->all_regions.back();
         ApiInternal::LayerAccess::add_region(layer, *added);
         return added;
     }
@@ -473,13 +493,14 @@ struct RegionalRouterFixture
         ConfigOptionInt *selector = config.opt<ConfigOptionInt>(selector_key);
         REQUIRE(selector != nullptr);
         selector->set_int(selected_provider);
-        routed_print_region->set_config(std::move(config));
+        LayerRegion &selected = &fixed_region->region() == routed_print_region ? *fixed_region : *routed_region;
+        routed_print_region = replace_region_config(selected, config);
     }
 
     PreparedPerimeterPrint prepared;
     LayerRegion *fixed_region = nullptr;
     LayerRegion *routed_region = nullptr;
-    PrintRegion *routed_print_region = nullptr;
+    const PrintRegion *routed_print_region = nullptr;
     std::unique_ptr<LayerRegionIsland> source;
     PluginStorage scratch_storage;
 };
@@ -597,7 +618,7 @@ TEST_CASE("Regional seam routing initializes providers and ranks overlapping reg
     {
         g_routing_provider.reset();
         RegionalRouterFixture fixture(true);
-        PrintRegion *second_routed_region = fixture.add_unused_routing_region();
+        const PrintRegion *second_routed_region = fixture.add_unused_routing_region();
         slic3r_api::SeamPlacement::SeamPlacerRouter router(
             reinterpret_cast<orchestrator_handle *>(&orchestrator),
             fixture.print_view(), fixture.plan_view(),
@@ -1344,9 +1365,10 @@ namespace {
    static object/region containers. Mutations are confined to test fixtures. */
 void random_options(ConstraintFixture &fixture, bool vertices, bool align, int seed=42)
 {
-    PrintRegionConfig &region=const_cast<PrintRegionConfig &>(fixture.region->region().config());
+    PrintRegionConfig region=fixture.region->region().config();
     REQUIRE_NOTHROW(region.set_deserialize_strict("seam_random_vertices_only",vertices?"1":"0"));
     REQUIRE_NOTHROW(region.set_deserialize_strict("seam_random_align_inner_seams",align?"1":"0"));
+    replace_region_config(*fixture.region, region);
     PrintObjectConfig &object=const_cast<PrintObjectConfig &>(fixture.prepared.print.object(0).config());
     REQUIRE_NOTHROW(object.set_deserialize_strict("seam_random_seed",std::to_string(seed)));
 }
@@ -1691,8 +1713,9 @@ TEST_CASE("Regional seam router selects the configured Random provider", "[plugi
     ConstraintFixture fixture;
     random_options(fixture,false,false);
     const std::string selector=Slic3r::Steps::plugin_exclusive_group_option_key(Orchestrator::instance(),SEAM_PLACER,"seam_placer_plugin");
-    PrintRegionConfig &config=const_cast<PrintRegionConfig &>(fixture.region->region().config());
+    PrintRegionConfig config=fixture.region->region().config();
     REQUIRE_NOTHROW(config.set_deserialize_strict(selector,"seam_placer.random"));
+    replace_region_config(*fixture.region, config);
     const slic3r_api::ExtrusionEntity loop=fixture.add(square_loop()).root();
     slic3r_api::SeamPlacer reference=create_fixed_session(fixture.prepared.print,"seam_placer.random");
     PluginStorage storage;
@@ -1703,4 +1726,149 @@ TEST_CASE("Regional seam router selects the configured Random provider", "[plugi
         reinterpret_cast<storage_handle *>(&storage));
     CHECK(same_point(router.place_seam(loop,{0,0}),reference.place_seam(loop,fixture.view(),{100,200})));
     CHECK(storage.size()==0);
+}
+
+
+TEST_CASE("Regional registry survives apply and rebinds retained layers", "[plugins][print-region-registry]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    DynamicPrintConfig config = perimeter_config({{k_direction_key, "rear"}});
+    prepare_cube_print(prepared, config);
+    Print &print = prepared.print;
+    const PrintRegion *original = &print.object(0).printing_region(0);
+    const PrintRegionConfig saved = original->config();
+    Layer *retained = &print.object(0).layer(0);
+    const size_t region_count = print.num_print_regions();
+    print.apply(prepared.model, config);
+    CHECK(&print.object(0).printing_region(0) == original);
+    CHECK(&print.object(0).layer(0) == retained);
+
+    config.set_deserialize_strict("perimeters", std::to_string(saved.perimeters.value + 2));
+    print.apply(prepared.model, config);
+    const PrintRegion *changed = &print.object(0).printing_region(0);
+    REQUIRE(changed != original);
+    CHECK(original->config() == saved);
+    CHECK(&print.object(0).layer(0) == retained);
+    CHECK(&retained->region(0).region() == changed);
+    CHECK(print.num_print_regions() == region_count);
+    for (const PrintRegion &active : print.print_regions()) CHECK(&active != original);
+    print.invalidate_all_steps();
+    CHECK(original->config() == saved);
+    config.set_deserialize_strict("perimeters", std::to_string(saved.perimeters.value));
+    print.apply(prepared.model, config);
+    CHECK(&print.object(0).printing_region(0) == original);
+    CHECK(&print.mutable_auxiliary_object().printing_region(0) == original);
+    CHECK(changed->config().perimeters.value == saved.perimeters.value + 2);
+}
+
+TEST_CASE("Independent objects share canonical regions and keep local slicing indices", "[plugins][print-region-registry]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    const DynamicPrintConfig config = perimeter_config({{k_direction_key, "rear"}});
+    prepare_cube_print(prepared, config);
+    ModelObject *copy = prepared.model.add_object(prepared.model.get_object(0));
+    copy->instances.front()->set_offset(Vec3d(50., 0., 0.));
+    prepared.print.apply(prepared.model, config);
+    REQUIRE(prepared.print.objects().size() == 2);
+    CHECK(&prepared.print.object(0).printing_region(0) == &prepared.print.object(1).printing_region(0));
+    const size_t shared_count = prepared.print.object(0).num_printing_regions();
+    CHECK(prepared.print.num_print_regions() == shared_count);
+
+    // Separate one volume, then merge it back. The historical distinct snapshot
+    // survives while current local tables and volume indices are rebuilt.
+    copy->volumes.front()->config.set_deserialize_strict("perimeters", "13");
+    prepared.print.apply(prepared.model, config);
+    const PrintObject &changed_object = prepared.print.object(1);
+    REQUIRE(changed_object.num_printing_regions() > shared_count);
+    const PrintRegion *historical = &changed_object.printing_region(shared_count);
+    for (const PrintObject &object : prepared.print.objects()) {
+        const PrintObjectRegions &associations = *object.shared_regions();
+        for (const PrintObjectRegions::LayerRangeRegions &range : associations.layer_ranges)
+            for (const PrintObjectRegions::VolumeRegion &volume : range.volume_regions)
+                if (volume.region != nullptr) {
+                    REQUIRE(volume.region_idx >= 0);
+                    CHECK(associations.all_regions.at(volume.region_idx) == volume.region);
+                }
+    }
+    copy->volumes.front()->config.erase("perimeters");
+    prepared.print.apply(prepared.model, config);
+    CHECK(prepared.print.object(1).num_printing_regions() == shared_count);
+    CHECK(historical->config().perimeters.value == 13);
+    for (const PrintRegion &active : prepared.print.print_regions()) CHECK(&active != historical);
+}
+
+TEST_CASE("Seam router initializes an auxiliary-only canonical region", "[plugins][seam-placer][router][print-region-registry]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    ScopedSeamProviders active({k_fixed_plugin, k_routing_plugin});
+    g_routing_provider.reset();
+    RegionalRouterFixture fixture(false);
+    Print &print = fixture.prepared.print;
+    PrintObject &auxiliary = print.mutable_auxiliary_object();
+    PrintRegionConfig config = fixture.routed_print_region->config();
+    config.perimeters.value += 5;
+    const PrintRegion *region = &print.register_print_region(config);
+    PrintObjectRegions &associations = *const_cast<PrintObjectRegions *>(auxiliary.shared_regions());
+    associations.all_regions.push_back(region);
+    Layer &layer = auxiliary.add_auxiliary_layer(0, scale_i(0.2), scale_i(0.2));
+    ApiInternal::LayerAccess::add_region(layer, *region);
+    LayerRegion &local = layer.region(0);
+    ApiInternal::LayerRegionAccess::slices_mutable(local) =
+        ApiInternal::LayerRegionAccess::slices_mutable(*fixture.fixed_region);
+    fixture.source.reset(new LayerRegionIsland({&local}, 0));
+    PrintingExtrusion &extrusion = print.mutable_printing_plan().groups.front()
+        .layers.front().tool_groups.front().extrusions.front();
+    extrusion.region_island = fixture.source.get();
+    const Point shift = print.object(0).instances().front().shift;
+    slic3r_api::MutableExtrusionEntity root(reinterpret_cast<extrusion_entity_handle *>(extrusion.root.get()));
+    REQUIRE(root.translate({-shift.x(), -shift.y()}));
+    fixture.source->mutable_extrusion(LayerRegionIsland::PERIMETERS).append(*extrusion.root);
+    {
+        slic3r_api::SeamPlacement::SeamPlacerRouter router(
+            reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+            fixture.print_view(), fixture.plan_view(),
+            reinterpret_cast<storage_handle *>(&fixture.scratch_storage));
+        CHECK(std::find(g_routing_provider.initialized_regions.begin(), g_routing_provider.initialized_regions.end(),
+              reinterpret_cast<const print_region_handle *>(region)) != g_routing_provider.initialized_regions.end());
+        CHECK_NOTHROW(router.place_seam(fixture.loop_view(), {}));
+    }
+    // Destroy a live plan before its auxiliary source layers and registry.
+    print.clear();
+    CHECK(print.num_print_regions() == 0);
+}
+
+
+TEST_CASE("Painted regions retain object-local indices across reslicing", "[plugins][print-region-registry][slicing]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    DynamicPrintConfig config = perimeter_config({{k_direction_key, "rear"}});
+    prepare_cube_print(prepared, config);
+    config.set_num_extruders(2);
+    config.set_deserialize_strict("nozzle_diameter", "0.4,0.4");
+    ModelVolume &volume = *prepared.model.get_object(0).volumes.front();
+    TriangleSelector paint(volume.mesh());
+    paint.set_facet(0, static_cast<EnforcerBlockerType>(2));
+    volume.mm_segmentation_facets.set(paint);
+    prepared.print.apply(prepared.model, config);
+    const PrintObjectRegions &associations = *prepared.print.object(0).shared_regions();
+    size_t painted_count = 0;
+    for (const PrintObjectRegions::LayerRangeRegions &range : associations.layer_ranges)
+        for (const PrintObjectRegions::PaintedRegion &region : range.painted_regions) {
+            ++painted_count;
+            REQUIRE(region.region_idx >= 0);
+            CHECK(associations.all_regions.at(region.region_idx) == region.region);
+        }
+    REQUIRE(painted_count > 0);
+    Steps::StepLayerHeightGeneration::run_step(Orchestrator::instance(), prepared.print);
+    Steps::StepSlicing::run_step(Orchestrator::instance(), prepared.print);
+    const PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() > 0);
+    for (const Layer &layer : object.layers()) {
+        REQUIRE(layer.region_count() == associations.all_regions.size());
+        for (size_t idx = 0; idx < layer.region_count(); ++idx)
+            CHECK(&layer.region(idx).region() == associations.all_regions[idx]);
+    }
 }

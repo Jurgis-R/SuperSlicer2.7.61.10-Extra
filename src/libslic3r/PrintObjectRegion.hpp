@@ -22,6 +22,8 @@
 #ifndef slic3r_PrintObjectRegion_hpp_
 #define slic3r_PrintObjectRegion_hpp_
 
+#include <algorithm>
+
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -60,12 +62,13 @@ public:
         const ModelVolume   *model_volume { nullptr };
         // Index of a parent VolumeRegion.
         int                  parent { -1 };
-        // Pointer to PrintObjectRegions::all_regions, null for a negative volume.
-        PrintRegion         *region { nullptr };
+        // Borrowed Print-owned snapshot; null for a negative volume.
+        const PrintRegion   *region { nullptr };
         // Pointer to VolumeExtents::bbox.
         const BoundingAlignedBox3f   *bbox { nullptr };
         // To speed up merging of same regions.
         const VolumeRegion  *prev_same_region { nullptr };
+        int region_idx { -1 }; // Local all_regions index; -1 for subtractors.
     };
 
     struct PaintedRegion
@@ -74,8 +77,9 @@ public:
         unsigned int     extruder_id;
         // Index of a parent VolumeRegion.
         int              parent { -1 };
-        // Pointer to PrintObjectRegions::all_regions.
-        PrintRegion     *region { nullptr };
+        // Borrowed Print-owned snapshot.
+        const PrintRegion *region { nullptr };
+        int region_idx { -1 }; // Local all_regions index.
     };
 
     // One slice over the PrintObject (possibly the whole PrintObject) and a list of ModelVolumes and their bounding boxes
@@ -102,7 +106,15 @@ public:
         SupportSpotsGenerator::PartialObjects partial_objects;
     };
 
-    std::vector<std::unique_ptr<PrintRegion>>   all_regions;
+    // Borrowed canonical regions, ordered locally (fallback first).
+    std::vector<const PrintRegion*> all_regions;
+
+    // Dense index belongs to the object association, never to the shared region.
+    int region_index(const PrintRegion *region) const {
+        const std::vector<const PrintRegion*>::const_iterator it =
+            std::find(all_regions.begin(), all_regions.end(), region);
+        return it == all_regions.end() ? -1 : int(it - all_regions.begin());
+    }
     std::vector<LayerRangeRegions>              layer_ranges;
     // Transformation of this ModelObject into one of the associated PrintObjects (all PrintObjects derived from a single modelObject differ by a Z rotation only).
     // This transformation is used to calculate VolumeExtents.

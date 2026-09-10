@@ -293,7 +293,7 @@ int32_t slicing_volume_region_get_parent(const slicing_volume_region_handle *vol
 int32_t slicing_volume_region_get_layer_region_idx(const slicing_volume_region_handle *volume_region)
 {
     const SlicingVolumeRegion *native = to_volume_region(volume_region);
-    return native == nullptr || native->region == nullptr ? -1 : native->region->print_object_region_id();
+    return native == nullptr || native->region == nullptr ? -1 : native->region_idx;
 }
 
 c_bounding_box3f slicing_volume_region_get_bbox(const slicing_volume_region_handle *volume_region)

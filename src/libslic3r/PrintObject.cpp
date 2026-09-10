@@ -290,8 +290,8 @@ std::vector<std::reference_wrapper<const PrintRegion>> PrintObject::all_regions(
 {
     std::vector<std::reference_wrapper<const PrintRegion>> out;
     out.reserve(m_shared_regions->all_regions.size());
-    for (const std::unique_ptr<Slic3r::PrintRegion> &region : m_shared_regions->all_regions) {
-        out.emplace_back(*region.get());
+    for (const Slic3r::PrintRegion *region : m_shared_regions->all_regions) {
+        out.emplace_back(*region);
     }
     return out;
 }
@@ -1062,7 +1062,11 @@ void PrintObject::ironing()
 
 void PrintObject::generate_support_spots()
 {
-    assert(this->default_region_config(this->print()->default_region_config()).get_computed_value("perimeter_acceleration") > -1);
+    // Resolve percentages against this object/Print only in a local working
+    // copy; the registered regional snapshot never borrows mutable parents.
+    PrintRegionConfig region_config = this->default_region_config(this->print()->default_region_config());
+    region_config.parent = &this->config();
+    assert(region_config.get_computed_value("perimeter_acceleration") > -1);
     if (this->set_started(posSupportSpotsSearch)) {
         BOOST_LOG_TRIVIAL(debug) << "Searching support spots - start";
         m_print->set_status(objectstep_percent(posSupportSpotsSearch), L("Searching support spots"));
@@ -1076,7 +1080,6 @@ void PrintObject::generate_support_spots()
         }
         if (!this->shared_regions()->generated_support_points.has_value()) {
             PrintTryCancel                cancel_func = m_print->make_try_cancel();
-            const PrintRegionConfig &region_config = this->default_region_config(this->print()->default_region_config());
             SupportSpotsGenerator::Params params{this->print()->m_config.filament_type.get_values(),
                                                  float(region_config.get_computed_value("perimeter_acceleration")),
                                                  this->config().raft_layers.value,

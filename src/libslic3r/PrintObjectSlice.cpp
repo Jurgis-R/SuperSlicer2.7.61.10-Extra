@@ -293,7 +293,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                 assert(model_volume != nullptr);
                 if (model_volume->is_model_part()) {
                     VolumeSlices &slices_src = volume_slices_find_by_id(volume_slices, model_volume->id());
-                    auto         &slices_dst = slices_by_region[layer_range.volume_regions.front().region->print_object_region_id()];
+                    auto         &slices_dst = slices_by_region[layer_range.volume_regions.front().region_idx];
                     for (; z_idx < zs.size() && scale_to_layer_coord(zs[z_idx]) < layer_range.layer_height_range_.second; ++z_idx) {
                         slices_dst[z_idx] = std::move(slices_src.slices[z_idx]);
                         ensure_valid(slices_dst[z_idx], SCALED_EPSILON);
@@ -327,7 +327,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                     else if (idx_first_printable_region >= 0) {
                         const PrintObjectRegions::VolumeRegion &region = layer_range.volume_regions[idx_first_printable_region];
                         assert_valid(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);
-                        slices_by_region[region.region->print_object_region_id()][z_idx] = std::move(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);
+                        slices_by_region[region.region_idx][z_idx] = std::move(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);
                     }
                 }
             }
@@ -377,7 +377,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                         temp_slices.reserve(layer_range.volume_regions.size());
                         for (VolumeSlices* &slices : layer_range_regions_to_slices) {
                             const PrintObjectRegions::VolumeRegion &volume_region = layer_range.volume_regions[&slices - layer_range_regions_to_slices.data()];
-                            temp_slices.push_back({ std::move(slices->slices[z_idx]), volume_region.region ? volume_region.region->print_object_region_id() : -1, volume_region.model_volume->id() });
+                            temp_slices.push_back({ std::move(slices->slices[z_idx]), volume_region.region ? volume_region.region_idx : -1, volume_region.model_volume->id() });
                         }
                     }
 
@@ -579,9 +579,9 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
     for(auto &slices : slices_by_region) for(auto &expolys : slices) assert_valid(expolys);
 
     // filament shrink
-    for (const std::unique_ptr<PrintRegion>& pr : print_object_regions.all_regions) {
-        if (pr.get()) {
-            std::vector<ExPolygons>& region_polys = slices_by_region[pr->print_object_region_id()];
+    for (const PrintRegion *pr : print_object_regions.all_regions) {
+        if (pr) {
+            std::vector<ExPolygons>& region_polys = slices_by_region[print_object_regions.region_index(pr)];
             const size_t extruder_id = pr->extruder(FlowRole::frPerimeter, print_object) - 1;
             double scale = print_config.filament_shrink.get_effective_value(1., extruder_id);
             if (scale != 1) {
@@ -1261,11 +1261,11 @@ void apply_mm_segmentation(PrintObject &print_object, ThrowOnCancel throw_on_can
                 auto it_painted_region = layer_range.painted_regions.begin();
                 for (int region_id = 0; region_id < int(layer.region_count()); ++ region_id)
                     if (LayerRegion &layerm = layer.region(region_id); ! layerm.get_raw_slices().empty()) {
-                        assert(layerm.region().print_object_region_id() == region_id);
+                        assert(&layerm.region() == &print_object.printing_region(region_id));
                         const BoundingBox bbox = get_extents(layerm.get_raw_slices());
                         assert(it_painted_region < layer_range.painted_regions.end());
                         // Find the first it_painted_region which overrides this region.
-                        for (; layer_range.volume_regions[it_painted_region->parent].region->print_object_region_id() < region_id; ++ it_painted_region)
+                        for (; layer_range.volume_regions[it_painted_region->parent].region_idx < region_id; ++ it_painted_region)
                             assert(it_painted_region != layer_range.painted_regions.end());
                         assert(it_painted_region != layer_range.painted_regions.end());
                         assert(layer_range.volume_regions[it_painted_region->parent].region == &layerm.region());
@@ -1284,7 +1284,7 @@ void apply_mm_segmentation(PrintObject &print_object, ThrowOnCancel throw_on_can
                                     continue;
                                 }
                                 // Steal from this region.
-                                int         target_region_id = it_painted_region->region->print_object_region_id();
+                                int         target_region_id = it_painted_region->region_idx;
                                 ExPolygons  stolen           = intersection_ex(layerm.get_raw_slices(), segmented.expolygons);
                                 if (! stolen.empty()) {
                                     ByRegion &dst = by_region[target_region_id];
@@ -1320,7 +1320,7 @@ void apply_mm_segmentation(PrintObject &print_object, ThrowOnCancel throw_on_can
                                 // opening scale_(5 * EPSILON)), float(scale_(5 * EPSILON)
                                 mine = offset2_ex(union_ex(mine), -float(5 * SCALED_EPSILON), float(5 * SCALED_EPSILON));
                             if (! mine.empty()) {
-                                ByRegion &dst = by_region[layerm.region().print_object_region_id()];
+                                ByRegion &dst = by_region[region_id];
                                 if (dst.expolygons.empty()) {
                                     dst.expolygons = union_ex(mine);
                                 } else {
@@ -1574,8 +1574,8 @@ void PrintObject::slice_volumes()
     for (std::unique_ptr<Layer> &layer : m_layers) {
         layer->m_regions.clear();
         layer->m_regions.reserve(m_shared_regions->all_regions.size());
-        for (const std::unique_ptr<PrintRegion> &pr : m_shared_regions->all_regions)
-            layer->m_regions.emplace_back(new LayerRegion(layer.get(), pr.get()));
+        for (const PrintRegion *pr : m_shared_regions->all_regions)
+            layer->m_regions.emplace_back(new LayerRegion(layer.get(), pr));
     }
 
     std::vector<float> slice_zs = slice_z_from_layers(m_layers);

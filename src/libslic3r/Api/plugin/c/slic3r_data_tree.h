@@ -5,7 +5,7 @@
 #ifndef slic3r_data_tree_h_
 #define slic3r_data_tree_h_
 
-#define SLIC3R_PLUGIN_API_DATA_TREE_MAJOR 1u
+#define SLIC3R_PLUGIN_API_DATA_TREE_MAJOR 2u
 #define SLIC3R_PLUGIN_API_DATA_TREE_MINOR 0u
 
 /*
@@ -625,12 +625,13 @@ SLIC3R_HOST_API const layer_region_handle *layer_region_island_get_region(const 
 /* ========================= PRINT REGION ========================= */
 
 /*
-Borrow a PrintRegion's effective configuration. Null returns null. The mutable
-form edits host-owned configuration and is valid only in steps that permit that
-mutation. It edits the live configuration without cloning or persisting it;
-neither handle may be freed or retained after its PrintRegion dies.
+Borrow an immutable PrintRegion configuration. Null returns null. A registered
+region and its configuration remain valid across apply() and invalidation until
+Print::clear() or Print destruction. Neither handle may be freed or mutated.
+The region can remain alive after it stops being used by any object or layer.
+Only regional options belong to this snapshot; resolve object/print options
+through their respective configs rather than a mutable parent-config fallback.
 */
-SLIC3R_HOST_API config_handle *print_region_get_config_mutable(print_region_handle *me);
 SLIC3R_HOST_API const config_handle *print_region_get_config(const print_region_handle *me);
 
 /* ========================= OBJECT ========================= */
@@ -806,13 +807,28 @@ SLIC3R_HOST_API void layer_add_regions_to_islands(layer_handle *me);
 /*
 Enumerate PrintRegions used by this Object. Counts are zero for null; accessors
 return null for invalid indices. Handles and configurations are borrowed from
-the Print and must not be freed. Mutable access does not transfer ownership.
+the Print and must not be freed. Regions are immutable and remain valid until
+Print::clear()/destruction, even if their local associations are replaced.
 */
 SLIC3R_HOST_API uint32_t object_count_region(const object_handle *me);
-SLIC3R_HOST_API print_region_handle *object_get_print_region_mutable(object_handle *me, uint32_t idx);
 SLIC3R_HOST_API const print_region_handle *object_get_print_region(const object_handle *me, uint32_t idx);
 
 /* ========================= PRINT ========================= */
+
+/*
+Copy the current Print regional defaults and apply config's supplied options.
+Unknown/non-regional keys, mismatched option types, null input or allocation
+failure return null without publishing a partial region. Equal completed configs
+share a handle within this Print (including registered plugin options).
+
+The returned immutable handle is Print-owned until clear()/destruction; never
+free it. Changing config or Print defaults later does not change this snapshot.
+Registration does not attach it to geometry or add it to active region traversal.
+Concurrent registrations and reads are allowed; apply(), clear(), destruction
+and changes to Print defaults require that all workers have stopped.
+*/
+SLIC3R_HOST_API const print_region_handle *print_register_print_region_config(
+    print_handle *me, const config_handle *config);
 
 /*
 Borrow the Print configuration; null returns null and ownership stays with Print.

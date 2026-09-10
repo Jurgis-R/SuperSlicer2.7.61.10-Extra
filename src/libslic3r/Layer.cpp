@@ -65,8 +65,8 @@ void ApiInternal::LayerAccess::init_regions_from_object(Layer &layer)
 
     layer.m_regions.clear();
     layer.m_regions.reserve(object->shared_regions()->all_regions.size());
-    for (const std::unique_ptr<PrintRegion> &pr : object->shared_regions()->all_regions)
-        layer.m_regions.emplace_back(new LayerRegion(&layer, pr.get()));
+    for (const PrintRegion *pr : object->shared_regions()->all_regions)
+        layer.m_regions.emplace_back(new LayerRegion(&layer, pr));
 }
 
 void ApiInternal::LayerAccess::add_region(Layer &layer, const PrintRegion &region)

@@ -170,8 +170,7 @@ void add_partitioned_region(PreparedPerimeterPrint &prepared,
     PrintRegionConfig config = layer.region(0).region().config();
     for (const std::pair<std::string, std::string> &entry : settings)
         config.set_deserialize_strict(entry.first, entry.second);
-    prepared.extra_regions.push_back(std::make_unique<PrintRegion>(config));
-    ApiInternal::LayerAccess::add_region(layer, *prepared.extra_regions.back());
+    ApiInternal::LayerAccess::add_region(layer, prepared.print.register_print_region(config));
 
     LayerRegion &region = layer.region(layer.region_count() - 1);
     set_region_areas(region, std::move(override_areas));

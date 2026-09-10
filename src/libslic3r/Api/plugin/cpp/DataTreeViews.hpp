@@ -581,6 +581,18 @@ public:
         return Config(print_get_config(handle()));
     }
 
+    // Copy regional overrides onto current Print defaults and intern the result.
+    // The immutable borrowed result survives apply(), but not clear()/destruction.
+    // Does not attach geometry. Concurrent registration is allowed while defaults
+    // are stable; invalid keys/types throw without publishing a partial region.
+    PrintRegion register_print_region_config(const Config &config) const {
+        const print_region_handle *region = print_register_print_region_config(
+            const_cast<print_handle *>(handle()), config.handle());
+        if (region == nullptr)
+            throw std::runtime_error("Cannot register the regional configuration.");
+        return PrintRegion(region);
+    }
+
     PrintRecords records() const {
         return PrintRecords(handle());
     }

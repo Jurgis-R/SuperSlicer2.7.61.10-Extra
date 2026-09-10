@@ -742,10 +742,7 @@ class Slic3rAPI:
     def print_region(self, handle: int) -> PrintRegion:
         return PrintRegion(self, handle)
 
-    def mutable_print_region(self, handle: int) -> MutablePrintRegion:
-        return MutablePrintRegion(self, handle)
 
-    @abi_requires_headers("slic3r_printing_plan.h")
     def printing_plan(self, handle: int) -> PrintingPlan:
         """Borrow a read-only plan; neither this view nor its children are freed."""
         return PrintingPlan(self, handle)

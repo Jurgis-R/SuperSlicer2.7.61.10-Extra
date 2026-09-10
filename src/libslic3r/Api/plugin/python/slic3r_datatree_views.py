@@ -1232,14 +1232,6 @@ class PrintRegion(DataTreeView):
         return Config(self.api, self.api.host.print_region_get_config(self.c_handle()))
 
 
-class MutablePrintRegion(PrintRegion):
-    def mutable_c_handle(self) -> ctypes.c_void_p:
-        return self.c_handle()
-
-    def config_mutable(self) -> MutableConfig:
-        return MutableConfig(self.api, self.api.host.print_region_get_config_mutable(self.mutable_c_handle()))
-
-
 # Borrowed layer-region view.
 class LayerRegion(DataTreeView):
     def flow(self, role: int) -> CFlow:
@@ -1742,14 +1734,25 @@ class MutableObject(Object):
     def layer_mutable(self, idx: int) -> MutableLayer:
         return MutableLayer(self.api, self.api.host.object_get_layer_mutable(self.mutable_c_handle(), int(idx)))
 
-    def print_region_mutable(self, idx: int) -> MutablePrintRegion:
-        return MutablePrintRegion(self.api, self.api.host.object_get_print_region_mutable(self.mutable_c_handle(), int(idx)))
-
-
 # Borrowed print view.
 class Print(DataTreeView):
     def config(self) -> Config:
         return Config(self.api, self.api.host.print_get_config(self.c_handle()))
+
+    @abi_requires_headers("slic3r_data_tree.h")
+    def register_print_region_config(self, config: Config) -> PrintRegion:
+        """Copy regional overrides onto this Print's current regional defaults.
+
+        Return a canonical immutable borrowed region, valid across apply() and
+        invalidation until Print.clear()/destruction. Never free it. Later source
+        or default changes do not affect the copy. Does not attach any geometry.
+        Concurrent registration is supported while defaults are stable; workers
+        must stop before apply()/clear(). Invalid keys/types raise ValueError.
+        """
+        handle = self.api.host.print_register_print_region_config(self.c_handle(), config.c_handle())
+        if not handle:
+            raise ValueError("Cannot register the regional configuration")
+        return PrintRegion(self.api, handle)
 
     def records(self) -> "PrintRecords":
         return PrintRecords(self.api, self.c_handle())
@@ -2062,7 +2065,6 @@ __all__ = [
     "MutableLayerRegionIsland",
     "MutableObject",
     "MutablePrint",
-    "MutablePrintRegion",
     "MutableSurface",
     "Object",
     "Print",

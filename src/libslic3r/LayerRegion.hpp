@@ -111,6 +111,7 @@ public:
 protected:
     friend class Layer;
     friend class PrintObject;
+    friend class Print;
     friend struct ApiInternal::LayerRegionAccess;
 
     LayerRegion(Layer *layer, const PrintRegion *region) : m_layer(layer), m_region(region) {}

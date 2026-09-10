@@ -148,10 +148,6 @@ static BoundingBox first_extents_or_empty(const ExPolygons &expolygons)
     return expolygons.empty() ? BoundingBox() : get_extents(expolygons.front());
 }
 
-static ConfigBase *mutable_config(const PrintRegion &region)
-{
-    return const_cast<PrintRegionConfig*>(&region.config());
-}
 
 static ConfigBase *mutable_config(const PrintObject &object)
 {
@@ -719,10 +715,6 @@ const layer_region_handle *layer_region_island_get_region(const layer_region_isl
     return reinterpret_cast<const layer_region_handle *>(*it);
 }
 
-config_handle *print_region_get_config_mutable(print_region_handle *me)
-{
-    return me == nullptr ? nullptr : Slic3r::ApiHost::to_config_handle(Slic3r::mutable_config(*Slic3r::to_print_region(me)));
-}
 
 const config_handle *print_region_get_config(const print_region_handle *me)
 {
@@ -887,18 +879,25 @@ uint32_t object_count_region(const object_handle *me)
     return me == nullptr ? 0 : Slic3r::to_object(me)->num_printing_regions();
 }
 
-print_region_handle *object_get_print_region_mutable(object_handle *me, uint32_t idx)
-{
-    if (me == nullptr || idx >= Slic3r::to_object(me)->num_printing_regions())
-        return nullptr;
-    return reinterpret_cast<print_region_handle*>(const_cast<Slic3r::PrintRegion*>(&Slic3r::to_object(me)->printing_region(idx)));
-}
 
 const print_region_handle *object_get_print_region(const object_handle *me, uint32_t idx)
 {
     if (me == nullptr || idx >= Slic3r::to_object(me)->num_printing_regions())
         return nullptr;
     return reinterpret_cast<const print_region_handle*>(&Slic3r::to_object(me)->printing_region(idx));
+}
+
+// Copy and validate before publishing; no C++ exception may cross the C ABI.
+const print_region_handle *print_register_print_region_config(print_handle *me, const config_handle *config)
+{
+    if (me == nullptr || config == nullptr)
+        return nullptr;
+    try {
+        return reinterpret_cast<const print_region_handle *>(
+            Slic3r::to_print(me)->register_print_region_config(*Slic3r::ApiHost::to_config(config)));
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 config_handle *print_get_config_mutable(print_handle *me)

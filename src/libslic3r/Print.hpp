@@ -316,6 +316,15 @@ public:
 
     std::string                 output_filename(const std::string &filename_base = std::string()) const override;
 
+    // Intern a complete snapshot. Concurrent registrations/readers are allowed;
+    // apply() and clear() must run with workers stopped. Does not activate it.
+    const PrintRegion &register_print_region(const PrintRegionConfig &config);
+    // Complete regional overrides using this Print's current defaults. Invalid
+    // keys/types return nullptr without modifying the registry.
+    const PrintRegion *register_print_region_config(const ConfigBase &config);
+    // Rebuild only the active catalogue in deterministic object order.
+    void rebuild_active_print_regions();
+
     size_t                      num_print_regions() const throw() { return m_print_regions.size(); }
     PrintRegionCRefs            print_regions() const  { return make_ref_view<PrintRegion, PrintRegionPtrs>(m_print_regions); }
     const PrintRegion&          print_region(size_t idx) const  { return *m_print_regions[idx]; }
@@ -402,6 +411,9 @@ private:
     // model-derived PrintObjects.
     std::unique_ptr<PrintObject>             m_auxiliary_object;
     // print regions are stored in PrintObjectRegions, here it's a shortcut
+    // Historical ownership is separate from the active catalogue below.
+    std::mutex m_region_registry_mutex;
+    std::map<size_t, std::vector<std::unique_ptr<const PrintRegion>>> m_region_registry;
     PrintRegionPtrs                         m_print_regions;
 
     /*

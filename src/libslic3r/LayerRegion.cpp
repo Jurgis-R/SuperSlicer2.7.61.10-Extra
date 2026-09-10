@@ -42,6 +42,12 @@ SurfaceCollection &ApiInternal::LayerRegionAccess::surfaces_mutable(LayerRegion 
     return layer_region.m_slices;
 }
 
+// Geometry remains attached to the LayerRegion while its immutable settings change.
+void ApiInternal::LayerRegionAccess::set_print_region(LayerRegion &layer_region, const PrintRegion &region)
+{
+    layer_region.m_region = &region;
+}
+
 ExPolygons &ApiInternal::LayerRegionAccess::slices_mutable(LayerRegion &layer_region)
 {
     return layer_region.m_raw_slices;
