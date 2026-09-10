@@ -309,7 +309,7 @@ SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
         0.;
     const int extruder_index = recipe.raw.extruder == 0 ? 0 : int(recipe.raw.extruder - 1);
     recipe.raw.loop_clipping =
-        Slic3r::scale_i(region_config.get_computed_value("seam_gap", extruder_index) * flow.nozzle_diameter());
+        Slic3r::scale_i(print.config().get_computed_value("seam_gap", extruder_index) * flow.nozzle_diameter());
     recipe.raw.link_max_length = (!flow.bridge() && recipe.raw.density > .8f) ?
         Slic3r::scale_i(3. * recipe.raw.spacing) :
         0;
