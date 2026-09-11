@@ -21,7 +21,9 @@ Payload for STEP_LAYER_EXTRUSION_EDIT.
 The host creates one payload per PrintingLayerGroup after STEP_ORDERING. The
 plan and group are read-only structural context: plugins must not append,
 remove, or reorder their vectors while layer runs may execute in parallel.
-Only the cloned extrusion roots owned by layer_group may be edited.
+During serialized setup(), plugins may resolve tool-group extruder IDs without
+changing the hierarchy. Parallel runs may edit the cloned extrusion roots and
+scope events owned by their layer_group; other layers must not be modified.
 */
 typedef struct run_ctx_layer_extrusion_edition {
     const print_handle *print;

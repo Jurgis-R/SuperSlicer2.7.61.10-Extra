@@ -23,12 +23,15 @@ Input requirements
 
 - PrintingGroup, PrintingLayerGroup and PrintingToolGroup order must already
   be final.
-- Tool-group extruder IDs must identify real tools.
+- Tool-group extruder IDs identify real tools or UINT16_MAX (-1) for any tool.
 - Tool-group event roots must still accept ordered additions.
 
 Output contract
 ---------------
 
+- Serialized setup resolves every unconstrained visit to the current tool.
+  Leading unconstrained visits use the first explicit tool in the plan, or 0
+  if all visits are unconstrained. No group is added, removed or reordered.
 - The first selected tool remains implicit and is chosen by the firmware when
   its first tool-group begins.
 - Every later change is represented exactly once in the target tool-group's

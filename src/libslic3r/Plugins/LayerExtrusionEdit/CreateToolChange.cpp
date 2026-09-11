@@ -28,7 +28,11 @@ Default tool-change event producer
 The layer-extrusion-edit step executes one run per PrintingLayerGroup, possibly
 in parallel. Tool selection, however, is a prefix state across the complete
 plan. setup_impl() therefore performs one cheap hierarchy-only scan and stores
-the tool active before each layer. run_impl() can then replay only its local
+the tool active before each layer. Unconstrained visits (UINT16_MAX, the
+unsigned representation of -1) receive that tool during this serialized scan.
+No vectors are resized or reordered; subsequent plugins see concrete IDs.
+Leading unconstrained visits use the first explicit tool, or tool 0 if none is
+requested anywhere in the plan. run_impl() can then replay only its local
 tool-groups and append events without consulting or modifying another layer.
 
 No extrusion tree is visited here. CreateTransitionScope later observes the
@@ -48,6 +52,9 @@ struct LayerToolState
     int32_t incoming_extruder = -1;
     coord_t print_z = 0;
 };
+
+/* Find the initial tool for leading unconstrained visits; fall back to tool 0. */
+uint16_t initial_plan_extruder(const PrintingPlan &plan);
 
 /* Return true when a setting contains at least one non-whitespace character. */
 bool has_visible_text(const std::string &text);
@@ -113,6 +120,22 @@ private:
     /* PluginStorage is shared and non-thread-safe; guard only event allocation. */
     mutable std::mutex m_storage_mutex;
 };
+
+uint16_t initial_plan_extruder(const PrintingPlan &plan)
+{
+    for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        const PrintingGroup group = plan.group(group_idx);
+        for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                const uint16_t tool = layer.tool_group(tool_idx).extruder_id();
+                if (tool != UINT16_MAX)
+                    return tool;
+            }
+        }
+    }
+    return 0;
+}
 
 bool has_visible_text(const std::string &text)
 {
@@ -191,7 +214,7 @@ const char *CreateToolChange::name_impl() const noexcept
 
 const char *CreateToolChange::description_impl() const noexcept
 {
-    return "Places configured or semantic tool-selection events before target tool visits.";
+    return "Resolves unconstrained tool visits to the current tool and places tool-selection events before actual changes.";
 }
 
 const char *CreateToolChange::exclusive_group_impl() const noexcept
@@ -253,7 +276,7 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
 
     const PrintingPlan plan(ctx->plan);
     m_layer_states.resize(plan.group_count());
-    int32_t current_extruder = -1;
+    int32_t current_extruder = initial_plan_extruder(plan);
     int32_t layer_number = 0;
     uint32_t counted_layers = 0;
 
@@ -274,11 +297,12 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
 
             for (uint32_t tool_idx = 0;
                  tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const uint16_t tool = layer.tool_group(tool_idx).extruder_id();
+                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                const uint16_t tool = tool_group.extruder_id();
                 if (tool == UINT16_MAX)
-                    throw std::runtime_error(
-                        "A PrintingToolGroup has no valid extruder for tool-change planning.");
-                current_extruder = int32_t(tool);
+                    tool_group.set_extruder_id(uint16_t(current_extruder));
+                else
+                    current_extruder = int32_t(tool);
             }
         }
     }

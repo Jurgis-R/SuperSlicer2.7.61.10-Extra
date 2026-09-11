@@ -177,4 +177,93 @@ TEST_CASE("Whitespace toolchange G-code uses only the semantic fallback",
     CHECK(event.get_property<ExtrusionPropertyCustomGcode>() == nullptr);
 }
 
+TEST_CASE("Unconstrained tool visits inherit the ordered tool across layers and groups",
+          "[plugins][layer-extrusion-edit][toolchange][any-tool]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    prepare_print(print, model);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.toolchange_gcode.value = GENERATE(std::string(), std::string("; [previous_extruder] -> [next_extruder]"));
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups[0].layers[0].tool_groups[0].extruder_id = 1;
+    // Empty wildcard visits must keep the selection, just like printable ones.
+    plan.groups[0].layers[0].tool_groups.emplace_back();
+    plan.groups[0].layers[0].tool_groups.back().extruder_id = UINT16_MAX;
+    plan.groups[0].layers.emplace_back();
+    plan.groups[0].layers[1].print_z = scale_i(0.4);
+    for (const uint16_t tool : {uint16_t(UINT16_MAX), uint16_t(0), uint16_t(UINT16_MAX)}) {
+        plan.groups[0].layers[1].tool_groups.emplace_back();
+        plan.groups[0].layers[1].tool_groups.back().extruder_id = tool;
+    }
+    plan.groups.emplace_back();
+    plan.groups[1].layers.emplace_back();
+    plan.groups[1].layers[0].print_z = scale_i(0.6);
+    plan.groups[1].layers[0].tool_groups.emplace_back();
+    plan.groups[1].layers[0].tool_groups[0].extruder_id = UINT16_MAX;
+    append_printing_extrusion(plan.groups[1].layers[0].tool_groups[0], make_print_path(40., 50.));
+
+    run_layer_plugins(print, {TOOLCHANGE_PLUGIN, TRANSITION_SCOPE_PLUGIN});
+
+    CHECK(plan.groups[0].layers[0].tool_groups[1].extruder_id == 1);
+    CHECK_FALSE(plan.groups[0].layers[0].tool_groups[1].events.has_before());
+    const PrintingLayerGroup &middle = plan.groups[0].layers[1];
+    CHECK(middle.tool_groups[0].extruder_id == 1);
+    CHECK_FALSE(middle.tool_groups[0].events.has_before());
+    CHECK(middle.tool_groups[2].extruder_id == 0);
+    CHECK_FALSE(middle.tool_groups[2].events.has_before());
+    const PrintingToolGroup &last = plan.groups[1].layers[0].tool_groups[0];
+    CHECK(last.extruder_id == 0);
+    CHECK_FALSE(last.events.has_before());
+    const slic3r_api::MutableExtrusionEntity scope =
+        find_scope(entity_view(*last.extrusions.front().root));
+    REQUIRE(scope.valid());
+    const slic3r_api::PrintingExtrusionScopeProperty *property = scope.get(scope_property_key());
+    REQUIRE(property != nullptr);
+    CHECK(slic3r_api::printing_extrusion_scope_has_flag(
+        *property, slic3r_api::PRINTING_EXTRUSION_SCOPE_INCOMING_TOOLCHANGE));
+    const ExtrusionEntity &event = first_before_event(middle.tool_groups[1]);
+    if (config.toolchange_gcode.value.empty()) {
+        const ExtrusionPropertySpecialCommand *command = event.get_property<ExtrusionPropertySpecialCommand>();
+        REQUIRE(command != nullptr);
+        CHECK(command->extra_data == Approx(0.0));
+    } else {
+        const ExtrusionPropertyCustomGcode *script = event.get_property<ExtrusionPropertyCustomGcode>();
+        REQUIRE(script != nullptr);
+        CHECK(stored_script_int(event, *script, "previous_extruder") == 1);
+        CHECK(stored_script_int(event, *script, "next_extruder") == 0);
+    }
+}
+
+TEST_CASE("Leading unconstrained visits use the first explicit tool or zero",
+          "[plugins][layer-extrusion-edit][toolchange][any-tool]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    prepare_print(print, model);
+    const uint16_t explicit_tool = GENERATE(uint16_t(1), uint16_t(UINT16_MAX));
+    const uint16_t expected = explicit_tool == UINT16_MAX ? 0 : explicit_tool;
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups[0].layers[0].tool_groups[0].extruder_id = UINT16_MAX;
+    // The initial concrete tool may be in a later group, beyond an empty layer.
+    plan.groups[0].layers.emplace_back();
+    plan.groups.emplace_back();
+    plan.groups[1].layers.emplace_back();
+    plan.groups[1].layers[0].print_z = scale_i(0.4);
+    plan.groups[1].layers[0].tool_groups.emplace_back();
+    plan.groups[1].layers[0].tool_groups[0].extruder_id = explicit_tool;
+
+    run_layer_plugins(print, {TOOLCHANGE_PLUGIN});
+    CHECK(plan.groups[0].layers[0].tool_groups[0].extruder_id == expected);
+    CHECK(plan.groups[1].layers[0].tool_groups[0].extruder_id == expected);
+    CHECK_FALSE(plan.groups[0].layers[0].tool_groups[0].events.has_before());
+    CHECK_FALSE(plan.groups[1].layers[0].tool_groups[0].events.has_before());
+    // Resolving IDs is stable when setup is run again on an already bound plan.
+    run_layer_plugins(print, {TOOLCHANGE_PLUGIN});
+    CHECK(plan.groups[0].layers[0].tool_groups[0].extruder_id == expected);
+    CHECK_FALSE(plan.groups[1].layers[0].tool_groups[0].events.has_before());
+}
+
 } // namespace
