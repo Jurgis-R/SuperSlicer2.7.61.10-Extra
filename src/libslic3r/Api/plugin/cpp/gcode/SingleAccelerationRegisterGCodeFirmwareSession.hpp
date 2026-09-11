@@ -5,6 +5,8 @@
 #ifndef slic3r_Api_plugin_cpp_gcode_SingleAccelerationRegisterGCodeFirmwareSession_hpp_
 #define slic3r_Api_plugin_cpp_gcode_SingleAccelerationRegisterGCodeFirmwareSession_hpp_
 
+#include <optional>
+
 #include "DefaultGCodeFirmwareSession.hpp"
 
 /*
@@ -29,7 +31,14 @@ public:
     using DefaultGCodeFirmwareSession::DefaultGCodeFirmwareSession;
 
 protected:
+    void setup_firmware(const Config &config) override;
     std::string write_acceleration(PreparedMove::Kind kind) override;
+
+private:
+    // A shared register may use travel acceleration only when the following
+    // print move has a known value to restore. This fallback is available only
+    // when machine limits participate in host-side policy.
+    std::optional<uint32_t> m_print_acceleration_fallback;
 };
 
 }} // namespace slic3r_api::GCodeGeneration

@@ -77,6 +77,30 @@ public:
     using KlipperGCodeFirmwareSession::encode_extruder_current;
 };
 
+// Build a print/travel/print sequence whose extrusion leaves deliberately
+// carry no acceleration. The final print may be omitted when a test only
+// needs to prove that an unsafe travel switch was suppressed.
+void append_optional_acceleration_sequence(Print &print, bool append_final_print = true)
+{
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    plan.groups.front().layers.emplace_back();
+    PrintingLayerGroup &layer = plan.groups.front().layers.front();
+    layer.tool_groups.emplace_back();
+    PrintingToolGroup &tool_group = layer.tool_groups.front();
+    tool_group.extruder_id = 0;
+    append_path_extrusion(tool_group, make_firmware_path(
+        ArcPolyline(Points{Point(scale_i(0.0), scale_i(0.0)), Point(scale_i(1.0), scale_i(0.0))}),
+        20.f, -1.f));
+    append_path_extrusion(tool_group, make_firmware_travel(
+        ArcPolyline(Points{Point(scale_i(1.0), scale_i(0.0)), Point(scale_i(2.0), scale_i(0.0))}),
+        80.f, 900.f));
+    if (append_final_print)
+        append_path_extrusion(tool_group, make_firmware_path(
+            ArcPolyline(Points{Point(scale_i(2.0), scale_i(0.0)), Point(scale_i(3.0), scale_i(0.0))}),
+            20.f, -1.f));
+}
+
 } // namespace
 
 TEST_CASE("G-code firmware service exposes its printer selector and standard session",
@@ -400,6 +424,88 @@ TEST_CASE("Built-in firmware acceleration acknowledgements match their physical 
         const std::string equal_output = export_with_firmware(equal_print, expectation.id);
         INFO(equal_output);
         CHECK(count_occurrences(equal_output, expectation.print_command) == 3);
+    }
+}
+
+TEST_CASE("Shared acceleration registers switch only when print acceleration can be restored",
+          "[plugins][gcode][firmware][dialects][acceleration][optional]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    struct SharedAccelerationExpectation
+    {
+        const char *id;
+        const char *print_command;
+        const char *travel_command;
+    };
+    const SharedAccelerationExpectation shared_dialects[] = {
+        {"gcode.firmware.marlin1", "M204 S500\n", "M204 S900\n"},
+        {"gcode.firmware.sprinter", "M204 P500\n", "M204 P900\n"},
+        {"gcode.firmware.klipper", "M204 S500\n", "M204 S900\n"}
+    };
+
+    SECTION("the machine extrusion limit restores the shared register") {
+        for (const SharedAccelerationExpectation &expectation : shared_dialects) {
+            INFO(expectation.id);
+            Print print;
+            configure_standard_firmware(print);
+            PrintConfig &config = const_cast<PrintConfig &>(print.config());
+            config.machine_limits_usage.value = MachineLimitsUsage::Limits;
+            config.machine_max_acceleration_extruding.set(std::vector<double>{500.0});
+            append_optional_acceleration_sequence(print);
+
+            const std::string output = export_with_firmware(print, expectation.id);
+            INFO(output);
+            const size_t travel_pos = output.find(expectation.travel_command);
+            const size_t print_pos = output.find(expectation.print_command);
+            REQUIRE(travel_pos != std::string::npos);
+            REQUIRE(print_pos != std::string::npos);
+            CHECK(travel_pos < print_pos);
+            CHECK(count_occurrences(output, expectation.travel_command) == 1);
+            CHECK(count_occurrences(output, expectation.print_command) == 1);
+        }
+    }
+
+    SECTION("Ignore mode does not use the machine limit as a fallback") {
+        for (const SharedAccelerationExpectation &expectation : shared_dialects) {
+            INFO(expectation.id);
+            Print print;
+            configure_standard_firmware(print);
+            PrintConfig &config = const_cast<PrintConfig &>(print.config());
+            config.machine_limits_usage.value = MachineLimitsUsage::Ignore;
+            config.machine_max_acceleration_extruding.set(std::vector<double>{500.0});
+            append_optional_acceleration_sequence(print);
+
+            const std::string output = export_with_firmware(print, expectation.id);
+            INFO(output);
+            CHECK(output.find("M204") == std::string::npos);
+        }
+    }
+
+    SECTION("an independent travel register remains usable without print acceleration") {
+        Print print;
+        configure_standard_firmware(print);
+        PrintConfig &config = const_cast<PrintConfig &>(print.config());
+        config.machine_limits_usage.value = MachineLimitsUsage::Ignore;
+        append_optional_acceleration_sequence(print);
+
+        const std::string output = export_with_firmware(print, "gcode.firmware.marlin2");
+        INFO(output);
+        CHECK(count_occurrences(output, "M204 T900\n") == 1);
+        CHECK(output.find("M204 P") == std::string::npos);
+    }
+
+    SECTION("a non-positive extrusion limit cannot restore the shared register") {
+        Print print;
+        configure_standard_firmware(print);
+        PrintConfig &config = const_cast<PrintConfig &>(print.config());
+        config.machine_limits_usage.value = MachineLimitsUsage::Limits;
+        config.machine_max_acceleration_extruding.set(std::vector<double>{0.0});
+        append_optional_acceleration_sequence(print, false);
+
+        const std::string output = export_with_firmware(print, "gcode.firmware.marlin1");
+        INFO(output);
+        CHECK(output.find("M204") == std::string::npos);
     }
 }
 TEST_CASE("Klipper uses configured extruder names and I J arc centers",

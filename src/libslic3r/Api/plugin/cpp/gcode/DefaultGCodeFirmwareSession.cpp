@@ -71,6 +71,25 @@ bool coordinates_differ(const c_vec3d &lhs, const c_vec3d &rhs)
     return lhs.x != rhs.x || lhs.y != rhs.y || lhs.z != rhs.z;
 }
 
+// Convert an optional process acceleration into the integer unit accepted by
+// firmware commands. Absence is meaningful: it leaves the printer's current
+// acceleration unchanged instead of inventing a host-side default.
+std::optional<uint32_t> validated_acceleration_request(
+    const std::optional<float> &acceleration)
+{
+    if (!acceleration)
+        return std::nullopt;
+    if (!std::isfinite(*acceleration) || *acceleration <= 0.f ||
+        double(*acceleration) > double(std::numeric_limits<uint32_t>::max()))
+        throw std::invalid_argument(
+            "A specified movement acceleration must be positive, finite and representable.");
+    const long long rounded = std::llround(*acceleration);
+    if (rounded <= 0)
+        throw std::invalid_argument(
+            "A specified movement acceleration is too small to encode.");
+    return uint32_t(rounded);
+}
+
 bool command_code(std::string_view command, char prefix, int32_t *code_out)
 {
     if (code_out == nullptr || command.size() < 2 || command.front() != prefix)
@@ -817,17 +836,18 @@ std::string DefaultGCodeFirmwareSession::write_leaf_geometry(const ExtrusionEnti
         throw std::invalid_argument("A printable extrusion needs valid flow attributes.");
     if (!state.speed_mm_per_s || *state.speed_mm_per_s <= 0.f)
         throw std::invalid_argument("An extrusion movement needs a positive speed.");
-    if (!state.acceleration_mm_per_s2 || *state.acceleration_mm_per_s2 <= 0.f)
-        throw std::invalid_argument("An extrusion movement needs a positive acceleration.");
+    const std::optional<uint32_t> acceleration =
+        validated_acceleration_request(state.acceleration_mm_per_s2);
 
-    // The property stores one effective acceleration. Its leaf role chooses
-    // which independent request it updates; the other request remains pending
-    // until another leaf explicitly changes it.
-    const uint32_t acceleration = uint32_t(std::lround(*state.acceleration_mm_per_s2));
-    if (is_travel)
-        m_gantry.request_travel_acceleration(acceleration);
-    else
-        m_gantry.request_print_acceleration(acceleration);
+    // A present property updates the logical register selected by the leaf
+    // role. An absent property deliberately preserves both existing requests,
+    // matching the zero-disabled acceleration settings used by the slicer.
+    if (acceleration) {
+        if (is_travel)
+            m_gantry.request_travel_acceleration(acceleration);
+        else
+            m_gantry.request_print_acceleration(acceleration);
+    }
     apply_requested_state(state);
     std::string output;
     if (is_wipe && !m_wipe_tag_open) {
@@ -949,8 +969,10 @@ std::string DefaultGCodeFirmwareSession::write_extrusion_axis_event(
     apply_requested_state(state);
     DefaultExtruder &tool = current_extruder();
     const std::optional<double> inherited_speed = m_gantry.requested_speed();
-    if (state.acceleration_mm_per_s2 && *state.acceleration_mm_per_s2 > 0.f)
-        m_gantry.request_print_acceleration(uint32_t(std::lround(*state.acceleration_mm_per_s2)));
+    const std::optional<uint32_t> acceleration =
+        validated_acceleration_request(state.acceleration_mm_per_s2);
+    if (acceleration)
+        m_gantry.request_print_acceleration(acceleration);
 
     const raw_extrusion_role role = state.attributes ? state.attributes->extrusion_role() : 0;
     if (RAW_EXTRUSION_ROLE_IS_RETRACT(role)) {
@@ -1024,9 +1046,10 @@ std::string DefaultGCodeFirmwareSession::write_special_command(
     case C_EXTRUSION_SPECIAL_COMMAND_RETRACT: {
         DefaultExtruder &tool = current_extruder();
         const std::optional<double> inherited_speed = m_gantry.requested_speed();
-        if (state.acceleration_mm_per_s2 && *state.acceleration_mm_per_s2 > 0.f)
-            m_gantry.request_print_acceleration(
-                uint32_t(std::lround(*state.acceleration_mm_per_s2)));
+        const std::optional<uint32_t> acceleration =
+            validated_acceleration_request(state.acceleration_mm_per_s2);
+        if (acceleration)
+            m_gantry.request_print_acceleration(acceleration);
         if (command.code == C_EXTRUSION_SPECIAL_COMMAND_RETRACT) {
             const double speed = command.extra_data < 0.0 ?
                 tool.extrusion_axis().retract_speed() : tool.extrusion_axis().deretract_speed();

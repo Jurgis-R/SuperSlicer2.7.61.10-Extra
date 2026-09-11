@@ -76,6 +76,7 @@ std::string KlipperGCodeFirmwareSession::encode_machine_envelope(
 
 void KlipperGCodeFirmwareSession::setup_firmware(const Config &config)
 {
+    SingleAccelerationRegisterGCodeFirmwareSession::setup_firmware(config);
     m_tool_names.clear();
     m_tool_names.reserve(extruders().size());
     for (uint32_t tool_id = 0; tool_id < extruders().size(); ++tool_id) {

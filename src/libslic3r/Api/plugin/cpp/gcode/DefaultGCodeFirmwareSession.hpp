@@ -132,7 +132,8 @@ protected:
 
     // A dialect may copy additional setup values after the generic machine
     // state has been initialized. The borrowed Config view remains valid only
-    // for the duration of this call.
+    // for the duration of this call. Overrides must call their direct parent
+    // implementation so intermediate firmware policies can cache their state.
     virtual void setup_firmware(const Config &config);
 
     // Convert validated printer limits into this dialect's startup commands.

@@ -1117,7 +1117,7 @@ TEST_CASE("Default firmware rejects missing process properties and unknown tools
         CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
     }
 
-    SECTION("printable leaf without speed and acceleration") {
+    SECTION("printable leaf without speed") {
         Print print;
         select_printing_plan_writer(print);
         configure_standard_firmware(print);
@@ -1133,7 +1133,7 @@ TEST_CASE("Default firmware rejects missing process properties and unknown tools
             make_firmware_path(
                 ArcPolyline(Points{Point(scale_i(0.0), scale_i(0.0)), Point(scale_i(1.0), scale_i(0.0))}),
                 -1.f,
-                -1.f));
+                500.f));
 
         const boost::filesystem::path output_path = temporary_gcode_path();
         remove_output_pair(output_path);
@@ -1144,6 +1144,34 @@ TEST_CASE("Default firmware rejects missing process properties and unknown tools
         Orchestrator::instance().reset_plugin_cancel();
         CHECK(read_text_file(output_path) == "previous output\n");
         CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
+        remove_output_pair(output_path);
+    }
+
+    SECTION("printable leaf without acceleration") {
+        Print print;
+        select_printing_plan_writer(print);
+        configure_standard_firmware(print);
+        PrintingPlan &plan = print.mutable_printing_plan();
+        plan.groups.emplace_back();
+        plan.groups.front().layers.emplace_back();
+        PrintingLayerGroup &layer = plan.groups.front().layers.front();
+        layer.tool_groups.emplace_back();
+        PrintingToolGroup &tool_group = layer.tool_groups.front();
+        tool_group.extruder_id = 0;
+        append_path_extrusion(
+            tool_group,
+            make_firmware_path(
+                ArcPolyline(Points{Point(scale_i(0.0), scale_i(0.0)), Point(scale_i(1.0), scale_i(0.0))}),
+                20.f,
+                -1.f));
+
+        const boost::filesystem::path output_path = temporary_gcode_path();
+        remove_output_pair(output_path);
+        Steps::StepGenerateGcode::run_step(
+            Orchestrator::instance(), print, output_path.string());
+        const std::string output = read_text_file(output_path);
+        CHECK(output.find("M204") == std::string::npos);
+        CHECK(output.find("G1 X1 E") != std::string::npos);
         remove_output_pair(output_path);
     }
 

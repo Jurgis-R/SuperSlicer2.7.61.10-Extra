@@ -683,6 +683,21 @@ TEST_CASE("Layer extrusion speed and acceleration plugins operate independently"
         CHECK(leaves.front().speed == -1.f);
         CHECK(leaves.front().acceleration == 700.f);
     }
+
+    SECTION("an unresolved travel acceleration remains optional") {
+        PreparedSpeedPrint prepared;
+        const DynamicPrintConfig config = speed_config({
+            {"travel_speed", "80"}, {"default_acceleration", "0"},
+            {"travel_acceleration", "0"}, {"machine_limits_usage", "ignore"}
+        });
+        prepare_ordered_plan(prepared, config, {{{ExtrusionRole::Travel, 0.0}}});
+
+        run_editors(prepared, {DEFAULT_ACCELERATION_PLUGIN});
+        const std::vector<ObservedLeaf> leaves = observed_plan_leaves(prepared.print);
+        REQUIRE(leaves.size() == 1);
+        CHECK(leaves.front().speed == -1.f);
+        CHECK(leaves.front().acceleration == -1.f);
+    }
 }
 
 TEST_CASE("Layer speed follows final values across region boundaries",

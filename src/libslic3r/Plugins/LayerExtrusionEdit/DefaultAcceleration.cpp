@@ -239,8 +239,14 @@ float resolved_travel_acceleration(const ExtrusionSettingsContext &context)
             acceleration = std::min(acceleration, machine_limit);
     }
 
-    if (acceleration <= 0.0 || !std::isfinite(acceleration))
-        throw std::runtime_error("Unable to resolve a positive finite travel acceleration.");
+    // Zero disables both travel and fallback acceleration. Preserve that
+    // deliberate absence so the firmware may keep its current acceleration;
+    // a shared-register dialect separately decides whether a travel switch is
+    // safe when no extrusion acceleration has been established.
+    if (!std::isfinite(acceleration))
+        throw std::runtime_error("Travel acceleration must be finite when specified.");
+    if (acceleration <= 0.0)
+        return 0.f;
     const float stored_acceleration = float(acceleration);
     if (!std::isfinite(stored_acceleration))
         throw std::runtime_error("Travel acceleration cannot be represented by the stored float.");
