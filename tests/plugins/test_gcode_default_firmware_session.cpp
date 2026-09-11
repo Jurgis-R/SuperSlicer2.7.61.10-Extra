@@ -950,6 +950,65 @@ TEST_CASE("Default firmware writes the E value prepared by the extruder state",
     remove_output_pair(output_path);
 }
 
+TEST_CASE("E-only unretraction resolves zero speed per extruder without inherited speed",
+          "[plugins][gcode][firmware][retraction][deretract-zero]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const uint16_t tool_id = GENERATE(uint16_t(0), uint16_t(1));
+    const bool explicit_speed = GENERATE(false, true);
+    Print print;
+    select_printing_plan_writer(print);
+    configure_standard_firmware(print, 2);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.use_firmware_retraction.value = false;
+    config.use_relative_e_distances.value = false;
+    config.retract_speed.set(std::vector<double>{40.0, 55.0});
+    config.deretract_speed.set(std::vector<double>{explicit_speed ? 18.0 : 0.0,
+                                                 explicit_speed ? 23.0 : 0.0});
+    PrintingToolGroup &tool = append_speed_validation_tool_group(print, scale_i(0.2), tool_id);
+
+    // Neither event nor parent declares speed: both E-only moves must resolve
+    // their speed from the selected tool, independently of previous XY moves.
+    ExtrusionEntity::Children children;
+    for (const bool is_retract : {true, false}) {
+        std::unique_ptr<ExtrusionNop> event(new ExtrusionNop());
+        slic3r_api::MutableExtrusionEntity view(
+            reinterpret_cast<extrusion_entity_handle *>(event.get()));
+        view.get_or_add(slic3r_api::EPropertyAttributes::key)
+            .extrusion_role(is_retract ? RAW_EXTRUSION_ROLE_RETRACT : RAW_EXTRUSION_ROLE_UNRETRACT)
+            .mm3_per_mm(0.0);
+        if (is_retract)
+            view.get_or_add(slic3r_api::EPropertyExtrusionAxis::key).retract_to(2.0);
+        else
+            view.get_or_add(slic3r_api::EPropertyExtrusionAxis::key).unretract(0.0);
+        children.push_back(std::move(event));
+    }
+    append_path_extrusion(tool, std::unique_ptr<ExtrusionEntity>(
+        new ExtrusionEntity(std::move(children), false, true, true)));
+
+    const boost::filesystem::path output_path = temporary_gcode_path();
+    remove_output_pair(output_path);
+    try {
+        Steps::StepGenerateGcode::run_step(Orchestrator::instance(), print, output_path.string());
+        const std::string output = read_text_file(output_path);
+        INFO(output);
+        const std::string retract_feed = tool_id == 0 ? "2400" : "3300";
+        CHECK(output.find("G1 E-2 F" + retract_feed + "\n") != std::string::npos);
+        if (explicit_speed) {
+            const std::string unretract_feed = tool_id == 0 ? "1080" : "1380";
+            CHECK(output.find("G1 E0 F" + unretract_feed + "\n") != std::string::npos);
+        } else {
+            // The same feed is already encoded by the retract command.
+            CHECK(output.find("G1 E0\n") != std::string::npos);
+        }
+        CHECK(count_occurrences(output, "G1 E") == 2);
+    } catch (...) {
+        remove_output_pair(output_path);
+        throw;
+    }
+    remove_output_pair(output_path);
+}
+
 TEST_CASE("Default firmware encodes semantic retract wipe and unretract leaves",
           "[plugins][gcode][firmware][retraction][wipe]")
 {

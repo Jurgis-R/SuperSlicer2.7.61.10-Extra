@@ -37,6 +37,10 @@ void DefaultExtruder::setup(const Config &config)
     axis_settings.retract_speed = config.vector_float_or_default("retract_speed", m_id, 0.0);
     axis_settings.deretract_speed =
         config.vector_float_or_default("deretract_speed", m_id, axis_settings.retract_speed);
+    // Zero explicitly requests the selected tool's retraction speed. Resolve
+    // this configuration sentinel before passing physical speeds to the axis.
+    if (axis_settings.deretract_speed == 0.0)
+        axis_settings.deretract_speed = axis_settings.retract_speed;
     axis_settings.xyz_precision = config.int_or_default("gcode_precision_xyz", 3);
     axis_settings.e_precision = config.int_or_default("gcode_precision_e", 5);
     m_extrusion_axis.setup(axis_settings);
