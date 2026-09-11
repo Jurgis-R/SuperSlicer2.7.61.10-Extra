@@ -45,10 +45,13 @@ from slic3r_api_generated import (
     RAW_GCODE_FIRMWARE_STATUS_SUCCESS,
     RAW_GCODE_FIRMWARE_STATUS_UNSET,
     RAW_GCODE_SCRIPT_STATUS_SUCCESS,
+    RAW_GCODE_THUMBNAIL_STATUS_ERROR,
+    RAW_GCODE_THUMBNAIL_STATUS_INVALID_ARGUMENT,
+    RAW_GCODE_THUMBNAIL_STATUS_SUCCESS,
+    RAW_GCODE_THUMBNAIL_STATUS_UNSET,
     RawGcodeFirmwareInstance,
     RawGcodeFirmwareResult,
-    RawGcodeThumbnailGenerator,
-    RawGcodeThumbnailSize,
+    RawGcodeThumbnailRenderRequest,
     RawGcodeScriptProcessor,
     RawGcodeScriptResult,
     RunCtxGcodeFirmware,
@@ -58,6 +61,9 @@ from slic3r_api_generated import (
     SLIC3R_CONFIG_OPTION_INT,
     SLIC3R_CONFIG_OPTION_INTS,
     SLIC3R_CONFIG_OPTION_STRING,
+)
+from .gcode_thumbnail import (
+    GCodeThumbnailRendererView,
 )
 from slic3r_datatree_views import Config, MutableConfig, Print
 from slic3r_extrusion_views import ExtrusionEntity
@@ -321,7 +327,11 @@ class GCodeFirmwareSession:
     be freed or retained. Calls follow the documented begin/write/end nesting.
     """
 
-    def begin_print(self, print_view: Print, plan: PrintingPlan) -> str:
+    def begin_print(
+        self,
+        print_view: Print,
+        plan: PrintingPlan,
+    ) -> str:
         """Emit preamble and plan.before events once. Views are read-only and
         borrowed for this call; do not retain or free them. The writer will not
         issue a separate write_event call for the plan's before-events.
@@ -444,7 +454,7 @@ def _begin_print(session, print_handle, plan_handle, result) -> None:
         result,
         lambda holder: holder.session.begin_print(
             Print(holder.api, _require_callback_handle(print_handle, "begin_print")),
-            PrintingPlan(holder.api, _require_callback_handle(plan_handle, "begin_print plan"))
+            PrintingPlan(holder.api, _require_callback_handle(plan_handle, "begin_print plan")),
         ),
     )
 
@@ -651,7 +661,11 @@ class GCodeFirmwareView:
             raise ValueError(f"{name} must use this API instance")
         return value.c_handle()
 
-    def begin_print(self, print_view: Print, plan: PrintingPlan) -> str:
+    def begin_print(
+        self,
+        print_view: Print,
+        plan: PrintingPlan,
+    ) -> str:
         return self._invoke(
             _instance_vtable(self._instance).contents.begin_print,
             self._argument(print_view, Print, "print"),
@@ -729,9 +743,9 @@ class GCodeFirmwareContext:
             raise ValueError("the G-code firmware context has no Print")
         return Print(self.api, self.payload.print)
 
-    def thumbnail_generator(self):
-        """Borrowed service, valid through this export's firmware destruction."""
-        return GCodeThumbnailGeneratorView(self.payload.thumbnails)
+    def thumbnail_renderer(self) -> GCodeThumbnailRendererView:
+        """Borrow the export renderer through this firmware's destruction."""
+        return GCodeThumbnailRendererView(self.payload.thumbnail_renderer)
 
     def gcode_firmware_script_processor(self) -> GCodeScriptProcessorView:
         """Borrow the processor that remains valid for the published session."""
@@ -752,45 +766,9 @@ __all__ = [
     "GCodeFirmwareContext",
     "GCodeFirmwareSession",
     "GCodeFirmwareView",
-    "GCodeThumbnailGeneratorView",
     "GCodeScriptConfig",
     "GCodeScriptContext",
     "GCodeScriptProcessorView",
     "RawGcodeFirmwareVTable",
     "make_gcode_firmware_instance",
 ]
-
-
-@abi_requires_headers("slic3r_gcode_firmware.h")
-class GCodeThumbnailGeneratorView:
-    """Borrowed export service; call serially while the host export is alive.
-
-    generate returns a copied string, independent of the service's next call.
-    Formats: 0 PNG, 1 JPG, 2 QOI, 3 BIQU. No placement or file write occurs.
-    """
-    def __init__(self, pointer):
-        self._pointer = ctypes.cast(pointer, ctypes.POINTER(RawGcodeThumbnailGenerator)) if pointer else None
-
-    def generate(self, sizes, format=0, with_bed=False, with_format_tag=False):
-        if not self._pointer:
-            return ""
-        if format not in (0, 1, 2, 3):
-            raise ValueError("Invalid thumbnail format")
-        dimensions = list(sizes)
-        if any(not (0 < w <= 0xffffffff and 0 < h <= 0xffffffff) for w, h in dimensions):
-            raise ValueError("Thumbnail dimensions must be positive uint32 values")
-        array = (RawGcodeThumbnailSize * len(dimensions))(
-            *(RawGcodeThumbnailSize(w, h) for w, h in dimensions))
-        service = self._pointer.contents
-        if service.struct_size < ctypes.sizeof(RawGcodeThumbnailGenerator) or not service.generate:
-            raise ValueError("Invalid thumbnail service")
-        result = RawGcodeFirmwareResult()
-        result.struct_size = ctypes.sizeof(result)
-        service.generate(service.context, array, len(array), format,
-                         bool(with_bed), bool(with_format_tag), ctypes.byref(result))
-        if result.status != RAW_GCODE_FIRMWARE_STATUS_SUCCESS:
-            raise RuntimeError(result.error_message.decode("utf-8", "replace") if result.error_message else "Thumbnail generation failed")
-        address = _raw_pointer(result, "text")
-        if result.text_size and not address:
-            raise RuntimeError("Missing thumbnail text")
-        return ctypes.string_at(address, result.text_size).decode("utf-8") if result.text_size else ""

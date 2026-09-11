@@ -130,6 +130,9 @@ if (TARGET Python3::Python)
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/gcode_firmware.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/gcode_firmware.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/gcode_thumbnail.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/gcode_thumbnail.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/steps/post_perimeter.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/steps/post_perimeter.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

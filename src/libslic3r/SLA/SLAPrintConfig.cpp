@@ -468,7 +468,7 @@ void init_sla_params(PrintConfigDef &definition)
         "inherits",
         "thumbnails",
         "thumbnails_color",
-        "thumbnails_custom_color",
+        "thumbnail_color_mode",
         "thumbnails_with_bed",
         "thumbnails_format",
         "thumbnails_tag_format",

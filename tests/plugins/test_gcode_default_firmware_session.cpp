@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -19,7 +20,7 @@
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/host/GCodeScriptProcessor.hpp"
-#include "libslic3r/Api/host/GCodeThumbnailGenerator.hpp"
+#include "libslic3r/Api/host/GCodeThumbnailRenderer.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeThumbnailViews.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
@@ -35,9 +36,12 @@
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionEntityVisitors.hpp"
 #include "libslic3r/GCode.hpp"
+#include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Geometry/ArcWelder.hpp"
 #include "libslic3r/Layer.hpp"
+#include "libslic3r/Model.hpp"
+#include "libslic3r/SLA/SLAPrintConfig.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/BuiltinGCodeFirmwares.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/KlipperGCodeFirmware.hpp"
@@ -1939,38 +1943,194 @@ TEST_CASE("Preamble brackets start script before priming and restores profile st
     remove_output_pair(path);
 }
 
-TEST_CASE("Thumbnail service owns text and honors explicit render parameters",
+TEST_CASE("Thumbnail renderer exposes borrowed RGBA8 pixels and render parameters",
           "[plugins][gcode][firmware][preamble][thumbnails]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Print print;
     size_t calls = 0;
-    GCodeThumbnailGenerator host(print, [&](const ThumbnailsParams &params) {
+    GCodeThumbnailRenderer host(print, [&](const ThumbnailsParams &params) {
         ++calls;
         REQUIRE(params.sizes.size() == 1);
         CHECK(params.sizes[0] == Vec2d(4, 4));
         CHECK(params.show_bed);
+        CHECK(params.camera == RAW_GCODE_THUMBNAIL_CAMERA_ISOMETRIC);
+        CHECK(params.projection == RAW_GCODE_THUMBNAIL_PROJECTION_ORTHOGRAPHIC);
+        CHECK(params.color_mode == RAW_GCODE_THUMBNAIL_COLOR_UNIFORM);
         ThumbnailData data;
         data.set(4, 4);
         std::fill(data.pixels.begin(), data.pixels.end(), 255);
         return ThumbnailsList{data};
     });
-    const slic3r_api::GCodeThumbnailGeneratorView view(host.c_generator());
-    const std::string png = view.generate({{4, 4}}, 0, true, true);
-    REQUIRE(!png.empty());
-    CHECK(png.find("thumbnail_PNG begin") != std::string::npos);
-    for (uint32_t format : {1u, 2u, 3u}) CHECK_FALSE(view.generate({{4, 4}}, format, true, true).empty());
-    CHECK(calls == 4);
-    CHECK(png.find("thumbnail_PNG begin") != std::string::npos);
-    GCodeThumbnailGenerator absent(print, {});
-    CHECK(slic3r_api::GCodeThumbnailGeneratorView(absent.c_generator()).generate({{4, 4}}, 0, false, false).empty());
-    CHECK_THROWS(view.generate({{0, 4}}, 0, false, false));
-    GCodeThumbnailGenerator failing(print, [](const ThumbnailsParams &) -> ThumbnailsList {
+    raw_gcode_thumbnail_render_request request{};
+    request.struct_size = sizeof(request);
+    request.width = 4;
+    request.height = 4;
+    request.camera = RAW_GCODE_THUMBNAIL_CAMERA_REAR;
+    request.projection = RAW_GCODE_THUMBNAIL_PROJECTION_PERSPECTIVE;
+    request.framing = RAW_GCODE_THUMBNAIL_FRAMING_AUTO;
+    request.color_mode = RAW_GCODE_THUMBNAIL_COLOR_UNIFORM;
+    request.background = RAW_GCODE_THUMBNAIL_BACKGROUND_TRANSPARENT;
+    request.show_bed = 1;
+    request.custom_scale = 1.0;
+
+    const slic3r_api::GCodeThumbnailRendererView view(host.c_renderer());
+    const slic3r_api::GCodeThumbnailRenderResult rendered = view.render(request);
+    REQUIRE(rendered.status == RAW_GCODE_THUMBNAIL_STATUS_SUCCESS);
+    CHECK(rendered.image.width() == 4);
+    CHECK(rendered.image.height() == 4);
+    CHECK(rendered.image.stride_bytes() == 16);
+    CHECK(rendered.image.pixels_size() == 64);
+    CHECK(rendered.image.pixels()[0] == 255);
+    CHECK(calls == 1);
+
+    GCodeThumbnailRenderer absent(print, {});
+    CHECK(slic3r_api::GCodeThumbnailRendererView(absent.c_renderer()).render(request).status ==
+          RAW_GCODE_THUMBNAIL_STATUS_SKIPPED);
+    request.width = 0;
+    CHECK_THROWS(view.render(request));
+    request.width = 4;
+    GCodeThumbnailRenderer failing(print, [](const ThumbnailsParams &) -> ThumbnailsList {
         throw std::runtime_error("renderer failed");
     });
-    CHECK_THROWS_WITH(slic3r_api::GCodeThumbnailGeneratorView(failing.c_generator()).generate({{4, 4}}, 0, false, false), "renderer failed");
+    CHECK_THROWS_WITH(slic3r_api::GCodeThumbnailRendererView(failing.c_renderer()).render(request),
+                      "renderer failed");
     print.cancel();
-    CHECK_THROWS(view.generate({{4, 4}}, 0, true, true));
+    CHECK_THROWS(view.render(request));
+}
+
+TEST_CASE("Built-in thumbnail providers expose one compatible exclusive selector",
+          "[plugins][gcode][firmware][preamble][thumbnails][metadata]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    const std::vector<std::string> provider_ids = {
+        "PNG", "JPG",
+        "QOI", "BIQU"
+    };
+    for (const std::string &provider_id : provider_ids) {
+        const Plugin *plugin = orchestrator.get_plugin(provider_id);
+        REQUIRE(plugin != nullptr);
+        CHECK(plugin->get_step() == GCODE_THUMBNAIL);
+        CHECK(plugin->get_exclusive_group() == "thumbnail_encoder_plugin");
+        CHECK(orchestrator.is_plugin_active(plugin));
+    }
+
+    const Plugin *settings_owner = orchestrator.get_plugin(provider_ids.front());
+    REQUIRE(settings_owner != nullptr);
+    const std::vector<Plugin::UsedConfigKey> used = settings_owner->get_used_config_keys();
+    CHECK_FALSE(used.empty()); // Typed metadata is required for definition ownership.
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules())
+        CHECK(rule.condition_key != "thumbnails_format");
+    for (size_t provider_idx = 1; provider_idx < provider_ids.size(); ++provider_idx) {
+        const Plugin *plugin = orchestrator.get_plugin(provider_ids[provider_idx]);
+        REQUIRE(plugin != nullptr);
+        CHECK(plugin->get_defined_config_keys().size() == 2);
+    }
+
+    for (const char *key : {"thumbnail_camera", "thumbnail_camera_position", "thumbnail_camera_target",
+                            "thumbnail_camera_up", "thumbnail_projection", "thumbnail_framing", "thumbnail_custom_scale"}) {
+        CHECK(PrintConfigDef::instance().get(key) == nullptr);
+    }
+    REQUIRE(PrintConfigDef::instance().get("thumbnail_background") != nullptr);
+    REQUIRE(PrintConfigDef::instance().get("thumbnail_background_color") != nullptr);
+    REQUIRE(PrintConfigDef::instance().get("thumbnail_color_mode") != nullptr);
+
+    Print print;
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    CHECK(config.option("thumbnails_format")->serialize() == "PNG");
+    const std::vector<std::string> expected = provider_ids;
+    for (size_t format_idx = 0; format_idx < expected.size(); ++format_idx) {
+        config.set_deserialize("thumbnails_format", expected[format_idx]);
+        Plugin *selected = Steps::selected_active_plugin_from_group(
+            orchestrator, GCODE_THUMBNAIL, "thumbnail_encoder_plugin", &print.config());
+        REQUIRE(selected != nullptr);
+        CHECK(selected->get_id() == expected[format_idx]);
+    }
+
+    config.set_deserialize("thumbnails_format", "JPG");
+    CHECK(config.option("thumbnails_format")->serialize() == "JPG");
+    CHECK(orchestrator.set_plugin_active("PNG", false));
+    Plugin *without_png = Steps::selected_active_plugin_from_group(
+        orchestrator, GCODE_THUMBNAIL, "thumbnail_encoder_plugin", &config);
+    CHECK(without_png != nullptr);
+    if (without_png) CHECK(without_png->get_id() == "JPG");
+    config.set_deserialize("thumbnails_format", "PNG");
+    CHECK(Steps::selected_active_plugin_from_group(
+        orchestrator, GCODE_THUMBNAIL, "thumbnail_encoder_plugin", &config) == nullptr);
+    CHECK(orchestrator.set_plugin_active("PNG", true));
+    size_t selector_fragments = 0, background_fragments = 0;
+    for (const Orchestrator::PluginUiFragment &fragment : orchestrator.ui_fragments_for_file("printer_fff.ui")) {
+        if (fragment.fragment_id == "thumbnail_encoder_plugin") ++selector_fragments;
+        if (fragment.fragment_id == "thumbnail_render_settings") ++background_fragments;
+    }
+    CHECK(selector_fragments == 1);
+    CHECK(background_fragments == 1);
+    for (const Orchestrator::PluginUiFragment &fragment : orchestrator.ui_fragments_for_file("print.ui"))
+        CHECK(fragment.fragment_id != "thumbnail_encoder_plugin");
+
+    config.thumbnails.set(std::vector<Vec2d>{Vec2d(4.5, 4)});
+    slic3r_api::GCodeGeneration::DefaultGCodeFirmwareSession firmware;
+    CHECK_THROWS_WITH(
+        slic3r_api::default_gcode_thumbnail_requests(
+            slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)).config()),
+        "Thumbnail dimensions must be finite positive integers.");
+}
+
+TEST_CASE("Thumbnail encoder adapter contains errors and owns its session once",
+          "[plugins][gcode][firmware][preamble][thumbnails][adapter]")
+{
+    class RecordingSession final : public slic3r_api::GCodeThumbnailEncoderSession
+    {
+    public:
+        explicit RecordingSession(uint32_t &destroyed) : m_destroyed(destroyed) {}
+        ~RecordingSession() override { ++m_destroyed; }
+
+        std::vector<uint8_t> encode(
+            const raw_gcode_thumbnail_render_request &request) override
+        {
+            if (request.width == 7)
+                throw std::invalid_argument("bad thumbnail request");
+            if (request.width == 8)
+                throw std::runtime_error("codec failed");
+            return {uint8_t(request.width), 0, uint8_t(request.height)};
+        }
+
+    private:
+        uint32_t &m_destroyed;
+    };
+
+    uint32_t destroyed = 0;
+    raw_gcode_thumbnail_encoder_instance instance =
+        slic3r_api::make_gcode_thumbnail_encoder_instance(
+            std::unique_ptr<slic3r_api::GCodeThumbnailEncoderSession>(
+                new RecordingSession(destroyed)));
+    {
+        const slic3r_api::GCodeThumbnailEncoderView view(&instance);
+        raw_gcode_thumbnail_render_request request = {};
+        request.struct_size = sizeof(request);
+        request.width = 4;
+        request.height = 3;
+        request.custom_scale = 1.0;
+        const slic3r_api::GCodeThumbnailEncodedBlock block = view.encode(request);
+        REQUIRE(block.status == RAW_GCODE_THUMBNAIL_STATUS_SUCCESS);
+        CHECK(std::vector<uint8_t>(block.bytes.begin(), block.bytes.end()) ==
+              std::vector<uint8_t>{4, 0, 3});
+
+        request.width = 0;
+        CHECK_THROWS_WITH(view.encode(request),
+                          "The G-code thumbnail render request is invalid.");
+        request.width = 7;
+        CHECK_THROWS_WITH(view.encode(request), "bad thumbnail request");
+        request.width = 8;
+        CHECK_THROWS_WITH(view.encode(request), "codec failed");
+    }
+    instance.vtable->destroy(instance.session);
+    CHECK(destroyed == 1);
+
+    raw_gcode_thumbnail_encoder_instance incomplete = {};
+    incomplete.struct_size = sizeof(incomplete);
+    CHECK_THROWS(slic3r_api::GCodeThumbnailEncoderView(&incomplete));
 }
 
 TEST_CASE("Preamble heats physical tools but only one MMU nozzle",
@@ -2005,37 +2165,292 @@ TEST_CASE("Firmware chooses thumbnail placement including BIQU at byte zero",
           "[plugins][gcode][firmware][preamble][thumbnails]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
-    const bool biqu = GENERATE(false, true);
+    const GCodeThumbnailsFormat format = GENERATE(
+        GCodeThumbnailsFormat::PNG,
+        GCodeThumbnailsFormat::JPG,
+        GCodeThumbnailsFormat::QOI,
+        GCodeThumbnailsFormat::BIQU);
     const bool at_end = GENERATE(false, true);
     Print print;
     select_printing_plan_writer(print);
     configure_standard_firmware(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.thumbnails_format.value = biqu ? GCodeThumbnailsFormat::BIQU : GCodeThumbnailsFormat::PNG;
+    config.set_deserialize("thumbnails_format", std::vector<std::string>{"PNG", "JPG", "QOI", "BIQU"}[size_t(format)]);
     config.thumbnails_end_file.value = at_end;
-    config.thumbnails.set(std::vector<Vec2d>{Vec2d(4, 4)});
+    config.thumbnails_tag_format.value = true;
+    config.thumbnails.set(std::vector<Vec2d>{Vec2d(4, 4), Vec2d(3, 2)});
     append_speed_validation_tool_group(print, scale_i(0.2), 0);
     uint32_t calls = 0;
-    raw_gcode_thumbnail_generator service{};
-    service.struct_size = sizeof(service);
-    service.context = &calls;
-    service.generate = [](void *opaque, const raw_gcode_thumbnail_size *, uint32_t, uint32_t,
-                           uint8_t, uint8_t, raw_gcode_firmware_result *result) {
-        ++*static_cast<uint32_t *>(opaque);
-        result->status = RAW_GCODE_FIRMWARE_STATUS_SUCCESS;
-        result->text = "THUMBNAIL\n";
-        result->text_size = 10;
+    std::vector<Vec2d> rendered_sizes;
+    GCodeThumbnailRenderer renderer(print, [&calls, &rendered_sizes](const ThumbnailsParams &params) {
+        ++calls;
+        REQUIRE(params.sizes.size() == 1);
+        rendered_sizes.push_back(params.sizes.front());
+        ThumbnailData data;
+        data.set(uint32_t(params.sizes.front().x()), uint32_t(params.sizes.front().y()));
+        std::fill(data.pixels.begin(), data.pixels.end(), 255);
+        return ThumbnailsList{data};
+    });
+    const boost::filesystem::path path = temporary_gcode_path();
+    remove_output_pair(path);
+    try {
+        Steps::StepGenerateGcode::run_step(
+            Orchestrator::instance(), print, path.string(), renderer.c_renderer());
+        const std::string text = read_text_file(path);
+        INFO(text);
+        CHECK(calls == 2);
+        CHECK(rendered_sizes == std::vector<Vec2d>{Vec2d(4, 4), Vec2d(3, 2)});
+        const bool biqu = format == GCodeThumbnailsFormat::BIQU;
+        const std::string marker = biqu ? ";00040004" :
+            format == GCodeThumbnailsFormat::PNG ? "; thumbnail_PNG begin" :
+            format == GCodeThumbnailsFormat::JPG ? "; thumbnail_JPG begin" :
+                                                   "; thumbnail_QOI begin";
+        CHECK(count_occurrences(text, marker) == (biqu ? 1 : 2));
+        if (biqu)
+            CHECK(count_occurrences(text, ";00030002") == 1);
+        if (biqu)
+            CHECK(text.find(marker) == 0);
+        else if (at_end)
+            CHECK(text.find(marker) > text.find("G21"));
+        else
+            CHECK(text.find(marker) < text.find("G21"));
+    } catch (...) { remove_output_pair(path); throw; }
+    remove_output_pair(path);
+}
+
+TEST_CASE("Optional thumbnails are skipped when no GUI renderer is available",
+          "[plugins][gcode][firmware][preamble][thumbnails]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    select_printing_plan_writer(print);
+    configure_standard_firmware(print);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.thumbnails.set(std::vector<Vec2d>{Vec2d(4, 4)});
+    append_speed_validation_tool_group(print, scale_i(0.2), 0);
+    const boost::filesystem::path path = temporary_gcode_path();
+    remove_output_pair(path);
+    try {
+        Steps::StepGenerateGcode::run_step(Orchestrator::instance(), print, path.string());
+        const std::string text = read_text_file(path);
+        CHECK(text.find("thumbnail begin") == std::string::npos);
+        CHECK(text.find("G21") != std::string::npos);
+    } catch (...) { remove_output_pair(path); throw; }
+    remove_output_pair(path);
+}
+
+TEST_CASE("Thumbnail rendering failure preserves an existing G-code file",
+          "[plugins][gcode][firmware][preamble][thumbnails][atomic]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    select_printing_plan_writer(print);
+    configure_standard_firmware(print);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.thumbnails.set(std::vector<Vec2d>{Vec2d(4, 4)});
+    append_speed_validation_tool_group(print, scale_i(0.2), 0);
+    GCodeThumbnailRenderer renderer(print, [](const ThumbnailsParams &) -> ThumbnailsList {
+        throw std::runtime_error("thumbnail rendering failed before publication");
+    });
+    const boost::filesystem::path path = temporary_gcode_path();
+    remove_output_pair(path);
+    write_text_file(path, "previous output\n");
+    try {
+        CHECK_THROWS_AS(
+            Steps::StepGenerateGcode::run_step(
+                Orchestrator::instance(), print, path.string(), renderer.c_renderer()),
+            RuntimeError);
+        CHECK(read_text_file(path) == "previous output\n");
+        CHECK_FALSE(boost::filesystem::exists(path.string() + ".tmp"));
+    } catch (...) { remove_output_pair(path); throw; }
+    remove_output_pair(path);
+    Orchestrator::instance().reset_plugin_cancel();
+}
+
+TEST_CASE("Firmware owns mixed thumbnail requests and ignores camera geometry",
+          "[plugins][gcode][thumbnails][preamble]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    configure_standard_firmware(print);
+    uint32_t calls = 0;
+    GCodeThumbnailRenderer renderer(print, [&](const ThumbnailsParams &params) {
+        ++calls;
+        CHECK(params.camera == RAW_GCODE_THUMBNAIL_CAMERA_ISOMETRIC);
+        CHECK(params.projection == RAW_GCODE_THUMBNAIL_PROJECTION_ORTHOGRAPHIC);
+        CHECK(params.framing == RAW_GCODE_THUMBNAIL_FRAMING_AUTO);
+        ThumbnailData image;
+        image.set(4, 4);
+        std::fill(image.pixels.begin(), image.pixels.end(), 255);
+        return ThumbnailsList{image};
+    });
+    class MixedFirmware : public slic3r_api::GCodeGeneration::DefaultGCodeFirmwareSession {
+    public:
+        uint32_t request_calls = 0;
+    protected:
+        std::vector<slic3r_api::GCodeThumbnailRequest> thumbnail_requests(
+            const slic3r_api::Print &, const slic3r_api::PrintingPlan &) override {
+            ++request_calls;
+            raw_gcode_thumbnail_render_request render = {};
+            render.struct_size = sizeof(render);
+            render.width = render.height = 4;
+            render.with_format_tag = 1;
+            render.camera = RAW_GCODE_THUMBNAIL_CAMERA_CUSTOM;
+            render.projection = RAW_GCODE_THUMBNAIL_PROJECTION_PERSPECTIVE;
+            render.framing = RAW_GCODE_THUMBNAIL_FRAMING_CUSTOM;
+            // Zero custom vectors/scale are intentionally ignored by this host.
+            return {{render, "JPG", RAW_GCODE_THUMBNAIL_FILE_PREFIX, true},
+                    {render, "QOI", RAW_GCODE_THUMBNAIL_FILE_SUFFIX, true}};
+        }
+    } firmware;
+    firmware.set_thumbnail_services(reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()), renderer.c_renderer());
+    const slic3r_api::Print view(reinterpret_cast<const print_handle *>(&print));
+    const slic3r_api::PrintingPlan plan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()));
+    const std::string begin = firmware.begin_print(view, plan);
+    CHECK(begin.find("thumbnail_JPG begin") < begin.find("generated by"));
+    CHECK(begin.find("thumbnail_QOI") == std::string::npos);
+    const std::string end = firmware.end_print();
+    CHECK(end.find("thumbnail_QOI begin") != std::string::npos);
+    CHECK(firmware.request_calls == 1);
+    CHECK(calls == 2);
+    CHECK(firmware.end_print().empty());
+    const slic3r_api::OrchestratorView orch(reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()));
+    CHECK_THROWS(slic3r_api::GCodeThumbnailEncoder(orch, view, renderer.c_renderer(), "missing.encoder"));
+    CHECK_THROWS(slic3r_api::GCodeThumbnailEncoder(orch, view, renderer.c_renderer(), "gcode.firmware.marlin2"));
+}
+
+TEST_CASE("Thumbnail configuration preserves serialized ids and binary codec limits",
+          "[plugins][gcode][thumbnails][metadata]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    DynamicPrintConfig config;
+    config.set_key_value("thumbnails", new ConfigOptionPoints(std::vector<Vec2d>{Vec2d(4, 4)}));
+    for (const std::string &id : {"PNG", "JPG", "QOI", "BIQU"}) {
+        config.set_deserialize("thumbnails_format", id);
+        CHECK(config.option("thumbnails_format")->serialize() == id);
+        DynamicPrintConfig copied;
+        copied.apply(config);
+        CHECK(copied.option("thumbnails_format")->serialize() == id);
+        if (id == "BIQU") {
+            CHECK_THROWS(GCodeThumbnails::make_and_check_thumbnail_list(copied));
+        } else {
+            const std::pair<GCodeThumbnails::GCodeThumbnailDefinitionsList, ThumbnailErrors> parsed =
+                GCodeThumbnails::make_and_check_thumbnail_list(copied);
+            REQUIRE(parsed.first.size() == 1);
+        }
+    }
+    config.set_key_value("thumbnails_format", new ConfigOptionString("external.custom"));
+    CHECK_THROWS(GCodeThumbnails::make_and_check_thumbnail_list(config));
+    config.set_key_value("thumbnails", new ConfigOptionPoints());
+    CHECK(GCodeThumbnails::make_and_check_thumbnail_list(config).first.empty());
+
+    Print print;
+    PrintConfig &settings = const_cast<PrintConfig &>(print.config());
+    settings.thumbnails.set(std::vector<Vec2d>{Vec2d(4, 4)});
+    settings.thumbnail_color_mode.value = ThumbnailColorMode::Uniform;
+    const std::vector<slic3r_api::GCodeThumbnailRequest> requests =
+        slic3r_api::default_gcode_thumbnail_requests(
+            slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)).config());
+    REQUIRE(requests.size() == 1);
+    CHECK(requests.front().render.color_mode == RAW_GCODE_THUMBNAIL_COLOR_UNIFORM);
+}
+
+TEST_CASE("Legacy text export uses the dynamic thumbnail service",
+          "[plugins][gcode][legacy][thumbnails]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const std::string id = GENERATE("PNG", "JPG", "QOI", "BIQU");
+    INFO("building full config");
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    INFO("deserializing config");
+    config.set_deserialize_strict({
+        {"step_gcode_plugin", "gcode.legacy"}, {"thumbnails_format", id},
+        {"thumbnails", "4x4"}, {"thumbnails_tag_format", "1"},
+        {"thumbnails_end_file", id == "QOI" || id == "BIQU" ? "1" : "0"},
+        {"start_gcode", ";thumbnail-test-start"}, {"end_gcode", ";thumbnail-test-end"}
+    });
+    Print print;
+    Model model;
+    INFO("initializing print");
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    INFO("processing print");
+    print.process();
+    INFO("exporting print");
+    uint32_t calls = 0;
+    const ThumbnailsGeneratorCallback renderer = [&calls](const ThumbnailsParams &params) {
+        ++calls;
+        REQUIRE(params.sizes.size() == 1);
+        ThumbnailData data;
+        data.set(4, 4);
+        std::fill(data.pixels.begin(), data.pixels.end(), 255);
+        return ThumbnailsList{data};
     };
     const boost::filesystem::path path = temporary_gcode_path();
     remove_output_pair(path);
     try {
-        Steps::StepGenerateGcode::run_step(Orchestrator::instance(), print, path.string(), &service);
+        GCodeGenerator generator;
+        generator.do_export(&print, path.string().c_str(), nullptr, renderer);
         const std::string text = read_text_file(path);
+        const std::string marker = id == "BIQU" ? ";00040004" : "; thumbnail_" + id + " begin";
         CHECK(calls == 1);
-        CHECK(count_occurrences(text, "THUMBNAIL") == 1);
-        if (biqu) CHECK(text.find("THUMBNAIL") == 0);
-        else if (at_end) CHECK(text.substr(text.size() - 10) == "THUMBNAIL\n");
-        else CHECK(text.find("THUMBNAIL") < text.find("G21"));
+        CHECK(count_occurrences(text, marker) == 1);
+        if (id == "BIQU") CHECK(text.find(marker) == 0);
+        else if (id == "QOI") CHECK(text.find(marker) > text.find(";thumbnail-test-end"));
+        else CHECK(text.find(marker) < text.find(";thumbnail-test-start"));
     } catch (...) { remove_output_pair(path); throw; }
     remove_output_pair(path);
+}
+
+TEST_CASE("Thumbnail palette migration preserves FFF and SLA profiles",
+          "[plugins][gcode][thumbnails][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    for (const std::string &value : {"0", "1"}) {
+        std::string key = "thumbnails_custom_color", converted = value;
+        PrintConfigDef::handle_legacy_pair(key, converted);
+        CHECK(key == "thumbnail_color_mode");
+        CHECK(converted == (value == "1" ? "uniform" : "filament"));
+        for (const std::string &palette : {"uniform", "extruder", "filament"}) {
+            std::unordered_map<std::string, std::pair<std::string, std::string>> profile = {
+                {"thumbnails_custom_color", {"thumbnails_custom_color", value}},
+                {"thumbnail_color_mode", {"thumbnail_color_mode", palette}}
+            };
+            PrintConfigDef::handle_legacy_map(profile);
+            CHECK(profile.at("thumbnails_custom_color").first.empty());
+            CHECK(profile.at("thumbnail_color_mode").second == (value == "1" ? "uniform" : palette));
+            DynamicPrintConfig loaded;
+            loaded.load_from_ini_string("thumbnail_color_mode = " + palette +
+                "\nthumbnails_custom_color = " + value + "\n", ForwardCompatibilitySubstitutionRule::Disable);
+            CHECK(loaded.option("thumbnail_color_mode")->serialize() == (value == "1" ? "uniform" : palette));
+            const boost::filesystem::path saved = temporary_gcode_path();
+            loaded.save(saved.string());
+            const std::string serialized = read_text_file(saved);
+            remove_output_pair(saved);
+            CHECK(serialized.find("thumbnails_custom_color") == std::string::npos);
+            CHECK(serialized.find("thumbnail_color_mode") != std::string::npos);
+        }
+    }
+    CHECK(PrintConfigDef::instance().get("thumbnails_custom_color") == nullptr);
+    for (const std::string &palette : {"uniform", "extruder", "filament"}) {
+        DynamicPrintConfig profile;
+        profile.set_deserialize("thumbnail_color_mode", palette);
+        PrintConfig fff;
+        SLAPrinterConfig sla;
+        fff.apply(profile); sla.apply(profile);
+        CHECK(fff.option("thumbnail_color_mode")->serialize() == palette);
+        CHECK(sla.option("thumbnail_color_mode")->serialize() == palette);
+        CHECK_FALSE(fff.has("thumbnails_custom_color"));
+        CHECK_FALSE(sla.has("thumbnails_custom_color"));
+        sla.thumbnails_color.value = "#123456";
+        ThumbnailsParams params{{}, true, true, true, true};
+        apply_thumbnail_colors(params, sla);
+        CHECK(params.color_mode == (palette == "uniform" ? 0 : palette == "extruder" ? 1 : 2));
+        CHECK(params.uniform_color == (std::array<unsigned char, 4>{0x12, 0x34, 0x56, 255}));
+    }
+    for (const char *obsolete : {"thumbnail_camera", "thumbnail_projection", "thumbnail_framing",
+                                "thumbnail_custom_scale", "thumbnail_camera_position", "thumbnail_camera_target", "thumbnail_camera_up"}) {
+        std::string key = obsolete, value = "custom";
+        PrintConfigDef::handle_legacy_pair(key, value);
+        CHECK(key.empty());
+    }
 }

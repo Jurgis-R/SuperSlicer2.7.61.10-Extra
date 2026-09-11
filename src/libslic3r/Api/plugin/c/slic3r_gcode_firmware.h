@@ -5,7 +5,7 @@
 #ifndef slic3r_gcode_firmware_h_
 #define slic3r_gcode_firmware_h_
 
-#define SLIC3R_PLUGIN_API_GCODE_FIRMWARE_MAJOR 2u
+#define SLIC3R_PLUGIN_API_GCODE_FIRMWARE_MAJOR 4u
 #define SLIC3R_PLUGIN_API_GCODE_FIRMWARE_MINOR 0u
 
 #include <stdint.h>
@@ -47,24 +47,11 @@ typedef struct raw_gcode_firmware_result {
     const char *error_message;
 } raw_gcode_firmware_result;
 
-/* Thumbnail renderer borrowed for one export. Dimensions are pixels; format is
-   PNG=0, JPG=1, QOI=2, BIQU=3. No setting lookup, placement or file writing.
-   Calls are serialized by the caller. Text/error is borrowed until the next
-   render call or service destruction; copy it before making another call. */
-typedef struct raw_gcode_thumbnail_size { uint32_t width; uint32_t height; } raw_gcode_thumbnail_size;
-typedef void (*gcode_thumbnail_generate_fn)(void *context,
-    const raw_gcode_thumbnail_size *sizes, uint32_t count, uint32_t format,
-    uint8_t with_bed, uint8_t with_format_tag, raw_gcode_firmware_result *result);
-typedef struct raw_gcode_thumbnail_generator {
-    uint32_t struct_size;
-    void *context;
-    gcode_thumbnail_generate_fn generate;
-} raw_gcode_thumbnail_generator;
-
 typedef void (*gcode_firmware_destroy_fn)(void *session);
 /* Compose the preamble, including plan's before-events exactly once. The writer
    emits no separate callback for those events. Print and sorted plan are
-   read-only borrowed handles valid for this call, with no ownership transfer. */
+   read-only borrowed handles valid for this call, with no ownership transfer.
+   Thumbnail services are acquired by the firmware through the orchestrator. */
 typedef void (*gcode_firmware_begin_print_fn)(
     void *session,
     const print_handle *print,

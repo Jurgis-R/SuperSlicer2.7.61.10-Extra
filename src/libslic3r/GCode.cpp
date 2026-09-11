@@ -23,6 +23,9 @@
 ///|/
 
 #include "GCode.hpp"
+#include "Api/host/Orchestrator.hpp"
+#include "Api/host/GCodeThumbnailRenderer.hpp"
+#include "Api/plugin/cpp/gcode/GCodeThumbnailViews.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -1921,10 +1924,17 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
             throw Slic3r::ExportError(error_str);
         }
 
-        if (!thumbnails.empty())
+        if (!thumbnails.empty()) {
+            ThumbnailsGeneratorCallback colored_callback = thumbnail_cb ?
+                ThumbnailsGeneratorCallback([&](const ThumbnailsParams &request) {
+                    ThumbnailsParams params = request;
+                    apply_thumbnail_colors(params, print.config());
+                    return thumbnail_cb(params);
+                }) : ThumbnailsGeneratorCallback{};
             GCodeThumbnails::generate_binary_thumbnails(
-                thumbnail_cb, binary_data.thumbnails, thumbnails,
+                colored_callback, binary_data.thumbnails, thumbnails,
                 [&print]() { print.throw_if_canceled(); });
+        }
 
         // file data
         binary_data.file_metadata.raw_data.emplace_back("Producer", std::string(SLIC3R_APP_NAME) + " " + std::string(SLIC3R_VERSION));
@@ -2069,18 +2079,18 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
 
     std::string preamble_to_put_start_layer = "";
 
-    // if thumbnail type of BTT_TFT, insert above header
-    // if not, it is inserted under the header in its normal spot
-    const ConfigOptionEnum<GCodeThumbnailsFormat>* thumbnails_format = print.full_print_config().option<ConfigOptionEnum<GCodeThumbnailsFormat>>("thumbnails_format");
-    const ConfigOptionBool* thumbnails_with_bed = print.full_print_config().option<ConfigOptionBool>("thumbnails_with_bed");
-    if (!export_to_binary_gcode && thumbnails_format != nullptr && thumbnails_format->value == GCodeThumbnailsFormat::BIQU)
-        GCodeThumbnails::export_thumbnails_to_file(thumbnail_cb,
-            print.full_print_config().option<ConfigOptionPoints>("thumbnails")->get_values(),
-            thumbnails_with_bed ? thumbnails_with_bed->value : false,
-            thumbnails_format->value,
-            true, 
-            [&file](const char *sz) { file.write(sz); },
-            this->m_throw_if_canceled);
+    // Both writers consume the same accessory service. Retain copied blocks
+    // for their output positions; no encoder or RGBA buffer escapes this scope.
+    std::array<std::string, 3> thumbnail_blocks;
+    if (!export_to_binary_gcode) {
+        GCodeThumbnailRenderer renderer(print, thumbnail_cb);
+        const slic3r_api::Print print_view(reinterpret_cast<const print_handle *>(&print));
+        const slic3r_api::Config config_view = print_view.config();
+        thumbnail_blocks = slic3r_api::encode_gcode_thumbnails(
+            slic3r_api::OrchestratorView(reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance())),
+            print_view, renderer.c_renderer(), slic3r_api::default_gcode_thumbnail_requests(config_view));
+        file.write(thumbnail_blocks[RAW_GCODE_THUMBNAIL_FILE_PREFIX]);
+    }
 
     if (print.config().avoid_crossing_curled_overhangs){
         this->m_avoid_crossing_curled_overhangs->init_bed_shape(get_bed_shape(print.config()));
@@ -2091,22 +2101,8 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
         file.write_format("; %s\n\n", Slic3r::header_slic3r_generated().c_str());
 
     
-    const ConfigOptionBool* thumbnails_end_file = print.full_print_config().option<ConfigOptionBool>("thumbnails_end_file");
-    if (! export_to_binary_gcode) {
-    //print thumbnails at the start unless requested at the end.
-        if(!thumbnails_end_file || !thumbnails_end_file->value) {
-            const ConfigOptionBool* thumbnails_tag_with_format = print.full_print_config().option<ConfigOptionBool>("thumbnails_tag_format");
-            // Unit tests or command line slicing may not define "thumbnails" or "thumbnails_format".
-            // If "thumbnails_format" is not defined, export to PNG.
-            GCodeThumbnails::export_thumbnails_to_file(thumbnail_cb,
-                print.full_print_config().option<ConfigOptionPoints>("thumbnails")->get_values(),
-                thumbnails_with_bed ? thumbnails_with_bed->value : false,
-                thumbnails_format ? thumbnails_format->value : GCodeThumbnailsFormat::PNG,
-                thumbnails_tag_with_format ? thumbnails_tag_with_format->value : false,
-                [&file](const char* sz) { file.write(sz); },
-                [&print]() { print.throw_if_canceled(); });
-        }
-    }
+    if (!export_to_binary_gcode)
+        file.write(thumbnail_blocks[RAW_GCODE_THUMBNAIL_BEFORE_START_GCODE]);
 
     // Write notes (content of the Print Settings tab -> Notes)
     {
@@ -3272,19 +3268,8 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
         }
         print.throw_if_canceled();
 
-        //print thumbnails at the end instead of the start if requested (unless BTT / biqu thumbnail)
-        if (!export_to_binary_gcode && thumbnails_end_file && thumbnails_end_file->value && (thumbnails_format == nullptr || thumbnails_format->value != GCodeThumbnailsFormat::BIQU)) {
-            const ConfigOptionBool* thumbnails_tag_with_format = print.full_print_config().option<ConfigOptionBool>("thumbnails_tag_format");
-            // Unit tests or command line slicing may not define "thumbnails" or "thumbnails_format".
-            // If "thumbnails_format" is not defined, export to PNG.
-            GCodeThumbnails::export_thumbnails_to_file(thumbnail_cb, 
-                print.full_print_config().option<ConfigOptionPoints>("thumbnails")->get_values(),
-                thumbnails_with_bed ? thumbnails_with_bed->value : false,
-                thumbnails_format ? thumbnails_format->value : GCodeThumbnailsFormat::PNG,
-                thumbnails_tag_with_format ? thumbnails_tag_with_format->value: false,
-                [&file](const char* sz) { file.write(sz); },
-                this->m_throw_if_canceled);
-        }
+        file.write(thumbnail_blocks[RAW_GCODE_THUMBNAIL_FILE_SUFFIX]);
+
     }
      this->m_throw_if_canceled();
 }

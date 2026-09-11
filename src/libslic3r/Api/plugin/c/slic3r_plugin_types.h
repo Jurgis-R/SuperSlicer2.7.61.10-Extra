@@ -6,7 +6,7 @@
 #define slic3r_plugin_types_h_
 
 #define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MAJOR 1u
-#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 0u
+#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 1u
 
 #include <stdint.h>
 
@@ -144,6 +144,8 @@ typedef enum slic3r_plugin_api_id {
     SLIC3R_PLUGIN_API_STEP_SUPPORT_SPOT = 48,
     SLIC3R_PLUGIN_API_STEP_SURFACE_GENERATION = 49,
     SLIC3R_PLUGIN_API_STEP_WIPETOWER = 50,
+    SLIC3R_PLUGIN_API_GCODE_THUMBNAIL = 51,
+    SLIC3R_PLUGIN_API_STEP_GCODE_THUMBNAIL = 52,
     /* SLIC3R_PLUGIN_API_COUNT is always last and has its value auto-filled. */
     SLIC3R_PLUGIN_API_COUNT
 } slic3r_plugin_api_id;

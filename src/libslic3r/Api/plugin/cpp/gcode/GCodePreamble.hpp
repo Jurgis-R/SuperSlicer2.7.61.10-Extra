@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "GCodeScriptProcessorViews.hpp"
+#include "GCodeThumbnailViews.hpp"
 #include "../PrintingPlanViews.hpp"
 namespace slic3r_api { namespace GCodeGeneration {
 class DefaultGCodeFirmwareSession;
@@ -16,7 +17,9 @@ class DefaultGCodeFirmwareSession;
 class GCodePreamble {
 public:
     explicit GCodePreamble(DefaultGCodeFirmwareSession &session) : m_session(session) {}
-    std::string begin(const Print &print, const PrintingPlan &plan);
+    std::string begin(const Print &print,
+                      const PrintingPlan &plan,
+                      const std::array<std::string, 3> &thumbnail_blocks);
     std::string finish();
     std::string pre_start(const std::string &resolved);
     std::string post_start();

@@ -205,8 +205,9 @@ void BackgroundSlicingProcess::process_sla()
 
         	const std::string export_path = m_sla_print->print_statistics().finalize_output_path(m_export_path);
 
-            ThumbnailsList thumbnails = this->render_thumbnails(
-                ThumbnailsParams{current_print()->full_print_config().option<ConfigOptionPoints>("thumbnails")->get_values(), true, true, true, true});
+            ThumbnailsParams params{current_print()->full_print_config().option<ConfigOptionPoints>("thumbnails")->get_values(), true, true, true, true};
+            apply_thumbnail_colors(params, current_print()->full_print_config());
+            ThumbnailsList thumbnails = this->render_thumbnails(params);
 			m_sla_print->export_print(export_path, thumbnails);
 
         } else if (! m_upload_job.empty()) {
@@ -802,7 +803,9 @@ void BackgroundSlicingProcess::prepare_upload()
     } else if (m_print == m_sla_print) {
 		m_upload_job.upload_data.upload_path = m_sla_print->print_statistics().finalize_output_path(m_upload_job.upload_data.upload_path.string());
         Vec2ds sizes = current_print()->full_print_config().option<ConfigOptionPoints>("thumbnails")->get_values();
-        ThumbnailsList thumbnails = this->render_thumbnails(ThumbnailsParams{ sizes, true, true, true, true });
+        ThumbnailsParams params{sizes, true, true, true, true};
+        apply_thumbnail_colors(params, current_print()->full_print_config());
+        ThumbnailsList thumbnails = this->render_thumbnails(params);
         m_sla_print->export_print(source_path.string(),thumbnails, m_upload_job.upload_data.upload_path.filename().string());
     }
 

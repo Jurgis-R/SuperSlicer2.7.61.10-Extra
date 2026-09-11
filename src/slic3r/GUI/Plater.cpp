@@ -2306,7 +2306,11 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     background_process.set_fff_print(&fff_print);
     background_process.set_sla_print(&sla_print);
     background_process.set_gcode_result(gcode_result);
-    background_process.set_thumbnail_cb([this](const ThumbnailsParams& params) { return this->generate_thumbnails(params, Camera::EType::Ortho); });
+    background_process.set_thumbnail_cb([this](const ThumbnailsParams& params) {
+        const Camera::EType projection = params.projection == 1 ?
+            Camera::EType::Perspective : Camera::EType::Ortho;
+        return this->generate_thumbnails(params, projection);
+    });
     background_process.set_slicing_completed_event(EVT_SLICING_COMPLETED);
     background_process.set_finished_event(EVT_PROCESS_COMPLETED);
 	background_process.set_export_began_event(EVT_EXPORT_BEGAN);
@@ -7585,6 +7589,7 @@ void Plater::export_platter()
                 !show_support_on_thumbnails, // parts_only
                 show_bed_on_thumbnails, // show_bed
                 true }; // transparent_background
+            apply_thumbnail_colors(thumbnail_params, *printer_config);
             //p->generate_thumbnail(thumbnail_data, THUMBNAIL_SIZE_3MF.first, THUMBNAIL_SIZE_3MF.second, thumbnail_params, Camera::EType::Ortho);
             const GLVolumeCollection& collection = p->view3D->get_canvas3d()->get_volumes();
             p->view3D->get_canvas3d()->render_thumbnail(thumbnail_data, THUMBNAIL_SIZE_3MF.first, THUMBNAIL_SIZE_3MF.second, thumbnail_params, collection, Camera::EType::Ortho);
@@ -7949,6 +7954,7 @@ bool Plater::export_3mf(const boost::filesystem::path& output_path)
         !show_support_on_thumbnails, // parts_only
         show_bed_on_thumbnails, // show_bed
         true}; // transparent_background
+    apply_thumbnail_colors(thumbnail_params, *printer_config);
     p->generate_thumbnail(thumbnail_data, THUMBNAIL_SIZE_3MF.first, THUMBNAIL_SIZE_3MF.second, thumbnail_params, Camera::EType::Ortho);
     bool ret = false;
     try

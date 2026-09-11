@@ -68,6 +68,9 @@ enum class SupportTreeType;
 enum class PillarConnectionMode;
 }
 
+// Shared FFF/SLA thumbnail palette; serialized names are stable profile values.
+enum class ThumbnailColorMode { Uniform = 0, Extruder = 1, Filament = 2 };
+
 enum PrintHostType {
     htPrusaLink,
     htPrusaConnect,
@@ -114,6 +117,7 @@ enum ZLiftTop {
     template<> const t_config_enum_names& ConfigOptionEnum<NAME>::get_enum_names(); \
     template<> const t_config_enum_values& ConfigOptionEnum<NAME>::get_enum_values();
 
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(ThumbnailColorMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PrinterTechnology)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(ForwardCompatibilitySubstitutionRule)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PrintHostType)

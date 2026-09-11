@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp"
+#include "libslic3r/Api/plugin/cpp/gcode/GCodeThumbnailViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFormatter.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeScriptProcessorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/DefaultExtruder.hpp"
@@ -61,8 +62,8 @@ public:
     void setup(const Config &config);
 
     std::string begin_print(const Print &print, const PrintingPlan &plan) override;
-    // Borrowed until session destruction, as guaranteed by the export host.
-    void set_thumbnail_generator(const raw_gcode_thumbnail_generator *service) { m_thumbnails = service; }
+    // Renderer and orchestrator are borrowed until firmware destruction.
+    void set_thumbnail_services(orchestrator_handle *, const raw_gcode_thumbnail_renderer *);
     std::string begin_group(const PrintingGroup &group) override;
     std::string begin_layer(const PrintingLayerGroup &layer) override;
     std::string begin_tool_group(const PrintingToolGroup &tool_group) override;
@@ -74,6 +75,8 @@ public:
     std::string end_print() override;
 
 protected:
+    // Called once per export; derived firmwares may mix providers and placements.
+    virtual std::vector<GCodeThumbnailRequest> thumbnail_requests(const Print &, const PrintingPlan &);
     // Startup policy hooks. Encoders retain dialect-specific command syntax.
     virtual std::string write_pre_thumbnail(const Print &, const PrintingPlan &);
     virtual std::string write_post_thumbnail(const Print &, const PrintingPlan &);
@@ -196,9 +199,10 @@ protected:
     virtual std::string encode_firmware_retraction(bool retract) const;
 
 private:
+    orchestrator_handle *m_thumbnail_orchestrator = nullptr;
+    const raw_gcode_thumbnail_renderer *m_thumbnail_renderer = nullptr;
     friend class GCodePreamble;
     std::unique_ptr<GCodePreamble> m_preamble;
-    const raw_gcode_thumbnail_generator *m_thumbnails = nullptr;
     struct RequestedState;
     class ExtrusionWriterVisitor;
     class GCodeStateInterpreter;

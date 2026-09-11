@@ -71,6 +71,13 @@ static t_config_enum_names enum_names_from_keys_map(const t_config_enum_values &
     template<> const t_config_enum_names& ConfigOptionEnum<NAME>::get_enum_names() { return s_keys_names_##NAME; }
 
 
+static const t_config_enum_values s_keys_map_ThumbnailColorMode {
+    {"uniform", int(ThumbnailColorMode::Uniform)},
+    {"extruder", int(ThumbnailColorMode::Extruder)},
+    {"filament", int(ThumbnailColorMode::Filament)}
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(ThumbnailColorMode)
+
 static const t_config_enum_values s_keys_map_PrinterTechnology{
     {"FFF",             ptFFF },
     {"SLA",             ptSLA },
@@ -289,15 +296,15 @@ void PrintConfigDef::init_common_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionString("#018aff"));
 
-    def = this->add("thumbnails_custom_color", coBool);
-    def->label = L("Enforce thumbnail color");
-    def->tooltip = L("Enforce a specific color on thumbnails."
-        " If not enforced, their color will be the one defined by the filament.");
+    def = this->add("thumbnail_color_mode", coEnum);
+    def->label = L("Thumbnail colors");
+    def->tooltip = L("Use a uniform color, extruder colors, or filament colors for thumbnails.");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::firmware;
     def->invalidates_step = psGCodeExport;
     def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
+    def->set_enum<ThumbnailColorMode>({"uniform", "extruder", "filament"});
+    def->set_default_value(new ConfigOptionEnum<ThumbnailColorMode>(ThumbnailColorMode::Filament));
 
     def = this->add("thumbnails_end_file", coBool);
     def->label = L("Print at the end");
@@ -315,16 +322,6 @@ void PrintConfigDef::init_common_params()
     def->invalidates_step = psGCodeExport;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(true));
-
-    def = this->add("thumbnails_format", coEnum);
-    def->label = L("Format of G-code thumbnails");
-    def->tooltip = L("Format of G-code thumbnails: PNG for best quality, JPG for smallest size, QOI for low memory firmware");
-    def->printer_technology = ptFFF | ptSLA;
-    def->category = OptionCategory::firmware;
-    def->invalidates_step = psGCodeExport;
-    def->mode = comExpert | comPrusa;
-    def->set_enum<GCodeThumbnailsFormat>({ "PNG", "JPG", "QOI", "BIQU" });
-    def->set_default_value(new ConfigOptionEnum<GCodeThumbnailsFormat>(GCodeThumbnailsFormat::PNG));
 
     def          = this->add("thumbnails_tag_format", coBool);
     def->label   = L("Write the thumbnail type in gcode.");
@@ -628,6 +625,25 @@ void _handle_legacy(std::unordered_map<t_config_option_key, std::pair<t_config_o
     using namespace std::literals;
     typedef t_config_option_key Key;
     typedef std::string Val;
+    // Migrate the old switch without depending on map iteration order. A true
+    // switch used to override the palette selector, including in mixed profiles.
+    const std::unordered_map<Key, std::pair<Key, Val>>::iterator old_color = dict.find("thumbnails_custom_color");
+    if (old_color != dict.end() && old_color->second.first == "thumbnails_custom_color") {
+        const bool uniform = old_color->second.second == "1";
+        const std::unordered_map<Key, std::pair<Key, Val>>::iterator palette = dict.find("thumbnail_color_mode");
+        if (palette != dict.end()) {
+            if (uniform) palette->second.second = "uniform";
+            old_color->second.first.clear();
+        } else {
+            old_color->second = {"thumbnail_color_mode", uniform ? "uniform" : "filament"};
+        }
+    }
+    // These unimplemented controls never affected rendering. Keep their ABI
+    // fields reserved, but silently discard the obsolete profile settings.
+    for_ech_entry(dict, {"thumbnail_camera", "thumbnail_camera_position", "thumbnail_camera_target",
+                        "thumbnail_camera_up", "thumbnail_projection", "thumbnail_framing", "thumbnail_custom_scale"},
+        [](Key &key, Val &) { key.clear(); });
+
     // handle legacy options (other than aliases)
     for_ech_entry(dict, {"extrusion_width_ratio", "bottom_layer_speed_ratio", "first_layer_height_ratio"},
                   [](Key &opt_key, Val &value) {
@@ -2180,7 +2196,7 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "thin_walls_overlap",
 "thin_walls_speed",
 "thumbnails_color",
-"thumbnails_custom_color",
+"thumbnail_color_mode",
 "thumbnails_end_file",
 "thumbnails_tag_format",
 "thumbnails_with_bed",
@@ -2470,8 +2486,8 @@ std::map<std::string, std::string> PrintConfigDef::to_prusa(t_config_option_key&
 
     if ("thumbnails" == opt_key) {
     // add format to thumbnails
-        const ConfigOptionEnum<GCodeThumbnailsFormat> *format_opt = all_conf.option<ConfigOptionEnum<GCodeThumbnailsFormat>>("thumbnails_format");
-        std::string format = format_opt->serialize();
+        const ConfigOption *format_opt = all_conf.option("thumbnails_format");
+        std::string format = format_opt ? format_opt->serialize() : "PNG";
         std::vector<std::string> sizes;
         boost::split(sizes, value, boost::is_any_of(","), boost::token_compress_off);
         value = "";

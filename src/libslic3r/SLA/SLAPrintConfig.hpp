@@ -324,7 +324,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloat,                        sla_output_precision))
     ((ConfigOptionPoints,                       thumbnails))
     ((ConfigOptionString,                       thumbnails_color))
-    ((ConfigOptionBool,                         thumbnails_custom_color))
+    ((ConfigOptionEnum<ThumbnailColorMode>, thumbnail_color_mode))
     ((ConfigOptionBool,                         thumbnails_tag_format))
     ((ConfigOptionBool,                         thumbnails_with_bed))
     ((ConfigOptionBool,                         thumbnails_with_support))

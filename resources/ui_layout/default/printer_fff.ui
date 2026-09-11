@@ -64,12 +64,11 @@ group:Thumbnails
 		setting:id$0:label$Small:thumbnails
 		setting:id$1:label$Big:thumbnails
 	end_line
-	line:Color override
-		setting:label$:sidetext_width$1:thumbnails_custom_color
+	line:Thumbnail colors
+		setting:label$:thumbnail_color_mode
 		setting:label$:label_width$1:thumbnails_color
 	end_line
 	line:Thumbnail options
-		setting:thumbnails_format
 		setting:thumbnails_with_bed
 		setting:thumbnails_tag_format
 		setting:thumbnails_end_file

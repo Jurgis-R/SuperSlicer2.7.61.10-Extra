@@ -20,6 +20,7 @@
 #include "libslic3r/ExtrusionEntityVisitors.hpp"
 #include "libslic3r/GCode/GCodeWriter.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_gcode_thumbnail.h"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/libslic3r.h"
@@ -5369,11 +5370,13 @@ void GLCanvas3D::_render_thumbnail_internal(ThumbnailData& thumbnail_data, const
         volumes_box = m_bed.extended_bounding_box();
 
     Camera camera;
-    camera.set_type(camera_type);
+    camera.set_type(Camera::EType::Ortho);
+    camera.select_view("iso");
     camera.set_scene_box(scene_bounding_box());
     camera.set_viewport(0, 0, thumbnail_data.width, thumbnail_data.height);
     camera.apply_viewport();
     camera.zoom_to_box(volumes_box);
+    // Custom camera controls are not implemented by this host yet.
 
     const Transform3d& view_matrix = camera.get_view_matrix();
 
@@ -5392,11 +5395,59 @@ void GLCanvas3D::_render_thumbnail_internal(ThumbnailData& thumbnail_data, const
     camera.apply_projection(volumes_box, near_z, far_z);
 
     const ModelObjectPtrs model_objects                 = GUI::wxGetApp().model().object_ptrs();
-    std::vector<ColorRGBA> extruders_colors             = get_extruders_colors();
-    const bool             is_enabled_painted_thumbnail = !model_objects.empty() && !extruders_colors.empty();
+    // A filament-colored thumbnail follows the filament palette and keeps MMU
+    // facet painting. An extruder-colored thumbnail deliberately uses the
+    // physical tool palette and ignores per-facet filament assignments.
+    // Resolve each entry independently: an absent/invalid color must not turn
+    // into a valid black entry before fallback. A deliberately black color is
+    // valid and must be preserved. The application preference is the last resort.
+    // decode_color() accepts malformed hex digits, so validate them first.
+    const auto decode_palette_color = [](const std::string &text, ColorRGBA &color) {
+        return text.size() == 7 && text.front() == '#' &&
+            std::all_of(text.begin() + 1, text.end(), [](char digit) {
+                return (digit >= '0' && digit <= '9') ||
+                       (digit >= 'a' && digit <= 'f') ||
+                       (digit >= 'A' && digit <= 'F');
+            }) && decode_color(text, color);
+    };
+    ColorRGBA default_thumbnail_color = ColorRGBA::YELLOW();
+    std::string app_color = wxGetApp().app_config->get("color");
+    if (app_color.size() == 6)
+        app_color.insert(app_color.begin(), '#');
+    decode_palette_color(app_color, default_thumbnail_color);
+
+    const DynamicPrintConfig *thumbnail_config = wxGetApp().plater()->config();
+    const ConfigOptionStrings *extruder_palette = thumbnail_config ?
+        thumbnail_config->option<ConfigOptionStrings>("extruder_colour") : nullptr;
+    const ConfigOptionStrings *filament_palette = thumbnail_config ?
+        thumbnail_config->option<ConfigOptionStrings>("filament_colour") : nullptr;
+    const bool by_extruder = thumbnail_params.color_mode == RAW_GCODE_THUMBNAIL_COLOR_BY_EXTRUDER;
+    const ConfigOptionStrings *preferred_palette = by_extruder ? extruder_palette : filament_palette;
+    const ConfigOptionStrings *fallback_palette = by_extruder ? filament_palette : extruder_palette;
+    const size_t palette_size = std::max(size_t(1), std::max(
+        extruder_palette ? extruder_palette->size() : size_t(0),
+        filament_palette ? filament_palette->size() : size_t(0)));
+    std::vector<ColorRGBA> thumbnail_colors(palette_size, default_thumbnail_color);
+    for (size_t index = 0; index < palette_size; ++index) {
+        ColorRGBA color = default_thumbnail_color;
+        const bool preferred_valid = preferred_palette && index < preferred_palette->size() &&
+            decode_palette_color(preferred_palette->get_at(index), color);
+        if (!preferred_valid && fallback_palette && index < fallback_palette->size())
+            decode_palette_color(fallback_palette->get_at(index), color);
+        thumbnail_colors[index] = color;
+    }
+    const bool is_enabled_painted_thumbnail =
+        thumbnail_params.color_mode == RAW_GCODE_THUMBNAIL_COLOR_BY_FILAMENT &&
+        !model_objects.empty() && !thumbnail_colors.empty();
 
     if (thumbnail_params.transparent_background)
         glsafe(::glClearColor(0.0f, 0.0f, 0.0f, 0.0f));
+    else
+        glsafe(::glClearColor(
+            thumbnail_params.background_color[0] / 255.0f,
+            thumbnail_params.background_color[1] / 255.0f,
+            thumbnail_params.background_color[2] / 255.0f,
+            thumbnail_params.background_color[3] / 255.0f));
 
     glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
     glsafe(::glEnable(GL_DEPTH_TEST));
@@ -5407,29 +5458,19 @@ void GLCanvas3D::_render_thumbnail_internal(ThumbnailData& thumbnail_data, const
     //parse custom color from config, if we need to set a special color to objects for thumbnail.
     ColorRGBA custom_color = { 0.0f, 0.0f, 1.0f, 1.0f };
     bool use_custom_color = false;
-    if (Tab *tab = wxGetApp().get_tab(Preset::TYPE_PRINTER)) {
-        if (const DynamicPrintConfig *printer_config = tab->get_config()) {
-            if (const ConfigOptionBool *conf_ok = printer_config->option<ConfigOptionBool>("thumbnails_custom_color")) {
-                if (conf_ok->value) {
-                    if (const ConfigOptionString *conf_color = printer_config->option<ConfigOptionString>("thumbnails_color")) {
-                        if (conf_color->value.length() > 6) {
-                            wxColour clr(conf_color->value);
-                            custom_color.r(clr.Red() / 255.f);
-                            custom_color.g(clr.Green() / 255.f);
-                            custom_color.b(clr.Blue() / 255.f);
-                            use_custom_color = true;
-                        }
-                    }
-                }
-            }
-        }
+    if (thumbnail_params.color_mode == 0) {
+        custom_color.r(thumbnail_params.uniform_color[0] / 255.f);
+        custom_color.g(thumbnail_params.uniform_color[1] / 255.f);
+        custom_color.b(thumbnail_params.uniform_color[2] / 255.f);
+        custom_color.a(thumbnail_params.uniform_color[3] / 255.f);
+        use_custom_color = true;
     }
-
     const int extruders_count = wxGetApp().extruders_edited_cnt();
     for (GLVolume *vol : visible_volumes) {
         const int obj_idx = vol->object_idx();
         const int vol_idx = vol->volume_idx();
-        const bool render_as_painted = is_enabled_painted_thumbnail && obj_idx >= 0 && vol_idx >= 0 && !model_objects[obj_idx]->volumes[vol_idx]->mm_segmentation_facets.empty();
+        const bool render_as_painted = is_enabled_painted_thumbnail && obj_idx >= 0 &&
+            vol_idx >= 0 && !model_objects[obj_idx]->volumes[vol_idx]->mm_segmentation_facets.empty();
         GLShaderProgram* shader = wxGetApp().get_shader(render_as_painted ? "mm_gouraud" : "gouraud_light");
         if (shader == nullptr)
             continue;
@@ -5446,8 +5487,12 @@ void GLCanvas3D::_render_thumbnail_internal(ThumbnailData& thumbnail_data, const
         }
         else {
             shader->set_uniform("emission_factor", 0.0f);
-            vol->model.set_color((vol->printable && !vol->is_outside) 
-                ? (use_custom_color ? custom_color : vol->color)
+            ColorRGBA requested_color = default_thumbnail_color;
+            const int palette_index = std::max(0, vol->extruder_id - 1);
+            if (!use_custom_color && size_t(palette_index) < thumbnail_colors.size())
+                requested_color = thumbnail_colors[size_t(palette_index)];
+            vol->model.set_color((vol->printable && !vol->is_outside)
+                ? (use_custom_color ? custom_color : requested_color)
                 : ColorRGBA::GRAY());
         }
 
@@ -5466,7 +5511,10 @@ void GLCanvas3D::_render_thumbnail_internal(ThumbnailData& thumbnail_data, const
         if (render_as_painted) {
             const ModelVolume& model_volume = *model_objects[obj_idx]->volumes[vol_idx];
             const size_t extruder_idx = get_extruder_color_idx(model_volume, extruders_count);
-            TriangleSelectorMmGui ts(model_volume.mesh(), extruders_colors, use_custom_color ? custom_color : extruders_colors[extruder_idx]);
+            const ColorRGBA base_color = extruder_idx < thumbnail_colors.size() ?
+                thumbnail_colors[extruder_idx] : default_thumbnail_color;
+            TriangleSelectorMmGui ts(model_volume.mesh(), thumbnail_colors,
+                use_custom_color ? custom_color : base_color);
             ts.deserialize(model_volume.mm_segmentation_facets.get_data(), true);
             ts.request_update_render_data();
 
@@ -5489,8 +5537,7 @@ void GLCanvas3D::_render_thumbnail_internal(ThumbnailData& thumbnail_data, const
         _render_bed(view_matrix, projection_matrix, !camera.is_looking_downward());
 
     // restore background color
-    if (thumbnail_params.transparent_background)
-        glsafe(::glClearColor(1.0f, 1.0f, 1.0f, 1.0f));
+    glsafe(::glClearColor(1.0f, 1.0f, 1.0f, 1.0f));
 }
 
 void GLCanvas3D::_render_thumbnail_framebuffer(ThumbnailData &           thumbnail_data,

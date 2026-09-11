@@ -48,8 +48,8 @@ set(SLIC3R_SOURCES
 	Api/host/ApiHostUtils.hpp
 	Api/host/GCodeScriptProcessor.cpp
 	Api/host/GCodeScriptProcessor.hpp
-	Api/host/GCodeThumbnailGenerator.cpp
-	Api/host/GCodeThumbnailGenerator.hpp
+	Api/host/GCodeThumbnailRenderer.cpp
+	Api/host/GCodeThumbnailRenderer.hpp
 	Api/host/ClipperShapes.cpp
 	Api/host/ClipperShapes.hpp
 	Api/host/Orchestrator.cpp
@@ -103,6 +103,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/slic3r_extrusions.h
 	Api/plugin/c/slic3r_geometry.h
 	Api/plugin/c/slic3r_gcode_firmware.h
+	Api/plugin/c/slic3r_gcode_thumbnail.h
 	Api/plugin/c/slic3r_gcode_script.h
 	Api/plugin/c/slic3r_orchestrator.h
 	Api/plugin/c/slic3r_plugin.h
@@ -120,6 +121,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/steps/slic3r_step_extrusion_simplification.h
 	Api/plugin/c/steps/slic3r_step_gcode.h
 	Api/plugin/c/steps/slic3r_step_gcode_firmware.h
+	Api/plugin/c/steps/slic3r_step_gcode_thumbnail.h
 	Api/plugin/c/steps/slic3r_step_infill.h
 	Api/plugin/c/steps/slic3r_step_infill_group.h
 	Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h
@@ -223,6 +225,8 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/Firmware/RepRapGCodeFirmware.hpp
 	Plugins/GCode/Firmware/SprinterGCodeFirmware.cpp
 	Plugins/GCode/Firmware/SprinterGCodeFirmware.hpp
+	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.cpp
+	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp
 	Plugins/GCode/FeatureGCode.cpp
 	Plugins/GCode/FeatureGCode.hpp
 	Plugins/GCode/CustomGCodePerPrintZ.cpp

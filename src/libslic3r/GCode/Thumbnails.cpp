@@ -241,16 +241,16 @@ std::pair<GCodeThumbnailDefinitionsList, ThumbnailErrors> make_and_check_thumbna
 
 std::pair<GCodeThumbnailDefinitionsList, ThumbnailErrors> make_and_check_thumbnail_list(const ConfigBase& config)
 {
-    // ??? Unit tests or command line slicing may not define "thumbnails" or "thumbnails_format".
-    // ??? If "thumbnails_format" is not defined, export to PNG.
-
-    // generate thumbnails data to process it
-    assert(config.option<ConfigOptionPoints>("thumbnails"));
-    assert(config.option<ConfigOptionEnum<GCodeThumbnailsFormat>>("thumbnails_format"));
-    if (const auto thumbnails_value = config.option<ConfigOptionPoints>("thumbnails"))
-        return make_and_check_thumbnail_list(thumbnails_value->get_values(), config.option<ConfigOptionEnum<GCodeThumbnailsFormat>>("thumbnails_format")->value);
-
-    return {};
+    const ConfigOptionPoints *sizes = config.option<ConfigOptionPoints>("thumbnails");
+    if (sizes == nullptr || sizes->get_values().empty()) return {};
+    const ConfigOption *selected = config.option("thumbnails_format");
+    const std::string id = selected ? selected->serialize() : "PNG";
+    GCodeThumbnailsFormat format;
+    if (id == "PNG") format = GCodeThumbnailsFormat::PNG;
+    else if (id == "JPG") format = GCodeThumbnailsFormat::JPG;
+    else if (id == "QOI") format = GCodeThumbnailsFormat::QOI;
+    else throw std::invalid_argument("Thumbnail provider is not supported by binary G-code: " + id);
+    return make_and_check_thumbnail_list(sizes->get_values(), format);
 }
 
 std::string get_error_string(const ThumbnailErrors& errors)

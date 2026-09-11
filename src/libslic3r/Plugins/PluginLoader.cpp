@@ -85,6 +85,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/CustomGCodePerPrintZ.hpp"
 #include "libslic3r/Plugins/GCode/FeatureGCode.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/BuiltinGCodeFirmwares.hpp"
+#include "libslic3r/Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp"
 #include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
@@ -670,6 +671,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::GCodeGeneration::CustomGCodePerPrintZPlugin::register_custom_gcode_per_print_z_plugins);
     register_builtin_plugin(orchestrator, "gcode firmware dialects",
         slic3r_api::GCodeGeneration::Firmware::register_builtin_gcode_firmware_plugins);
+    register_builtin_plugin(orchestrator, "G-code thumbnail encoders",
+        slic3r_api::GCodeGeneration::Thumbnail::register_builtin_gcode_thumbnail_plugins);
     register_builtin_plugin(orchestrator, "infill.generator.default",
         slic3r_api::Infill::DefaultInfillGeneratorPlugin::register_default_infill_generator_plugin);
     register_builtin_plugin(orchestrator, "legacy_infill_patterns",
@@ -822,6 +825,10 @@ void add_exclusive_step_used_setting_rules(Orchestrator &orchestrator,
                                            const Steps::StepExclusiveGroup &group,
                                            const std::vector<Plugin *> &plugins)
 {
+    // Thumbnail consumers may acquire several encoders independently of the
+    // default selector. Their shared renderer controls must remain editable.
+    if (group.step == GCODE_THUMBNAIL)
+        return;
     // An exclusive group exposes one enum selector whose values are plugin ids.
     // Settings declared as "used" by a plugin should only be editable when
     // that plugin is the selected implementation. These generated rules keep

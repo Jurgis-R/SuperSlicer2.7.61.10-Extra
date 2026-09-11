@@ -1302,7 +1302,7 @@ void init_categories(PrintConfigDef &definition)
         "machine_limits_usage",
         "thumbnails",
         "thumbnails_color",
-        "thumbnails_custom_color",
+        "thumbnail_color_mode",
         "thumbnails_end_file",
         "thumbnails_format",
         "thumbnails_tag_format",

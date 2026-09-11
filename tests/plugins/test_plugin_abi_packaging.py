@@ -108,6 +108,10 @@ class AbiPackagingTests(unittest.TestCase):
             )
             self.assertIn("slic3r_gcode_firmware.h", catalog["headers"])
             self.assertIn("steps/slic3r_step_gcode_firmware.h", catalog["headers"])
+            self.assertNotIn(
+                "slic3r_gcode_thumbnail.h",
+                catalog["headers"]["steps/slic3r_step_gcode.h"]["dependencies"],
+            )
             self.assertEqual(
                 catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"],
                 sorted(catalog["headers"]["slic3r_extrusion_entity.h"]["dependencies"]))

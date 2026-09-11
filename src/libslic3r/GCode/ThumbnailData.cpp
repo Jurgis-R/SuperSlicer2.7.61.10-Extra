@@ -6,8 +6,28 @@
 ///|/
 
 #include "ThumbnailData.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
+#include <charconv>
 
 namespace Slic3r {
+
+void apply_thumbnail_colors(ThumbnailsParams &params, const ConfigBase &config)
+{
+    const ConfigOption *mode = config.option("thumbnail_color_mode");
+    params.color_mode = static_cast<unsigned char>(mode ? mode->get_int() : 2);
+    params.uniform_color = {1, 138, 255, 255};
+    const ConfigOptionString *color = config.option<ConfigOptionString>("thumbnails_color");
+    if (color && color->value.size() == 7 && color->value.front() == '#') {
+        unsigned int rgb = 0;
+        const char *begin = color->value.data() + 1;
+        const std::from_chars_result result = std::from_chars(begin, begin + 6, rgb, 16);
+        if (result.ec == std::errc() && result.ptr == begin + 6)
+            params.uniform_color = {static_cast<unsigned char>(rgb >> 16),
+                                    static_cast<unsigned char>(rgb >> 8),
+                                    static_cast<unsigned char>(rgb), 255};
+    }
+}
+
 
 void ThumbnailData::set(unsigned int w, unsigned int h)
 {

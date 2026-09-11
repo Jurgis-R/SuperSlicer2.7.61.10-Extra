@@ -114,6 +114,7 @@ from steps.perimeter import *
 from steps.perimeter_module import *
 from steps.seam_placer import *
 from steps.gcode_firmware import *
+from steps.gcode_thumbnail import *
 from steps.post_perimeter import *
 from steps.post_infill import *
 from steps.surface_generation import *
@@ -827,6 +828,11 @@ class Slic3rAPI:
     def gcode_firmware_context(self, run_ctx_address: int) -> GCodeFirmwareContext | None:
         """Borrow the service payload used to publish a Python firmware session."""
         return GCodeFirmwareContext.from_gcode_firmware_run_context(self, run_ctx_address)
+
+    @abi_requires_headers("steps/slic3r_step_gcode_thumbnail.h")
+    def gcode_thumbnail_context(self, run_ctx_address: int) -> GCodeThumbnailContext | None:
+        """Borrow the service payload used to publish a Python thumbnail encoder."""
+        return GCodeThumbnailContext.from_gcode_thumbnail_run_context(self, run_ctx_address)
 
     @abi_requires_headers("steps/slic3r_step_surface_generation.h")
     def surface_generation_context(self, run_ctx_address: int) -> SurfaceGenerationContext | None:

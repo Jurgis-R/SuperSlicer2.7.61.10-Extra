@@ -1,6 +1,7 @@
 #include "plugin_test_helpers.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 
@@ -33,6 +34,7 @@
 #include "libslic3r/Plugins/GCode/FeatureGCode.hpp"
 #include "libslic3r/Plugins/GCode/CustomGCodePerPrintZ.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/BuiltinGCodeFirmwares.hpp"
+#include "libslic3r/Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp"
 #include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
@@ -379,6 +381,8 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::GCodeGeneration::Firmware::register_builtin_gcode_firmware_plugins(
             orchestrator_handle_value);
+        slic3r_api::GCodeGeneration::Thumbnail::register_builtin_gcode_thumbnail_plugins(
+            orchestrator_handle_value);
         slic3r_api::FlatAreaLayerHeightPlugin::register_flat_area_layer_height_plugin(orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
@@ -486,6 +490,10 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "gcode.firmware.reprap");
         activate_plugin_or_fail(orchestrator, "gcode.firmware.sprinter");
         activate_plugin_or_fail(orchestrator, "gcode.firmware.klipper");
+        activate_plugin_or_fail(orchestrator, "PNG");
+        activate_plugin_or_fail(orchestrator, "JPG");
+        activate_plugin_or_fail(orchestrator, "QOI");
+        activate_plugin_or_fail(orchestrator, "BIQU");
         activate_plugin_or_fail(orchestrator, "flat_area_layer_height");
         activate_plugin_or_fail(orchestrator, "dense_infill.surface_marker");
         activate_plugin_or_fail(orchestrator, "dense_infill.recipe_modifier");
@@ -545,7 +553,12 @@ void ensure_plugin_test_runtime_initialized()
 #endif
 
         register_exclusive_step_group_options(orchestrator);
+        // An isolated test run can prove that another encoder publishes every
+        // shared option before PNG has ever been initialized.
+        const bool without_png = std::getenv("SLIC3R_TEST_THUMBNAILS_WITHOUT_PNG") != nullptr;
+        if (without_png) orchestrator.set_plugin_active("PNG", false);
         orchestrator.initialize_plugins();
+        if (without_png) orchestrator.set_plugin_active("PNG", true);
         register_exclusive_step_group_ui_fragments(orchestrator);
         orchestrator.set_plugin_active("slic3r.test.seam_placer.regional", false);
         orchestrator.set_plugin_active("seam_placer.random", false);

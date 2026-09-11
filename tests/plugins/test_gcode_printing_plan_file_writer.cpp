@@ -78,7 +78,8 @@ public:
     explicit RecordingFirmwareSession(FirmwareRecorder &recorder) : m_recorder(recorder) {}
     ~RecordingFirmwareSession() override { ++m_recorder.destruction_count; }
 
-    std::string begin_print(const slic3r_api::Print &, const slic3r_api::PrintingPlan &plan) override
+    std::string begin_print(const slic3r_api::Print &,
+                            const slic3r_api::PrintingPlan &plan) override
     {
         m_recorder.calls.emplace_back("begin_print");
         return std::string("begin_print\n") + (plan.events().has_before() ? write_event(plan.events().before()) : std::string());

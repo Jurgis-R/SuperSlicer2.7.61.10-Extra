@@ -70,6 +70,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         sys.path.insert(0, cls.generated_directory.name)
         cls.generated = importlib.import_module("slic3r_api_generated")
         cls.firmware = importlib.import_module("steps.gcode_firmware")
+        cls.thumbnail = importlib.import_module("steps.gcode_thumbnail")
         cls.datatree = importlib.import_module("slic3r_datatree_views")
         cls.extrusion = importlib.import_module("slic3r_extrusion_views")
         cls.plan = importlib.import_module("slic3r_printing_plan_views")
@@ -81,27 +82,201 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         cls.generated_directory.cleanup()
 
     def test_thumbnail_result_is_copied_and_parameters_are_explicit(self):
-        buffer = ctypes.create_string_buffer(b"first thumbnail")
+        pixels = (ctypes.c_uint8 * 8)(*range(8))
         seen = []
-        def render(context, sizes, count, format, bed, tag, result):
-            seen.append(([(sizes[i].width, sizes[i].height) for i in range(count)], format, bed, tag))
-            result.contents.status = self.generated.RAW_GCODE_FIRMWARE_STATUS_SUCCESS
-            result.contents.text = ctypes.cast(buffer, ctypes.c_char_p)
-            result.contents.text_size = len(buffer.value)
-        callback = self.generated.GCODE_THUMBNAIL_GENERATE(render)
-        raw = self.generated.RawGcodeThumbnailGenerator()
+
+        def render(_context, request, result):
+            seen.append((request.contents.width, request.contents.height, request.contents.show_bed))
+            result.contents.status = self.generated.RAW_GCODE_THUMBNAIL_STATUS_SUCCESS
+            result.contents.image.struct_size = ctypes.sizeof(
+                self.generated.RawGcodeThumbnailImage
+            )
+            result.contents.image.pixels = ctypes.cast(
+                pixels, ctypes.POINTER(ctypes.c_uint8)
+            )
+            result.contents.image.pixels_size = len(pixels)
+            result.contents.image.width = 2
+            result.contents.image.height = 1
+            result.contents.image.stride_bytes = 8
+            result.contents.image.pixel_format = (
+                self.generated.RAW_GCODE_THUMBNAIL_PIXEL_FORMAT_RGBA8
+            )
+            result.contents.image.origin = (
+                self.generated.RAW_GCODE_THUMBNAIL_ORIGIN_TOP_LEFT
+            )
+
+        callback = self.generated.GCODE_THUMBNAIL_RENDER(render)
+        raw = self.generated.RawGcodeThumbnailRenderer()
         raw.struct_size = ctypes.sizeof(raw)
-        raw.generate = callback
-        view = self.firmware.GCodeThumbnailGeneratorView(ctypes.pointer(raw))
-        first = view.generate([(4, 8)], format=2, with_bed=True, with_format_tag=True)
-        buffer.value = b"second"
-        second = view.generate([(8, 4)])
-        self.assertEqual(first, "first thumbnail")
-        self.assertEqual(second, "second")
-        self.assertEqual(seen[0], ([(4, 8)], 2, 1, 1))
-        self.assertEqual(self.firmware.GCodeThumbnailGeneratorView(None).generate([(4, 4)]), "")
-        with self.assertRaises(ValueError):
-            view.generate([(0, 4)])
+        raw.render = callback
+        request = self.generated.RawGcodeThumbnailRenderRequest()
+        request.struct_size = ctypes.sizeof(request)
+        request.width = 2
+        request.height = 1
+        request.show_bed = True
+        wrapped = self.thumbnail.GCodeThumbnailRequest(request)
+        view = self.thumbnail.GCodeThumbnailRendererView(ctypes.pointer(raw))
+        first = view.render(wrapped)
+        pixels[0] = 99
+        self.assertEqual(first.pixels, bytes(range(8)))
+        self.assertEqual(first.origin, self.generated.RAW_GCODE_THUMBNAIL_ORIGIN_TOP_LEFT)
+        self.assertEqual(seen, [(2, 1, 1)])
+        self.assertIsNone(self.thumbnail.GCodeThumbnailRendererView(None).render(wrapped))
+
+    def test_thumbnail_request_owns_its_ctypes_snapshot_and_validates_custom_pose(self):
+        raw = self.generated.RawGcodeThumbnailRenderRequest()
+        raw.struct_size = ctypes.sizeof(raw)
+        raw.width = 32
+        raw.height = 16
+        raw.custom_scale = 1.0
+        request = self.thumbnail.GCodeThumbnailRequest(raw)
+        raw.width = 99
+        self.assertEqual(request.width, 32)
+
+        invalid = self.generated.RawGcodeThumbnailRenderRequest()
+        invalid.struct_size = ctypes.sizeof(invalid)
+        invalid.height = 16
+        with self.assertRaisesRegex(ValueError, "render request is invalid"):
+            self.thumbnail.GCodeThumbnailRequest(invalid)
+
+        custom = self.generated.RawGcodeThumbnailRenderRequest()
+        custom.struct_size = ctypes.sizeof(custom)
+        custom.width = 32
+        custom.height = 16
+        custom.camera = self.generated.RAW_GCODE_THUMBNAIL_CAMERA_CUSTOM
+        custom.camera_up.z = 1.0
+        custom.custom_scale = 1.0
+        self.thumbnail.GCodeThumbnailRequest(custom)  # Reserved camera fields are ignored.
+
+    def test_thumbnail_encoder_copies_bytes_contains_errors_and_destroys_once(self):
+        destroyed = []
+        thumbnail = self.thumbnail
+
+        class Session(thumbnail.GCodeThumbnailEncoderSession):
+            def encode(self, request):
+                if request.width == 7:
+                    raise RuntimeError("python codec failed")
+                if request.width == 8:
+                    return b""
+                return bytes((request.width, 0, request.height))
+
+            def __del__(self):
+                destroyed.append(1)
+
+        session = Session()
+        reference = weakref.ref(session)
+        instance = thumbnail.make_gcode_thumbnail_encoder_instance(session)
+        view = thumbnail.GCodeThumbnailEncoderView(ctypes.pointer(instance))
+        raw = self.generated.RawGcodeThumbnailRenderRequest()
+        raw.struct_size = ctypes.sizeof(raw)
+        raw.width = 4
+        raw.height = 3
+        raw.custom_scale = 1.0
+        request = thumbnail.GCodeThumbnailRequest(raw)
+        self.assertEqual(view.encode(request), b"\x04\x00\x03")
+        raw.width = 7
+        with self.assertRaisesRegex(RuntimeError, "python codec failed"):
+            view.encode(thumbnail.GCodeThumbnailRequest(raw))
+        raw.width = 8
+        self.assertIsNone(view.encode(thumbnail.GCodeThumbnailRequest(raw)))
+        with self.assertRaisesRegex(ValueError, "already been consumed"):
+            thumbnail.make_gcode_thumbnail_encoder_instance(session)
+
+        table = ctypes.cast(
+            instance.vtable, ctypes.POINTER(thumbnail.RawGcodeThumbnailEncoderVTable)
+        )
+        del session
+        gc.collect()
+        self.assertIsNotNone(reference())
+        table.contents.destroy(instance.session)
+        instance.session = None
+        instance.vtable = None
+        gc.collect()
+        self.assertIsNone(reference())
+        self.assertEqual(destroyed, [1])
+
+    def test_owned_encoder_uses_orchestrator_and_cleans_failed_publication(self):
+        import copy
+        destroyed = []
+        thumbnail = self.thumbnail
+        generated = self.generated
+
+        class Session(thumbnail.GCodeThumbnailEncoderSession):
+            def encode(self, request): return b"copied"
+            def __del__(self): destroyed.append(True)
+
+        class Orchestrator:
+            def __init__(self): self.status = generated.RAW_PLUGIN_EXECUTION_SUCCESS
+            def find_plugin(self, identifier):
+                self.identifier = identifier
+                return types.SimpleNamespace(valid=lambda: True, step=lambda: int(generated.GCODE_THUMBNAIL))
+            def select_plugin(self, config, step, group):
+                self.group = group
+                return self.find_plugin("selected")
+            def execute_one(self, plugin, payload, print):
+                payload.instance = thumbnail.make_gcode_thumbnail_encoder_instance(Session())
+                return self.status
+
+        orch = Orchestrator()
+        print_view = types.SimpleNamespace(c_handle=lambda: ctypes.c_void_p(1), config=lambda: None)
+        raw = generated.RawGcodeThumbnailRenderRequest()
+        raw.struct_size = ctypes.sizeof(raw)
+        raw.width = raw.height = 4
+        request = thumbnail.GCodeThumbnailRequest(raw)
+        with thumbnail.GCodeThumbnailEncoder(orch, print_view, None, "JPG") as encoder:
+            self.assertEqual(orch.identifier, "JPG")
+            self.assertEqual(encoder.encode(request), b"copied")
+            with self.assertRaises(TypeError): copy.copy(encoder)
+            with self.assertRaises(TypeError): copy.deepcopy(encoder)
+        encoder.close()
+        self.assertEqual(len(destroyed), 1)
+        with self.assertRaises(RuntimeError): encoder.encode(request)
+        orch.status = generated.RAW_PLUGIN_EXECUTION_PLUGIN_ERROR
+        with self.assertRaises(RuntimeError): thumbnail.GCodeThumbnailEncoder(orch, print_view, None)
+        gc.collect()
+        self.assertEqual(orch.group, "thumbnail_encoder_plugin")
+        self.assertEqual(len(destroyed), 2)
+
+    def test_thumbnail_context_borrows_inputs_and_transfers_one_session(self):
+        thumbnail = self.thumbnail
+
+        class Session(thumbnail.GCodeThumbnailEncoderSession):
+            def encode(self, _request):
+                return b"block"
+
+        payload = self.generated.RunCtxGcodeThumbnail()
+        payload.print = ctypes.c_void_p(21)
+        common = self.generated.PluginRunContext()
+        common.step = self.generated.GCODE_THUMBNAIL
+        common.data = ctypes.addressof(payload)
+        context = thumbnail.GCodeThumbnailContext.from_gcode_thumbnail_run_context(
+            self.api, ctypes.addressof(common)
+        )
+        self.assertEqual(context.print().address, 21)
+        self.assertFalse(context.renderer().valid())
+        context.publish(Session())
+        with self.assertRaisesRegex(ValueError, "already owns"):
+            context.publish(Session())
+        table = ctypes.cast(
+            payload.instance.vtable,
+            ctypes.POINTER(thumbnail.RawGcodeThumbnailEncoderVTable),
+        )
+        table.contents.destroy(payload.instance.session)
+
+    def test_thumbnail_wrappers_declare_minimal_contracts(self):
+        header_attribute = "__slic3r_abi_headers__"
+        self.assertIn(
+            "slic3r_gcode_thumbnail.h",
+            getattr(self.thumbnail.GCodeThumbnailRendererView, header_attribute),
+        )
+        self.assertIn(
+            "slic3r_gcode_thumbnail.h",
+            getattr(self.thumbnail.GCodeThumbnailEncoderView, header_attribute),
+        )
+        self.assertIn(
+            "steps/slic3r_step_gcode_thumbnail.h",
+            getattr(self.thumbnail.GCodeThumbnailContext, header_attribute),
+        )
 
     def setUp(self):
         self.api = types.SimpleNamespace(host=types.SimpleNamespace())
@@ -161,6 +336,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
                 calls.append(("end_print", None))
                 return "end print\n"
 
+        self_outer = self
         return Session(), calls
 
     def test_complete_callback_order_and_embedded_nul_text(self):
@@ -168,7 +344,13 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         instance = self.firmware.make_gcode_firmware_instance(session, self.api)
         try:
             view = self.firmware.GCodeFirmwareView(self.api, instance)
-            self.assertEqual(view.begin_print(self.datatree.Print(self.api, 11), self.plan.PrintingPlan(self.api, 12)), "print\n")
+            self.assertEqual(
+                view.begin_print(
+                    self.datatree.Print(self.api, 11),
+                    self.plan.PrintingPlan(self.api, 12),
+                ),
+                "print\n",
+            )
             self.assertEqual(view.begin_group(self.plan.PrintingGroup(self.api, 12)), "group\n")
             self.assertEqual(view.begin_layer(self.plan.PrintingLayerGroup(self.api, 13)), "layer\n")
             self.assertEqual(view.begin_tool_group(self.plan.PrintingToolGroup(self.api, 14)), "tool\n")
@@ -231,6 +413,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
             def end_print(self): return ""
             def __del__(self): destroyed.append(1)
 
+        self_outer = self
         payload = self.generated.RunCtxGcodeFirmware()
         payload.print = ctypes.c_void_p(21)
         common = self.generated.PluginRunContext()
@@ -258,9 +441,11 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
     def test_gcode_context_returns_borrowed_firmware_view(self):
         session, _calls = self.complete_session()
         instance = self.firmware.make_gcode_firmware_instance(session, self.api)
-        payload = self.generated.RunCtxGenerateGcode(
-            ctypes.c_void_p(1), ctypes.c_void_p(2), ctypes.pointer(instance), b"out.gcode"
-        )
+        payload = self.generated.RunCtxGenerateGcode()
+        payload.print = ctypes.c_void_p(1)
+        payload.plan = ctypes.c_void_p(2)
+        payload.firmware = ctypes.pointer(instance)
+        payload.output_path = b"out.gcode"
         common = self.generated.PluginRunContext()
         common.step = self.generated.STEP_GCODE
         common.data = ctypes.addressof(payload)
@@ -409,6 +594,79 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
                     if probe:
                         fixture.python_gcode_firmware_native_probe_destroy(probe)
                     self.destroy_instance(instance)
+
+    def test_thumbnail_bytes_and_error_survive_native_thread_state_detach(self):
+        fixture_path = native_fixture_path()
+        if fixture_path is None:
+            self.skipTest("python_gcode_firmware_native_fixture has not been built")
+
+        fixture = ctypes.CDLL(str(fixture_path))
+        fixture.python_gcode_thumbnail_native_probe_create.argtypes = [
+            ctypes.POINTER(self.generated.RawGcodeThumbnailEncoderInstance),
+            ctypes.POINTER(self.generated.RawGcodeThumbnailRenderRequest),
+        ]
+        fixture.python_gcode_thumbnail_native_probe_create.restype = ctypes.c_void_p
+        fixture.python_gcode_thumbnail_native_probe_status.argtypes = [ctypes.c_void_p]
+        fixture.python_gcode_thumbnail_native_probe_status.restype = ctypes.c_int32
+        for name in ("copy_bytes", "copy_error"):
+            callback = getattr(fixture, f"python_gcode_thumbnail_native_probe_{name}")
+            callback.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_char),
+                ctypes.c_uint32,
+            ]
+            callback.restype = ctypes.c_uint32
+        fixture.python_gcode_thumbnail_native_probe_destroy.argtypes = [ctypes.c_void_p]
+        fixture.python_gcode_thumbnail_native_probe_destroy.restype = None
+
+        request = self.generated.RawGcodeThumbnailRenderRequest()
+        request.struct_size = ctypes.sizeof(request)
+        request.width = 4
+        request.height = 3
+        request.custom_scale = 1.0
+        thumbnail = self.thumbnail
+
+        for fails, expected_status, expected in (
+            (False, self.generated.RAW_GCODE_THUMBNAIL_STATUS_SUCCESS,
+             b"native\0thumbnail"),
+            (True, self.generated.RAW_GCODE_THUMBNAIL_STATUS_ERROR,
+             b"native thumbnail failure"),
+        ):
+            with self.subTest(fails=fails):
+                class Session(thumbnail.GCodeThumbnailEncoderSession):
+                    def encode(self, _request):
+                        if fails:
+                            raise RuntimeError("native thumbnail failure")
+                        return b"native\0thumbnail"
+
+                instance = thumbnail.make_gcode_thumbnail_encoder_instance(Session())
+                probe = None
+                try:
+                    probe = fixture.python_gcode_thumbnail_native_probe_create(
+                        ctypes.byref(instance), ctypes.byref(request)
+                    )
+                    self.assertTrue(probe)
+                    self.assertEqual(
+                        fixture.python_gcode_thumbnail_native_probe_status(probe),
+                        expected_status,
+                    )
+                    output = ctypes.create_string_buffer(128)
+                    copy = (
+                        fixture.python_gcode_thumbnail_native_probe_copy_error
+                        if fails
+                        else fixture.python_gcode_thumbnail_native_probe_copy_bytes
+                    )
+                    length = copy(probe, output, len(output))
+                    self.assertEqual(length, len(expected))
+                    self.assertEqual(output.raw[:length], expected)
+                finally:
+                    if probe:
+                        fixture.python_gcode_thumbnail_native_probe_destroy(probe)
+                    table = ctypes.cast(
+                        instance.vtable,
+                        ctypes.POINTER(thumbnail.RawGcodeThumbnailEncoderVTable),
+                    )
+                    table.contents.destroy(instance.session)
 
 
 if __name__ == "__main__":

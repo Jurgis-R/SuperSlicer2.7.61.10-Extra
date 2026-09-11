@@ -5,8 +5,10 @@
 #ifndef slic3r_Api_plugin_cpp_gcode_GCodeFirmwareViews_hpp_
 #define slic3r_Api_plugin_cpp_gcode_GCodeFirmwareViews_hpp_
 
+#include <algorithm>
 #include <cstddef>
 #include <exception>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -64,11 +66,10 @@ public:
     */
     virtual ~GCodeFirmwareSession() = default;
 
-    // Called exactly once before any plan group. Emit the file preamble and
-    // initialize state from the Print configuration. Consume plan.events().before()
-    // here exactly once; the writer does not emit that event tree separately.
-    // Both views are borrowed for this call and must not be modified or retained.
-    virtual std::string begin_print(const Print &, const PrintingPlan &) = 0;
+    // Compose the preamble and consume the plan before-events exactly once.
+    // The provider may acquire thumbnail services using its creation context.
+    virtual std::string begin_print(const Print &,
+                                    const PrintingPlan &) = 0;
 
     // Enter one PrintingGroup. Groups represent independent ordered batches;
     // the preceding group has already received end_group().
@@ -307,7 +308,9 @@ public:
         validate();
     }
 
-    std::string_view begin_print(const Print &print, const PrintingPlan &plan) const
+    std::string_view begin_print(
+        const Print &print,
+        const PrintingPlan &plan) const
     {
         raw_gcode_firmware_result result = make_result();
         m_instance->vtable->begin_print(m_instance->session, print.handle(), plan.handle(), &result);
@@ -391,7 +394,8 @@ private:
 
         const raw_gcode_firmware_vtable &vtable = *m_instance->vtable;
         if (vtable.struct_size < sizeof(raw_gcode_firmware_vtable) || vtable.destroy == nullptr ||
-            vtable.begin_print == nullptr || vtable.begin_group == nullptr ||
+            vtable.begin_print == nullptr ||
+            vtable.begin_group == nullptr ||
             vtable.begin_layer == nullptr || vtable.begin_tool_group == nullptr ||
             vtable.write_extrusion == nullptr || vtable.write_event == nullptr ||
             vtable.end_tool_group == nullptr ||

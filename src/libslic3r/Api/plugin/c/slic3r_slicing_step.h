@@ -6,7 +6,7 @@
 #define slic3r_slicing_step_h_
 
 #define SLIC3R_PLUGIN_API_SLICING_STEP_MAJOR 1u
-#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 0u
+#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 1u
 
 #include <stdint.h>
 
@@ -101,7 +101,13 @@ typedef enum slicing_step_t : uint16_t
     Service plugin that creates one stateful G-code firmware session for one
     STEP_GCODE export.
     */
-    GCODE_FIRMWARE                 = 10300
+    GCODE_FIRMWARE                 = 10300,
+
+    /*
+    Outside-pipeline service which renders through a host callback and encodes
+    one or more firmware-ready thumbnail blocks for a G-code export.
+    */
+    GCODE_THUMBNAIL                = 10350
 
 } slicing_step_t;
 

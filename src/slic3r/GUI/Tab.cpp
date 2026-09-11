@@ -4200,7 +4200,11 @@ void TabPrinter::clear_pages()
 
 void TabPrinter::toggle_options()
 {
-    if (!m_active_page || m_presets->get_edited_preset().printer_technology() != ptFFF)
+    if (!m_active_page)
+        return;
+    // The palette and its uniform-color field are shared by FFF and SLA printers.
+    toggle_option("thumbnails_color", m_config->option("thumbnail_color_mode")->get_int() == int(ThumbnailColorMode::Uniform));
+    if (m_presets->get_edited_preset().printer_technology() != ptFFF)
         return;
 
     const DynamicPrintConfig& print_config = m_preset_bundle->fff_prints.get_edited_preset().config;

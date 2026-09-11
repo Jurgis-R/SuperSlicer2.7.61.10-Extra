@@ -217,6 +217,9 @@ std::string option_key_for_plugin_group(const Orchestrator &orchestrator,
                                         slicing_step_t step,
                                         const std::string &group_id)
 {
+    // Preserve the historical key; its dynamic enum now stores provider ids.
+    if (step == GCODE_THUMBNAIL && group_id == "thumbnail_encoder_plugin")
+        return "thumbnails_format";
     const Orchestrator::DynamicStepInfo *step_info = orchestrator.step_info(step);
     const std::string step_identity = step_info != nullptr ?
         sanitized_config_key_part(step_info->name) : std::to_string(int(step));
@@ -259,6 +262,7 @@ bool is_known_builtin_step(slicing_step_t step)
     case BRIDGE_DETECTOR:
     case PERIMETER_GENERATION_MODULE:
     case GCODE_FIRMWARE:
+    case GCODE_THUMBNAIL:
         return true;
     default:
         return false;
@@ -283,6 +287,7 @@ raw_option_category option_category_for_step(slicing_step_t step)
         return RAW_OPTION_CATEGORY_SUPPORT;
     case STEP_GCODE:
     case GCODE_FIRMWARE:
+    case GCODE_THUMBNAIL:
     case STEP_PRE_GCODE:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
@@ -303,7 +308,8 @@ raw_option_preset_type option_preset_type_for_step(slicing_step_t step)
     */
     static const std::map<slicing_step_t, raw_option_preset_type> s_step_preset_types = {
         { STEP_GCODE, RAW_PRESET_TYPE_FFF_PRINTER },
-        { GCODE_FIRMWARE, RAW_PRESET_TYPE_FFF_PRINTER }
+        { GCODE_FIRMWARE, RAW_PRESET_TYPE_FFF_PRINTER },
+        { GCODE_THUMBNAIL, RAW_PRESET_TYPE_FFF_PRINTER }
     };
 
     const std::map<slicing_step_t, raw_option_preset_type>::const_iterator found =
@@ -336,7 +342,8 @@ StepExclusiveGroup make_exclusive_group(slicing_step_t step,
     def.category = category;
     // Service selectors invalidate the consuming pipeline step rather than
     // pretending that the service itself is independently executable.
-    def.invalidates_step = step == GCODE_FIRMWARE ? STEP_GCODE : step;
+    def.invalidates_step =
+        (step == GCODE_FIRMWARE || step == GCODE_THUMBNAIL) ? STEP_GCODE : step;
     def.mode = RAW_CONFIG_OPTION_MODE_ADV_EXP | RAW_CONFIG_OPTION_MODE_SUSI;
     group.option_def = def;
 
@@ -501,6 +508,10 @@ void StepExclusiveGroup::refresh_storage_pointers()
     option_def.enum_def.value_label_pairs.items = enum_pairs.empty() ? nullptr : enum_pairs.data();
     option_def.enum_def.value_label_pairs.count = uint32_t(enum_pairs.size());
     option_def.default_serialized_value = enum_values.empty() ? "" : enum_values.front().c_str();
+    // PNG remains the standard default even if a third-party encoder sorts first.
+    if (step == GCODE_THUMBNAIL && group_id == "thumbnail_encoder_plugin")
+        for (const std::string &id : enum_values)
+            if (id == "PNG") option_def.default_serialized_value = id.c_str();
 }
 
 void StepExclusiveGroup::set_enum_plugins(const std::vector<std::pair<std::string, std::string>> &plugin_ids_and_labels)
@@ -598,12 +609,21 @@ Plugin *selected_plugin_from_group(const StepExclusiveGroup &group,
 {
     if (plugins.empty())
         return nullptr;
-    if (plugins.size() == 1 || config == nullptr)
+    if (config == nullptr || (plugins.size() == 1 && group.step != GCODE_THUMBNAIL))
         return plugins.front();
 
     const ConfigOption *option = config->option(group.option_def.opt_key);
     if (option == nullptr)
         return plugins.front();
+
+    // Resolve dynamic provider ids against the active set without assuming
+    // that activation preserves the original enum positions.
+    if (group.step == GCODE_THUMBNAIL && group.group_id == "thumbnail_encoder_plugin") {
+        const std::string id = option->serialize();
+        for (Plugin *plugin : plugins)
+            if (plugin->get_id() == id) return plugin;
+        return nullptr;
+    }
 
     const int32_t selected_idx = option->get_int();
     if (selected_idx < 0 || size_t(selected_idx) >= plugins.size()) {
@@ -766,7 +786,9 @@ void run_post_slicing(Orchestrator &orchestrator, Print &print, const std::strin
     });
 }
 
-void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::string &path, slicing_step_t until = STEP_GCODE, const raw_gcode_thumbnail_generator *thumbnails = nullptr)
+void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::string &path,
+                         slicing_step_t until = STEP_GCODE,
+                         const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr)
 {
     // This helper is shared by slice preparation and export. Print::process()
     // stops it at STEP_PRE_GCODE, while Orchestrator::export_gcode() calls it
@@ -924,7 +946,7 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
     run_step_if_requested(print, STEP_GCODE, [&] {
         begin_step(print, STEP_GCODE, L("Generating G-code"));
         StepGenerateGcode::clean_and_prepare(print);
-        StepGenerateGcode::run_step(orchestrator, print, path, thumbnails);
+        StepGenerateGcode::run_step(orchestrator, print, path, thumbnail_renderer);
         mark_legacy_step_done(print, psGCodeExport);
     });
     if (stop_after(STEP_GCODE, until)) return;
@@ -1027,14 +1049,16 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
     run_remaining_steps(orchestrator, print, path, STEP_PRE_GCODE);
 }
 
-void StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print, const std::string &path, const raw_gcode_thumbnail_generator *thumbnails)
+void StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
+                             const std::string &path,
+                             const raw_gcode_thumbnail_renderer *thumbnail_renderer)
 {
 #ifdef _DEBUG
     assert(validate_execution_order_against_dependencies());
 #endif
 
     orchestrator.reset_plugin_cancel();
-    run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnails);
+    run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnail_renderer);
 }
 
 void StepPipeline::run(Orchestrator &orchestrator, Print &print, const std::string &path)

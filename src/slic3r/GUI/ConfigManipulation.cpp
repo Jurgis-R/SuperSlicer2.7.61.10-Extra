@@ -968,13 +968,13 @@ void ConfigManipulation::toggle_printer_fff_options(DynamicPrintConfig *config, 
     toggle_field("single_extruder_multi_material", extruder_count > 1);
 
     //thumbnails
-    bool custom_color = config->opt_bool("thumbnails_custom_color");
+    bool custom_color = config->option("thumbnail_color_mode")->get_int() == int(ThumbnailColorMode::Uniform);
     toggle_field("thumbnails_color", custom_color);
-    const ConfigOptionEnum<GCodeThumbnailsFormat>* thumbnails_format = config->option<ConfigOptionEnum<GCodeThumbnailsFormat>>("thumbnails_format");
+    const ConfigOption* thumbnails_format = config->option("thumbnails_format");
     
     if (thumbnails_format) {
-        toggle_field("thumbnails_end_file", thumbnails_format->value != (GCodeThumbnailsFormat::BIQU));
-        toggle_field("thumbnails_tag_format", thumbnails_format->value != (GCodeThumbnailsFormat::BIQU));
+        toggle_field("thumbnails_end_file", thumbnails_format->serialize() != "BIQU");
+        toggle_field("thumbnails_tag_format", thumbnails_format->serialize() != "BIQU");
     }
 
     bool have_arc_fitting = config->option("arc_fitting")->get_int() != int(ArcFittingType::Disabled);

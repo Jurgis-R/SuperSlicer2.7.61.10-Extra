@@ -23,6 +23,16 @@ from .gcode_firmware import (
     GCodeScriptProcessorView,
     make_gcode_firmware_instance,
 )
+from .gcode_thumbnail import (
+    GCodeThumbnailContext,
+    GCodeThumbnailEncoderSession,
+    GCodeThumbnailEncoderView,
+    GCodeThumbnailImage,
+    GCodeThumbnailEncoder,
+    GCodeThumbnailRendererView,
+    GCodeThumbnailRequest,
+    make_gcode_thumbnail_encoder_instance,
+)
 from .post_perimeter import PostPerimeterContext
 from .post_infill import PostInfillContext
 from .surface_generation import SurfaceGenerationContext
@@ -71,6 +81,14 @@ __all__ = [
     "GCodeScriptContext",
     "GCodeScriptProcessorView",
     "make_gcode_firmware_instance",
+    "GCodeThumbnailContext",
+    "GCodeThumbnailEncoderSession",
+    "GCodeThumbnailEncoderView",
+    "GCodeThumbnailImage",
+    "GCodeThumbnailEncoder",
+    "GCodeThumbnailRendererView",
+    "GCodeThumbnailRequest",
+    "make_gcode_thumbnail_encoder_instance",
     "PostPerimeterContext",
     "PostInfillContext",
     "SurfaceGenerationContext",
