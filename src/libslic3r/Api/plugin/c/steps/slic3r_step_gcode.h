@@ -5,7 +5,7 @@
 #ifndef slic3r_step_gcode_h_
 #define slic3r_step_gcode_h_
 
-#define SLIC3R_PLUGIN_API_STEP_GCODE_MAJOR 1u
+#define SLIC3R_PLUGIN_API_STEP_GCODE_MAJOR 2u
 #define SLIC3R_PLUGIN_API_STEP_GCODE_MINOR 0u
 
 #include "slic3r_step_common.h"
@@ -35,6 +35,8 @@ typedef struct run_ctx_generate_gcode {
     printing_plan_handle *plan;
     const raw_gcode_firmware_instance *firmware;
     const char *output_path;
+    /* Borrowed until the export finishes, including firmware destruction. */
+    const raw_gcode_thumbnail_generator *thumbnails;
 } run_ctx_generate_gcode;
 
 static inline const run_ctx_generate_gcode *

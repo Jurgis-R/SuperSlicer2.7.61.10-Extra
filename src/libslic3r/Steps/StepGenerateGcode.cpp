@@ -252,6 +252,7 @@ private:
 void create_firmware_session(Orchestrator &orchestrator,
                              Print &print,
                              const raw_gcode_script_processor *script_processor,
+                             const raw_gcode_thumbnail_generator *thumbnails,
                              FirmwareInstanceOwner &owner);
 
 std::string speed_value_text(const float value)
@@ -650,6 +651,7 @@ const raw_gcode_firmware_instance *FirmwareInstanceOwner::instance() const
 void create_firmware_session(Orchestrator &orchestrator,
                              Print &print,
                              const raw_gcode_script_processor *script_processor,
+                             const raw_gcode_thumbnail_generator *thumbnails,
                              FirmwareInstanceOwner &owner)
 {
     Plugin *firmware_plugin = selected_or_active_plugin_for_step(
@@ -664,6 +666,7 @@ void create_firmware_session(Orchestrator &orchestrator,
     run_ctx_gcode_firmware payload = {};
     payload.print = reinterpret_cast<const print_handle *>(&print);
     payload.script_processor = script_processor;
+    payload.thumbnails = thumbnails;
     run_context.data = &payload;
 
     firmware_plugin->setup(run_context, 1);
@@ -790,7 +793,7 @@ bool validate_post(const Print &, std::string *)
     return true;
 }
 
-void run_step(Orchestrator &orchestrator, Print &print, const std::string &path)
+void run_step(Orchestrator &orchestrator, Print &print, const std::string &path, const raw_gcode_thumbnail_generator *thumbnails)
 {
     if (path.empty())
         throw RuntimeError("G-code generation plugin needs a non-empty output path.");
@@ -815,12 +818,13 @@ void run_step(Orchestrator &orchestrator, Print &print, const std::string &path)
     // only after the firmware session has released every reference to it.
     GCodeScriptProcessor scripts(print, orchestrator);
     FirmwareInstanceOwner firmware;
-    create_firmware_session(orchestrator, print, scripts.c_processor(), firmware);
+    create_firmware_session(orchestrator, print, scripts.c_processor(), thumbnails, firmware);
     run_ctx_generate_gcode payload = {};
     payload.print = reinterpret_cast<const print_handle *>(&print);
     payload.plan = reinterpret_cast<printing_plan_handle *>(&plan);
     payload.firmware = firmware.instance();
     payload.output_path = path.c_str();
+    payload.thumbnails = thumbnails;
 
     plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_GCODE, plugin, &print);
     plugin_run_context run_context = orchestrator.prepare_plugin_run_context(STEP_GCODE, plugin, &host_context);

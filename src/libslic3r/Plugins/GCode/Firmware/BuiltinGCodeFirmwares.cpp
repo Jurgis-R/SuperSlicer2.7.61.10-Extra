@@ -255,8 +255,9 @@ void BuiltinGCodeFirmwarePlugin::run_impl(const plugin_run_context *run_ctx) con
     // writer completes. A fresh instance isolates every export's machine state.
     const GCodeScriptProcessorView scripts = context->script_processor != nullptr ?
         GCodeScriptProcessorView(context->script_processor) : GCodeScriptProcessorView();
-    context->instance = make_gcode_firmware_instance(
-        m_definition.factory(scripts, run_ctx->plugin_storage));
+    std::unique_ptr<GCodeFirmwareSession> session = m_definition.factory(scripts, run_ctx->plugin_storage);
+    static_cast<GCodeGeneration::DefaultGCodeFirmwareSession &>(*session).set_thumbnail_generator(context->thumbnails);
+    context->instance = make_gcode_firmware_instance(std::move(session));
 }
 
 void register_firmware(orchestrator_handle *orchestrator,

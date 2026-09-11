@@ -46,19 +46,23 @@ namespace slic3r_api { namespace GCodeGeneration {
 // delegates only command syntax to its protected encode_* methods. Derived
 // firmware classes may replace those encoders, but must leave traversal,
 // requested/encoded state transitions and extrusion accounting to this class.
+class GCodePreamble;
+
 class DefaultGCodeFirmwareSession : public GCodeFirmwareSession
 {
 public:
-    DefaultGCodeFirmwareSession() = default;
+    DefaultGCodeFirmwareSession();
     explicit DefaultGCodeFirmwareSession(GCodeScriptProcessorView scripts,
                                          storage_handle *storage);
-    ~DefaultGCodeFirmwareSession() override = default;
+    ~DefaultGCodeFirmwareSession() override;
 
     // Copy every setting needed during the export and reset all transient
     // machine state. The borrowed Config view is not retained.
     void setup(const Config &config);
 
-    std::string begin_print(const Print &print) override;
+    std::string begin_print(const Print &print, const PrintingPlan &plan) override;
+    // Borrowed until session destruction, as guaranteed by the export host.
+    void set_thumbnail_generator(const raw_gcode_thumbnail_generator *service) { m_thumbnails = service; }
     std::string begin_group(const PrintingGroup &group) override;
     std::string begin_layer(const PrintingLayerGroup &layer) override;
     std::string begin_tool_group(const PrintingToolGroup &tool_group) override;
@@ -70,6 +74,11 @@ public:
     std::string end_print() override;
 
 protected:
+    // Startup policy hooks. Encoders retain dialect-specific command syntax.
+    virtual std::string write_pre_thumbnail(const Print &, const PrintingPlan &);
+    virtual std::string write_post_thumbnail(const Print &, const PrintingPlan &);
+    virtual std::string write_pre_start(const std::string &resolved_script);
+    virtual std::string write_post_start();
     // Describes one movement after geometry and extrusion have been converted
     // to machine units. It is a short-lived value passed to write_lines() and
     // encode_move(); it does not own or mark any persistent machine state as encoded
@@ -187,6 +196,9 @@ protected:
     virtual std::string encode_firmware_retraction(bool retract) const;
 
 private:
+    friend class GCodePreamble;
+    std::unique_ptr<GCodePreamble> m_preamble;
+    const raw_gcode_thumbnail_generator *m_thumbnails = nullptr;
     struct RequestedState;
     class ExtrusionWriterVisitor;
     class GCodeStateInterpreter;

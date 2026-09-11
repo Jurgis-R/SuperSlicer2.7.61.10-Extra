@@ -4,6 +4,7 @@
 ///|/
 
 #include "DefaultGCodeFirmwareSession.hpp"
+#include "GCodePreamble.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -37,7 +38,7 @@ namespace slic3r_api { namespace GCodeGeneration {
 DefaultGCodeFirmwareSession::DefaultGCodeFirmwareSession(
     GCodeScriptProcessorView scripts,
     storage_handle *storage) :
-    m_scripts(scripts)
+    m_preamble(new GCodePreamble(*this)), m_scripts(scripts)
 {
     if (storage != nullptr)
         m_script_config.emplace(storage);
@@ -88,16 +89,6 @@ std::optional<uint32_t> validated_acceleration_request(
         throw std::invalid_argument(
             "A specified movement acceleration is too small to encode.");
     return uint32_t(rounded);
-}
-
-bool command_code(std::string_view command, char prefix, int32_t *code_out)
-{
-    if (code_out == nullptr || command.size() < 2 || command.front() != prefix)
-        return false;
-    const char *begin = command.data() + 1;
-    const char *end = command.data() + command.size();
-    const std::from_chars_result parsed = std::from_chars(begin, end, *code_out);
-    return parsed.ec == std::errc() && parsed.ptr == end;
 }
 
 // Return true when this event tree contains a non-empty toolchange script.
@@ -163,190 +154,6 @@ struct DefaultGCodeFirmwareSession::RequestedState
     std::optional<EPropertyAttributes> attributes;
     std::optional<EPropertyExtrusionAxis> extrusion_axis;
     coord_t z_offset = 0;
-};
-
-/*
-Observe state-changing commands emitted by a resolved user script.
-
-The interpreter never rewrites the text and ignores commands it does not know.
-Its only job is to make the next host-generated movement start from the state
-the printer will actually have after executing that text.
-*/
-class DefaultGCodeFirmwareSession::GCodeStateInterpreter
-{
-public:
-    explicit GCodeStateInterpreter(DefaultGCodeFirmwareSession &session) : m_session(session) {}
-
-    void apply(const std::string &gcode)
-    {
-        GCodeLineParser parser;
-        parser.parse_buffer(gcode, [this](GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
-            apply_line(line);
-        });
-    }
-
-private:
-    void apply_line(const GCodeLineParser::GCodeLine &line)
-    {
-        const std::string_view command = line.command();
-        int32_t code = 0;
-        if (command_code(command, 'T', &code)) {
-            if (code >= 0 && code <= int32_t(std::numeric_limits<uint16_t>::max()))
-                (void)m_session.select_extruder(uint16_t(code), false);
-            return;
-        }
-
-        if (command_code(command, 'G', &code)) {
-            if (code == 20) {
-                m_session.m_units_in_mm = false;
-                return;
-            }
-            if (code == 21) {
-                m_session.m_units_in_mm = true;
-                return;
-            }
-            if (code == 90) {
-                m_session.m_xyz_relative_mode = false;
-                return;
-            }
-            if (code == 91) {
-                m_session.m_xyz_relative_mode = true;
-                return;
-            }
-            if (code == 92) {
-                apply_coordinate_reset(line);
-                return;
-            }
-            if (code >= 0 && code <= 3)
-                apply_move(line);
-            return;
-        }
-
-        if (!command_code(command, 'M', &code))
-            return;
-        if (code == 82 || code == 83) {
-            m_session.m_e_relative_mode = code == 83;
-            for (DefaultExtruder &tool : m_session.m_extruders)
-                tool.extrusion_axis().set_relative_mode(m_session.m_e_relative_mode);
-            return;
-        }
-        if (code == 104 || code == 109) {
-            apply_tool_temperature(line, code == 109);
-            return;
-        }
-        if (code == 140 || code == 190) {
-            apply_heater(line, m_session.m_printer.bed_heater(), code == 190);
-            return;
-        }
-        if (code == 141 || code == 191) {
-            apply_heater(line, m_session.m_printer.chamber_heater(), code == 191);
-            return;
-        }
-        if (code == 106 || code == 107)
-            apply_fan(line, code == 107);
-    }
-
-    double unit_scale() const { return m_session.m_units_in_mm ? 1.0 : 25.4; }
-
-    std::optional<uint16_t> addressed_tool(const GCodeLineParser::GCodeLine &line,
-                                           char selector) const
-    {
-        int32_t tool_id = -1;
-        if (line.parameter_value(selector, tool_id)) {
-            if (tool_id < 0 || tool_id >= int32_t(m_session.m_extruders.size()))
-                return std::nullopt;
-            return uint16_t(tool_id);
-        }
-        if (m_session.m_current_extruder_idx)
-            return m_session.m_current_extruder_idx;
-        return m_session.m_script_processing_tool;
-    }
-
-    void apply_coordinate_reset(const GCodeLineParser::GCodeLine &line)
-    {
-        const double scale = unit_scale();
-        const std::optional<float> e = line.parameter_value('E');
-        if (e) {
-            const std::optional<uint16_t> tool_id = addressed_tool(line, 'T');
-            if (tool_id)
-                m_session.extruder(*tool_id).extrusion_axis().set_position(*e * scale);
-        }
-
-        const std::optional<float> x = line.parameter_value('X');
-        const std::optional<float> y = line.parameter_value('Y');
-        const std::optional<float> z = line.parameter_value('Z');
-        const std::optional<c_vec3d> old_position = m_session.m_gantry.position();
-        if (!old_position && !(x && y && z))
-            return;
-        c_vec3d position = old_position.value_or(c_vec3d{});
-        if (x) position.x = *x * scale;
-        if (y) position.y = *y * scale;
-        if (z) position.z = *z * scale;
-        m_session.m_gantry.set_position(position);
-    }
-
-    void apply_move(const GCodeLineParser::GCodeLine &line)
-    {
-        const double scale = unit_scale();
-        const std::optional<float> feedrate = line.parameter_value('F');
-        if (feedrate) {
-            m_session.m_gantry.request_speed(*feedrate * scale / 60.0);
-            m_session.m_gantry.mark_speed_encoded();
-        }
-
-        const std::optional<float> x = line.parameter_value('X');
-        const std::optional<float> y = line.parameter_value('Y');
-        const std::optional<float> z = line.parameter_value('Z');
-        const std::optional<c_vec3d> old_position = m_session.m_gantry.position();
-        if (old_position || (x && y && z)) {
-            c_vec3d position = old_position.value_or(c_vec3d{});
-            if (x)
-                position.x = m_session.m_xyz_relative_mode ? position.x + *x * scale : *x * scale;
-            if (y)
-                position.y = m_session.m_xyz_relative_mode ? position.y + *y * scale : *y * scale;
-            if (z)
-                position.z = m_session.m_xyz_relative_mode ? position.z + *z * scale : *z * scale;
-            m_session.m_gantry.set_position(position);
-        }
-
-        const std::optional<float> e = line.parameter_value('E');
-        if (e) {
-            const std::optional<uint16_t> tool_id = addressed_tool(line, 'T');
-            if (tool_id)
-                m_session.extruder(*tool_id).extrusion_axis().observe_external_move(
-                    *e * scale, m_session.m_e_relative_mode);
-        }
-    }
-
-    void apply_heater(const GCodeLineParser::GCodeLine &line, HeaterState &heater, bool waited)
-    {
-        std::optional<float> temperature = line.parameter_value('S');
-        if (!temperature && waited)
-            temperature = line.parameter_value('R');
-        if (temperature && std::isfinite(*temperature) &&
-            *temperature >= double(std::numeric_limits<int16_t>::min()) &&
-            *temperature <= double(std::numeric_limits<int16_t>::max()))
-            heater.synchronize_after_external_gcode(int16_t(std::lround(*temperature)), waited);
-    }
-
-    void apply_tool_temperature(const GCodeLineParser::GCodeLine &line, bool waited)
-    {
-        const std::optional<uint16_t> tool_id = addressed_tool(line, 'T');
-        if (tool_id)
-            apply_heater(line, m_session.extruder(*tool_id).heater(), waited);
-    }
-
-    void apply_fan(const GCodeLineParser::GCodeLine &line, bool stopped)
-    {
-        const std::optional<uint16_t> tool_id = addressed_tool(line, 'P');
-        if (!tool_id)
-            return;
-        const float pwm = stopped ? 0.f : line.parameter_value('S').value_or(255.f);
-        m_session.extruder(*tool_id).fan().synchronize_after_external_gcode(
-            std::clamp(double(pwm) * 100.0 / 255.0, 0.0, 100.0));
-    }
-
-    DefaultGCodeFirmwareSession &m_session;
 };
 
 // Resolves inherited properties and visits leaves in geometric output order
@@ -483,17 +290,13 @@ void DefaultGCodeFirmwareSession::setup(const Config &config)
     m_is_setup = true;
 }
 
-std::string DefaultGCodeFirmwareSession::begin_print(const Print &print)
-{
-    // Establish the complete export state before invoking a dialect encoder,
-    // because that encoder may inspect configured tools or the formatter.
-    setup(print.config());
+DefaultGCodeFirmwareSession::DefaultGCodeFirmwareSession() : m_preamble(new GCodePreamble(*this)) {}
+DefaultGCodeFirmwareSession::~DefaultGCodeFirmwareSession() = default;
 
-    // MachineEnvelope is the neutral boundary between printer settings and
-    // firmware syntax. A disabled envelope produces no startup command.
-    const std::optional<MachineEnvelope> envelope =
-        configured_machine_envelope(print.config());
-    return envelope ? encode_machine_envelope(*envelope) : std::string();
+std::string DefaultGCodeFirmwareSession::begin_print(const Print &print, const PrintingPlan &plan)
+{
+    setup(print.config());
+    return m_preamble->begin(print, plan);
 }
 
 std::string DefaultGCodeFirmwareSession::begin_group(const PrintingGroup &group)
@@ -579,10 +382,9 @@ std::string DefaultGCodeFirmwareSession::end_group()
 
 std::string DefaultGCodeFirmwareSession::end_print()
 {
-    if (!m_wipe_tag_open)
-        return {};
+    std::string output = m_wipe_tag_open ? ";WIPE_END\n" : "";
     m_wipe_tag_open = false;
-    return ";WIPE_END\n";
+    return output + m_preamble->finish();
 }
 
 std::string DefaultGCodeFirmwareSession::enter_extrusion_node(const ExtrusionEntity &)
@@ -1128,142 +930,10 @@ std::string DefaultGCodeFirmwareSession::write_custom_gcode(
     return encode_custom_gcode(custom_gcode.kind, text);
 }
 
-std::string DefaultGCodeFirmwareSession::process_script(
-    gcode_script_type script_type,
-    const std::string &script,
-    const Config *producer_config,
-    uint16_t processing_extruder_id)
+std::string DefaultGCodeFirmwareSession::process_script(gcode_script_type type,
+    const std::string &script, const Config *config, uint16_t tool)
 {
-    if (!m_scripts.valid())
-        throw std::invalid_argument(
-            "Custom G-code scripts require a host script processor.");
-
-    const std::string resolved_script = script.empty() ?
-        resolve_empty_script(script_type, producer_config) : script;
-
-    // The script producer has already frozen every structural placeholder in
-    // its Config. The firmware adds only values that depend on the machine at
-    // this exact execution point.
-    GCodeScriptContext context = producer_config == nullptr ?
-        m_scripts.prepare(script_type) : m_scripts.prepare(script_type, *producer_config);
-    GCodeScriptConfig config = context.config();
-
-    uint16_t processing_tool = m_current_extruder_idx.value_or(0);
-    if (processing_extruder_id != GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID)
-        processing_tool = processing_extruder_id;
-    if (processing_tool >= m_extruders.size())
-        throw std::invalid_argument("A custom G-code script references an unknown processing extruder.");
-    complete_script_context(script_type, processing_tool, config);
-
-    std::vector<double> used_filament_snapshot;
-    if (script_type == GCODE_SCRIPT_TYPE_BEFORE_LAYER_GCODE &&
-        config.has("layer_used_filament")) {
-        used_filament_snapshot.reserve(m_extruders.size());
-        std::vector<double> layer_used_filament;
-        layer_used_filament.reserve(m_extruders.size());
-        for (size_t tool_idx = 0; tool_idx < m_extruders.size(); ++tool_idx) {
-            const double used = m_extruders[tool_idx].extrusion_axis().used_filament();
-            used_filament_snapshot.push_back(used);
-            layer_used_filament.push_back(used - m_last_layer_used_filament[tool_idx]);
-        }
-        config.set("layer_used_filament", layer_used_filament);
-    }
-    if (config.has("gcode_bed_temperature") && m_printer.bed_heater().requested_temperature())
-        config.set("gcode_bed_temperature", int32_t(m_printer.bed_heater().effective_temperature()));
-
-    // Export the complete current machine snapshot before the parser runs.
-    // An unknown position uses a stable placeholder but remains unknown unless
-    // the script or the generated G-code actually changes that vector.
-    const std::optional<c_vec3d> old_position = m_gantry.position();
-    const std::vector<double> position = old_position ?
-        std::vector<double>{old_position->x, old_position->y, old_position->z} :
-        std::vector<double>{0.0, 0.0, 0.0};
-    config.set("position", position);
-
-    std::vector<double> old_e_positions;
-    std::vector<double> old_retracted;
-    std::vector<double> old_restart_extra;
-    old_e_positions.reserve(m_extruders.size());
-    old_retracted.reserve(m_extruders.size());
-    old_restart_extra.reserve(m_extruders.size());
-    for (const DefaultExtruder &tool : m_extruders) {
-        old_e_positions.push_back(tool.extrusion_axis().position());
-        old_retracted.push_back(tool.extrusion_axis().retracted());
-        old_restart_extra.push_back(tool.extrusion_axis().restart_extra());
-    }
-    config.set("e_retracted", old_retracted);
-    config.set("e_restart_extra", old_restart_extra);
-    if (config.has("e_position"))
-        config.set("e_position", old_e_positions);
-
-    m_script_processing_tool = processing_tool;
-    std::string output;
-    try {
-        output = context.process(resolved_script, processing_tool);
-        GCodeStateInterpreter(*this).apply(output);
-        m_script_processing_tool.reset();
-    } catch (...) {
-        m_script_processing_tool.reset();
-        throw;
-    }
-
-    // Read and validate every output before mutating any session component.
-    // This keeps script application atomic even when the last vector is bad.
-    const std::vector<double> new_position = config.get_floats("position");
-    const std::vector<double> new_retracted = config.get_floats("e_retracted");
-    const std::vector<double> new_restart_extra = config.get_floats("e_restart_extra");
-    const std::vector<double> new_e_positions = config.has("e_position") ?
-        config.get_floats("e_position") : std::vector<double>();
-    if (new_position.size() != 3 || new_retracted.size() != m_extruders.size() ||
-        new_restart_extra.size() != m_extruders.size() ||
-        (!new_e_positions.empty() && new_e_positions.size() != m_extruders.size()))
-        throw std::invalid_argument("A G-code script returned an invalid machine-state vector size.");
-
-    for (double value : new_position) {
-        if (!std::isfinite(value))
-            throw std::invalid_argument("A G-code script returned a non-finite position.");
-    }
-    for (size_t tool_idx = 0; tool_idx < m_extruders.size(); ++tool_idx) {
-        if (!std::isfinite(new_retracted[tool_idx]) ||
-            !std::isfinite(new_restart_extra[tool_idx]) ||
-            new_retracted[tool_idx] < -EPSILON || new_restart_extra[tool_idx] < -EPSILON ||
-            (!new_e_positions.empty() && !std::isfinite(new_e_positions[tool_idx])))
-            throw std::invalid_argument("A G-code script returned an invalid extrusion state.");
-    }
-
-    // A script which leaves the placeholder position untouched must not turn
-    // an unknown Gantry position into an invented origin.
-    if (new_position != position)
-        m_gantry.set_position(c_vec3d{new_position[0], new_position[1], new_position[2]});
-    for (size_t tool_idx = 0; tool_idx < m_extruders.size(); ++tool_idx) {
-        const bool e_position_changed = !new_e_positions.empty() &&
-                                        new_e_positions[tool_idx] != old_e_positions[tool_idx];
-        const bool retraction_changed = new_retracted[tool_idx] != old_retracted[tool_idx] ||
-                                        new_restart_extra[tool_idx] != old_restart_extra[tool_idx];
-        if (e_position_changed || retraction_changed) {
-            const std::optional<double> e_position = e_position_changed ?
-                std::optional<double>(new_e_positions[tool_idx]) : std::optional<double>();
-            m_extruders[tool_idx].extrusion_axis().synchronize_after_external_gcode(
-                e_position, new_retracted[tool_idx], new_restart_extra[tool_idx]);
-        }
-    }
-    if (!used_filament_snapshot.empty())
-        m_last_layer_used_filament = std::move(used_filament_snapshot);
-    // Event chunks are concatenated directly by the plan writer. Collapse all
-    // trailing line breaks to one so an empty line cannot accumulate at every
-    // scope boundary and the following command can never join this script.
-    while (!output.empty() && (output.back() == '\n' || output.back() == '\r'))
-        output.pop_back();
-    if (!output.empty())
-        output += '\n';
-    return output;
-}
-
-std::string DefaultGCodeFirmwareSession::resolve_empty_script(
-    gcode_script_type,
-    const Config *) const
-{
-    return {};
+    return m_preamble->process_script(type, script, config, tool);
 }
 
 void DefaultGCodeFirmwareSession::complete_script_context(

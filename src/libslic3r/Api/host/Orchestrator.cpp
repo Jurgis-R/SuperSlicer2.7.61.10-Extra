@@ -3,6 +3,7 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "Orchestrator.hpp"
+#include "GCodeThumbnailGenerator.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1918,7 +1919,8 @@ std::string Orchestrator::export_gcode(Print &print,
     // export-side sub-pipeline to rebuild the PrintingPlan and rewrite the
     // destination file, while leaving the expensive slicing data intact.
     print.mark_step_and_dependents_for_execution(STEP_ORDERING);
-    Steps::StepPipeline::run_gcode(*this, print, path);
+    GCodeThumbnailGenerator thumbnails(print, std::move(thumbnail_cb));
+    Steps::StepPipeline::run_gcode(*this, print, path, thumbnails.c_generator());
 
     if (result != nullptr) {
         result->reset();

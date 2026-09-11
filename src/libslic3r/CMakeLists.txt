@@ -48,6 +48,8 @@ set(SLIC3R_SOURCES
 	Api/host/ApiHostUtils.hpp
 	Api/host/GCodeScriptProcessor.cpp
 	Api/host/GCodeScriptProcessor.hpp
+	Api/host/GCodeThumbnailGenerator.cpp
+	Api/host/GCodeThumbnailGenerator.hpp
 	Api/host/ClipperShapes.cpp
 	Api/host/ClipperShapes.hpp
 	Api/host/Orchestrator.cpp
@@ -171,7 +173,10 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/gcode/GCodeFormatter.hpp
 	Api/plugin/cpp/gcode/GCodeLineParser.cpp
 	Api/plugin/cpp/gcode/GCodeLineParser.hpp
+	Api/plugin/cpp/gcode/GCodePreamble.cpp
+	Api/plugin/cpp/gcode/GCodePreamble.hpp
 	Api/plugin/cpp/gcode/GCodeScriptProcessorViews.hpp
+	Api/plugin/cpp/gcode/GCodeThumbnailViews.hpp
 	Api/plugin/cpp/gcode/HeaterState.cpp
 	Api/plugin/cpp/gcode/HeaterState.hpp
 	Api/plugin/cpp/gcode/MachineEnvelope.cpp

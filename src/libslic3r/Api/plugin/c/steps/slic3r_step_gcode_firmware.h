@@ -5,7 +5,7 @@
 #ifndef slic3r_step_gcode_firmware_h_
 #define slic3r_step_gcode_firmware_h_
 
-#define SLIC3R_PLUGIN_API_STEP_GCODE_FIRMWARE_MAJOR 1u
+#define SLIC3R_PLUGIN_API_STEP_GCODE_FIRMWARE_MAJOR 2u
 #define SLIC3R_PLUGIN_API_STEP_GCODE_FIRMWARE_MINOR 0u
 
 #include "slic3r_step_common.h"
@@ -26,6 +26,8 @@ destroys it after the STEP_GCODE plugin has finished.
 typedef struct run_ctx_gcode_firmware {
     const print_handle *print;
     const raw_gcode_script_processor *script_processor;
+    /* Borrowed until the export finishes, including firmware destruction. */
+    const raw_gcode_thumbnail_generator *thumbnails;
     raw_gcode_firmware_instance instance;
 } run_ctx_gcode_firmware;
 

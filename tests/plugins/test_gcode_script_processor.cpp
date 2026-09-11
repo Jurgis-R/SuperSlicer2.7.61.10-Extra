@@ -296,7 +296,7 @@ TEST_CASE("Firmware scripts import validated machine state atomically",
     ScriptStateFirmwareProbe firmware(scripts);
     const slic3r_api::Print print_view(
         reinterpret_cast<const print_handle *>(&print));
-    CHECK(firmware.begin_print(print_view).empty());
+    firmware.setup(print_view.config());
 
     CHECK(firmware.process_script(
               GCODE_SCRIPT_TYPE_START_GCODE, "M104 S175", nullptr, uint16_t(1)) ==
@@ -435,7 +435,7 @@ TEST_CASE("Derived firmware completes a script context immediately before parsin
     const slic3r_api::Print print_view(
         reinterpret_cast<const print_handle *>(&print));
 
-    REQUIRE(firmware.begin_print(print_view).empty());
+    firmware.setup(print_view.config());
     CHECK(firmware.process_script(
               GCODE_SCRIPT_TYPE_START_GCODE, "M117 Z[max_layer_z]") ==
           "M117 Z12.5\n");
@@ -493,7 +493,7 @@ TEST_CASE("Toolchange scripts use the structural Config stored at insertion",
     const slic3r_api::PrintingToolGroup first_tool = layer_view.tool_group(0);
     const slic3r_api::PrintingToolGroup second_tool = layer_view.tool_group(1);
 
-    REQUIRE(firmware.begin_print(print_view).empty());
+    firmware.setup(print_view.config());
     REQUIRE(firmware.begin_group(group_view).empty());
     REQUIRE(firmware.begin_layer(layer_view).empty());
     CHECK(firmware.begin_tool_group(first_tool) == "T1\n");
@@ -664,7 +664,7 @@ TEST_CASE("Firmware rejects invalid script Config snapshots and clears its scrat
     ScriptStateFirmwareProbe firmware(scripts, storage);
     const slic3r_api::Print print_view(
         reinterpret_cast<const print_handle *>(&print));
-    REQUIRE(firmware.begin_print(print_view).empty());
+    firmware.setup(print_view.config());
 
     slic3r_api::StoredExtrusionEntity invalid_id_event(storage);
     slic3r_api::EPropertyCustomGcode &invalid_id_property = invalid_id_event.script_gcode(

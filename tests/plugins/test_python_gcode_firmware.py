@@ -80,6 +80,29 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         sys.path.remove(cls.generated_directory.name)
         cls.generated_directory.cleanup()
 
+    def test_thumbnail_result_is_copied_and_parameters_are_explicit(self):
+        buffer = ctypes.create_string_buffer(b"first thumbnail")
+        seen = []
+        def render(context, sizes, count, format, bed, tag, result):
+            seen.append(([(sizes[i].width, sizes[i].height) for i in range(count)], format, bed, tag))
+            result.contents.status = self.generated.RAW_GCODE_FIRMWARE_STATUS_SUCCESS
+            result.contents.text = ctypes.cast(buffer, ctypes.c_char_p)
+            result.contents.text_size = len(buffer.value)
+        callback = self.generated.GCODE_THUMBNAIL_GENERATE(render)
+        raw = self.generated.RawGcodeThumbnailGenerator()
+        raw.struct_size = ctypes.sizeof(raw)
+        raw.generate = callback
+        view = self.firmware.GCodeThumbnailGeneratorView(ctypes.pointer(raw))
+        first = view.generate([(4, 8)], format=2, with_bed=True, with_format_tag=True)
+        buffer.value = b"second"
+        second = view.generate([(8, 4)])
+        self.assertEqual(first, "first thumbnail")
+        self.assertEqual(second, "second")
+        self.assertEqual(seen[0], ([(4, 8)], 2, 1, 1))
+        self.assertEqual(self.firmware.GCodeThumbnailGeneratorView(None).generate([(4, 4)]), "")
+        with self.assertRaises(ValueError):
+            view.generate([(0, 4)])
+
     def setUp(self):
         self.api = types.SimpleNamespace(host=types.SimpleNamespace())
 
@@ -96,7 +119,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         firmware = self.firmware
 
         class Session(firmware.GCodeFirmwareSession):
-            def begin_print(self, value):
+            def begin_print(self, value, plan):
                 calls.append(("begin_print", value.address))
                 return "print\n"
 
@@ -145,7 +168,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         instance = self.firmware.make_gcode_firmware_instance(session, self.api)
         try:
             view = self.firmware.GCodeFirmwareView(self.api, instance)
-            self.assertEqual(view.begin_print(self.datatree.Print(self.api, 11)), "print\n")
+            self.assertEqual(view.begin_print(self.datatree.Print(self.api, 11), self.plan.PrintingPlan(self.api, 12)), "print\n")
             self.assertEqual(view.begin_group(self.plan.PrintingGroup(self.api, 12)), "group\n")
             self.assertEqual(view.begin_layer(self.plan.PrintingLayerGroup(self.api, 13)), "layer\n")
             self.assertEqual(view.begin_tool_group(self.plan.PrintingToolGroup(self.api, 14)), "tool\n")
@@ -196,7 +219,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         firmware = self.firmware
 
         class Session(firmware.GCodeFirmwareSession):
-            def begin_print(self, _value): return ""
+            def begin_print(self, _value, _plan): return ""
             def begin_group(self, _value): return ""
             def begin_layer(self, _value): return ""
             def begin_tool_group(self, _value): return ""

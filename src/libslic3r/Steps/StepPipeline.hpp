@@ -6,6 +6,7 @@
 #ifndef steps_steppipeline_hpp_
 #define steps_steppipeline_hpp_
 
+#include "libslic3r/Api/plugin/c/slic3r_gcode_firmware.h"
 #include <map>
 #include <string>
 #include <utility>
@@ -113,7 +114,8 @@ public:
     // Finish the export-side pipeline. This starts at STEP_ORDERING because the
     // G-code writer consumes the ordered PrintingPlan, then runs every
     // post-ordering step and finally STEP_GCODE with the destination path.
-    static void run_gcode(Orchestrator &orchestrator, Print &print, const std::string &path);
+    static void run_gcode(Orchestrator &orchestrator, Print &print, const std::string &path,
+        const raw_gcode_thumbnail_generator *thumbnails = nullptr);
 
     // Compatibility wrapper for code that still wants the whole migrated
     // pipeline in one call. Normal GUI/CLI flow uses run_slice() and run_gcode()
