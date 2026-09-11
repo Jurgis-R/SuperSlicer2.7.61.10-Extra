@@ -15,6 +15,7 @@
 
 #include "plugin_test_helpers.hpp"
 #include "gcode_test_helpers.hpp"
+#include "perimeter_test_helpers.hpp"
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/host/GCodeScriptProcessor.hpp"
@@ -158,7 +159,415 @@ private:
     std::vector<std::string> &m_calls;
 };
 
+/* Add the minimum plan hierarchy needed by STEP_GCODE validation tests. */
+PrintingToolGroup &append_speed_validation_tool_group(Print &print,
+                                                      coord_t print_z = scale_i(0.42),
+                                                      uint16_t extruder_id = 3)
+{
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    plan.groups.back().layers.emplace_back();
+    PrintingLayerGroup &layer_group = plan.groups.back().layers.back();
+    layer_group.print_z = print_z;
+    layer_group.tool_groups.emplace_back();
+    layer_group.tool_groups.back().extruder_id = extruder_id;
+    return layer_group.tool_groups.back();
+}
+
+/* Build one two-point geometric leaf with an optional direct speed property. */
+std::unique_ptr<ExtrusionEntity> speed_validation_path(
+    std::optional<float> speed,
+    double start_x = 1.25,
+    double end_x = 3.75)
+{
+    std::unique_ptr<ExtrusionPath> path(new ExtrusionPath(
+        ArcPolyline(Points{
+            Point(scale_i(start_x), scale_i(2.5)),
+            Point(scale_i(end_x), scale_i(2.5))
+        }),
+        ExtrusionAttributes(ExtrusionRole::Perimeter, ExtrusionFlow(0.08, 0.4f, 0.2f)),
+        nullptr,
+        true));
+    if (speed)
+        path->add_property(ExtrusionPropertySpeed(*speed));
+    return path;
+}
+
+/* Append one independently owned validation root to a tool group. */
+PrintingExtrusion &append_speed_validation_extrusion(
+    PrintingToolGroup &tool_group,
+    std::unique_ptr<ExtrusionEntity> root,
+    const LayerRegionIsland *region_island = nullptr,
+    uint16_t object_instance_idx = 0)
+{
+    PrintingExtrusion extrusion;
+    extrusion.region_island = region_island;
+    extrusion.sregion_island_role = ExtrusionRole::Perimeter;
+    extrusion.root = std::move(root);
+    extrusion.object_instance_idx = object_instance_idx;
+    tool_group.extrusions.push_back(std::move(extrusion));
+    return tool_group.extrusions.back();
+}
+
+/* Add one geometric event below a scope's fixed before or after root. */
+void append_speed_validation_event(PrintingScopeEvents &events,
+                                   const bool before,
+                                   std::optional<float> speed)
+{
+    const std::unique_ptr<ExtrusionEntity> event = speed_validation_path(speed);
+    if (before)
+        events.append_before(*event);
+    else
+        events.append_after(*event);
+}
+
+/* Add one E-only command whose firmware path still emits a movement line. */
+void append_special_extrusion_event(PrintingScopeEvents &events,
+                                    const bool before,
+                                    std::optional<float> speed)
+{
+    ExtrusionNop event;
+    event.add_property(ExtrusionPropertySpecialCommand(
+        ExtrusionPropertySpecialCommand::Code::EXTRUSION, 0.5));
+    if (speed)
+        event.add_property(ExtrusionPropertySpeed(*speed));
+    if (before)
+        events.append_before(event);
+    else
+        events.append_after(event);
+}
+
 } // namespace
+
+TEST_CASE("STEP_GCODE pre-validation resolves inherited geometric speeds",
+          "[plugins][gcode][validation][speed]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("a local positive speed is accepted") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        append_speed_validation_extrusion(tool_group, speed_validation_path(22.f));
+
+        std::string error = "stale";
+        CHECK(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.empty());
+    }
+
+    SECTION("a child inherits a positive parent speed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        ExtrusionEntity::Children children;
+        children.push_back(speed_validation_path(std::nullopt));
+        std::unique_ptr<ExtrusionEntity> root(new ExtrusionEntity(
+            std::move(children), false, false, true));
+        root->add_property(ExtrusionPropertySpeed(24.f));
+        append_speed_validation_extrusion(tool_group, std::move(root));
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("a non-positive child declaration keeps the inherited parent speed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        ExtrusionEntity::Children children;
+        children.push_back(speed_validation_path(0.f));
+        children.push_back(speed_validation_path(-1.f));
+        std::unique_ptr<ExtrusionEntity> root(new ExtrusionEntity(
+            std::move(children), false, false, true));
+        root->add_property(ExtrusionPropertySpeed(26.f));
+        append_speed_validation_extrusion(tool_group, std::move(root));
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("an event leaf without geometry does not require speed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        append_speed_validation_extrusion(
+            tool_group, std::unique_ptr<ExtrusionEntity>(new ExtrusionNop()));
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+}
+
+TEST_CASE("STEP_GCODE pre-validation reports missing and malformed speeds",
+          "[plugins][gcode][validation][speed]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("a PrintingPlan is required") {
+        Print print;
+        std::string error = "stale";
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("Print has no plan") != std::string::npos);
+    }
+
+    SECTION("a geometric leaf without any declaration has a complete diagnostic") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        ExtrusionEntity::Children inner_children;
+        inner_children.push_back(speed_validation_path(std::nullopt));
+        ExtrusionEntity::Children root_children;
+        root_children.push_back(std::unique_ptr<ExtrusionEntity>(new ExtrusionEntity(
+            std::move(inner_children), false, false, true)));
+        append_speed_validation_extrusion(tool_group, std::unique_ptr<ExtrusionEntity>(
+            new ExtrusionEntity(std::move(root_children), false, false, true)));
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("1 geometric extrusion leaf has no valid effective speed") != std::string::npos);
+        CHECK(error.find(
+            "groups[0].layers[0].tool_groups[0].extrusions[0].root.children[0].children[0]") !=
+            std::string::npos);
+        CHECK(error.find("print_z=0.42 mm") != std::string::npos);
+        CHECK(error.find("extruder_id=3") != std::string::npos);
+        CHECK(error.find("source_role=IPeri") != std::string::npos);
+        CHECK(error.find("region_island=unavailable") != std::string::npos);
+        CHECK(error.find("object_instance_idx=0") != std::string::npos);
+        CHECK(error.find("type=path") != std::string::npos);
+        CHECK(error.find("points=2, segments=1") != std::string::npos);
+        CHECK(error.find("length=2.5 mm") != std::string::npos);
+        CHECK(error.find("start=(1.25, 2.5)") != std::string::npos);
+        CHECK(error.find("end=(3.75, 2.5)") != std::string::npos);
+        CHECK(error.find("contains_arcs=no") != std::string::npos);
+        CHECK(error.find("Speed declarations: none on the leaf or its parents") != std::string::npos);
+        CHECK(error.find("neither this geometric leaf nor any parent declares a speed") != std::string::npos);
+    }
+
+    SECTION("inherit sentinels without a positive ancestor are listed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        ExtrusionEntity::Children children;
+        children.push_back(speed_validation_path(0.f));
+        std::unique_ptr<ExtrusionEntity> root(new ExtrusionEntity(
+            std::move(children), false, false, true));
+        root->add_property(ExtrusionPropertySpeed(-1.f));
+        append_speed_validation_extrusion(tool_group, std::move(root));
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find(".root: speed_mm_per_s=-1 (inherit)") != std::string::npos);
+        CHECK(error.find(".root.children[0]: speed_mm_per_s=0 (inherit)") != std::string::npos);
+        CHECK(error.find("every speed declaration on this path requests inheritance") != std::string::npos);
+    }
+
+    SECTION("non-finite declarations remain errors despite a valid ancestor") {
+        const std::vector<std::pair<float, const char *>> invalid_values{
+            {std::numeric_limits<float>::quiet_NaN(), "NaN"},
+            {std::numeric_limits<float>::infinity(), "+infinity"},
+            {-std::numeric_limits<float>::infinity(), "-infinity"}
+        };
+        for (const std::pair<float, const char *> &invalid : invalid_values) {
+            CAPTURE(invalid.second);
+            Print print;
+            PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+            ExtrusionEntity::Children children;
+            children.push_back(speed_validation_path(invalid.first));
+            std::unique_ptr<ExtrusionEntity> root(new ExtrusionEntity(
+                std::move(children), false, false, true));
+            root->add_property(ExtrusionPropertySpeed(28.f));
+            append_speed_validation_extrusion(tool_group, std::move(root));
+
+            std::string error;
+            CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+            CHECK(error.find(std::string("speed_mm_per_s=") + invalid.second) != std::string::npos);
+            CHECK(error.find("Every explicit speed must be finite") != std::string::npos);
+        }
+    }
+
+    SECTION("a missing extrusion root is rejected at its plan location") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        append_speed_validation_extrusion(tool_group, nullptr);
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("extrusions[0].root") != std::string::npos);
+        CHECK(error.find("print_z=0.42 mm") != std::string::npos);
+        CHECK(error.find("extruder_id=3") != std::string::npos);
+        CHECK(error.find("Entity: unavailable") != std::string::npos);
+        CHECK(error.find("Speed declarations: unavailable") != std::string::npos);
+        CHECK(error.find("has no root extrusion tree") != std::string::npos);
+    }
+}
+
+TEST_CASE("STEP_GCODE pre-validation covers every before and after event scope",
+          "[plugins][gcode][validation][speed][events]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+    PrintingPlan &plan = print.mutable_printing_plan();
+    PrintingGroup &group = plan.groups.front();
+    PrintingLayerGroup &layer_group = group.layers.front();
+
+    append_speed_validation_event(plan.events, true, std::nullopt);
+    append_speed_validation_event(plan.events, false, std::nullopt);
+    append_speed_validation_event(group.events, true, std::nullopt);
+    append_speed_validation_event(group.events, false, std::nullopt);
+    append_speed_validation_event(layer_group.events, true, std::nullopt);
+    append_speed_validation_event(layer_group.events, false, std::nullopt);
+    append_speed_validation_event(tool_group.events, true, std::nullopt);
+    append_speed_validation_event(tool_group.events, false, std::nullopt);
+
+    std::string error;
+    CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+    CHECK(error.find("8 movement-producing before/after event entities have") != std::string::npos);
+    CHECK(error.find("plan.events.before.children[0]") != std::string::npos);
+    CHECK(error.find("plan.events.after.children[0]") != std::string::npos);
+    CHECK(error.find("groups[0].events.before.children[0]") != std::string::npos);
+    CHECK(error.find("groups[0].events.after.children[0]") != std::string::npos);
+    CHECK(error.find("groups[0].layers[0].events.before.children[0]") != std::string::npos);
+    CHECK(error.find("groups[0].layers[0].events.after.children[0]") != std::string::npos);
+    CHECK(error.find(
+        "groups[0].layers[0].tool_groups[0].events.before.children[0]") !=
+        std::string::npos);
+    CHECK(error.find(
+        "groups[0].layers[0].tool_groups[0].events.after.children[0]") !=
+        std::string::npos);
+    CHECK(error.find("source_role=unavailable (scope event)") != std::string::npos);
+    CHECK(error.find("Source context: unavailable for a before/after scope event") !=
+          std::string::npos);
+}
+
+TEST_CASE("STEP_GCODE pre-validation recognizes event movement kinds",
+          "[plugins][gcode][validation][speed][events]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("geometric and E-only events accept their own speed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        append_speed_validation_event(tool_group.events, true, 18.f);
+        append_special_extrusion_event(tool_group.events, false, 12.f);
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("event geometry inherits speed inside its own event root") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        ExtrusionEntity::Children children;
+        children.push_back(speed_validation_path(std::nullopt));
+        ExtrusionEntity event(std::move(children), false, false, true);
+        event.add_property(ExtrusionPropertySpeed(19.f));
+        tool_group.events.append_before(event);
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("an E-only special extrusion without speed is diagnosed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        append_special_extrusion_event(tool_group.events, false, std::nullopt);
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("1 movement-producing before/after event entity has") !=
+              std::string::npos);
+        CHECK(error.find("movement=E-only special extrusion") != std::string::npos);
+        CHECK(error.find("neither this E-only event nor any parent declares a speed") !=
+              std::string::npos);
+    }
+
+    SECTION("a non-movement scope event needs no speed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        tool_group.events.append_before(ExtrusionNop());
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("an E-only command in a PrintingExtrusion is also rejected early") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        std::unique_ptr<ExtrusionNop> event(new ExtrusionNop());
+        event->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, -15.0));
+        append_speed_validation_extrusion(tool_group, std::move(event));
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("1 E-only special extrusion event has") != std::string::npos);
+        CHECK(error.find("extrusions[0].root") != std::string::npos);
+    }
+}
+
+TEST_CASE("STEP_GCODE speed diagnostics retain source object context",
+          "[plugins][gcode][validation][speed]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    using namespace Slic3r::Test::PerimeterPluginTests;
+
+    PreparedPerimeterPrint prepared;
+    const DynamicPrintConfig config = perimeter_config({});
+    prepare_cube_print(prepared, config);
+    REQUIRE(prepared.print.objects().size() == 1);
+    prepared.print.object(0).model_object()->name = "speed_validation_cube.stl";
+    REQUIRE(prepared.print.object(0).layer_count() > 0);
+    const Layer &source_layer = prepared.print.object(0).layer(0);
+    REQUIRE(source_layer.region_count() > 0);
+    const LayerRegionIsland source_island({&source_layer.region(0)}, 0);
+
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+        prepared.print, source_layer.scaled_print_z(), source_island.extruder_id());
+    append_speed_validation_extrusion(
+        tool_group, speed_validation_path(std::nullopt), &source_island, 0);
+
+    std::string error;
+    CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(prepared.print, &error));
+    CHECK(error.find("region_count=1") != std::string::npos);
+    CHECK(error.find("layer_id=0") != std::string::npos);
+    CHECK(error.find("print_object_index=0") != std::string::npos);
+    CHECK(error.find("object_name=\"speed_validation_cube.stl\"") != std::string::npos);
+    CHECK(error.find("object_instance_idx=0") != std::string::npos);
+}
+
+TEST_CASE("STEP_GCODE speed diagnostics are bounded without hiding the total",
+          "[plugins][gcode][validation][speed]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+    for (size_t extrusion_idx = 0; extrusion_idx < 12; ++extrusion_idx)
+        append_speed_validation_extrusion(
+            tool_group, speed_validation_path(std::nullopt, double(extrusion_idx), double(extrusion_idx + 1)));
+
+    std::string error;
+    CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+    CHECK(error.find("12 geometric extrusion leaves") != std::string::npos);
+    CHECK(error.find("[10/12]") != std::string::npos);
+    CHECK(error.find("[11/12]") == std::string::npos);
+    CHECK(error.find("2 additional validation errors were omitted") != std::string::npos);
+}
+
+TEST_CASE("STEP_GCODE rejects an invalid speed before touching output",
+          "[plugins][gcode][validation][speed]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+    append_speed_validation_extrusion(tool_group, speed_validation_path(std::nullopt));
+
+    const boost::filesystem::path output_path = temporary_gcode_path();
+    remove_output_pair(output_path);
+    write_text_file(output_path, "previous output\n");
+    try {
+        Steps::StepGenerateGcode::run_step(
+            Orchestrator::instance(), print, output_path.string());
+        FAIL("STEP_GCODE accepted a geometric leaf without speed");
+    } catch (const RuntimeError &error) {
+        CHECK(std::string(error.what()).find("PrintingPlan location") != std::string::npos);
+    }
+    CHECK(read_text_file(output_path) == "previous output\n");
+    CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
+    remove_output_pair(output_path);
+}
 
 TEST_CASE("G-code formatter builds checked command parameters",
           "[plugins][gcode][formatter]")

@@ -834,8 +834,9 @@ std::string DefaultGCodeFirmwareSession::write_leaf_geometry(const ExtrusionEnti
         (state.attributes->c_extrusion_property_attributes::mm3_per_mm <= 0.0 ||
          !std::isfinite(state.attributes->c_extrusion_property_attributes::mm3_per_mm)))
         throw std::invalid_argument("A printable extrusion needs valid flow attributes.");
-    if (!state.speed_mm_per_s || *state.speed_mm_per_s <= 0.f)
-        throw std::invalid_argument("An extrusion movement needs a positive speed.");
+    if (!state.speed_mm_per_s || !std::isfinite(*state.speed_mm_per_s) ||
+        *state.speed_mm_per_s <= 0.f)
+        throw std::invalid_argument("An extrusion movement needs a finite positive speed.");
     const std::optional<uint32_t> acceleration =
         validated_acceleration_request(state.acceleration_mm_per_s2);
 
@@ -1364,8 +1365,9 @@ std::string DefaultGCodeFirmwareSession::write_lines(const PreparedMove &prepare
     // A sub-precision E delta still updates the extruder rounding remainder,
     // but no empty G-code line is produced until a later delta becomes visible.
     if (xyz_changed || e_changed) {
-        if (!m_gantry.requested_speed() || *m_gantry.requested_speed() <= 0.0)
-            throw std::invalid_argument("A movement requires a positive requested speed.");
+        if (!m_gantry.requested_speed() || !std::isfinite(*m_gantry.requested_speed()) ||
+            *m_gantry.requested_speed() <= 0.0)
+            throw std::invalid_argument("A movement requires a finite positive requested speed.");
         const bool include_speed = m_gantry.needs_speed_encoding();
         output += encode_move(quantized_move, include_speed);
         if (xyz_changed)
