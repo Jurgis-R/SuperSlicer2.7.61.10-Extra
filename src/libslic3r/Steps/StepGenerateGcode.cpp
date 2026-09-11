@@ -1,5 +1,6 @@
 #include "StepGenerateGcode.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -49,7 +50,7 @@ namespace Slic3r::Steps::StepGenerateGcode {
 
 namespace {
 
-constexpr size_t MaximumReportedSpeedErrors = 10;
+constexpr size_t MaximumReportedValidationErrors = 10;
 
 /* One direct EPropertySpeed declaration encountered from a root to a leaf. */
 struct SpeedDeclaration
@@ -73,6 +74,20 @@ struct SpeedTraversalState
     std::optional<uint16_t> effective_role;
     std::vector<SpeedDeclaration> declarations;
     bool has_non_finite_speed = false;
+};
+
+/*
+Machine tool selected while walking the complete PrintingPlan.
+
+Requested speed is lexical and resets for each event or extrusion tree, but a
+tool change is machine state and survives the end of that tree. The source text
+is retained so an E-only command can explain whether its tool came from a tool
+group boundary or an earlier semantic TOOLCHANGE command.
+*/
+struct ActiveToolState
+{
+    std::optional<uint16_t> tool_id;
+    std::string source = "no tool has been selected yet";
 };
 
 /*
@@ -101,8 +116,8 @@ struct SpeedValidationReport
 {
     size_t error_count = 0;
     size_t speed_error_count = 0;
-    size_t extrusion_event_speed_error_count = 0;
-    size_t event_speed_error_count = 0;
+    size_t extrusion_e_only_error_count = 0;
+    size_t scope_event_error_count = 0;
     size_t missing_root_count = 0;
     std::vector<std::string> details;
 
@@ -110,23 +125,23 @@ struct SpeedValidationReport
     {
         ++error_count;
         ++speed_error_count;
-        if (details.size() < MaximumReportedSpeedErrors)
+        if (details.size() < MaximumReportedValidationErrors)
             details.push_back(std::move(detail));
     }
 
-    void add_extrusion_event_speed_error(std::string detail)
+    void add_extrusion_e_only_error(std::string detail)
     {
         ++error_count;
-        ++extrusion_event_speed_error_count;
-        if (details.size() < MaximumReportedSpeedErrors)
+        ++extrusion_e_only_error_count;
+        if (details.size() < MaximumReportedValidationErrors)
             details.push_back(std::move(detail));
     }
 
-    void add_event_speed_error(std::string detail)
+    void add_scope_event_error(std::string detail)
     {
         ++error_count;
-        ++event_speed_error_count;
-        if (details.size() < MaximumReportedSpeedErrors)
+        ++scope_event_error_count;
+        if (details.size() < MaximumReportedValidationErrors)
             details.push_back(std::move(detail));
     }
 
@@ -134,13 +149,16 @@ struct SpeedValidationReport
     {
         ++error_count;
         ++missing_root_count;
-        if (details.size() < MaximumReportedSpeedErrors)
+        if (details.size() < MaximumReportedValidationErrors)
             details.push_back(std::move(detail));
     }
 };
 
 /* Return a readable value while preserving NaN and infinity signs. */
 std::string speed_value_text(float value);
+
+/* Return the number of DefaultExtruder instances created by the firmware. */
+size_t configured_extruder_count(const Print &print);
 
 /* Format the zero-based path used by PrintingPlan and the debugger. */
 std::string extrusion_tree_path(const PrintingTreeLocation &location,
@@ -166,24 +184,42 @@ std::string geometric_speed_error(const Print &print,
                                   const ExtrusionEntity &entity,
                                   const PrintingTreeLocation &location,
                                   const std::vector<size_t> &child_path,
-                                  const SpeedTraversalState &state,
-                                  bool special_extrusion_event);
+                                  const SpeedTraversalState &state);
 
-/* Validate one tree recursively while preserving inherited process state. */
-void validate_extrusion_tree_speed(const Print &print,
+/* Append every lexical speed declaration used to resolve one movement. */
+void append_speed_declarations(std::ostringstream &out,
+                               const PrintingTreeLocation &location,
+                               const SpeedTraversalState &state);
+
+/* Explain every invalid input of one explicit E-only extrusion command. */
+std::string e_only_extrusion_error(const Print &print,
                                    const ExtrusionEntity &entity,
                                    const PrintingTreeLocation &location,
-                                   std::vector<size_t> &child_path,
-                                   const SpeedTraversalState &parent_state,
-                                   SpeedValidationReport &report);
+                                   const std::vector<size_t> &child_path,
+                                   const SpeedTraversalState &state,
+                                   const ActiveToolState &active_tool,
+                                   size_t extruder_count,
+                                   double extrusion_delta);
 
-/* Validate the non-empty before/after roots owned by one plan scope. */
-void validate_scope_event_speeds(const Print &print,
-                                 const Printing::PrintingScopeEvents &events,
-                                 const std::string &scope_path,
-                                 const Printing::PrintingLayerGroup *layer_group,
-                                 const Printing::PrintingToolGroup *tool_group,
-                                 SpeedValidationReport &report);
+/* Validate one tree recursively while preserving inherited process state. */
+void validate_extrusion_tree_movements(const Print &print,
+                                       const ExtrusionEntity &entity,
+                                       const PrintingTreeLocation &location,
+                                       std::vector<size_t> &child_path,
+                                       const SpeedTraversalState &parent_state,
+                                       ActiveToolState &active_tool,
+                                       size_t extruder_count,
+                                       SpeedValidationReport &report);
+
+/* Validate one scope-event root at its exact position in serialization order. */
+void validate_scope_event_movements(const Print &print,
+                                    const ExtrusionEntity &event_root,
+                                    const std::string &root_path,
+                                    const Printing::PrintingLayerGroup *layer_group,
+                                    const Printing::PrintingToolGroup *tool_group,
+                                    ActiveToolState &active_tool,
+                                    size_t extruder_count,
+                                    SpeedValidationReport &report);
 
 /* Convert the bounded report into the public validate_pre() diagnostic. */
 std::string speed_validation_message(const SpeedValidationReport &report);
@@ -228,6 +264,18 @@ std::string speed_value_text(const float value)
     std::ostringstream out;
     out << std::setprecision(std::numeric_limits<float>::max_digits10) << value;
     return out.str();
+}
+
+size_t configured_extruder_count(const Print &print)
+{
+    const PrintConfig &config = print.config();
+    return std::max<size_t>({
+        1,
+        config.nozzle_diameter.size(),
+        config.filament_diameter.size(),
+        config.extruder_offset.size(),
+        config.extrusion_multiplier.size()
+    });
 }
 
 std::string extrusion_tree_path(const PrintingTreeLocation &location,
@@ -332,8 +380,7 @@ std::string geometric_speed_error(const Print &print,
                                   const ExtrusionEntity &entity,
                                   const PrintingTreeLocation &location,
                                   const std::vector<size_t> &child_path,
-                                  const SpeedTraversalState &state,
-                                  const bool special_extrusion_event)
+                                  const SpeedTraversalState &state)
 {
     std::ostringstream out;
     out << "PrintingPlan location: " << extrusion_tree_path(location, child_path) << "\n";
@@ -360,12 +407,26 @@ std::string geometric_speed_error(const Print &print,
         out << ", effective_role=" << *state.effective_role;
     else
         out << ", effective_role=unavailable";
-    if (special_extrusion_event)
-        out << ", movement=E-only special extrusion";
-    else
-        out << ", movement=geometric";
+    out << ", movement=geometric";
     out << "\n";
 
+    append_speed_declarations(out, location, state);
+
+    if (state.has_non_finite_speed)
+        out << "Reason: a speed declaration on this path is NaN or infinite."
+               " Every explicit speed must be finite.\n";
+    else if (state.declarations.empty())
+        out << "Reason: neither this geometric leaf nor any parent declares a speed.\n";
+    else
+        out << "Reason: every speed declaration on this path requests inheritance,"
+               " but no parent provides a finite positive speed.\n";
+    return out.str();
+}
+
+void append_speed_declarations(std::ostringstream &out,
+                               const PrintingTreeLocation &location,
+                               const SpeedTraversalState &state)
+{
     out << "Speed declarations:";
     if (state.declarations.empty()) {
         out << " none on the leaf or its parents\n";
@@ -377,26 +438,61 @@ std::string geometric_speed_error(const Print &print,
                 << (std::isfinite(declaration.value) && declaration.value <= 0.f ? " (inherit)" : "")
                 << "\n";
     }
+}
 
-    if (state.has_non_finite_speed)
-        out << "Reason: a speed declaration on this path is NaN or infinite."
-               " Every explicit speed must be finite.\n";
-    else if (state.declarations.empty())
-        out << "Reason: neither this "
-            << (special_extrusion_event ? "E-only event" : "geometric leaf")
-            << " nor any parent declares a speed.\n";
+std::string e_only_extrusion_error(const Print &print,
+                                   const ExtrusionEntity &entity,
+                                   const PrintingTreeLocation &location,
+                                   const std::vector<size_t> &child_path,
+                                   const SpeedTraversalState &state,
+                                   const ActiveToolState &active_tool,
+                                   const size_t extruder_count,
+                                   const double extrusion_delta)
+{
+    std::ostringstream out;
+    out << "PrintingPlan location: " << extrusion_tree_path(location, child_path) << "\n";
+    append_plan_source_context(out, print, location);
+    out << "Entity: id=" << entity.get_id() << ", type=" << extrusion_entity_type(entity)
+        << ", movement=E-only special extrusion, extrusion_delta_mm="
+        << std::setprecision(std::numeric_limits<double>::max_digits10) << extrusion_delta << "\n";
+    out << "Active tool: ";
+    if (active_tool.tool_id)
+        out << *active_tool.tool_id;
     else
-        out << "Reason: every speed declaration on this path requests inheritance,"
-               " but no parent provides a finite positive speed.\n";
+        out << "unavailable";
+    out << ", source=" << active_tool.source
+        << ", configured_tool_count=" << extruder_count << "\n";
+    append_speed_declarations(out, location, state);
+
+    out << "Reason:";
+    if (!std::isfinite(extrusion_delta))
+        out << " the requested E delta is NaN or infinite;";
+    if (!active_tool.tool_id)
+        out << " no active tool is available;";
+    else if (*active_tool.tool_id >= extruder_count)
+        out << " active tool " << *active_tool.tool_id << " is outside the configured range;";
+    if (state.has_non_finite_speed)
+        out << " a speed declaration on this path is NaN or infinite;";
+    else if (std::isfinite(extrusion_delta) && extrusion_delta != 0.0 &&
+             (!state.effective_speed || !std::isfinite(*state.effective_speed) ||
+              *state.effective_speed <= 0.f)) {
+        if (state.declarations.empty())
+            out << " neither this E-only event nor any parent declares a speed;";
+        else
+            out << " every speed declaration requests inheritance without a finite positive parent speed;";
+    }
+    out << " the firmware cannot safely emit this command.\n";
     return out.str();
 }
 
-void validate_extrusion_tree_speed(const Print &print,
-                                   const ExtrusionEntity &entity,
-                                   const PrintingTreeLocation &location,
-                                   std::vector<size_t> &child_path,
-                                   const SpeedTraversalState &parent_state,
-                                   SpeedValidationReport &report)
+void validate_extrusion_tree_movements(const Print &print,
+                                       const ExtrusionEntity &entity,
+                                       const PrintingTreeLocation &location,
+                                       std::vector<size_t> &child_path,
+                                       const SpeedTraversalState &parent_state,
+                                       ActiveToolState &active_tool,
+                                       const size_t extruder_count,
+                                       SpeedValidationReport &report)
 {
     SpeedTraversalState state = parent_state;
     if (const ExtrusionPropertySpeed *speed = entity.get_property<ExtrusionPropertySpeed>()) {
@@ -410,69 +506,90 @@ void validate_extrusion_tree_speed(const Print &print,
     if (const ExtrusionAttributes *attributes = entity.get_property<ExtrusionAttributes>())
         state.effective_role = attributes->role;
 
+    const ExtrusionPropertySpecialCommand *special_command =
+        entity.get_property<ExtrusionPropertySpecialCommand>();
+    if (special_command != nullptr &&
+        special_command->command_code() == ExtrusionPropertySpecialCommand::Code::TOOLCHANGE) {
+        // Semantic tool changes are persistent machine state. Process them on
+        // node entry, just like ExtrusionWriterVisitor, so following siblings
+        // and later event roots observe the selected tool.
+        if (!std::isfinite(special_command->extra_data) || special_command->extra_data < 0.0 ||
+            special_command->extra_data > double(std::numeric_limits<uint16_t>::max())) {
+            active_tool.tool_id.reset();
+            active_tool.source = extrusion_tree_path(location, child_path) +
+                " contains an invalid TOOLCHANGE value";
+        } else {
+            active_tool.tool_id = uint16_t(std::lround(special_command->extra_data));
+            active_tool.source = extrusion_tree_path(location, child_path) +
+                " SpecialCommand::TOOLCHANGE";
+        }
+    }
+
+    if (special_command != nullptr &&
+        special_command->command_code() == ExtrusionPropertySpecialCommand::Code::EXTRUSION) {
+        const double extrusion_delta = special_command->extra_data;
+        const bool invalid_delta = !std::isfinite(extrusion_delta);
+        const bool invalid_tool = !active_tool.tool_id || *active_tool.tool_id >= extruder_count;
+        const bool invalid_speed = state.has_non_finite_speed ||
+            (std::isfinite(extrusion_delta) && extrusion_delta != 0.0 &&
+             (!state.effective_speed || !std::isfinite(*state.effective_speed) ||
+              *state.effective_speed <= 0.f));
+        if (invalid_delta || invalid_tool || invalid_speed) {
+            const std::string detail = e_only_extrusion_error(
+                print, entity, location, child_path, state, active_tool,
+                extruder_count, extrusion_delta);
+            if (location.extrusion == nullptr)
+                report.add_scope_event_error(detail);
+            else
+                report.add_extrusion_e_only_error(detail);
+        }
+    }
+
     for (size_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
         child_path.push_back(child_idx);
-        validate_extrusion_tree_speed(
-            print, entity.child(child_idx), location, child_path, state, report);
+        validate_extrusion_tree_movements(
+            print, entity.child(child_idx), location, child_path, state,
+            active_tool, extruder_count, report);
         child_path.pop_back();
     }
 
-    const ExtrusionPropertySpecialCommand *special_command =
-        entity.get_property<ExtrusionPropertySpecialCommand>();
-    const bool special_extrusion_event = special_command != nullptr &&
-        special_command->command_code() == ExtrusionPropertySpecialCommand::Code::EXTRUSION &&
-        special_command->extra_data != 0.0;
     const ArcPolyline *polyline = entity.polyline_or_null();
     const bool geometric_movement = entity.child_count() == 0 &&
         polyline != nullptr && polyline->size() >= 2;
 
-    // Direct special-command properties execute when their node is entered,
-    // including on container nodes. Ordinary geometry executes only on a leaf.
-    // Retraction-axis events are omitted here because their speed may legally
-    // come from retract_speed/deretract_speed or native firmware retraction.
-    if (!geometric_movement && !special_extrusion_event)
+    // Retraction commands and EPropertyExtrusionAxis are intentionally outside
+    // this validation. Their effective speed depends on configured retraction
+    // policy and runtime extrusion-axis state rather than only on this tree.
+    if (!geometric_movement)
         return;
     if (!state.has_non_finite_speed && state.effective_speed &&
         std::isfinite(*state.effective_speed) && *state.effective_speed > 0.f)
         return;
 
-    const std::string detail = geometric_speed_error(
-        print, entity, location, child_path, state, special_extrusion_event);
+    const std::string detail = geometric_speed_error(print, entity, location, child_path, state);
     if (location.extrusion == nullptr)
-        report.add_event_speed_error(detail);
-    else if (!geometric_movement)
-        report.add_extrusion_event_speed_error(detail);
+        report.add_scope_event_error(detail);
     else
         report.add_speed_error(detail);
 }
 
-void validate_scope_event_speeds(const Print &print,
-                                 const Printing::PrintingScopeEvents &events,
-                                 const std::string &scope_path,
-                                 const Printing::PrintingLayerGroup *layer_group,
-                                 const Printing::PrintingToolGroup *tool_group,
-                                 SpeedValidationReport &report)
+void validate_scope_event_movements(const Print &print,
+                                    const ExtrusionEntity &event_root,
+                                    const std::string &root_path,
+                                    const Printing::PrintingLayerGroup *layer_group,
+                                    const Printing::PrintingToolGroup *tool_group,
+                                    ActiveToolState &active_tool,
+                                    const size_t extruder_count,
+                                    SpeedValidationReport &report)
 {
-    // The file writer invokes write_event() once per non-empty root. Validate
-    // each root independently because the firmware's tree writer resets all
-    // inherited requested properties between those calls.
-    const std::pair<const char *, const ExtrusionEntity *> roots[] = {
-        {"before", events.has_before() ? &events.before() : nullptr},
-        {"after", events.has_after() ? &events.after() : nullptr}
-    };
-    for (const std::pair<const char *, const ExtrusionEntity *> &root : roots) {
-        if (root.second == nullptr)
-            continue;
-        const PrintingTreeLocation location{
-            scope_path + ".events." + root.first,
-            layer_group,
-            tool_group,
-            nullptr
-        };
-        std::vector<size_t> child_path;
-        validate_extrusion_tree_speed(
-            print, *root.second, location, child_path, SpeedTraversalState{}, report);
-    }
+    // Requested properties restart for every write_event() call. Active tool
+    // state is deliberately shared with the caller because firmware tool
+    // selection survives between independently serialized roots.
+    const PrintingTreeLocation location{root_path, layer_group, tool_group, nullptr};
+    std::vector<size_t> child_path;
+    validate_extrusion_tree_movements(print, event_root, location, child_path,
+                                      SpeedTraversalState{}, active_tool,
+                                      extruder_count, report);
 }
 
 std::string speed_validation_message(const SpeedValidationReport &report)
@@ -485,16 +602,16 @@ std::string speed_validation_message(const SpeedValidationReport &report)
             << (report.speed_error_count == 1 ? "leaf has" : "leaves have")
             << " no valid effective speed. A geometric leaf must define or inherit a finite speed"
                " greater than zero.\n";
-    if (report.extrusion_event_speed_error_count > 0)
-        out << report.extrusion_event_speed_error_count << " E-only special extrusion "
-            << (report.extrusion_event_speed_error_count == 1 ? "event has" : "events have")
-            << " no valid effective speed. Such an event must define or inherit a finite speed"
-               " greater than zero.\n";
-    if (report.event_speed_error_count > 0)
-        out << report.event_speed_error_count << " movement-producing before/after event "
-            << (report.event_speed_error_count == 1 ? "entity has" : "entities have")
-            << " no valid effective speed. Each event tree is serialized with independent"
-               " inherited process state.\n";
+    if (report.extrusion_e_only_error_count > 0)
+        out << report.extrusion_e_only_error_count << " E-only special extrusion "
+            << (report.extrusion_e_only_error_count == 1 ? "event is" : "events are")
+            << " invalid. A non-zero E delta needs a finite positive inherited speed and every"
+               " command needs a configured active tool.\n";
+    if (report.scope_event_error_count > 0)
+        out << report.scope_event_error_count << " movement-producing before/after event "
+            << (report.scope_event_error_count == 1 ? "entity is" : "entities are")
+            << " invalid. Each event tree has independent inherited process state, while the"
+               " active tool follows PrintingPlan serialization order.\n";
     if (report.missing_root_count > 0)
         out << report.missing_root_count << " PrintingExtrusion "
             << (report.missing_root_count == 1 ? "has" : "entries have") << " no root.\n";
@@ -582,25 +699,40 @@ bool validate_pre(const Print &print, std::string *error)
     }
 
     SpeedValidationReport report;
-    validate_scope_event_speeds(print, plan->events, "plan", nullptr, nullptr, report);
+    const size_t extruder_count = configured_extruder_count(print);
+    ActiveToolState active_tool;
+    if (plan->events.has_before())
+        validate_scope_event_movements(print, plan->events.before(), "plan.events.before",
+                                       nullptr, nullptr, active_tool, extruder_count, report);
     for (size_t group_idx = 0; group_idx < plan->groups.size(); ++group_idx) {
         const Printing::PrintingGroup &group = plan->groups[group_idx];
         const std::string group_path = "groups[" + std::to_string(group_idx) + "]";
-        validate_scope_event_speeds(
-            print, group.events, group_path, nullptr, nullptr, report);
+        if (group.events.has_before())
+            validate_scope_event_movements(print, group.events.before(),
+                                           group_path + ".events.before", nullptr, nullptr,
+                                           active_tool, extruder_count, report);
         for (size_t layer_idx = 0; layer_idx < group.layers.size(); ++layer_idx) {
             const Printing::PrintingLayerGroup &layer_group = group.layers[layer_idx];
             const std::string layer_path = group_path + ".layers[" +
                 std::to_string(layer_idx) + "]";
-            validate_scope_event_speeds(
-                print, layer_group.events, layer_path, &layer_group, nullptr, report);
+            if (layer_group.events.has_before())
+                validate_scope_event_movements(print, layer_group.events.before(),
+                                               layer_path + ".events.before", &layer_group,
+                                               nullptr, active_tool, extruder_count, report);
             for (size_t tool_group_idx = 0; tool_group_idx < layer_group.tool_groups.size(); ++tool_group_idx) {
                 const Printing::PrintingToolGroup &tool_group = layer_group.tool_groups[tool_group_idx];
                 const std::string tool_group_path = layer_path + ".tool_groups[" +
                     std::to_string(tool_group_idx) + "]";
-                validate_scope_event_speeds(
-                    print, tool_group.events, tool_group_path,
-                    &layer_group, &tool_group, report);
+                // begin_tool_group() establishes the intended tool before its
+                // ordered events. A semantic TOOLCHANGE inside a tree may then
+                // replace this state for following commands.
+                active_tool.tool_id = tool_group.extruder_id;
+                active_tool.source = tool_group_path + ".extruder_id";
+                if (tool_group.events.has_before())
+                    validate_scope_event_movements(print, tool_group.events.before(),
+                                                   tool_group_path + ".events.before",
+                                                   &layer_group, &tool_group, active_tool,
+                                                   extruder_count, report);
                 for (size_t extrusion_idx = 0; extrusion_idx < tool_group.extrusions.size(); ++extrusion_idx) {
                     const Printing::PrintingExtrusion &extrusion = tool_group.extrusions[extrusion_idx];
                     const PrintingTreeLocation location{
@@ -622,12 +754,29 @@ bool validate_pre(const Print &print, std::string *error)
                     }
 
                     std::vector<size_t> child_path;
-                    validate_extrusion_tree_speed(print, *extrusion.root, location, child_path,
-                                                  SpeedTraversalState{}, report);
+                    validate_extrusion_tree_movements(
+                        print, *extrusion.root, location, child_path,
+                        SpeedTraversalState{}, active_tool, extruder_count, report);
                 }
+                if (tool_group.events.has_after())
+                    validate_scope_event_movements(print, tool_group.events.after(),
+                                                   tool_group_path + ".events.after",
+                                                   &layer_group, &tool_group, active_tool,
+                                                   extruder_count, report);
             }
+            if (layer_group.events.has_after())
+                validate_scope_event_movements(print, layer_group.events.after(),
+                                               layer_path + ".events.after", &layer_group,
+                                               nullptr, active_tool, extruder_count, report);
         }
+        if (group.events.has_after())
+            validate_scope_event_movements(print, group.events.after(),
+                                           group_path + ".events.after", nullptr, nullptr,
+                                           active_tool, extruder_count, report);
     }
+    if (plan->events.has_after())
+        validate_scope_event_movements(print, plan->events.after(), "plan.events.after",
+                                       nullptr, nullptr, active_tool, extruder_count, report);
 
     if (report.error_count == 0)
         return true;

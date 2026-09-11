@@ -224,11 +224,12 @@ void append_speed_validation_event(PrintingScopeEvents &events,
 /* Add one E-only command whose firmware path still emits a movement line. */
 void append_special_extrusion_event(PrintingScopeEvents &events,
                                     const bool before,
-                                    std::optional<float> speed)
+                                    std::optional<float> speed,
+                                    const double extrusion_delta = 0.5)
 {
     ExtrusionNop event;
     event.add_property(ExtrusionPropertySpecialCommand(
-        ExtrusionPropertySpecialCommand::Code::EXTRUSION, 0.5));
+        ExtrusionPropertySpecialCommand::Code::EXTRUSION, extrusion_delta));
     if (speed)
         event.add_property(ExtrusionPropertySpeed(*speed));
     if (before)
@@ -414,7 +415,7 @@ TEST_CASE("STEP_GCODE pre-validation covers every before and after event scope",
 
     std::string error;
     CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
-    CHECK(error.find("8 movement-producing before/after event entities have") != std::string::npos);
+    CHECK(error.find("8 movement-producing before/after event entities are invalid") != std::string::npos);
     CHECK(error.find("plan.events.before.children[0]") != std::string::npos);
     CHECK(error.find("plan.events.after.children[0]") != std::string::npos);
     CHECK(error.find("groups[0].events.before.children[0]") != std::string::npos);
@@ -439,7 +440,7 @@ TEST_CASE("STEP_GCODE pre-validation recognizes event movement kinds",
 
     SECTION("geometric and E-only events accept their own speed") {
         Print print;
-        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print, scale_i(0.42), 0);
         append_speed_validation_event(tool_group.events, true, 18.f);
         append_special_extrusion_event(tool_group.events, false, 12.f);
 
@@ -460,12 +461,12 @@ TEST_CASE("STEP_GCODE pre-validation recognizes event movement kinds",
 
     SECTION("an E-only special extrusion without speed is diagnosed") {
         Print print;
-        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print, scale_i(0.42), 0);
         append_special_extrusion_event(tool_group.events, false, std::nullopt);
 
         std::string error;
         CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
-        CHECK(error.find("1 movement-producing before/after event entity has") !=
+        CHECK(error.find("1 movement-producing before/after event entity is invalid") !=
               std::string::npos);
         CHECK(error.find("movement=E-only special extrusion") != std::string::npos);
         CHECK(error.find("neither this E-only event nor any parent declares a speed") !=
@@ -482,7 +483,7 @@ TEST_CASE("STEP_GCODE pre-validation recognizes event movement kinds",
 
     SECTION("an E-only command in a PrintingExtrusion is also rejected early") {
         Print print;
-        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(print, scale_i(0.42), 0);
         std::unique_ptr<ExtrusionNop> event(new ExtrusionNop());
         event->add_property(ExtrusionPropertySpecialCommand(
             ExtrusionPropertySpecialCommand::Code::EXTRUSION, -15.0));
@@ -490,9 +491,189 @@ TEST_CASE("STEP_GCODE pre-validation recognizes event movement kinds",
 
         std::string error;
         CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
-        CHECK(error.find("1 E-only special extrusion event has") != std::string::npos);
+        CHECK(error.find("1 E-only special extrusion event is invalid") != std::string::npos);
         CHECK(error.find("extrusions[0].root") != std::string::npos);
     }
+}
+
+TEST_CASE("STEP_GCODE pre-validation visits E-only commands in every event scope",
+          "[plugins][gcode][validation][speed][events][e-only]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+        print, scale_i(0.42), 0);
+    PrintingPlan &plan = print.mutable_printing_plan();
+    PrintingGroup &group = plan.groups.front();
+    PrintingLayerGroup &layer_group = group.layers.front();
+
+    // The plan-level before scope runs before begin_tool_group(), so establish
+    // its tool with the same semantic command understood by the firmware.
+    ExtrusionNop toolchange;
+    toolchange.add_property(ExtrusionPropertySpecialCommand(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0));
+    plan.events.append_before(toolchange);
+    append_special_extrusion_event(plan.events, true, 12.f);
+    append_special_extrusion_event(group.events, true, 12.f);
+    append_special_extrusion_event(layer_group.events, true, 12.f);
+    append_special_extrusion_event(tool_group.events, true, 12.f);
+    append_special_extrusion_event(tool_group.events, false, 12.f);
+    append_special_extrusion_event(layer_group.events, false, 12.f);
+    append_special_extrusion_event(group.events, false, 12.f);
+    append_special_extrusion_event(plan.events, false, 12.f);
+
+    CHECK(Steps::StepGenerateGcode::validate_pre(print));
+}
+
+TEST_CASE("STEP_GCODE pre-validation checks explicit E-only extrusion inputs",
+          "[plugins][gcode][validation][speed][events][e-only]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("a zero E delta needs no speed") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+            print, scale_i(0.42), 0);
+        append_special_extrusion_event(tool_group.events, true, std::nullopt, 0.0);
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("an E-only child inherits speed from its event parent") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+            print, scale_i(0.42), 0);
+        ExtrusionEntity::Children children;
+        std::unique_ptr<ExtrusionNop> extrusion(new ExtrusionNop());
+        extrusion->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, 0.5));
+        children.push_back(std::move(extrusion));
+        ExtrusionEntity event(std::move(children), false, false, true);
+        event.add_property(ExtrusionPropertySpeed(17.f));
+        tool_group.events.append_before(event);
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("a non-finite speed remains invalid for a zero E delta") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+            print, scale_i(0.42), 0);
+        append_special_extrusion_event(
+            tool_group.events, true, std::numeric_limits<float>::quiet_NaN(), 0.0);
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("a speed declaration on this path is NaN or infinite") !=
+              std::string::npos);
+    }
+
+    SECTION("non-finite E deltas are rejected") {
+        const std::vector<double> invalid_values{
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::infinity(),
+            -std::numeric_limits<double>::infinity()
+        };
+        for (const double invalid_value : invalid_values) {
+            CAPTURE(invalid_value);
+            Print print;
+            PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+                print, scale_i(0.42), 0);
+            append_special_extrusion_event(tool_group.events, true, 15.f, invalid_value);
+
+            std::string error;
+            CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+            CHECK(error.find("requested E delta is NaN or infinite") != std::string::npos);
+        }
+    }
+
+    SECTION("an E-only command before the first tool reports the missing state") {
+        Print print;
+        PrintingPlan &plan = print.mutable_printing_plan();
+        append_special_extrusion_event(plan.events, true, 15.f);
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("plan.events.before.children[0]") != std::string::npos);
+        CHECK(error.find("Active tool: unavailable") != std::string::npos);
+        CHECK(error.find("no tool has been selected yet") != std::string::npos);
+    }
+
+    SECTION("a tool group selects the tool used by its events") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+            print, scale_i(0.42), 0);
+        append_special_extrusion_event(tool_group.events, true, 15.f);
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("an out-of-range tool is diagnosed with its source") {
+        Print print;
+        PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+            print, scale_i(0.42), 3);
+        append_special_extrusion_event(tool_group.events, true, 15.f);
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("Active tool: 3") != std::string::npos);
+        CHECK(error.find("tool_groups[0].extruder_id") != std::string::npos);
+        CHECK(error.find("outside the configured range") != std::string::npos);
+    }
+
+    SECTION("a semantic tool change supplies the tool to the following command") {
+        Print print;
+        PrintConfig &config = const_cast<PrintConfig &>(print.config());
+        config.nozzle_diameter.set(std::vector<double>{0.4, 0.4});
+        PrintingPlan &plan = print.mutable_printing_plan();
+
+        ExtrusionEntity::Children commands;
+        std::unique_ptr<ExtrusionNop> toolchange(new ExtrusionNop());
+        toolchange->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 1.0));
+        commands.push_back(std::move(toolchange));
+        std::unique_ptr<ExtrusionNop> extrusion(new ExtrusionNop());
+        extrusion->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, 0.5));
+        extrusion->add_property(ExtrusionPropertySpeed(15.f));
+        commands.push_back(std::move(extrusion));
+        plan.events.append_before(ExtrusionEntity(std::move(commands), false, false, true));
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("the selected tool remains available to later after events") {
+        Print print;
+        append_speed_validation_tool_group(print, scale_i(0.42), 0);
+        append_special_extrusion_event(print.mutable_printing_plan().events, false, 15.f);
+
+        CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+}
+
+TEST_CASE("STEP_GCODE speed validation leaves retraction policy to the firmware",
+          "[plugins][gcode][validation][speed][events][retraction]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+        print, scale_i(0.42), 0);
+
+    ExtrusionNop special_retract;
+    special_retract.add_property(ExtrusionPropertySpecialCommand(
+        ExtrusionPropertySpecialCommand::Code::RETRACT, -0.8));
+    tool_group.events.append_before(special_retract);
+
+    ExtrusionNop semantic_retract;
+    semantic_retract.add_property(ExtrusionPropertyExtrusionAxis(
+        C_EXTRUSION_AXIS_OPERATION_RETRACT_TO, 0.8));
+    semantic_retract.add_property(ExtrusionAttributes(
+        ExtrusionRole(ExtrusionRole::Travel | ExtrusionRoleModifier::ERM_Retract)));
+    tool_group.events.append_after(semantic_retract);
+
+    CHECK(Steps::StepGenerateGcode::validate_pre(print));
 }
 
 TEST_CASE("STEP_GCODE speed diagnostics retain source object context",
@@ -563,6 +744,32 @@ TEST_CASE("STEP_GCODE rejects an invalid speed before touching output",
         FAIL("STEP_GCODE accepted a geometric leaf without speed");
     } catch (const RuntimeError &error) {
         CHECK(std::string(error.what()).find("PrintingPlan location") != std::string::npos);
+    }
+    CHECK(read_text_file(output_path) == "previous output\n");
+    CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
+    remove_output_pair(output_path);
+}
+
+TEST_CASE("STEP_GCODE rejects an invalid E-only command before touching output",
+          "[plugins][gcode][validation][speed][e-only]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(
+        print, scale_i(0.42), 0);
+    append_special_extrusion_event(tool_group.events, true, std::nullopt);
+
+    const boost::filesystem::path output_path = temporary_gcode_path();
+    remove_output_pair(output_path);
+    write_text_file(output_path, "previous output\n");
+    try {
+        Steps::StepGenerateGcode::run_step(
+            Orchestrator::instance(), print, output_path.string());
+        FAIL("STEP_GCODE accepted an E-only extrusion command without speed");
+    } catch (const RuntimeError &error) {
+        CHECK(std::string(error.what()).find("movement=E-only special extrusion") !=
+              std::string::npos);
     }
     CHECK(read_text_file(output_path) == "previous output\n");
     CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
