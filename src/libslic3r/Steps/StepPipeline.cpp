@@ -263,6 +263,7 @@ bool is_known_builtin_step(slicing_step_t step)
     case PERIMETER_GENERATION_MODULE:
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
+    case GCODE_READER:
         return true;
     default:
         return false;
@@ -288,6 +289,7 @@ raw_option_category option_category_for_step(slicing_step_t step)
     case STEP_GCODE:
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
+    case GCODE_READER:
     case STEP_PRE_GCODE:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
@@ -309,7 +311,8 @@ raw_option_preset_type option_preset_type_for_step(slicing_step_t step)
     static const std::map<slicing_step_t, raw_option_preset_type> s_step_preset_types = {
         { STEP_GCODE, RAW_PRESET_TYPE_FFF_PRINTER },
         { GCODE_FIRMWARE, RAW_PRESET_TYPE_FFF_PRINTER },
-        { GCODE_THUMBNAIL, RAW_PRESET_TYPE_FFF_PRINTER }
+        { GCODE_THUMBNAIL, RAW_PRESET_TYPE_FFF_PRINTER },
+        { GCODE_READER, RAW_PRESET_TYPE_FFF_PRINTER }
     };
 
     const std::map<slicing_step_t, raw_option_preset_type>::const_iterator found =
@@ -343,7 +346,8 @@ StepExclusiveGroup make_exclusive_group(slicing_step_t step,
     // Service selectors invalidate the consuming pipeline step rather than
     // pretending that the service itself is independently executable.
     def.invalidates_step =
-        (step == GCODE_FIRMWARE || step == GCODE_THUMBNAIL) ? STEP_GCODE : step;
+        (step == GCODE_FIRMWARE || step == GCODE_THUMBNAIL || step == GCODE_READER) ?
+            STEP_GCODE : step;
     def.mode = RAW_CONFIG_OPTION_MODE_ADV_EXP | RAW_CONFIG_OPTION_MODE_SUSI;
     group.option_def = def;
 

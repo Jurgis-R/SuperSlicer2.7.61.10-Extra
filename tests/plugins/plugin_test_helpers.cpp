@@ -37,6 +37,7 @@
 #include "libslic3r/Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp"
 #include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
+#include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
@@ -377,6 +378,8 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::GCodeGeneration::FeatureGCodePlugin::register_feature_gcode_plugin(
             orchestrator_handle_value);
+        slic3r_api::GCodeGeneration::Reader::register_default_gcode_reader_plugin(
+            orchestrator_handle_value);
         slic3r_api::GCodeGeneration::CustomGCodePerPrintZPlugin::register_custom_gcode_per_print_z_plugins(
             orchestrator_handle_value);
         slic3r_api::GCodeGeneration::Firmware::register_builtin_gcode_firmware_plugins(
@@ -483,6 +486,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "gcode.printing_plan_file_writer");
         activate_plugin_or_fail(orchestrator, "gcode.settings_scripts");
         activate_plugin_or_fail(orchestrator, "gcode.feature_gcode");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.default");
         activate_plugin_or_fail(orchestrator, "gcode.custom_gcode_per_print_z");
         activate_plugin_or_fail(orchestrator, "gcode.firmware.marlin1");
         activate_plugin_or_fail(orchestrator, "gcode.firmware.marlin2");

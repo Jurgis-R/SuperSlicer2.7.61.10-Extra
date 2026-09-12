@@ -33,6 +33,7 @@ add_executable(${_TEST_NAME}_tests
     test_gcode_firmware_state.cpp
     test_gcode_line_parser.cpp
     test_gcode_reader_compatibility.cpp
+    test_gcode_reader.cpp
     test_gcode_printing_plan_file_writer.cpp
     test_gcode_script_processor.cpp
     test_gcode_settings_scripts.cpp

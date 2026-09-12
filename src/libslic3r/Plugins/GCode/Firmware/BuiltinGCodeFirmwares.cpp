@@ -268,6 +268,8 @@ void BuiltinGCodeFirmwarePlugin::run_impl(const plugin_run_context *run_ctx) con
     std::unique_ptr<GCodeFirmwareSession> session = m_definition.factory(scripts, run_ctx->plugin_storage);
     static_cast<DefaultGCodeFirmwareSession &>(*session).set_thumbnail_services(
         m_orchestrator, context->thumbnail_renderer);
+    static_cast<DefaultGCodeFirmwareSession &>(*session).set_gcode_reader_service(
+        m_orchestrator, context->print);
     context->instance = make_gcode_firmware_instance(std::move(session));
 }
 

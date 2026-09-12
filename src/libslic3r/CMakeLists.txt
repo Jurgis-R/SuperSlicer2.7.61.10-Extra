@@ -46,6 +46,8 @@ set(SLIC3R_SOURCES
     Algorithm/RegionExpansion.cpp
 	AnyPtr.hpp
 	Api/host/ApiHostUtils.hpp
+	Api/host/GCodeReaderService.cpp
+	Api/host/GCodeReaderService.hpp
 	Api/host/GCodeScriptProcessor.cpp
 	Api/host/GCodeScriptProcessor.hpp
 	Api/host/GCodeThumbnailRenderer.cpp
@@ -103,6 +105,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/slic3r_extrusions.h
 	Api/plugin/c/slic3r_geometry.h
 	Api/plugin/c/slic3r_gcode_firmware.h
+	Api/plugin/c/slic3r_gcode_reader.h
 	Api/plugin/c/slic3r_gcode_thumbnail.h
 	Api/plugin/c/slic3r_gcode_script.h
 	Api/plugin/c/slic3r_orchestrator.h
@@ -121,6 +124,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/steps/slic3r_step_extrusion_simplification.h
 	Api/plugin/c/steps/slic3r_step_gcode.h
 	Api/plugin/c/steps/slic3r_step_gcode_firmware.h
+	Api/plugin/c/steps/slic3r_step_gcode_reader.h
 	Api/plugin/c/steps/slic3r_step_gcode_thumbnail.h
 	Api/plugin/c/steps/slic3r_step_infill.h
 	Api/plugin/c/steps/slic3r_step_infill_group.h
@@ -171,6 +175,8 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/gcode/Gantry.cpp
 	Api/plugin/cpp/gcode/Gantry.hpp
 	Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp
+	Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp
+	Api/plugin/cpp/gcode/GCodeStateTracker.hpp
 	Api/plugin/cpp/gcode/GCodeFormatter.cpp
 	Api/plugin/cpp/gcode/GCodeFormatter.hpp
 	Api/plugin/cpp/gcode/GCodeLineParser.cpp
@@ -225,6 +231,8 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/Firmware/RepRapGCodeFirmware.hpp
 	Plugins/GCode/Firmware/SprinterGCodeFirmware.cpp
 	Plugins/GCode/Firmware/SprinterGCodeFirmware.hpp
+	Plugins/GCode/Reader/DefaultGCodeReader.cpp
+	Plugins/GCode/Reader/DefaultGCodeReader.hpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.cpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp
 	Plugins/GCode/FeatureGCode.cpp

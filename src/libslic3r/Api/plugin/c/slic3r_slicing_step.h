@@ -6,7 +6,7 @@
 #define slic3r_slicing_step_h_
 
 #define SLIC3R_PLUGIN_API_SLICING_STEP_MAJOR 1u
-#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 1u
+#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 2u
 
 #include <stdint.h>
 
@@ -107,7 +107,14 @@ typedef enum slicing_step_t : uint16_t
     Outside-pipeline service which renders through a host callback and encodes
     one or more firmware-ready thumbnail blocks for a G-code export.
     */
-    GCODE_THUMBNAIL                = 10350
+    GCODE_THUMBNAIL                = 10350,
+
+    /*
+    Service plugin that parses G-code into normalized state events. It is used
+    by the viewer and by firmware sessions after custom G-code; it does not
+    run as a standalone slicing pipeline stage.
+    */
+    GCODE_READER                   = 10400
 
 } slicing_step_t;
 

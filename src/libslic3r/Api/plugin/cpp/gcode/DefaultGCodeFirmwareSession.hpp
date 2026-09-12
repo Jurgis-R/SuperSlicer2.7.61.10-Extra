@@ -64,6 +64,9 @@ public:
     std::string begin_print(const Print &print, const PrintingPlan &plan) override;
     // Renderer and orchestrator are borrowed until firmware destruction.
     void set_thumbnail_services(orchestrator_handle *, const raw_gcode_thumbnail_renderer *);
+    // The reader service is borrowed for this export. It interprets custom
+    // G-code after placeholder processing and returns the resulting state.
+    void set_gcode_reader_service(orchestrator_handle *, const print_handle *);
     std::string begin_group(const PrintingGroup &group) override;
     std::string begin_layer(const PrintingLayerGroup &layer) override;
     std::string begin_tool_group(const PrintingToolGroup &tool_group) override;
@@ -201,6 +204,8 @@ protected:
 private:
     orchestrator_handle *m_thumbnail_orchestrator = nullptr;
     const raw_gcode_thumbnail_renderer *m_thumbnail_renderer = nullptr;
+    orchestrator_handle *m_gcode_reader_orchestrator = nullptr;
+    const print_handle *m_gcode_reader_print = nullptr;
     friend class GCodePreamble;
     std::unique_ptr<GCodePreamble> m_preamble;
     struct RequestedState;
@@ -221,8 +226,18 @@ private:
     std::string write_native_unretract();
     std::string write_special_command(const EPropertySpecialCommand &command,
                                       const RequestedState &state);
+    // Emit one user-provided script and reconcile the cached machine state
+    // before returning to generated G-code. The entity only borrows the script
+    // data; this session never takes ownership of it.
     std::string write_custom_gcode(const ExtrusionEntity &entity,
                                    const EPropertyCustomGcode &custom_gcode);
+
+    // Read already-emitted custom G-code from the current firmware state, then
+    // replace each cached value with the reader's final known value. Unknown
+    // reader values deliberately invalidate the corresponding cache so later
+    // generated commands establish a safe, explicit state. This does not
+    // emit G-code and is a no-op when no reader service is available.
+    void synchronize_after_custom_gcode(const std::string &text);
     void apply_requested_state(const RequestedState &state);
     c_vec3d machine_position(c_point point, coord_t z_offset) const;
     double segment_length_mm(const c_extrusion_segment &segment) const;
@@ -240,6 +255,9 @@ private:
     bool m_xyz_relative_mode = false;
     bool m_units_in_mm = true;
     bool m_e_relative_mode = false;
+    // Cleared when external G-code invalidates E. The next generated extrusion
+    // establishes a fresh E origin instead of continuing a stale coordinate.
+    bool m_e_position_known = true;
     bool m_seen_object_group = false;
     bool m_use_firmware_retraction = false;
     // G10/G11 expose one binary protocol state per tool even though the

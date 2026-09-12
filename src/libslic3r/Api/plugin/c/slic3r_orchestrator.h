@@ -6,7 +6,7 @@
 #define slic3r_orchestrator_h_
 
 #define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 1u
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 1u
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 3u
 
 /*
 Property registration guide:
