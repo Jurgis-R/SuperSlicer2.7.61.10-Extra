@@ -13,11 +13,13 @@ Built-in G-code reader registration
 
 This small public header exposes only registration. Parsing remains private to
 DefaultGCodeReader.cpp and is reached later through the generic GCODE_READER
-service selected by the Orchestrator.
+service by its stable id, or as the fallback after no active Reader recognizes
+an imported file.
 
     PluginLoader -> register_default_gcode_reader_plugin()
                  -> Orchestrator stores provider
-                 -> read_gcode() selects and executes provider
+                 -> firmware requests "gcode.reader.default"
+                 -> read_gcode() validates and executes that exact provider
 
 The registered object is process-lived and stateless. Per-stream parser state
 is created on the stack for each run, allowing concurrent Reader executions.
@@ -27,7 +29,8 @@ namespace slic3r_api { namespace GCodeGeneration { namespace Reader {
 
 // Register the built-in Marlin-like provider. The Orchestrator borrows the
 // process-lived static plugin instance; this function transfers no ownership.
-// Selection occurs later from the exclusive Reader provider group.
+// It does not join an exclusive group: every Reader may stay active so the host
+// can probe all dialects and execute a specifically requested one.
 void register_default_gcode_reader_plugin(orchestrator_handle *orchestrator);
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

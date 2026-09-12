@@ -20,7 +20,7 @@ namespace Steps::StepGenerateGcode {
 void clean_and_prepare(Print &print);
 bool validate_pre(const Print &print, std::string *error = nullptr);
 bool validate_post(const Print &print, std::string *error = nullptr);
-void run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
+std::string run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
         const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr);
 
 } // namespace Steps::StepGenerateGcode

@@ -19,9 +19,6 @@
 #include "libslic3r/Api/plugin/cpp/ExtrusionTreeVisitors.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeLineParser.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeStateTracker.hpp"
-#include "libslic3r/Api/host/GCodeReaderService.hpp"
-#include "libslic3r/Api/host/Orchestrator.hpp"
-#include "libslic3r/Print.hpp"
 
 /*
 Standard PrintingPlan firmware implementation
@@ -342,13 +339,9 @@ void DefaultGCodeFirmwareSession::set_thumbnail_services(
 }
 
 void DefaultGCodeFirmwareSession::set_gcode_reader_service(
-    orchestrator_handle *orchestrator, const print_handle *print)
+    const raw_gcode_reader_service *service)
 {
-    // Both pointers belong to the host and outlive this export session. Keeping
-    // them separate from parser state lets each custom script start a fresh,
-    // synchronous Reader invocation from the current writer snapshot.
-    m_gcode_reader_orchestrator = orchestrator;
-    m_gcode_reader_print = print;
+    m_gcode_reader_service = service;
 }
 std::vector<GCodeThumbnailRequest> DefaultGCodeFirmwareSession::thumbnail_requests(
     const Print &print, const PrintingPlan &)
@@ -1012,7 +1005,7 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
         return;
     // Some callers, such as lightweight firmware tests, do not install a
     // reader service. Without one, this session cannot learn script effects.
-    if (m_gcode_reader_orchestrator == nullptr || m_gcode_reader_print == nullptr)
+    if (m_gcode_reader_service == nullptr)
         return;
 
     // Start the reader with a snapshot of this session's current knowledge.
@@ -1060,10 +1053,8 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     // The reader service copies the provider's final callback while it is
     // valid and returns a self-contained value; no parser-owned pointer escapes
     // the synchronous plugin invocation.
-    const GCodeStateTracker tracked = Slic3r::read_gcode(
-        *reinterpret_cast<Slic3r::Orchestrator *>(m_gcode_reader_orchestrator),
-        const_cast<Slic3r::Print *>(reinterpret_cast<const Slic3r::Print *>(m_gcode_reader_print)),
-        initial, text);
+    const GCodeStateTracker tracked = GCodeReaderServiceView(m_gcode_reader_service).read(
+        reader_plugin_id(), initial, text);
 
     const std::optional<double> units_mm = tracked.value(RAW_GCODE_READER_ITEM_UNITS_MM);
     const std::optional<double> xyz_absolute = tracked.value(RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE);

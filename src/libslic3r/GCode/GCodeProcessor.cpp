@@ -487,6 +487,7 @@ void GCodeProcessor::UsedFilaments::process_caches(const GCodeProcessor* process
 
 #if ENABLE_GCODE_VIEWER_STATISTICS
 void GCodeProcessorResult::reset() {
+    reader_plugin_id.clear();
     moves = std::vector<GCodeProcessorResult::MoveVertex>();
     bed_shape = Pointfs();
     max_print_height = 0.0f;
@@ -507,6 +508,7 @@ void GCodeProcessorResult::reset() {
 }
 #else
 void GCodeProcessorResult::reset() {
+    reader_plugin_id.clear();
     is_binary_file = false;
     moves.clear();
     lines_ends.clear();

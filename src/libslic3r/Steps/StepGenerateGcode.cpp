@@ -14,6 +14,7 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/host/GCodeScriptProcessor.hpp"
+#include "libslic3r/Api/host/GCodeReaderService.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode_firmware.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode_thumbnail.h"
@@ -258,6 +259,7 @@ void create_firmware_session(Orchestrator &orchestrator,
                              Print &print,
                              const raw_gcode_script_processor *script_processor,
                              const raw_gcode_thumbnail_renderer *renderer,
+                             const raw_gcode_reader_service *reader_service,
                              FirmwareInstanceOwner &owner);
 
 std::string speed_value_text(const float value)
@@ -657,6 +659,7 @@ void create_firmware_session(Orchestrator &orchestrator,
                              Print &print,
                              const raw_gcode_script_processor *script_processor,
                              const raw_gcode_thumbnail_renderer *renderer,
+                             const raw_gcode_reader_service *reader_service,
                              FirmwareInstanceOwner &owner)
 {
     Plugin *firmware_plugin = selected_or_active_plugin_for_step(
@@ -672,6 +675,7 @@ void create_firmware_session(Orchestrator &orchestrator,
     payload.print = reinterpret_cast<const print_handle *>(&print);
     payload.script_processor = script_processor;
     payload.thumbnail_renderer = renderer;
+    payload.reader_service = reader_service;
     run_context.data = &payload;
 
     firmware_plugin->setup(run_context, 1);
@@ -798,7 +802,7 @@ bool validate_post(const Print &, std::string *)
     return true;
 }
 
-void run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
+std::string run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
               const raw_gcode_thumbnail_renderer *thumbnail_renderer)
 {
     if (path.empty())
@@ -823,8 +827,13 @@ void run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
     // The host parser outlives the borrowed firmware view and is destroyed
     // only after the firmware session has released every reference to it.
     GCodeScriptProcessor scripts(print, orchestrator);
+    GCodeReaderService readers(orchestrator, &print);
     FirmwareInstanceOwner firmware;
-    create_firmware_session(orchestrator, print, scripts.c_processor(), thumbnail_renderer, firmware);
+    create_firmware_session(orchestrator, print, scripts.c_processor(), thumbnail_renderer,
+                            readers.c_service(), firmware);
+    const slic3r_api::GCodeFirmwareView firmware_view(firmware.instance());
+    const std::string reader_plugin_id = readers.validated_reader_id(
+        firmware_view.reader_plugin_id());
     run_ctx_generate_gcode payload = {};
     payload.print = reinterpret_cast<const print_handle *>(&print);
     payload.plan = reinterpret_cast<printing_plan_handle *>(&plan);
@@ -844,6 +853,7 @@ void run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
     // host step turns that request back into a normal export failure.
     if (run_context.is_cancelled != nullptr && run_context.is_cancelled(run_context.host_context))
         throw RuntimeError("G-code generation plugin failed.");
+    return reader_plugin_id;
 }
 
 } // namespace Slic3r::Steps::StepGenerateGcode

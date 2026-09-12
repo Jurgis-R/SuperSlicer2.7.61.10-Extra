@@ -70,6 +70,7 @@ TYPE_ALIASES = {
     "raw_seam_placer_status": "int32_t",
     "raw_gcode_firmware_status": "int32_t",
     "raw_gcode_reader_status": "int32_t",
+    "raw_gcode_reader_operation": "int32_t",
     "raw_gcode_thumbnail_status": "int32_t",
     "raw_gcode_thumbnail_pixel_format": "int32_t",
     "raw_gcode_thumbnail_origin": "int32_t",

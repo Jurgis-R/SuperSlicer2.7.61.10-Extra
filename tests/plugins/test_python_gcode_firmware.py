@@ -81,6 +81,45 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         sys.path.remove(cls.generated_directory.name)
         cls.generated_directory.cleanup()
 
+    def test_reader_service_view_routes_id_streams_text_and_copies_final_state(self):
+        seen = {}
+
+        def read(_context, reader_id, initial, source_context, next_chunk,
+                 final_context, emit_final, result):
+            seen["id"] = reader_id.decode("utf-8")
+            chunks = []
+            while True:
+                chunk = self.generated.RawGcodeReaderChunk()
+                chunk_result = self.generated.RawGcodeReaderResult(
+                    self.generated.RAW_GCODE_READER_STATUS_UNSET, None
+                )
+                next_chunk(source_context, ctypes.byref(chunk), ctypes.byref(chunk_result))
+                self.assertEqual(
+                    chunk_result.status,
+                    self.generated.RAW_GCODE_READER_STATUS_SUCCESS,
+                )
+                if not chunk.bytes and chunk.byte_count == 0:
+                    break
+                chunks.append(ctypes.string_at(chunk.bytes, chunk.byte_count))
+            seen["text"] = b"".join(chunks)
+            final_result = self.generated.RawGcodeReaderResult(
+                self.generated.RAW_GCODE_READER_STATUS_UNSET, None
+            )
+            emit_final(final_context, initial, ctypes.byref(final_result))
+            self.assertEqual(
+                final_result.status,
+                self.generated.RAW_GCODE_READER_STATUS_SUCCESS,
+            )
+            result.contents.status = self.generated.RAW_GCODE_READER_STATUS_SUCCESS
+
+        callback = self.generated.GCODE_READER_SERVICE_READ(read)
+        raw = self.generated.RawGcodeReaderService(None, callback)
+        view = self.firmware.GCodeReaderServiceView(ctypes.pointer(raw))
+        items = ((self.generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 7.0),)
+
+        self.assertEqual(view.read("gcode.reader.test", items, "G1 X4\n"), items)
+        self.assertEqual(seen, {"id": "gcode.reader.test", "text": b"G1 X4\n"})
+
     def test_thumbnail_result_is_copied_and_parameters_are_explicit(self):
         pixels = (ctypes.c_uint8 * 8)(*range(8))
         seen = []
@@ -294,6 +333,9 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         firmware = self.firmware
 
         class Session(firmware.GCodeFirmwareSession):
+            def reader_plugin_id(self):
+                return "gcode.reader.test"
+
             def begin_print(self, value, plan):
                 calls.append(("begin_print", value.address))
                 return "print\n"
@@ -344,6 +386,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         instance = self.firmware.make_gcode_firmware_instance(session, self.api)
         try:
             view = self.firmware.GCodeFirmwareView(self.api, instance)
+            self.assertEqual(view.reader_plugin_id(), "gcode.reader.test")
             self.assertEqual(
                 view.begin_print(
                     self.datatree.Print(self.api, 11),

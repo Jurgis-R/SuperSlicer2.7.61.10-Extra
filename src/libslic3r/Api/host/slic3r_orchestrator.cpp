@@ -537,7 +537,8 @@ void orchestrator_plugin_report_error(plugin_host_context *host_context, const c
                                                        host_context->plugin,
                                                        host_context->step,
                                                        message);
-        host_context->orchestrator->request_plugin_cancel();
+        if (host_context->cancel_on_error)
+            host_context->orchestrator->request_plugin_cancel();
     }
 }
 

@@ -5,7 +5,7 @@
 #ifndef slic3r_step_gcode_reader_h_
 #define slic3r_step_gcode_reader_h_
 
-#define SLIC3R_PLUGIN_API_STEP_GCODE_READER_MAJOR 1u
+#define SLIC3R_PLUGIN_API_STEP_GCODE_READER_MAJOR 2u
 #define SLIC3R_PLUGIN_API_STEP_GCODE_READER_MINOR 0u
 
 #include "slic3r_step_common.h"
@@ -18,23 +18,33 @@ extern "C" {
 /*
 Synchronous payload for a GCODE_READER service plugin.
 
-The host owns every pointer in this structure for the complete run() call. The
-provider repeatedly calls get_next_chunk() until it receives the null end
-marker, emits zero or more action events, then emits exactly one final state.
-The provider must not retain the context, callbacks, chunks or states after
-run() returns.
+The host owns every pointer in this structure for the complete run() call. In
+READ mode, the provider consumes every chunk, emits zero or more action events,
+then emits exactly one final state. In PROBE mode, it consumes only the bounded
+prefix supplied through the same chunk callback and emits exactly one score.
+Fields unused by the selected operation are null. The provider must not retain
+the context, callbacks, chunks or states after run() returns.
 
 The generic plugin_run_context remains responsible for cancellation, errors
 and progress. This typed payload contains only Reader-specific data. A C++
 provider normally derives from GCodeReaderPluginBase instead of invoking these
 callbacks directly.
 */
+typedef enum raw_gcode_reader_operation {
+    RAW_GCODE_READER_OPERATION_READ = 1,
+    RAW_GCODE_READER_OPERATION_PROBE
+} raw_gcode_reader_operation;
+
 typedef struct run_ctx_gcode_reader {
+    raw_gcode_reader_operation operation;
     const raw_gcode_reader_state *initial_state;
     void *callback_context;
     gcode_reader_get_next_chunk_fn get_next_chunk;
     gcode_reader_emit_event_fn emit_event;
     gcode_reader_emit_final_state_fn emit_final_state;
+    /* PROBE uses the same bounded chunk source, publishes one confidence and
+       never emits normal events or a final machine state. */
+    gcode_reader_emit_probe_fn emit_probe;
 } run_ctx_gcode_reader;
 
 static inline run_ctx_gcode_reader *

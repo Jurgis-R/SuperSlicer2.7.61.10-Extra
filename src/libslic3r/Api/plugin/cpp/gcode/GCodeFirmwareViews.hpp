@@ -66,6 +66,11 @@ public:
     */
     virtual ~GCodeFirmwareSession() = default;
 
+    // Identify the Reader which understands this session's emitted dialect.
+    // Empty selects the built-in default. The value must remain stable for the
+    // complete export, although the ABI adapter copies it for every query.
+    virtual std::string reader_plugin_id() const { return {}; }
+
     // Compose the preamble and consume the plan before-events exactly once.
     // The provider may acquire thumbnail services using its creation context.
     virtual std::string begin_print(const Print &,
@@ -263,6 +268,13 @@ inline void end_print_thunk(void *opaque, raw_gcode_firmware_result *result) noe
     });
 }
 
+inline void reader_plugin_id_thunk(void *opaque, raw_gcode_firmware_result *result) noexcept
+{
+    invoke_firmware_callback(opaque, result, [](GCodeFirmwareSession &session) {
+        return session.reader_plugin_id();
+    });
+}
+
 inline const raw_gcode_firmware_vtable &firmware_session_vtable()
 {
     static const raw_gcode_firmware_vtable vtable = {
@@ -277,7 +289,8 @@ inline const raw_gcode_firmware_vtable &firmware_session_vtable()
         &end_tool_group_thunk,
         &end_layer_thunk,
         &end_group_thunk,
-        &end_print_thunk
+        &end_print_thunk,
+        &reader_plugin_id_thunk
     };
     return vtable;
 }
@@ -356,6 +369,12 @@ public:
     std::string_view end_layer() const { return invoke_end(m_instance->vtable->end_layer); }
     std::string_view end_group() const { return invoke_end(m_instance->vtable->end_group); }
     std::string_view end_print() const { return invoke_end(m_instance->vtable->end_print); }
+    std::string reader_plugin_id() const
+    {
+        raw_gcode_firmware_result result = make_result();
+        m_instance->vtable->reader_plugin_id(m_instance->session, &result);
+        return std::string(consume(result));
+    }
 
 private:
     raw_gcode_firmware_result make_result() const
@@ -399,7 +418,8 @@ private:
             vtable.begin_layer == nullptr || vtable.begin_tool_group == nullptr ||
             vtable.write_extrusion == nullptr || vtable.write_event == nullptr ||
             vtable.end_tool_group == nullptr ||
-            vtable.end_layer == nullptr || vtable.end_group == nullptr || vtable.end_print == nullptr)
+            vtable.end_layer == nullptr || vtable.end_group == nullptr || vtable.end_print == nullptr ||
+            vtable.reader_plugin_id == nullptr)
             throw std::invalid_argument("The G-code firmware callback table is incomplete.");
     }
 

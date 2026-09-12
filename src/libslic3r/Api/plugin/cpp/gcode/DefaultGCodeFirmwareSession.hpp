@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp"
+#include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeThumbnailViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFormatter.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeScriptProcessorViews.hpp"
@@ -66,7 +67,8 @@ public:
     void set_thumbnail_services(orchestrator_handle *, const raw_gcode_thumbnail_renderer *);
     // The reader service is borrowed for this export. It interprets custom
     // G-code after placeholder processing and returns the resulting state.
-    void set_gcode_reader_service(orchestrator_handle *, const print_handle *);
+    void set_gcode_reader_service(const raw_gcode_reader_service *service);
+    std::string reader_plugin_id() const override { return "gcode.reader.default"; }
     std::string begin_group(const PrintingGroup &group) override;
     std::string begin_layer(const PrintingLayerGroup &layer) override;
     std::string begin_tool_group(const PrintingToolGroup &tool_group) override;
@@ -204,8 +206,7 @@ protected:
 private:
     orchestrator_handle *m_thumbnail_orchestrator = nullptr;
     const raw_gcode_thumbnail_renderer *m_thumbnail_renderer = nullptr;
-    orchestrator_handle *m_gcode_reader_orchestrator = nullptr;
-    const print_handle *m_gcode_reader_print = nullptr;
+    const raw_gcode_reader_service *m_gcode_reader_service = nullptr;
     friend class GCodePreamble;
     std::unique_ptr<GCodePreamble> m_preamble;
     struct RequestedState;

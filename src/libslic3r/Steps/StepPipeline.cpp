@@ -792,7 +792,8 @@ void run_post_slicing(Orchestrator &orchestrator, Print &print, const std::strin
 
 void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::string &path,
                          slicing_step_t until = STEP_GCODE,
-                         const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr)
+                         const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr,
+                         std::string *reader_plugin_id = nullptr)
 {
     // This helper is shared by slice preparation and export. Print::process()
     // stops it at STEP_PRE_GCODE, while Orchestrator::export_gcode() calls it
@@ -950,7 +951,10 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
     run_step_if_requested(print, STEP_GCODE, [&] {
         begin_step(print, STEP_GCODE, L("Generating G-code"));
         StepGenerateGcode::clean_and_prepare(print);
-        StepGenerateGcode::run_step(orchestrator, print, path, thumbnail_renderer);
+        const std::string selected_reader = StepGenerateGcode::run_step(
+            orchestrator, print, path, thumbnail_renderer);
+        if (reader_plugin_id != nullptr)
+            *reader_plugin_id = selected_reader;
         mark_legacy_step_done(print, psGCodeExport);
     });
     if (stop_after(STEP_GCODE, until)) return;
@@ -1053,7 +1057,7 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
     run_remaining_steps(orchestrator, print, path, STEP_PRE_GCODE);
 }
 
-void StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
+std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
                              const std::string &path,
                              const raw_gcode_thumbnail_renderer *thumbnail_renderer)
 {
@@ -1062,7 +1066,10 @@ void StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
 #endif
 
     orchestrator.reset_plugin_cancel();
-    run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnail_renderer);
+    std::string reader_plugin_id;
+    run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnail_renderer,
+                        &reader_plugin_id);
+    return reader_plugin_id;
 }
 
 void StepPipeline::run(Orchestrator &orchestrator, Print &print, const std::string &path)

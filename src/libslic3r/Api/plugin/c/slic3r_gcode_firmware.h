@@ -5,7 +5,7 @@
 #ifndef slic3r_gcode_firmware_h_
 #define slic3r_gcode_firmware_h_
 
-#define SLIC3R_PLUGIN_API_GCODE_FIRMWARE_MAJOR 4u
+#define SLIC3R_PLUGIN_API_GCODE_FIRMWARE_MAJOR 5u
 #define SLIC3R_PLUGIN_API_GCODE_FIRMWARE_MINOR 0u
 
 #include <stdint.h>
@@ -80,6 +80,11 @@ typedef void (*gcode_firmware_write_event_fn)(
 typedef void (*gcode_firmware_end_scope_fn)(
     void *session,
     raw_gcode_firmware_result *result);
+/* Return the stable Reader plugin id for this export. Empty text requests the
+   built-in default. The host copies the borrowed result immediately. */
+typedef void (*gcode_firmware_reader_plugin_id_fn)(
+    void *session,
+    raw_gcode_firmware_result *result);
 
 typedef struct raw_gcode_firmware_vtable {
     uint32_t struct_size;
@@ -94,6 +99,7 @@ typedef struct raw_gcode_firmware_vtable {
     gcode_firmware_end_scope_fn end_layer;
     gcode_firmware_end_scope_fn end_group;
     gcode_firmware_end_scope_fn end_print;
+    gcode_firmware_reader_plugin_id_fn reader_plugin_id;
 } raw_gcode_firmware_vtable;
 
 typedef struct raw_gcode_firmware_instance {

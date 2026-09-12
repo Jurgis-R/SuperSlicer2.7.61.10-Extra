@@ -152,6 +152,9 @@ namespace Slic3r {
         };
 
         std::string filename;
+        // Reader selected by the firmware which produced this file. Empty for
+        // externally loaded files until the Reader probe phase chooses one.
+        std::string reader_plugin_id;
         bool is_binary_file;
         unsigned int id;
         std::vector<MoveVertex> moves;

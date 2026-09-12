@@ -6,7 +6,7 @@
 #define slic3r_gcode_reader_h_
 
 #define SLIC3R_PLUGIN_API_GCODE_READER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 0u
+#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 1u
 
 #include <stdint.h>
 
@@ -22,6 +22,11 @@ A G-code reader runs synchronously and owns no host resource after run()
 returns. The host lends an initial machine state and a sequential byte source.
 The reader pulls bounded chunks, publishes normalized action events, then
 publishes exactly one complete final state after reaching the end of the input.
+
+The same provider also supports a side-effect-free probe operation. A probe
+reads a host-bounded prefix and publishes one confidence score; it receives no
+initial state and emits neither actions nor a final state. A firmware does not
+probe: it names the exact Reader for its own dialect through its session API.
 
 The call sequence is:
 
@@ -201,6 +206,35 @@ typedef void (*gcode_reader_emit_event_fn)(void *context,
 typedef void (*gcode_reader_emit_final_state_fn)(void *context,
                                                   const raw_gcode_reader_state *state,
                                                   raw_gcode_reader_result *result);
+
+/* Deliver the confidence produced by one detection probe. Zero means that the
+   provider found no identifying evidence; 100 means an exact dialect marker.
+   The host rejects values above 100. A probe publishes exactly one score. */
+typedef void (*gcode_reader_emit_probe_fn)(void *context,
+                                           uint32_t confidence,
+                                           raw_gcode_reader_result *result);
+
+/* Execute one Reader selected by its stable plugin id. The service and its
+   context are borrowed for the firmware session lifetime. An empty id requests
+   gcode.reader.default; a non-empty unavailable id is an error. The service
+   validates the provider's events and lends the copied final state to
+   receive_final_state before returning. */
+typedef void (*gcode_reader_service_read_fn)(
+    void *service_context,
+    const char *reader_plugin_id,
+    const raw_gcode_reader_state *initial_state,
+    void *source_context,
+    gcode_reader_get_next_chunk_fn get_next_chunk,
+    void *final_state_context,
+    gcode_reader_emit_final_state_fn receive_final_state,
+    raw_gcode_reader_result *result);
+
+typedef struct raw_gcode_reader_service {
+    /* Both fields are borrowed. read() is synchronous and non-reentrant for a
+       given service instance; all callback data is consumed before it returns. */
+    void *context;
+    gcode_reader_service_read_fn read;
+} raw_gcode_reader_service;
 
 #ifdef __cplusplus
 }

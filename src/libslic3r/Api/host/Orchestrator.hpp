@@ -63,6 +63,10 @@ struct plugin_host_context
     // Generic executions point this at invocation-local state so a reported
     // plugin error can be distinguished from an unrelated cancellation.
     std::atomic_bool *execution_error = nullptr;
+    // Normal pipeline failures cancel dependent work. Independent detection
+    // probes set this false so one malformed candidate cannot suppress the
+    // remaining candidates.
+    bool cancel_on_error = true;
 };
 
 namespace Slic3r {
@@ -345,7 +349,8 @@ public:
     raw_plugin_execution_status execute_plugin(Plugin &plugin,
                                                Print *print,
                                                const raw_plugin_run_payload *payloads,
-                                               uint32_t run_count);
+                                               uint32_t run_count,
+                                               bool cancel_on_error = true);
 
     // Start and complete one installed package load. Loaders add precise
     // issues as they encounter them; successful registrations are associated

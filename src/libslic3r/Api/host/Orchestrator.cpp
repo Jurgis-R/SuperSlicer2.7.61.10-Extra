@@ -3,6 +3,7 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "Orchestrator.hpp"
+#include "GCodeReaderService.hpp"
 #include "GCodeThumbnailRenderer.hpp"
 
 #include <algorithm>
@@ -1263,7 +1264,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
     Plugin &plugin,
     Print *print,
     const raw_plugin_run_payload *payloads,
-    uint32_t run_count)
+    uint32_t run_count,
+    bool cancel_on_error)
 {
     if (!this->owns_plugin(&plugin) || (run_count != 0 && payloads == nullptr))
         return RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT;
@@ -1276,6 +1278,7 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
     plugin_host_context host_context = this->prepare_plugin_host_context(plugin.get_step(), &plugin, print);
     host_context.object_count = run_count;
     host_context.execution_error = &execution_error;
+    host_context.cancel_on_error = cancel_on_error;
     plugin_run_context run_context = this->prepare_plugin_run_context(
         plugin.get_step(), &plugin, &host_context);
 
@@ -1910,6 +1913,8 @@ std::string Orchestrator::export_gcode(Print &print,
         */
         std::unique_ptr<GCodeGenerator> gcode(new GCodeGenerator());
         gcode->do_export(&print, path.c_str(), result, thumbnail_cb);
+        if (result != nullptr)
+            result->reader_plugin_id = DEFAULT_GCODE_READER_PLUGIN_ID;
         if (result != nullptr && print.conflict_result())
             result->conflict_result = *print.conflict_result();
         return path;
@@ -1920,11 +1925,13 @@ std::string Orchestrator::export_gcode(Print &print,
     // destination file, while leaving the expensive slicing data intact.
     print.mark_step_and_dependents_for_execution(STEP_ORDERING);
     GCodeThumbnailRenderer thumbnail_renderer(print, std::move(thumbnail_cb));
-    Steps::StepPipeline::run_gcode(*this, print, path, thumbnail_renderer.c_renderer());
+    const std::string reader_plugin_id = Steps::StepPipeline::run_gcode(
+        *this, print, path, thumbnail_renderer.c_renderer());
 
     if (result != nullptr) {
         result->reset();
         result->filename = path;
+        result->reader_plugin_id = reader_plugin_id;
         if (print.conflict_result())
             result->conflict_result = *print.conflict_result();
     }
