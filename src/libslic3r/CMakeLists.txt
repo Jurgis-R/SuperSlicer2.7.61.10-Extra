@@ -241,6 +241,8 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/Reader/MarlinGCodeReader.hpp
 	Plugins/GCode/Reader/RepRapGCodeReader.cpp
 	Plugins/GCode/Reader/RepRapGCodeReader.hpp
+	Plugins/GCode/Reader/RepRapGCodeReaderState.cpp
+	Plugins/GCode/Reader/RepRapGCodeReaderState.hpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.cpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp
 	Plugins/GCode/FeatureGCode.cpp

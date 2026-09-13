@@ -28,6 +28,10 @@ public:
     void synchronize_runtime_from(const HeaterState &source);
     // Import a physical target already emitted by external G-code.
     void synchronize_after_external_gcode(int16_t effective_temperature, bool waited);
+    // Replace only encoded acknowledgements after script inspection. The
+    // requested uncorrected temperature remains owned by the plan.
+    void synchronize_encoded_after_external_gcode(
+        std::optional<int16_t> effective_temperature, bool waited);
 
     std::optional<int16_t> requested_temperature() const { return m_temperature.requested(); }
     std::optional<int16_t> encoded_temperature() const { return m_temperature.encoded(); }

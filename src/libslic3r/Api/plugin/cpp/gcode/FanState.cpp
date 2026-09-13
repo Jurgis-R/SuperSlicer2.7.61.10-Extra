@@ -44,6 +44,16 @@ void FanState::synchronize_after_external_gcode(double effective_speed_percent)
     m_speed.mark_encoded_as(effective);
 }
 
+void FanState::synchronize_encoded_after_external_gcode(
+    std::optional<double> effective_speed_percent)
+{
+    if (effective_speed_percent && !std::isfinite(*effective_speed_percent))
+        throw std::invalid_argument("External G-code returned a non-finite fan speed.");
+    m_speed.synchronize_encoded(effective_speed_percent ?
+        std::optional<double>(std::clamp(*effective_speed_percent, 0.0, 100.0)) :
+        std::optional<double>());
+}
+
 double FanState::effective_speed_percent() const
 {
     const std::optional<double> requested = m_speed.requested();

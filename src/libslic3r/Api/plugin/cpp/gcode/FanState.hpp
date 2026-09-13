@@ -27,6 +27,9 @@ public:
     void synchronize_runtime_from(const FanState &source);
     // Import a physical percentage already emitted by external G-code.
     void synchronize_after_external_gcode(double effective_speed_percent);
+    // Update only the physical value observed in an external script. Unlike
+    // synchronize_after_external_gcode(), this preserves the plan request.
+    void synchronize_encoded_after_external_gcode(std::optional<double> effective_speed_percent);
 
     std::optional<double> requested_speed_percent() const { return m_speed.requested(); }
     std::optional<double> encoded_speed_percent() const { return m_speed.encoded(); }

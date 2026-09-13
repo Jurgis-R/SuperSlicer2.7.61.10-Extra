@@ -210,6 +210,11 @@ protected:
     // by generic Readers; 100 is reserved for an exact identifying marker.
     virtual uint32_t probe_impl(std::string_view) const { return 0; }
 
+    // Return the numeric identity which scopes provider-private state. Zero is
+    // the provisional value used until identities are allocated by the host.
+    // A mismatch is rejected before the provider sees any input chunk.
+    virtual uint32_t reader_state_id_impl() const { return 0u; }
+
     // Check common plugin cancellation, request one host chunk and convert its
     // borrowed byte pair into a string_view. Return false only for the valid
     // null/zero end marker. The view becomes invalid at the next call because
@@ -292,8 +297,12 @@ private:
             throw std::invalid_argument("G-code reader received an incomplete read context.");
 
         GCodeStateTracker state(*context->initial_state);
+        if (state.reader_id() != reader_state_id_impl())
+            throw std::invalid_argument("The initial G-code Reader state belongs to another Reader identity.");
         read_impl(*run_context, *context, state);
         throw_if_cancelled(run_context);
+        if (state.reader_id() != reader_state_id_impl())
+            throw std::invalid_argument("The G-code Reader changed its state identity while parsing.");
 
         raw_gcode_reader_result result = make_result();
         context->emit_final_state(context->callback_context, &state.state(), &result);

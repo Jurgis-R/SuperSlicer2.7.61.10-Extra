@@ -45,6 +45,10 @@ public:
     void request_speed(std::optional<double> speed) { m_speed.request(speed); }
     bool needs_speed_encoding() const;
     void mark_speed_encoded();
+    void synchronize_encoded_speed(std::optional<double> speed)
+    {
+        m_speed.synchronize_encoded(speed);
+    }
 
     std::optional<uint32_t> requested_print_acceleration() const { return m_print_acceleration.requested(); }
     std::optional<uint32_t> requested_travel_acceleration() const { return m_travel_acceleration.requested(); }
@@ -64,6 +68,14 @@ public:
     void mark_travel_acceleration_encoded();
     void clear_print_acceleration_encoded();
     void clear_travel_acceleration_encoded();
+    void synchronize_encoded_print_acceleration(std::optional<uint32_t> acceleration)
+    {
+        m_print_acceleration.synchronize_encoded(acceleration);
+    }
+    void synchronize_encoded_travel_acceleration(std::optional<uint32_t> acceleration)
+    {
+        m_travel_acceleration.synchronize_encoded(acceleration);
+    }
 
     double travel_speed() const { return m_travel_speed; }
     double z_offset() const { return m_z_offset; }

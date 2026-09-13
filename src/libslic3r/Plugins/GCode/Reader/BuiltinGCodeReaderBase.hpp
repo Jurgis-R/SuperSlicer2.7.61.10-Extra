@@ -34,8 +34,9 @@ marker or are understood but have no portable Reader state item.
 
 Returning true from a command hook means that the derived Reader has completely
 handled the command and published the required event. Returning false delegates
-to the next stage. Unknown commands ultimately invalidate portable state so a
-later writer never relies on values an unsupported command may have changed.
+to the next stage. Unknown commands ultimately invalidate portable and private
+state so a later writer never relies on values an unsupported command may have
+changed.
 
 Plugin instances contain no stream state. Each read creates its own tracker and
 line buffer, so immutable provider instances may be executed concurrently.
@@ -71,6 +72,10 @@ protected:
     // Return true for a pause or filament-change command represented as a
     // timeline marker rather than a portable machine-state update.
     virtual bool is_marker_command(char letter, uint32_t number) const;
+    // Validate provider-private state at both boundaries of one read. The
+    // generic base has no private schema; dialects use this hook to reject an
+    // incomplete snapshot even when the input stream contains no command.
+    virtual void validate_private_state(const GCodeStateTracker &state) const;
 
     // Publish a caller-owned delta. The event and its temporary item storage
     // need only remain alive for this synchronous call.
@@ -85,8 +90,8 @@ protected:
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               raw_gcode_reader_source source) const;
-    // Discard every currently known portable value after an unsupported
-    // command, while preserving the session's line cursor.
+    // Discard every currently known portable and provider-private value after
+    // an unsupported command, while preserving identity and the line cursor.
     void publish_unknown(const plugin_run_context &run_context,
                          const run_ctx_gcode_reader &context,
                          GCodeStateTracker &state,

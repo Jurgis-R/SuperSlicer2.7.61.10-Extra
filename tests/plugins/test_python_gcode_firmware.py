@@ -81,6 +81,17 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         sys.path.remove(cls.generated_directory.name)
         cls.generated_directory.cleanup()
 
+    def test_reader_identity_and_custom_range_constants_are_generated(self):
+        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_GCODE_READER_MINOR, 2)
+        self.assertGreater(
+            self.generated.RAW_GCODE_READER_ITEM_READER_ID,
+            self.generated.RAW_GCODE_READER_ITEM_LINE_NUMBER,
+        )
+        self.assertEqual(
+            self.generated.RAW_GCODE_READER_ITEM_CUSTOM_BEGIN,
+            0x80000000,
+        )
+
     def test_reader_service_view_routes_id_streams_text_and_copies_final_state(self):
         seen = {}
 

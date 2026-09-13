@@ -63,6 +63,12 @@ public:
 
     void clear_encoded() { m_encoded.reset(); }
 
+    // Replace only the value known to be present in an externally generated
+    // stream. The logical request still belongs to the PrintingPlan and must
+    // survive script inspection so the next comparison can decide whether it
+    // needs to be emitted again.
+    void synchronize_encoded(std::optional<T> value) { m_encoded = value; }
+
     void reset_runtime_state()
     {
         m_requested.reset();
@@ -148,6 +154,14 @@ public:
     {
         m_encoding.synchronize_runtime_from(source.m_encoding);
         m_encoded_with_wait = source.m_encoded_with_wait;
+    }
+
+    // Import only what external output established. The pending request stays
+    // owned by the PrintingPlan; absence clears both acknowledgements.
+    void synchronize_encoded(std::optional<T> value, bool waited)
+    {
+        m_encoding.synchronize_encoded(value);
+        m_encoded_with_wait = waited ? value : std::optional<T>();
     }
 
 private:

@@ -30,6 +30,12 @@ public:
     bool needs_encoding() const;
     void mark_encoded();
     void clear_encoded() { m_value.clear_encoded(); }
+    // Import the register written by a script without replacing the process
+    // value still requested by the PrintingPlan.
+    void synchronize_encoded(std::optional<double> value)
+    {
+        m_value.synchronize_encoded(value);
+    }
 
 private:
     EncodableState<double> m_value;

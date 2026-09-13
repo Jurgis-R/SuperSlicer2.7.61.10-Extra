@@ -1017,6 +1017,7 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     // A custom script is parsed as an independent input stream. Its first
     // physical line is therefore zero, regardless of its output position.
     items.push_back({RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0});
+    items.push_back({RAW_GCODE_READER_ITEM_READER_ID, 0, double(reader_state_id())});
     if (const std::optional<c_vec3d> position = m_gantry.position()) {
         items.push_back({RAW_GCODE_READER_ITEM_X, 0, position->x});
         items.push_back({RAW_GCODE_READER_ITEM_Y, 0, position->y});
@@ -1025,6 +1026,8 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     items.push_back({RAW_GCODE_READER_ITEM_UNITS_MM, 0, m_units_in_mm ? 1.0 : 0.0});
     items.push_back({RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, 0, m_xyz_relative_mode ? 0.0 : 1.0});
     items.push_back({RAW_GCODE_READER_ITEM_E_ABSOLUTE, 0, m_e_relative_mode ? 0.0 : 1.0});
+    if (const std::optional<double> speed = m_gantry.encoded_speed())
+        items.push_back({RAW_GCODE_READER_ITEM_FEEDRATE, 0, *speed * 60.0});
     if (m_current_extruder_idx) {
         // E coordinates belong to the currently selected extruder. Supplying
         // them for every tool would incorrectly claim that all E origins are
@@ -1045,6 +1048,7 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
                              m_printer.bed_heater().encoded_temperature());
     append_known_temperature(items, RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE, 0,
                              m_printer.chamber_heater().encoded_temperature());
+    append_reader_private_state(items);
 
     raw_gcode_reader_state initial = {};
     initial.items = items.empty() ? nullptr : items.data();
@@ -1055,6 +1059,8 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     // the synchronous plugin invocation.
     const GCodeStateTracker tracked = GCodeReaderServiceView(m_gcode_reader_service).read(
         reader_plugin_id(), initial, text);
+    if (tracked.reader_id() != reader_state_id())
+        throw std::runtime_error("The G-code Reader returned state for another firmware identity.");
 
     const std::optional<double> units_mm = tracked.value(RAW_GCODE_READER_ITEM_UNITS_MM);
     const std::optional<double> xyz_absolute = tracked.value(RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE);
@@ -1074,6 +1080,10 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     else
         m_gantry.invalidate_position();
 
+    const std::optional<double> feedrate = tracked.value(RAW_GCODE_READER_ITEM_FEEDRATE);
+    m_gantry.synchronize_encoded_speed(feedrate ?
+        std::optional<double>(*feedrate / 60.0) : std::optional<double>());
+
     const std::optional<double> active_tool = tracked.value(RAW_GCODE_READER_ITEM_ACTIVE_TOOL);
     // A reader may report a tool identifier that this print does not own.
     // Treat it as unknown instead of indexing outside m_extruders.
@@ -1091,17 +1101,16 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
         if (temperature) {
             const bool waited = tracked.known(
                 RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE_REACHED, tool.id());
-            tool.heater().synchronize_after_external_gcode(reader_temperature(*temperature), waited);
+            tool.heater().synchronize_encoded_after_external_gcode(
+                reader_temperature(*temperature), waited);
         } else {
-            tool.heater().request_temperature(std::nullopt);
             tool.heater().clear_encoded();
             tool.heater().clear_encoded_with_wait();
         }
         const std::optional<double> fan = tracked.value(RAW_GCODE_READER_ITEM_FAN_SPEED, tool.id());
         if (fan)
-            tool.fan().synchronize_after_external_gcode(*fan);
+            tool.fan().synchronize_encoded_after_external_gcode(fan);
         else {
-            tool.fan().request_speed_percent(std::nullopt);
             tool.fan().clear_encoded();
         }
         tool.extrusion_axis().set_relative_mode(m_e_relative_mode);
@@ -1127,9 +1136,9 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     const std::optional<double> bed_temperature = tracked.value(RAW_GCODE_READER_ITEM_BED_TEMPERATURE);
     if (bed_temperature) {
         const bool waited = tracked.known(RAW_GCODE_READER_ITEM_BED_TEMPERATURE_REACHED);
-        m_printer.bed_heater().synchronize_after_external_gcode(reader_temperature(*bed_temperature), waited);
+        m_printer.bed_heater().synchronize_encoded_after_external_gcode(
+            reader_temperature(*bed_temperature), waited);
     } else {
-        m_printer.bed_heater().request_temperature(std::nullopt);
         m_printer.bed_heater().clear_encoded();
         m_printer.bed_heater().clear_encoded_with_wait();
     }
@@ -1137,13 +1146,29 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
         RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE);
     if (chamber_temperature) {
         const bool waited = tracked.known(RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE_REACHED);
-        m_printer.chamber_heater().synchronize_after_external_gcode(
+        m_printer.chamber_heater().synchronize_encoded_after_external_gcode(
             reader_temperature(*chamber_temperature), waited);
     } else {
-        m_printer.chamber_heater().request_temperature(std::nullopt);
         m_printer.chamber_heater().clear_encoded();
         m_printer.chamber_heater().clear_encoded_with_wait();
     }
+    synchronize_reader_private_state(tracked);
+}
+
+void DefaultGCodeFirmwareSession::append_reader_private_state(
+    std::vector<raw_gcode_reader_event_item> &) const
+{}
+
+void DefaultGCodeFirmwareSession::synchronize_reader_private_state(
+    const GCodeStateTracker &)
+{}
+
+void DefaultGCodeFirmwareSession::synchronize_native_retraction(
+    uint16_t tool_id, bool retracted)
+{
+    if (tool_id >= m_native_retraction_active.size())
+        throw std::invalid_argument("A Reader returned retraction state for an unknown tool.");
+    m_native_retraction_active[tool_id] = retracted ? 1 : 0;
 }
 
 std::string DefaultGCodeFirmwareSession::process_script(gcode_script_type type,

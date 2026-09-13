@@ -77,6 +77,42 @@ public:
     using KlipperGCodeFirmwareSession::encode_extruder_current;
 };
 
+// Exposes only the private-state boundary used around custom scripts. This
+// keeps the test independent of PrintingPlan traversal while still exercising
+// the real RepRap firmware implementation and Gantry registers.
+class RepRapReaderStateProbe final :
+    public slic3r_api::GCodeGeneration::Firmware::RepRapGCodeFirmwareSession
+{
+public:
+    using RepRapGCodeFirmwareSession::append_reader_private_state;
+    using RepRapGCodeFirmwareSession::encode_fan;
+    using RepRapGCodeFirmwareSession::encode_machine_envelope;
+    using RepRapGCodeFirmwareSession::encode_pressure_advance;
+    using RepRapGCodeFirmwareSession::synchronize_reader_private_state;
+
+    void request_accelerations(uint32_t print, uint32_t travel)
+    {
+        gantry().request_print_acceleration(print);
+        gantry().request_travel_acceleration(travel);
+    }
+    std::optional<uint32_t> requested_print() const
+    {
+        return gantry().requested_print_acceleration();
+    }
+    std::optional<uint32_t> requested_travel() const
+    {
+        return gantry().requested_travel_acceleration();
+    }
+    std::optional<uint32_t> encoded_print() const
+    {
+        return gantry().encoded_print_acceleration();
+    }
+    std::optional<uint32_t> encoded_travel() const
+    {
+        return gantry().encoded_travel_acceleration();
+    }
+};
+
 // Build a print/travel/print sequence whose extrusion leaves deliberately
 // carry no acceleration. The final print may be omitted when a test only
 // needs to prove that an unsafe travel switch was suppressed.
@@ -195,6 +231,56 @@ TEST_CASE("Built-in firmware dialects select their matching G-code readers",
     CHECK(SprinterGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
     CHECK(RepRapGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.reprap");
     CHECK(KlipperGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.klipper");
+}
+
+TEST_CASE("RepRap firmware round-trips private Reader acceleration state",
+          "[plugins][gcode][firmware][reader][reprap]")
+{
+    using slic3r_api::GCodeGeneration::MachineEnvelope;
+    using slic3r_api::GCodeGeneration::Reader::RepRapGCodeReaderState;
+
+    RepRapReaderStateProbe firmware;
+    MachineEnvelope envelope;
+    envelope.max_acceleration_x = 1000.0;
+    envelope.max_acceleration_y = 1100.0;
+    envelope.max_acceleration_z = 100.0;
+    envelope.max_acceleration_e = 1200.0;
+    envelope.max_feedrate_x = 300.0;
+    envelope.max_print_acceleration = 800.0;
+    envelope.max_travel_acceleration = 1500.0;
+    (void) firmware.encode_machine_envelope(envelope);
+
+    std::vector<raw_gcode_reader_event_item> items = {
+        {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0},
+        {RAW_GCODE_READER_ITEM_READER_ID, 0, 0.0}
+    };
+    firmware.append_reader_private_state(items);
+    raw_gcode_reader_state raw = {items.data(), static_cast<uint32_t>(items.size())};
+    slic3r_api::GCodeStateTracker tracker(raw);
+    RepRapGCodeReaderState state = RepRapGCodeReaderState::from_tracker(tracker);
+    CHECK(state.max_acceleration[1] == 1100.0);
+    CHECK(state.max_feedrate[0] == 300.0);
+    CHECK(state.print_acceleration == 800.0);
+    CHECK(state.travel_acceleration == 1500.0);
+
+    // A script changes encoded firmware registers, but the plan's requested
+    // values remain authoritative and will be re-emitted when they differ.
+    firmware.request_accelerations(700u, 1400u);
+    state.print_acceleration = 600.0;
+    state.travel_acceleration = 1300.0;
+    slic3r_api::GCodeGeneration::Reader::RepRapToolState &tool = state.tools[2];
+    tool.drives = {3, 4};
+    tool.fans = {6, 7};
+    state.write_to(tracker);
+    firmware.synchronize_reader_private_state(tracker);
+    CHECK(firmware.requested_print() == 700u);
+    CHECK(firmware.requested_travel() == 1400u);
+    CHECK(firmware.encoded_print() == 600u);
+    CHECK(firmware.encoded_travel() == 1300u);
+    CHECK(firmware.encode_fan(2, 25.0) ==
+          "M106 P6 S0.25\nM106 P7 S0.25\n");
+    CHECK(firmware.encode_pressure_advance(2, 0.04) ==
+          "M572 D3 S0.04\nM572 D4 S0.04\n");
 }
 
 TEST_CASE("Built-in firmware dialects encode their machine envelope preamble",

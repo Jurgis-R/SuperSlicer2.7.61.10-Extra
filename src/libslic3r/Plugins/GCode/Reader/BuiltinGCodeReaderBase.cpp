@@ -34,8 +34,8 @@ the plugin singleton.
 Input may arrive in arbitrary chunks. The parser retains only an unfinished
 last line during run(), assigns byte ranges while complete lines are consumed,
 then emits a normalized event for each command. Unknown commands invalidate
-the portable machine state instead of letting a later host-generated command
-reuse a value which arbitrary dialect G-code may have changed.
+portable and private machine state instead of letting a later host-generated
+command reuse a value which arbitrary dialect G-code may have changed.
 
     arbitrary chunks
           |
@@ -211,10 +211,14 @@ bool BuiltinGCodeReaderBase::is_marker_command(char, uint32_t) const
     return false;
 }
 
+void BuiltinGCodeReaderBase::validate_private_state(const GCodeStateTracker &) const
+{}
+
 void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
                                        const run_ctx_gcode_reader &context,
                                        GCodeStateTracker &state) const
 {
+    validate_private_state(state);
     // Chunks may split anywhere, including in CRLF and numeric parameters.
     // Retain only bytes after the last complete newline between pulls.
     std::string pending;
@@ -249,6 +253,7 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
     }
     if (!pending.empty())
         consume_line(run_context, context, state, pending, pending_begin, pending_begin + pending.size());
+    validate_private_state(state);
 }
 
 void BuiltinGCodeReaderBase::publish_items(
@@ -294,7 +299,7 @@ void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_conte
                                              GCodeStateTracker &state,
                                              raw_gcode_reader_source source) const
 {
-    // One unsupported command may have changed any portable modal value. Send
+    // One unsupported command may have changed any portable or private value. Send
     // an INVALIDATE item for every currently known value so downstream writers
     // re-establish state explicitly instead of continuing from stale data.
     // Use the exact current keys, including dynamically discovered tool and
@@ -303,7 +308,8 @@ void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_conte
     std::vector<raw_gcode_reader_event_item> items;
     for (uint32_t index = 0; index < snapshot.item_count; ++index) {
         const raw_gcode_reader_event_item &item = snapshot.items[index];
-        if (item.type != RAW_GCODE_READER_ITEM_LINE_NUMBER)
+        if (item.type != RAW_GCODE_READER_ITEM_LINE_NUMBER &&
+            item.type != RAW_GCODE_READER_ITEM_READER_ID)
             items.push_back(item);
     }
     publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, source, items);

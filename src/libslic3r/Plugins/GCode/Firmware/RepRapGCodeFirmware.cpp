@@ -6,6 +6,9 @@
 #include "RepRapGCodeFirmware.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 
 /*
 RepRapFirmware implementation
@@ -39,6 +42,107 @@ RepRapFirmware encodings and is instantiated by the common firmware provider.
 
 namespace slic3r_api { namespace GCodeGeneration { namespace Firmware {
 
+namespace {
+
+// Convert a Reader scalar back to the integer register used by Gantry. RRF
+// accepts decimal input, while generated acceleration commands are integral;
+// round exactly as the firmware encoder does and reject impossible values.
+std::optional<uint32_t> acceleration_register(const std::optional<double> &value)
+{
+    if (!value)
+        return std::nullopt;
+    if (!std::isfinite(*value) || *value < 0.0 ||
+        *value > double(std::numeric_limits<uint32_t>::max()))
+        throw std::invalid_argument("RepRapFirmware returned an invalid acceleration register.");
+    return static_cast<uint32_t>(std::lround(*value));
+}
+
+} // namespace
+
+void RepRapGCodeFirmwareSession::setup_firmware(const Config &config)
+{
+    DefaultGCodeFirmwareSession::setup_firmware(config);
+    m_reader_state = {};
+}
+
+void RepRapGCodeFirmwareSession::append_reader_private_state(
+    std::vector<raw_gcode_reader_event_item> &items) const
+{
+    // Until M563 supplies explicit relationships, built-in exports use the
+    // conventional one-to-one tool/drive/heater/fan mapping. The snapshot is
+    // copied back into `items`; no pointer owned by the temporary tracker escapes.
+    for (const DefaultExtruder &extruder : extruders()) {
+        Reader::RepRapToolState &tool = m_reader_state.tools[extruder.id()];
+        if (tool.drives.empty())
+            tool.drives.push_back(extruder.id());
+        if (tool.heaters.empty())
+            tool.heaters.push_back(extruder.id());
+        if (tool.fans.empty())
+            tool.fans.push_back(extruder.id());
+    }
+
+    raw_gcode_reader_state raw = {};
+    raw.items = items.empty() ? nullptr : items.data();
+    raw.item_count = static_cast<uint32_t>(items.size());
+    GCodeStateTracker tracker(raw);
+    m_reader_state.write_to(tracker);
+    const raw_gcode_reader_state &complete = tracker.state();
+    items.assign(complete.items, complete.items + complete.item_count);
+}
+
+void RepRapGCodeFirmwareSession::synchronize_reader_private_state(
+    const GCodeStateTracker &state)
+{
+    // Decode to a temporary first. A malformed private snapshot therefore
+    // leaves both the cached RRF model and all encoded gantry registers intact.
+    const Reader::RepRapGCodeReaderState decoded =
+        Reader::RepRapGCodeReaderState::from_tracker(state);
+    gantry().synchronize_encoded_print_acceleration(
+        acceleration_register(decoded.print_acceleration));
+    gantry().synchronize_encoded_travel_acceleration(
+        acceleration_register(decoded.travel_acceleration));
+    for (DefaultExtruder &extruder : extruders()) {
+        const std::map<uint32_t, Reader::RepRapToolState>::const_iterator tool =
+            decoded.tools.find(extruder.id());
+        if (tool == decoded.tools.end()) {
+            extruder.pressure_advance().synchronize_encoded(std::nullopt);
+            extruder.fan().synchronize_encoded_after_external_gcode(std::nullopt);
+            continue;
+        }
+
+        std::optional<double> pressure;
+        bool pressure_consistent = !tool->second.drives.empty();
+        for (uint32_t drive : tool->second.drives) {
+            const std::map<uint32_t, double>::const_iterator found =
+                decoded.pressure_advance.find(drive);
+            if (found == decoded.pressure_advance.end() ||
+                (pressure && *pressure != found->second)) {
+                pressure_consistent = false;
+                break;
+            }
+            pressure = found->second;
+        }
+        extruder.pressure_advance().synchronize_encoded(
+            pressure_consistent ? pressure : std::optional<double>());
+
+        std::optional<double> fan;
+        bool fan_consistent = !tool->second.fans.empty();
+        for (uint32_t fan_id : tool->second.fans) {
+            const std::optional<double> physical = state.fan_speed(fan_id);
+            if (!physical || (fan && *fan != *physical)) {
+                fan_consistent = false;
+                break;
+            }
+            fan = physical;
+        }
+        extruder.fan().synchronize_encoded_after_external_gcode(
+            fan_consistent ? fan : std::optional<double>());
+        if (tool->second.retracted)
+            synchronize_native_retraction(extruder.id(), *tool->second.retracted);
+    }
+    m_reader_state = decoded;
+}
+
 std::string RepRapGCodeFirmwareSession::resolve_empty_script(
     gcode_script_type script_type,
     const Config *producer_config) const
@@ -58,6 +162,19 @@ std::string RepRapGCodeFirmwareSession::encode_machine_envelope(
     const double unit_factor = 60.0;
     std::string output;
     GCodeFormatter formatter(2, 2);
+
+    m_reader_state.max_acceleration = {
+        double(envelope.max_acceleration_x), double(envelope.max_acceleration_y),
+        double(envelope.max_acceleration_z), double(envelope.max_acceleration_e)};
+    m_reader_state.max_feedrate = {
+        envelope.max_feedrate_x, envelope.max_feedrate_y,
+        envelope.max_feedrate_z, envelope.max_feedrate_e};
+    m_reader_state.min_extruding_feedrate = envelope.min_extruding_feedrate;
+    m_reader_state.print_acceleration = envelope.max_print_acceleration;
+    m_reader_state.travel_acceleration = envelope.max_travel_acceleration;
+    m_reader_state.machine_jerk = {
+        envelope.max_jerk_x, envelope.max_jerk_y,
+        envelope.max_jerk_z, envelope.max_jerk_e};
 
     formatter.emit_string("M201");
     formatter.emit_integer_parameter('X', envelope.max_acceleration_x);
@@ -118,7 +235,17 @@ std::string RepRapGCodeFirmwareSession::encode_fan(uint16_t tool_id,
                                                     double speed_percent) const
 {
     const double normalized = std::clamp(speed_percent, 0.0, 100.0) / 100.0;
-    return "M106 P" + std::to_string(tool_id) + " S" + format_number(normalized) + "\n";
+    const std::map<uint32_t, Reader::RepRapToolState>::const_iterator tool =
+        m_reader_state.tools.find(tool_id);
+    const std::vector<uint32_t> fallback{tool_id};
+    const std::vector<uint32_t> &fans = tool != m_reader_state.tools.end() &&
+                                               !tool->second.fans.empty() ?
+        tool->second.fans : fallback;
+    std::string output;
+    for (uint32_t fan : fans)
+        output += "M106 P" + std::to_string(fan) +
+                  " S" + format_number(normalized) + "\n";
+    return output;
 }
 
 std::string RepRapGCodeFirmwareSession::encode_pressure_advance(
@@ -127,8 +254,36 @@ std::string RepRapGCodeFirmwareSession::encode_pressure_advance(
 {
     // [2026-08-25] RepRapFirmware assigns pressure advance per drive with
     // M572: https://docs.duet3d.com/User_manual/Reference/Gcodes
-    return "M572 D" + std::to_string(tool_id) +
-           " S" + format_number(pressure_advance) + "\n";
+    const std::map<uint32_t, Reader::RepRapToolState>::const_iterator tool =
+        m_reader_state.tools.find(tool_id);
+    const std::vector<uint32_t> fallback{tool_id};
+    const std::vector<uint32_t> &drives = tool != m_reader_state.tools.end() &&
+                                                 !tool->second.drives.empty() ?
+        tool->second.drives : fallback;
+    std::string output;
+    for (uint32_t drive : drives) {
+        m_reader_state.pressure_advance[drive] = pressure_advance;
+        output += "M572 D" + std::to_string(drive) +
+                  " S" + format_number(pressure_advance) + "\n";
+    }
+    return output;
+}
+
+std::string RepRapGCodeFirmwareSession::encode_acceleration(
+    uint32_t acceleration, bool travel) const
+{
+    if (travel)
+        m_reader_state.travel_acceleration = acceleration;
+    else
+        m_reader_state.print_acceleration = acceleration;
+    return DefaultGCodeFirmwareSession::encode_acceleration(acceleration, travel);
+}
+
+std::string RepRapGCodeFirmwareSession::encode_firmware_retraction(bool retract) const
+{
+    if (const std::optional<uint16_t> tool_id = current_extruder_id())
+        m_reader_state.tools[*tool_id].retracted = retract;
+    return DefaultGCodeFirmwareSession::encode_firmware_retraction(retract);
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Firmware

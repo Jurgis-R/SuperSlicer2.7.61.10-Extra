@@ -6,7 +6,7 @@
 #define slic3r_gcode_reader_h_
 
 #define SLIC3R_PLUGIN_API_GCODE_READER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 1u
+#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 2u
 
 #include <stdint.h>
 
@@ -151,8 +151,19 @@ typedef enum raw_gcode_reader_item_type {
     RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE_REACHED,
     /* Zero-based number of the line currently being parsed. It is mandatory
        in every event and state, uses target zero and is an exact uint32_t. */
-    RAW_GCODE_READER_ITEM_LINE_NUMBER
+    RAW_GCODE_READER_ITEM_LINE_NUMBER,
+    /* Numeric identity of the Reader-specific state carried alongside the
+       portable items. Zero is the provisional identity used when no provider
+       identity has been assigned. Missing values are normalized to zero by
+       the C++ tracker. The target is always zero. */
+    RAW_GCODE_READER_ITEM_READER_ID
 } raw_gcode_reader_item_type;
+
+/* Provider-private scalar items use this range. The generic host validates
+   only that their transported double is finite, then copies them without
+   interpreting target or value. Their meaning belongs to the explicitly
+   selected Reader; callers must not transfer them to an unrelated Reader. */
+#define RAW_GCODE_READER_ITEM_CUSTOM_BEGIN ((uint32_t)0x80000000u)
 
 /* One normalized action. source identifies the command bytes in the complete
    stream, not offsets within the current chunk. items contains the state delta

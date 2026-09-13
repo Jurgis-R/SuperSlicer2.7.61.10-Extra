@@ -153,6 +153,18 @@ protected:
     // implementation so intermediate firmware policies can cache their state.
     virtual void setup_firmware(const Config &config);
 
+    // Reader-private state travels through the generic tracker as opaque
+    // scalar keys. A dialect appends its snapshot before a custom script and
+    // imports the validated final snapshot afterwards. Implementations must
+    // preserve PrintingPlan requests and update only their encoded knowledge.
+    virtual uint32_t reader_state_id() const { return 0u; }
+    virtual void append_reader_private_state(
+        std::vector<raw_gcode_reader_event_item> &items) const;
+    virtual void synchronize_reader_private_state(const GCodeStateTracker &state);
+    // Update the protocol-level G10/G11 flag reconstructed by a dialect
+    // Reader. This does not invent an E position or retraction distance.
+    void synchronize_native_retraction(uint16_t tool_id, bool retracted);
+
     // Convert validated printer limits into this dialect's startup commands.
     // The neutral base emits nothing; concrete firmware sessions choose both
     // the supported fields and their command syntax.

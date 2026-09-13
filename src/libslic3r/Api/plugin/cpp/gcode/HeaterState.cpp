@@ -49,6 +49,12 @@ void HeaterState::synchronize_after_external_gcode(int16_t effective_temperature
         m_temperature.mark_encoded_as(effective_temperature);
 }
 
+void HeaterState::synchronize_encoded_after_external_gcode(
+    std::optional<int16_t> effective_temperature, bool waited)
+{
+    m_temperature.synchronize_encoded(effective_temperature, waited);
+}
+
 int16_t HeaterState::effective_temperature() const
 {
     const std::optional<int16_t> requested = m_temperature.requested();

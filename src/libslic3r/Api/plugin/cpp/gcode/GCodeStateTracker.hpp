@@ -48,7 +48,11 @@ class GCodeStateTracker
 public:
     // A standalone tracker starts on physical line zero. Reader invocations
     // normally use the state constructor so the host controls initial values.
-    GCodeStateTracker() { set_line_number(0); }
+    GCodeStateTracker()
+    {
+        set_line_number(0);
+        set_reader_id(0);
+    }
 
     // Copy and validate a borrowed complete state. No pointer from the source
     // is retained after this constructor returns.
@@ -100,6 +104,7 @@ public:
         std::map<Key, double> replacement;
         copy_items(state.items, state.item_count, replacement);
         require_line_number(replacement);
+        normalize_reader_id(replacement);
         m_values = std::move(replacement);
         rebuild_state();
     }
@@ -137,6 +142,7 @@ public:
             }
         }
         require_line_number(updated);
+        normalize_reader_id(updated);
         m_values = std::move(updated);
         rebuild_state();
     }
@@ -163,6 +169,44 @@ public:
     void set_line_number(uint32_t value)
     {
         m_values[Key{RAW_GCODE_READER_ITEM_LINE_NUMBER, 0}] = double(value);
+        rebuild_state();
+    }
+
+    // Store the identity which scopes provider-private items. Zero means that
+    // no orchestrator-assigned identity exists yet; it remains a real value so
+    // both ends can already exercise the ownership and validation contract.
+    void set_reader_id(uint32_t value)
+    {
+        m_values[Key{RAW_GCODE_READER_ITEM_READER_ID, 0}] = double(value);
+        rebuild_state();
+    }
+
+    uint32_t reader_id() const
+    {
+        const std::optional<uint32_t> id = uint32_value(RAW_GCODE_READER_ITEM_READER_ID);
+        if (!id)
+            throw std::logic_error("A G-code reader state has no Reader identity.");
+        return *id;
+    }
+
+    // Provider-private state remains opaque to the tracker. These mutators are
+    // intentionally restricted to the custom range and keep the raw callback
+    // view synchronized with the authoritative map.
+    void set_custom_value(uint32_t type, uint32_t target, double value)
+    {
+        const raw_gcode_reader_event_item item{type, target, value};
+        validate_item(item);
+        if (type < RAW_GCODE_READER_ITEM_CUSTOM_BEGIN)
+            throw std::invalid_argument("A private G-code reader item is outside the custom range.");
+        m_values[Key{type, target}] = value;
+        rebuild_state();
+    }
+
+    void erase_custom_value(uint32_t type, uint32_t target)
+    {
+        if (type < RAW_GCODE_READER_ITEM_CUSTOM_BEGIN)
+            throw std::invalid_argument("A private G-code reader item is outside the custom range.");
+        m_values.erase(Key{type, target});
         rebuild_state();
     }
 
@@ -263,6 +307,7 @@ private:
         case RAW_GCODE_READER_ITEM_ARC_CLOCKWISE:
         case RAW_GCODE_READER_ITEM_ARC_TURNS:
         case RAW_GCODE_READER_ITEM_LINE_NUMBER:
+        case RAW_GCODE_READER_ITEM_READER_ID:
             return true;
         default:
             return false;
@@ -304,6 +349,7 @@ private:
         case RAW_GCODE_READER_ITEM_BED_TEMPERATURE_REACHED:
         case RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE_REACHED:
         case RAW_GCODE_READER_ITEM_LINE_NUMBER:
+        case RAW_GCODE_READER_ITEM_READER_ID:
             return true;
         default:
             return false;
@@ -318,8 +364,11 @@ private:
             throw std::invalid_argument("A G-code reader item contains a non-finite value.");
         if (item.type == 0)
             throw std::invalid_argument("A G-code reader item has an invalid type.");
-        if (item.type > RAW_GCODE_READER_ITEM_LINE_NUMBER)
+        if (item.type > RAW_GCODE_READER_ITEM_READER_ID &&
+            item.type < RAW_GCODE_READER_ITEM_CUSTOM_BEGIN)
             throw std::invalid_argument("A G-code reader item uses an unknown type.");
+        if (item.type >= RAW_GCODE_READER_ITEM_CUSTOM_BEGIN)
+            return;
         if (requires_zero_target(item.type) && item.target != 0)
             throw std::invalid_argument("A G-code reader global item has a nonzero target.");
         if (requires_integral_value(item.type) &&
@@ -382,6 +431,14 @@ private:
     {
         if (values.find(Key{RAW_GCODE_READER_ITEM_LINE_NUMBER, 0}) == values.end())
             throw std::invalid_argument("A G-code reader state or event has no line number.");
+    }
+
+    // Reader identity was introduced after the first complete-state fixtures.
+    // Normalize an omitted value to the provisional identity instead of
+    // forcing every existing producer to synthesize the same default.
+    static void normalize_reader_id(std::map<Key, double> &values)
+    {
+        values.emplace(Key{RAW_GCODE_READER_ITEM_READER_ID, 0}, 0.0);
     }
 
     // Rebuild the contiguous C view after every mutation, copy or move. Its
