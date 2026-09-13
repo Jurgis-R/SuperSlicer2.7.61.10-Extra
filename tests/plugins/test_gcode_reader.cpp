@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 #include "plugin_test_helpers.hpp"
 
 #include "libslic3r/Api/host/GCodeReaderService.hpp"
+#include "libslic3r/Api/host/GCodeReaderResultBuilder.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode_reader.h"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
@@ -415,6 +417,22 @@ raw_gcode_reader_state initial_state(
     state.items = items.data();
     state.item_count = static_cast<uint32_t>(items.size());
     return state;
+}
+
+// Apply the same event to the authoritative state and to the viewer builder,
+// matching ViewerReaderInvocation's production callback ordering.
+void consume_builder_event(
+    GCodeReaderResultBuilder &builder,
+    slic3r_api::GCodeStateTracker &state,
+    uint32_t kind,
+    std::initializer_list<raw_gcode_reader_event_item> items)
+{
+    const std::vector<raw_gcode_reader_event_item> owned_items(items);
+    const raw_gcode_reader_event event = {
+        kind, owned_items.data(), static_cast<uint32_t>(owned_items.size())
+    };
+    state.apply(event);
+    builder.consume_event(event, state);
 }
 
 TEST_CASE("G-code reader publishes semantic actions and an owned final state",
@@ -828,6 +846,210 @@ TEST_CASE("Host G-code reader excludes retraction recovery from material usage",
     REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
     CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
           Approx(filament_area));
+}
+
+TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
+          "[plugins][gcode][reader][viewer]")
+{
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    raw_gcode_reader_state initial = initial_state(initial_items);
+    initial_items.push_back({RAW_GCODE_READER_ITEM_E, 1, 0.0});
+    initial.items = initial_items.data();
+    initial.item_count = static_cast<uint32_t>(initial_items.size());
+    const double filament_area = PI * std::pow(1.75 * 0.5, 2.0);
+
+    SECTION("unknown E clears the corresponding tool debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_X, 0, 2.0},
+             {RAW_GCODE_READER_ITEM_E, 0, 1.0},
+             {RAW_GCODE_READER_ITEM_FEEDRATE, 0, 60.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
+        CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
+              Approx(filament_area));
+    }
+
+    SECTION("unknown active tool alone preserves every tool debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_X, 0, 2.0},
+             {RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_FEEDRATE, 0, 60.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        CHECK(result.print_statistics.volumes_per_extruder.count(0) == 0);
+    }
+
+    SECTION("state update changing E with unknown active tool clears every debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_X, 0, 2.0},
+             {RAW_GCODE_READER_ITEM_E, 0, 1.0},
+             {RAW_GCODE_READER_ITEM_FEEDRATE, 0, 60.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 4.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
+        CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
+              Approx(filament_area));
+    }
+
+    SECTION("set position changing E with unknown active tool clears every debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_SET_POSITION,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_X, 0, 2.0},
+             {RAW_GCODE_READER_ITEM_E, 0, 1.0},
+             {RAW_GCODE_READER_ITEM_FEEDRATE, 0, 60.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 4.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
+        CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
+              Approx(filament_area));
+    }
+
+    SECTION("E movement with unknown active tool clears debt without assigning new debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -3.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_X, 0, 2.0},
+             {RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_FEEDRATE, 0, 60.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 4.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
+        CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
+              Approx(3.0 * filament_area));
+    }
+
+    SECTION("unchanged E with unknown active tool preserves every debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 4.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        CHECK(result.print_statistics.volumes_per_extruder.count(0) == 0);
+    }
+
+    SECTION("targeted E invalidation preserves another tool debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 1.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 1, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 1, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 4.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        CHECK(result.print_statistics.volumes_per_extruder.count(1) == 0);
+    }
+
+    SECTION("known tool changes preserve per-tool debt") {
+        slic3r_api::GCodeStateTracker state(initial);
+        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 1.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+
+        const GCodeProcessorResult result = builder.finish(state);
+        CHECK(result.print_statistics.volumes_per_extruder.count(0) == 0);
+    }
 }
 
 TEST_CASE("Host G-code reader derives tools and arc vertices from events",

@@ -221,6 +221,7 @@ void GCodeReaderResultBuilder::consume_event(
 {
     if (m_finished)
         throw std::logic_error("Cannot append a Reader event after finalizing viewer data.");
+    invalidate_derived_state(event, post_state);
     switch (event.kind) {
     case RAW_GCODE_READER_EVENT_STATE_UPDATE:
         process_state_update(event, post_state);
@@ -262,7 +263,15 @@ void GCodeReaderResultBuilder::process_state_update(
     const std::optional<uint32_t> current_tool = state.active_tool();
     if (!previous_tool || !current_tool || *previous_tool == *current_tool)
         return;
-    ensure_tool(*current_tool);
+    process_tool_change(event, state, *current_tool);
+}
+
+void GCodeReaderResultBuilder::process_tool_change(
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &state,
+    uint32_t new_tool)
+{
+    ensure_tool(new_tool);
 
     const Vec3d position(
         state_value_or(state, RAW_GCODE_READER_ITEM_X, 0.0),
@@ -271,16 +280,16 @@ void GCodeReaderResultBuilder::process_state_update(
     const uint32_t line = static_cast<uint32_t>(
         event_value(event, RAW_GCODE_READER_ITEM_LINE_NUMBER).value_or(0.0));
     const double offset_x = state_value_or(
-        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_X, 0.0, *current_tool);
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_X, 0.0, new_tool);
     const double offset_y = state_value_or(
-        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Y, 0.0, *current_tool);
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Y, 0.0, new_tool);
     const double offset_z = state_value_or(
-        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Z, 0.0, *current_tool);
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Z, 0.0, new_tool);
     const uint32_t fan_id = static_cast<uint32_t>(state_value_or(
-        state, RAW_GCODE_READER_ITEM_TOOL_FAN, 0.0, *current_tool));
+        state, RAW_GCODE_READER_ITEM_TOOL_FAN, 0.0, new_tool));
     m_result.moves.emplace_back(
         line + 1u, EMoveType::Tool_change, viewer_role(state),
-        static_cast<uint8_t>(std::min<uint32_t>(*current_tool, UINT8_MAX)),
+        static_cast<uint8_t>(std::min<uint32_t>(new_tool, UINT8_MAX)),
         static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)), 0,
         Vec3f(static_cast<float>(position.x() + offset_x),
               static_cast<float>(position.y() + offset_y),
@@ -289,7 +298,7 @@ void GCodeReaderResultBuilder::process_state_update(
         static_cast<float>(state.value(
             RAW_GCODE_READER_ITEM_FAN_SPEED, fan_id).value_or(0.0)),
         static_cast<float>(state.value(
-            RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, *current_tool).value_or(0.0)),
+            RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, new_tool).value_or(0.0)),
         m_total_time, 0, false);
 }
 
@@ -304,7 +313,8 @@ void GCodeReaderResultBuilder::process_linear_move(
         // turned into an honest viewer segment.
         return;
     }
-    const uint32_t tool = state.active_tool().value_or(0);
+    const std::optional<uint32_t> active_tool = state.active_tool();
+    const uint32_t tool = active_tool.value_or(0);
     const Vec3d start(*m_previous_state.x(), *m_previous_state.y(), *m_previous_state.z());
     const Vec3d end(*state.x(), *state.y(), *state.z());
     const double start_e = state_value_or(
@@ -430,6 +440,35 @@ void GCodeReaderResultBuilder::process_invalidation(
     // movement listener will resume only when enough position data is known.
 }
 
+void GCodeReaderResultBuilder::invalidate_derived_state(
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &state)
+{
+    bool e_changed = false;
+    for (uint32_t index = 0; index < event.item_count; ++index) {
+        const raw_gcode_reader_event_item &item = event.items[index];
+        if (item.type == RAW_GCODE_READER_ITEM_E &&
+            m_previous_state.e(item.target) != state.e(item.target)) {
+            e_changed = true;
+            break;
+        }
+    }
+
+    // E positions are stored per logical tool, so merely losing ACTIVE_TOOL
+    // does not invalidate them. If E changes while no tool is active, however,
+    // the host cannot safely associate that change with any retained debt.
+    if (!state.active_tool() && e_changed) {
+        std::fill(m_retracted_filament.begin(), m_retracted_filament.end(), 0.0);
+        return;
+    }
+
+    // A Reader may invalidate one E slot while preserving other tools. Keep
+    // independent debts only where the corresponding E position remains known.
+    for (size_t tool = 0; tool < m_retracted_filament.size(); ++tool)
+        if (!state.e(static_cast<uint32_t>(tool)))
+            m_retracted_filament[tool] = 0.0;
+}
+
 void GCodeReaderResultBuilder::append_move(
     const raw_gcode_reader_event &event,
     const slic3r_api::GCodeStateTracker &state,
@@ -439,7 +478,8 @@ void GCodeReaderResultBuilder::append_move(
     double end_e,
     bool internal_only)
 {
-    const uint32_t tool = state.active_tool().value_or(0);
+    const std::optional<uint32_t> active_tool = state.active_tool();
+    const uint32_t tool = active_tool.value_or(0);
     ensure_tool(tool);
     const Vec3d delta = end - start;
     const double xyz_distance = delta.norm();
@@ -448,7 +488,10 @@ void GCodeReaderResultBuilder::append_move(
     const double diameter = vector_value_or(
         m_result.filament_diameters, tool, DEFAULT_VIEWER_FILAMENT_DIAMETER);
     const double filament_area = PI * std::pow(0.5 * diameter, 2.0);
-    const double e_delta_raw = end_e - start_e;
+    // Keep the spatial move visible when ACTIVE_TOOL is unknown, but do not
+    // attribute its E delta to the fallback display tool. A later known E
+    // position starts a new trustworthy accounting sequence.
+    const double e_delta_raw = active_tool ? end_e - start_e : 0.0;
     const double e_delta = volumetric && filament_area > 0.0 ?
         e_delta_raw / filament_area : e_delta_raw;
     const double extrusion_factor =

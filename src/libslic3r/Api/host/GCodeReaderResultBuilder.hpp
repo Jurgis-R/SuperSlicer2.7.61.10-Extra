@@ -71,6 +71,10 @@ private:
     // Dispatch semantic events; each listener handles one viewer concern.
     void process_state_update(const raw_gcode_reader_event &event,
                               const slic3r_api::GCodeStateTracker &state);
+    // Store the visible transition between two known logical tools.
+    void process_tool_change(const raw_gcode_reader_event &event,
+                             const slic3r_api::GCodeStateTracker &state,
+                             uint32_t new_tool);
     void process_linear_move(const raw_gcode_reader_event &event,
                              const slic3r_api::GCodeStateTracker &state);
     void process_arc_move(const raw_gcode_reader_event &event,
@@ -85,6 +89,10 @@ private:
                             const slic3r_api::GCodeStateTracker &state);
     void process_invalidation(const raw_gcode_reader_event &event,
                               const slic3r_api::GCodeStateTracker &state);
+
+    // Drop host-only deductions only when this event breaks their source state.
+    void invalidate_derived_state(const raw_gcode_reader_event &event,
+                                  const slic3r_api::GCodeStateTracker &state);
 
     // Store one linearized endpoint and update host-derived statistics.
     void append_move(const raw_gcode_reader_event &event,
@@ -106,8 +114,9 @@ private:
     std::array<float, static_cast<size_t>(GCodeExtrusionRole::Count)> m_role_times{};
     std::vector<float> m_layer_times;
     std::vector<double> m_color_volumes;
-    // Positive E first pays back earlier retraction for the same tool. Only
-    // the remainder represents newly consumed filament.
+    // Positive E first pays back earlier retraction for the same tool. Losing
+    // one E discards that tool's debt; an E change without a known active tool
+    // discards every debt because the host can no longer attribute the change.
     std::vector<double> m_retracted_filament;
     uint64_t m_source_size = 0;
     float m_total_time = 0.0f;
