@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -83,6 +84,61 @@ TEST_CASE("GCodeLineParser command helpers preserve complete-word semantics",
     CHECK_FALSE(GCodeLineParser::GCodeLine::command_is("G10 X1", "G1"));
     CHECK(GCodeLineParser::GCodeLine::command_starts_with("  G10 X1", "G1"));
     CHECK(GCodeLineParser::GCodeLine::extract_command("\tM106 S255") == "M106");
+}
+
+TEST_CASE("GCodeLineParser respects string view boundaries",
+          "[plugins][gcode][line-parser]")
+{
+    const std::string storage = "G10 X99";
+    const std::string_view command_only(storage.data(), 2);
+
+    // The character following the view is '0'. It must not turn the bounded
+    // command into G10 or prevent G1 from being recognized as a complete word.
+    CHECK(GCodeLineParser::GCodeLine::command_is(command_only, "G1"));
+    CHECK(GCodeLineParser::GCodeLine::command_starts_with(command_only, "G1"));
+    CHECK(GCodeLineParser::GCodeLine::extract_command(command_only) == "G1");
+
+    std::array<char, 5> characters {{'M', '1', '0', '4', 'X'}};
+    const std::string_view without_terminator(characters.data(), 4);
+    GCodeLineParser::GCodeLine saved;
+    GCodeLineParser parser;
+    parser.parse_line(without_terminator,
+        [&saved](GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
+            saved = line;
+        });
+    characters[0] = 'X';
+    CHECK(saved.raw() == "M104");
+    CHECK(saved.command() == "M104");
+}
+
+TEST_CASE("GCodeLineParser handles empty terminated and embedded-null views",
+          "[plugins][gcode][line-parser]")
+{
+    GCodeLineParser parser;
+    uint32_t callbacks = 0;
+    parser.parse_line(std::string_view(),
+        [&callbacks](GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
+            ++callbacks;
+            CHECK(line.raw().empty());
+        });
+    CHECK(callbacks == 1);
+
+    callbacks = 0;
+    parser.parse_buffer(std::string_view(),
+        [&callbacks](GCodeLineParser &, const GCodeLineParser::GCodeLine &) {
+            ++callbacks;
+        });
+    CHECK(callbacks == 0);
+
+    const std::array<char, 9> text {{'G', '1', '\r', '\n', 'G', '2', '\0', 'G', '3'}};
+    std::vector<GCodeLineParser::GCodeLine> lines;
+    parser.parse_buffer(std::string_view(text.data(), text.size()),
+        [&lines](GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
+            lines.push_back(line);
+        });
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0].raw() == "G1");
+    CHECK(lines[1].raw() == "G2");
 }
 
 TEST_CASE("GCodeLineParser callbacks may stop a buffer traversal",

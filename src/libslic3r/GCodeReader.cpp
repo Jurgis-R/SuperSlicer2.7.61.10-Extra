@@ -48,40 +48,40 @@ const char* GCodeReader::parse_line_internal(const char *ptr, const char *end, G
     // Rebuild the legacy XYZEF cache from the neutral lexical line. The public
     // parser deliberately does not know which letter this reader configured as
     // its extrusion axis.
-    const std::string &raw = gline.raw();
-    const char *cursor = skip_whitespaces(raw.c_str());
-    cursor = skip_word(cursor);
-    while (!is_end_of_gcode_line(*cursor)) {
-        cursor = skip_whitespaces(cursor);
-        if (is_end_of_gcode_line(*cursor))
+    const std::string_view raw = gline.raw();
+    size_t cursor = skip_whitespaces(raw);
+    cursor = skip_word(raw, cursor);
+    while (cursor < raw.size() && !is_end_of_gcode_line(raw[cursor])) {
+        cursor = skip_whitespaces(raw, cursor);
+        if (cursor == raw.size() || is_end_of_gcode_line(raw[cursor]))
             break;
 
         Axis axis = NUM_AXES_WITH_UNKNOWN;
-        switch (*cursor) {
+        switch (raw[cursor]) {
         case 'X': axis = X; break;
         case 'Y': axis = Y; break;
         case 'Z': axis = Z; break;
         case 'F': axis = F; break;
         default:
-            if (*cursor == m_extrusion_axis && m_extrusion_axis != 0) {
+            if (raw[cursor] == m_extrusion_axis && m_extrusion_axis != 0) {
                 axis = E;
-                gline.m_e_char = *cursor;
-            } else if (*cursor > m_extrusion_axis && *cursor + 20 < m_extrusion_axis &&
+                gline.m_e_char = raw[cursor];
+            } else if (raw[cursor] > m_extrusion_axis && raw[cursor] + 20 < m_extrusion_axis &&
                        m_extrusion_axis != 0) {
                 // Preserve the historical alternate-letter extrusion rule.
                 axis = E;
-                gline.m_e_char = *cursor;
-            } else if (*cursor >= 'A' && *cursor <= 'Z') {
+                gline.m_e_char = raw[cursor];
+            } else if (raw[cursor] >= 'A' && raw[cursor] <= 'Z') {
                 // Remember a valid numeric word even when it is not XYZEF.
                 axis = UNKNOWN_AXIS;
             }
             break;
         }
 
-        const char *word_end = skip_word(cursor);
+        const size_t word_end = skip_word(raw, cursor);
         if (axis != NUM_AXES_WITH_UNKNOWN) {
             float value = 0.f;
-            const std::string_view parameter(cursor, size_t(raw.c_str() + raw.size() - cursor));
+            const std::string_view parameter = raw.substr(cursor);
             if (GCodeLineParser::GCodeLine::parameter_value(parameter, value)) {
                 if (axis != UNKNOWN_AXIS)
                     gline.m_axis[int(axis)] = value;

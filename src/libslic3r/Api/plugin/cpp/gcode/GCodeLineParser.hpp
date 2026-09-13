@@ -5,6 +5,7 @@
 #ifndef slic3r_Api_plugin_cpp_gcode_GCodeLineParser_hpp_
 #define slic3r_Api_plugin_cpp_gcode_GCodeLineParser_hpp_
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -73,13 +74,13 @@ public:
         static bool parameter_value(std::string_view parameter_position, int32_t &value);
 
         /* Compare a raw line with one complete command word. */
-        static bool command_is(const std::string &gcode_line, const char *command);
+        static bool command_is(std::string_view gcode_line, const char *command);
 
         /* Test only the beginning of a command, for consumers that accept suffixes. */
-        static bool command_starts_with(const std::string &gcode_line, const char *command);
+        static bool command_starts_with(std::string_view gcode_line, const char *command);
 
         /* Extract the command word from an otherwise unparsed line. */
-        static std::string extract_command(const std::string &gcode_line);
+        static std::string extract_command(std::string_view gcode_line);
 
     protected:
         std::string m_raw;
@@ -92,13 +93,13 @@ public:
     GCodeLineParser() = default;
 
     /*
-    Visit every line in a buffer in source order. The same temporary line
-    object is reset and reused between callbacks.
+    Visit every line in a borrowed buffer in source order. The same temporary
+    line object is reset and reused between callbacks, and owns its copied text.
     */
     template<typename Callback>
-    void parse_buffer(const std::string &buffer, Callback callback)
+    void parse_buffer(std::string_view buffer, Callback callback)
     {
-        const char *ptr = buffer.c_str();
+        const char *ptr = buffer.empty() ? "" : buffer.data();
         const char *end = ptr + buffer.size();
         GCodeLine line;
         m_parsing = true;
@@ -109,7 +110,7 @@ public:
     }
 
     /* Parse a buffer while discarding its lines. */
-    void parse_buffer(const std::string &buffer);
+    void parse_buffer(std::string_view buffer);
 
     /*
     Parse one line from a character range, invoke the callback, and return the
@@ -126,12 +127,13 @@ public:
         return next;
     }
 
-    /* Parse one standalone line and invoke the callback once. */
+    /* Parse one borrowed standalone line and invoke the callback once. */
     template<typename Callback>
-    void parse_line(const std::string &line, Callback callback)
+    void parse_line(std::string_view line, Callback callback)
     {
         GCodeLine parsed_line;
-        this->parse_line(line.c_str(), line.c_str() + line.size(), parsed_line, callback);
+        const char *begin = line.empty() ? "" : line.data();
+        this->parse_line(begin, begin + line.size(), parsed_line, callback);
     }
 
     /* Stop the currently active parse_buffer() after its current callback. */
@@ -145,9 +147,9 @@ protected:
     static bool is_end_of_line(char character);
     static bool is_end_of_gcode_line(char character);
     static bool is_end_of_word(char character);
-    static const char *skip_whitespaces(const char *text);
-    static const char *skip_word(const char *text);
-    static const char *parameter_position(const char *raw_line, char parameter);
+    static size_t skip_whitespaces(std::string_view text, size_t position = 0);
+    static size_t skip_word(std::string_view text, size_t position);
+    static std::string_view parameter_position(std::string_view raw_line, char parameter);
 
     bool m_parsing {false};
 };

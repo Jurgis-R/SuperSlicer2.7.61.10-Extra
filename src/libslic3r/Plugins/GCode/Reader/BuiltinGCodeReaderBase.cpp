@@ -347,7 +347,7 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
     // outside the common subset and the derived dialect hooks invalidate
     // portable state so later output never relies on guessed machine values.
     GCodeLineParser parser;
-    parser.parse_line(std::string(text),
+    parser.parse_line(text,
                       [this, &run_context, &context, &state](
                           GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
         const std::string_view command = line.command();

@@ -7,8 +7,6 @@
 
 #include <charconv>
 #include <cmath>
-#include <cstring>
-
 #include <fast_float/fast_float.h>
 
 /*
@@ -34,9 +32,10 @@ void GCodeLineParser::GCodeLine::reset()
 
 std::string_view GCodeLineParser::GCodeLine::command() const
 {
-    const char *command_begin = GCodeLineParser::skip_whitespaces(m_raw.c_str());
-    return std::string_view(command_begin,
-                            GCodeLineParser::skip_word(command_begin) - command_begin);
+    const std::string_view raw(m_raw);
+    const size_t begin = GCodeLineParser::skip_whitespaces(raw);
+    const size_t end = GCodeLineParser::skip_word(raw, begin);
+    return raw.substr(begin, end - begin);
 }
 
 std::string_view GCodeLineParser::GCodeLine::comment() const
@@ -48,14 +47,12 @@ std::string_view GCodeLineParser::GCodeLine::comment() const
 
 std::string_view GCodeLineParser::GCodeLine::parameter_position(char parameter) const
 {
-    const char *position = GCodeLineParser::parameter_position(m_raw.c_str(), parameter);
-    return position == nullptr ? std::string_view() :
-                                 std::string_view(position, m_raw.size() - size_t(position - m_raw.data()));
+    return GCodeLineParser::parameter_position(m_raw, parameter);
 }
 
 bool GCodeLineParser::GCodeLine::has_parameter(char parameter) const
 {
-    return GCodeLineParser::parameter_position(m_raw.c_str(), parameter) != nullptr;
+    return !GCodeLineParser::parameter_position(m_raw, parameter).empty();
 }
 
 std::optional<float> GCodeLineParser::GCodeLine::parameter_value(char parameter) const
@@ -112,45 +109,44 @@ bool GCodeLineParser::GCodeLine::parameter_value(std::string_view position, int3
     return true;
 }
 
-bool GCodeLineParser::GCodeLine::command_is(const std::string &gcode_line,
+bool GCodeLineParser::GCodeLine::command_is(std::string_view gcode_line,
                                              const char *expected_command)
 {
     if (expected_command == nullptr)
         return false;
-    const char *command = GCodeLineParser::skip_whitespaces(gcode_line.c_str());
-    if (*command == 'N') {
-        command = GCodeLineParser::skip_word(command);
-        command = GCodeLineParser::skip_whitespaces(command);
+    size_t command = GCodeLineParser::skip_whitespaces(gcode_line);
+    if (command < gcode_line.size() && gcode_line[command] == 'N') {
+        command = GCodeLineParser::skip_word(gcode_line, command);
+        command = GCodeLineParser::skip_whitespaces(gcode_line, command);
     }
-    const size_t length = std::strlen(expected_command);
-    const size_t available = gcode_line.size() - size_t(command - gcode_line.c_str());
-    if (length > available)
+    const std::string_view expected(expected_command);
+    if (expected.size() > gcode_line.size() - command ||
+        gcode_line.substr(command, expected.size()) != expected)
         return false;
-    return std::strncmp(command, expected_command, length) == 0 &&
-           GCodeLineParser::is_end_of_word(command[length]);
+    const size_t after_command = command + expected.size();
+    return after_command == gcode_line.size() ||
+           GCodeLineParser::is_end_of_word(gcode_line[after_command]);
 }
 
-bool GCodeLineParser::GCodeLine::command_starts_with(const std::string &gcode_line,
+bool GCodeLineParser::GCodeLine::command_starts_with(std::string_view gcode_line,
                                                       const char *expected_command)
 {
     if (expected_command == nullptr)
         return false;
-    const char *command = GCodeLineParser::skip_whitespaces(gcode_line.c_str());
-    const size_t expected_length = std::strlen(expected_command);
-    const size_t available = gcode_line.size() - size_t(command - gcode_line.c_str());
-    return expected_length <= available &&
-           std::strncmp(command, expected_command, expected_length) == 0;
+    const size_t command = GCodeLineParser::skip_whitespaces(gcode_line);
+    const std::string_view expected(expected_command);
+    return expected.size() <= gcode_line.size() - command &&
+           gcode_line.substr(command, expected.size()) == expected;
 }
 
-std::string GCodeLineParser::GCodeLine::extract_command(const std::string &gcode_line)
+std::string GCodeLineParser::GCodeLine::extract_command(std::string_view gcode_line)
 {
-    GCodeLine line;
-    line.m_raw = gcode_line;
-    const std::string_view command = line.command();
-    return std::string(command.begin(), command.end());
+    const size_t begin = GCodeLineParser::skip_whitespaces(gcode_line);
+    const size_t end = GCodeLineParser::skip_word(gcode_line, begin);
+    return std::string(gcode_line.substr(begin, end - begin));
 }
 
-void GCodeLineParser::parse_buffer(const std::string &buffer)
+void GCodeLineParser::parse_buffer(std::string_view buffer)
 {
     this->parse_buffer(buffer, [](GCodeLineParser &, const GCodeLine &) {});
 }
@@ -198,33 +194,34 @@ bool GCodeLineParser::is_end_of_word(char character)
     return is_whitespace(character) || is_end_of_gcode_line(character);
 }
 
-const char *GCodeLineParser::skip_whitespaces(const char *text)
+size_t GCodeLineParser::skip_whitespaces(std::string_view text, size_t position)
 {
-    while (is_whitespace(*text))
-        ++text;
-    return text;
+    while (position < text.size() && is_whitespace(text[position]))
+        ++position;
+    return position;
 }
 
-const char *GCodeLineParser::skip_word(const char *text)
+size_t GCodeLineParser::skip_word(std::string_view text, size_t position)
 {
-    while (!is_end_of_word(*text))
-        ++text;
-    return text;
+    while (position < text.size() && !is_end_of_word(text[position]))
+        ++position;
+    return position;
 }
 
-const char *GCodeLineParser::parameter_position(const char *raw_line, char parameter)
+std::string_view GCodeLineParser::parameter_position(std::string_view raw_line,
+                                                      char parameter)
 {
-    const char *cursor = skip_whitespaces(raw_line);
-    cursor = skip_word(cursor);
-    while (!is_end_of_gcode_line(*cursor)) {
-        cursor = skip_whitespaces(cursor);
-        if (is_end_of_gcode_line(*cursor))
+    size_t cursor = skip_whitespaces(raw_line);
+    cursor = skip_word(raw_line, cursor);
+    while (cursor < raw_line.size() && !is_end_of_gcode_line(raw_line[cursor])) {
+        cursor = skip_whitespaces(raw_line, cursor);
+        if (cursor == raw_line.size() || is_end_of_gcode_line(raw_line[cursor]))
             break;
-        if (*cursor == parameter)
-            return cursor;
-        cursor = skip_word(cursor);
+        if (raw_line[cursor] == parameter)
+            return raw_line.substr(cursor);
+        cursor = skip_word(raw_line, cursor);
     }
-    return nullptr;
+    return {};
 }
 
 }} // namespace slic3r_api::GCodeGeneration
