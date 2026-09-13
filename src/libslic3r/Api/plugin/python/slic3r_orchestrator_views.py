@@ -190,7 +190,12 @@ class OrchestratorView:
         return option_definition(self.api, key)
 
     def find_plugin(self, plugin_id: str) -> PluginView:
-        """Find an exact plugin id, including inactive registered plugins."""
+        """Find an active plugin by exact id.
+
+        An empty or unknown id, or a plugin outside the activation set
+        established by the host, produces a false ``PluginView``. ``execute()``
+        defensively validates the handle and its activation again.
+        """
         handle = self.api.host.orchestrator_find_plugin(
             self.c_handle(), plugin_id.encode("utf-8")
         )

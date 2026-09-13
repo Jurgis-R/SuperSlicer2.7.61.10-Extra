@@ -369,6 +369,9 @@ TEST_CASE("Missing dependencies block indirect consumers without executing them"
     register_service_plugin(orchestrator, direct);
     register_service_plugin(orchestrator, indirect);
     ActivePluginGuard active(orchestrator, {indirect.id, direct.id});
+    const orchestrator_plugin_handle *plugin = orchestrator_find_plugin(
+        reinterpret_cast<orchestrator_handle *>(&orchestrator), indirect.id);
+    REQUIRE(plugin != nullptr);
     std::vector<std::string> closure;
     std::string error;
     REQUIRE_FALSE(orchestrator.plugin_dependency_closure({indirect.id}, closure, error));
@@ -380,8 +383,8 @@ TEST_CASE("Missing dependencies block indirect consumers without executing them"
     REQUIRE(orchestrator.blocked_plugin_activations().size() == 2);
     CHECK(orchestrator.blocked_plugin_activations().at(direct.id).find("not loaded") != std::string::npos);
     CHECK(orchestrator.blocked_plugin_activations().at(indirect.id).find(direct.id) != std::string::npos);
-    const orchestrator_plugin_handle *plugin = orchestrator_find_plugin(
-        reinterpret_cast<orchestrator_handle *>(&orchestrator), indirect.id);
+    CHECK(orchestrator_find_plugin(
+        reinterpret_cast<orchestrator_handle *>(&orchestrator), indirect.id) == nullptr);
     CHECK(orchestrator_execute_plugin(reinterpret_cast<orchestrator_handle *>(&orchestrator),
         plugin, nullptr, nullptr, 0) == RAW_PLUGIN_EXECUTION_INACTIVE);
     CHECK(indirect.run_count == 0);
@@ -659,8 +662,13 @@ TEST_CASE("Generic plugin execution reports inactive cancellation and plugin err
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator.reset_plugin_cancel();
     orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
-    const orchestrator_plugin_handle *plugin = orchestrator_find_plugin(handle, g_service_low.id);
-    REQUIRE(plugin != nullptr);
+    const orchestrator_plugin_handle *plugin = nullptr;
+    {
+        ActivePluginGuard active(orchestrator, {g_service_low.id});
+        plugin = orchestrator_find_plugin(handle, g_service_low.id);
+        REQUIRE(plugin != nullptr);
+        CHECK(slic3r_api::OrchestratorView(handle).find_plugin(g_service_low.id).valid());
+    }
     const orchestrator_plugin_handle *invalid_plugin =
         reinterpret_cast<const orchestrator_plugin_handle *>(uintptr_t(1));
     CHECK(orchestrator_execute_plugin(handle, invalid_plugin, nullptr, nullptr, 0) ==
@@ -668,6 +676,10 @@ TEST_CASE("Generic plugin execution reports inactive cancellation and plugin err
 
     {
         ActivePluginGuard active(orchestrator, {});
+        CHECK(orchestrator_find_plugin(handle, g_service_low.id) == nullptr);
+        CHECK_FALSE(slic3r_api::OrchestratorView(handle).find_plugin(g_service_low.id).valid());
+        // Handles are borrowed snapshots of a lookup. Execution must reject a
+        // handle acquired before its provider was deactivated.
         CHECK(orchestrator_execute_plugin(handle, plugin, nullptr, nullptr, 0) ==
               RAW_PLUGIN_EXECUTION_INACTIVE);
     }

@@ -36,6 +36,7 @@ def address(handle):
 class OrchestratorBridgeHost:
     def __init__(self, generated):
         self.generated = generated
+        self.active_plugins = {b"example.provider"}
         self.executions = []
         self.bridge_input = None
         self.bridge_destroy_count = 0
@@ -74,7 +75,7 @@ class OrchestratorBridgeHost:
         return None
 
     def orchestrator_find_plugin(self, _orchestrator, plugin_id):
-        return 101 if plugin_id == b"example.provider" else 0
+        return 101 if plugin_id in self.active_plugins else 0
 
     def orchestrator_select_plugin(self, _orchestrator, config, step, group):
         self.selection = (address(config), int(step), group.decode())
@@ -210,6 +211,9 @@ class PythonOrchestratorBridgeViewTests(unittest.TestCase):
         self.assertEqual(plugin.id(), "example.provider")
         self.assertEqual(plugin.step(), step)
         self.assertFalse(orchestrator.find_plugin("missing"))
+        host.active_plugins.clear()
+        self.assertFalse(orchestrator.find_plugin("example.provider"))
+        host.active_plugins.add(b"example.provider")
 
         config = self.datatree.Config(api, 30)
         self.assertTrue(orchestrator.select_plugin(config, step, "providers"))

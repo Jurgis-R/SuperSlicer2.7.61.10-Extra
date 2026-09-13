@@ -672,6 +672,8 @@ int32_t orchestrator_selected_plugin_used_config_keys(orchestrator_handle *me,
 
 namespace Slic3r {
 
+// Initialize the host registries and reserve built-in runtime identities.
+// The singleton owns this state until process shutdown.
 Orchestrator::Orchestrator()
 {
     link_config_definition_api();
@@ -715,6 +717,7 @@ Orchestrator::Orchestrator()
     m_generic_facets_annotations.emplace_back(builtin_seam_facets_annotation_definition());
 }
 
+// Return the function-local singleton; its plugin objects remain valid until shutdown.
 Orchestrator &Orchestrator::instance() {
     static Orchestrator s_instance;
     static bool s_default_bridge_detector_registered = []() {
@@ -726,6 +729,8 @@ Orchestrator &Orchestrator::instance() {
     return s_instance;
 }
 
+// Validate the instance, create host-owned storage, and publish its metadata.
+// Registration failure does not publish a partially constructed plugin.
 bool Orchestrator::register_plugin(plugin_instance plugin) {
     const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     std::unique_ptr<Plugin> new_plugin;
@@ -775,6 +780,7 @@ bool Orchestrator::register_plugin(plugin_instance plugin) {
     return true;
 }
 
+// Replace any previous report and begin collecting load results for one package.
 void Orchestrator::begin_plugin_package_load(const std::string &package_id,
                                              const std::string &package_path,
                                              bool allows_no_plugins)
@@ -788,6 +794,7 @@ void Orchestrator::begin_plugin_package_load(const std::string &package_id,
     m_plugin_package_load_reports[package_id] = std::move(report);
 }
 
+// Append one diagnostic and update the package state without unloading plugins.
 void Orchestrator::report_plugin_package_load_issue(const std::string &package_id,
                                                     PluginPackageLoadIssue issue)
 {
@@ -799,6 +806,7 @@ void Orchestrator::report_plugin_package_load_issue(const std::string &package_i
     update_plugin_package_load_state(report);
 }
 
+// Complete a report and synthesize the no-plugin error when the package is not allowed to be empty.
 void Orchestrator::finish_plugin_package_load(const std::string &package_id)
 {
     const std::map<std::string, PluginPackageLoadReport>::iterator found =
@@ -816,11 +824,13 @@ void Orchestrator::finish_plugin_package_load(const std::string &package_id)
     update_plugin_package_load_state(report);
 }
 
+// Discard reports only; registered plugin objects and activation state are preserved.
 void Orchestrator::clear_plugin_package_load_reports()
 {
     m_plugin_package_load_reports.clear();
 }
 
+// Return a borrowed report pointer; it is invalidated when reports are cleared.
 const PluginPackageLoadReport *Orchestrator::plugin_package_load_report(const std::string &package_id) const
 {
     const std::map<std::string, PluginPackageLoadReport>::const_iterator found =
@@ -828,11 +838,13 @@ const PluginPackageLoadReport *Orchestrator::plugin_package_load_report(const st
     return found == m_plugin_package_load_reports.end() ? nullptr : &found->second;
 }
 
+// Transfer the scope token so only one object can close the registration scope.
 Orchestrator::PluginRegistrationScope::PluginRegistrationScope(PluginRegistrationScope &&other) noexcept
     : m_orchestrator(std::exchange(other.m_orchestrator, nullptr))
 {
 }
 
+// Close this scope before taking the source token, preserving one active owner.
 Orchestrator::PluginRegistrationScope &Orchestrator::PluginRegistrationScope::operator=(PluginRegistrationScope &&other) noexcept
 {
     if (this != &other) {
@@ -843,12 +855,14 @@ Orchestrator::PluginRegistrationScope &Orchestrator::PluginRegistrationScope::op
     return *this;
 }
 
+// Close the registration scope when its owning token is destroyed.
 Orchestrator::PluginRegistrationScope::~PluginRegistrationScope()
 {
     if (m_orchestrator != nullptr)
         m_orchestrator->end_plugin_registration_scope();
 }
 
+// Record the package context until the returned scope is destroyed.
 Orchestrator::PluginRegistrationScope Orchestrator::plugin_registration_scope(std::string package_root,
                                                                                 bool external_plugin)
 {
@@ -864,12 +878,15 @@ Orchestrator::PluginRegistrationScope Orchestrator::plugin_registration_scope(st
     return PluginRegistrationScope(this);
 }
 
+// Remove the most recent registration context; the scope stack must not be empty.
 void Orchestrator::end_plugin_registration_scope()
 {
     assert(!m_plugin_registration_sources.empty());
     m_plugin_registration_sources.pop_back();
 }
 
+// Validate a package-relative catalog path and retain one catalog per domain.
+// Return -1 for invalid input, -2 for a conflicting domain, 0 for a duplicate, and 1 when added.
 int32_t Orchestrator::register_translation_catalog(const char *domain, const char *locale_directory)
 {
     if (domain == nullptr || locale_directory == nullptr || m_plugin_registration_sources.empty())
@@ -908,6 +925,7 @@ int32_t Orchestrator::register_translation_catalog(const char *domain, const cha
     return 1;
 }
 
+// Use the explicit domain when present, otherwise inherit the initializing plugin's domain.
 std::string Orchestrator::resolved_translation_domain(const char *requested_domain) const
 {
     if (requested_domain != nullptr && requested_domain[0] != '\0')
@@ -915,6 +933,7 @@ std::string Orchestrator::resolved_translation_domain(const char *requested_doma
     return m_initializing_plugin != nullptr ? m_initializing_plugin->get_translation_domain() : std::string();
 }
 
+// Treat the host domain as available and require a registered catalog for other domains.
 bool Orchestrator::is_translation_domain_available(const std::string &domain, const std::string &package_root) const
 {
     if (domain.empty() || domain == "Slic3r")
@@ -926,6 +945,7 @@ bool Orchestrator::is_translation_domain_available(const std::string &domain, co
     return false;
 }
 
+// Copy borrowed plugin pointers into a snapshot so callers cannot alter the owning vector.
 std::vector<Plugin *> Orchestrator::registered_plugins() const
 {
     std::vector<Plugin *> plugins;
@@ -1045,6 +1065,7 @@ const Orchestrator::DynamicStepInfo *Orchestrator::step_info(const char *namespa
     return nullptr;
 }
 
+// Validate and retain one fragment; duplicate IDs are rejected to keep the logical slot unique.
 bool Orchestrator::add_ui_fragment(const char *target_file,
                                    const char *fragment_id,
                                    const char *content,
@@ -1105,6 +1126,7 @@ bool Orchestrator::add_ui_fragment(const char *target_file,
 std::vector<Orchestrator::PluginUiFragment>
 Orchestrator::ui_fragments_for_file(const std::string &target_file) const
 {
+    // Return copies because sorting and later registry changes must not mutate caller-visible storage.
     std::vector<PluginUiFragment> out;
     for (const PluginUiFragment &fragment : m_ui_fragments)
         if (fragment.target_file == target_file)
@@ -1120,6 +1142,7 @@ Orchestrator::ui_fragments_for_file(const std::string &target_file) const
     return out;
 }
 
+// Merge the registered fragments into a base layout without excluding any fragment ID.
 std::string Orchestrator::merged_ui_layout(const std::string &target_file, const std::string &base_content) const
 {
     static const std::unordered_set<std::string> empty_implemented_fragment_ids;
@@ -1130,6 +1153,7 @@ std::string Orchestrator::merged_ui_layout(const std::string &target_file,
                                            const std::string &base_content,
                                            const std::unordered_set<std::string> &implemented_fragment_ids) const
 {
+    // Skip IDs already implemented by the base layout or another provider.
     const std::vector<PluginUiFragment> fragments = this->ui_fragments_for_file(target_file);
     if (fragments.empty())
         return base_content;
@@ -1144,6 +1168,7 @@ std::string Orchestrator::merged_ui_layout(const std::string &target_file,
     return merger.merged();
 }
 
+// Validate and retain one GUI rule; an identical rule is not inserted twice.
 bool Orchestrator::add_gui_rule(const raw_gui_rule *rule)
 {
     if (rule == nullptr ||
@@ -1176,6 +1201,7 @@ bool Orchestrator::add_gui_rule(const raw_gui_rule *rule)
     return true;
 }
 
+// Assign or reuse a type ID after validating the descriptor; incompatible reuse is rejected.
 slic3r_property_type Orchestrator::register_property(const char *namespaced_name,
                                                      uint32_t byte_count,
                                                      uint32_t alignment)
@@ -1206,6 +1232,7 @@ slic3r_property_type Orchestrator::register_property(const char *namespaced_name
     return m_custom_property_infos.back().type;
 }
 
+// Reuse the generic property registry for the extrusion-property ABI type.
 extrusion_property_type Orchestrator::register_custom_extrusion_property(const char *namespaced_name,
                                                                          uint32_t byte_count,
                                                                          uint32_t alignment)
@@ -1213,6 +1240,7 @@ extrusion_property_type Orchestrator::register_custom_extrusion_property(const c
     return static_cast<extrusion_property_type>(this->register_property(namespaced_name, byte_count, alignment));
 }
 
+// Validate and retain one annotation definition; conflicting duplicate keys are rejected.
 bool Orchestrator::register_generic_facets_annotation(GenericFacetsAnnotationDefinition def)
 {
     if (def.key.empty() || def.label.empty() || def.enforce_label.empty() || def.block_label.empty())
@@ -1259,6 +1287,7 @@ bool Orchestrator::register_generic_facets_annotation(GenericFacetsAnnotationDef
 const Orchestrator::CustomExtrusionPropertyInfo*
 Orchestrator::custom_extrusion_property_info(extrusion_property_type type) const
 {
+    // The property APIs share one descriptor table.
     return this->property_info(type);
 }
 
@@ -1274,6 +1303,7 @@ Orchestrator::property_info(slic3r_property_type type) const
 const Orchestrator::CustomExtrusionPropertyInfo*
 Orchestrator::custom_extrusion_property_info(const char *namespaced_name) const
 {
+    // Name lookup uses the same table as numeric lookup.
     return this->property_info(namespaced_name);
 }
 
@@ -1293,6 +1323,7 @@ plugin_host_context Orchestrator::prepare_plugin_host_context(slicing_step_t ste
                                                               Plugin *plugin,
                                                               Print *print)
 {
+    // These handles are borrowed; the caller must keep the plugin and print alive for the run.
     plugin_host_context context = {};
     context.orchestrator = this;
     context.print = print;
@@ -1304,6 +1335,7 @@ plugin_host_context Orchestrator::prepare_plugin_host_context(slicing_step_t ste
 plugin_run_context Orchestrator::prepare_plugin_run_context(slicing_step_t step,
                                                             Plugin *plugin,
                                                             plugin_host_context *host_context) {
+    // Plugin storage stays owned by this orchestrator; host_context is optional and borrowed.
     plugin_run_context context = {};
     context.step = step;
     context.plugin_storage = reinterpret_cast<storage_handle *>(&this->plugin_storage()[plugin]);
@@ -1415,10 +1447,13 @@ std::vector<Orchestrator::PluginMessage> Orchestrator::consume_plugin_messages()
     return messages;
 }
 
+// Read the host cancellation flag without changing it.
 bool Orchestrator::is_plugin_cancelled() const { return m_plugin_cancel_requested.load(std::memory_order_relaxed); }
 
+// Publish cancellation for running plugin code to observe at its next cancellation point.
 void Orchestrator::request_plugin_cancel() { m_plugin_cancel_requested.store(true, std::memory_order_relaxed); }
 
+// Clear cancellation before starting an independent operation.
 void Orchestrator::reset_plugin_cancel() { m_plugin_cancel_requested.store(false, std::memory_order_relaxed); }
 
 bool Orchestrator::validate_plugin_activation(const std::vector<std::string> &plugin_ids,
@@ -1595,6 +1630,7 @@ option_def_error_code Orchestrator::create_new_print_config(const raw_config_opt
     return OPTION_DEF_ERROR_OK;
 }
 
+// Return a priority-ordered snapshot of every plugin registered for a step.
 std::vector<Plugin *> Orchestrator::get_all_plugins_for_step(slicing_step_t step) const {
     std::vector<Plugin *> list;
     for (const std::unique_ptr<Plugin> &plugin : m_registered_plugins) {
@@ -1607,6 +1643,7 @@ std::vector<Plugin *> Orchestrator::get_all_plugins_for_step(slicing_step_t step
     return list;
 }
 
+// Filter the step snapshot to plugins currently marked active.
 std::vector<Plugin *> Orchestrator::get_active_plugins_for_step(slicing_step_t step) const {
     std::vector<Plugin *> list;
     for (Plugin *plugin : this->get_all_plugins_for_step(step))
@@ -1615,6 +1652,7 @@ std::vector<Plugin *> Orchestrator::get_active_plugins_for_step(slicing_step_t s
     return list;
 }
 
+// Return active plugins in the step's current execution order.
 std::vector<Plugin *> Orchestrator::get_current_plugins_for_step(slicing_step_t step) const {
     auto it = m_plugins_by_step.find(step);
     if (it == m_plugins_by_step.end())
@@ -1628,6 +1666,7 @@ std::vector<Plugin *> Orchestrator::get_current_plugins_for_step(slicing_step_t 
     return plugins;
 }
 
+// Perform a linear ID lookup and return a borrowed pointer when found.
 const Plugin *Orchestrator::get_plugin(const std::string &plugin_id) const {
     const Plugin *plugin = nullptr;
     for (const std::unique_ptr<Plugin> &plugin_test : m_registered_plugins) {
@@ -1639,6 +1678,7 @@ const Plugin *Orchestrator::get_plugin(const std::string &plugin_id) const {
     return plugin;
 }
 
+// Perform the mutable form of the ID lookup without transferring ownership.
 Plugin *Orchestrator::get_plugin(const std::string &plugin_id) {
     Plugin *plugin = nullptr;
     for (const std::unique_ptr<Plugin> &plugin_test : m_registered_plugins) {
@@ -1662,22 +1702,28 @@ bool Orchestrator::owns_plugin(const Plugin *plugin) const
     return false;
 }
 
+// Test membership in the active set without dereferencing the handle.
 bool Orchestrator::is_plugin_active(const Plugin *plugin) const
 {
     return plugin != nullptr && m_active_plugins.find(const_cast<Plugin *>(plugin)) != m_active_plugins.end();
 }
 
+// Resolve the ID and test the resulting handle without changing activation.
 bool Orchestrator::is_plugin_active(const std::string &plugin_id) const
 {
     return this->is_plugin_active(this->get_plugin(plugin_id));
 }
 
+// Empty the active set and discard dependency-blocking diagnostics.
 void Orchestrator::clear_active_plugins()
 {
     m_active_plugins.clear();
     m_blocked_plugin_activations.clear();
 }
 
+// Insert or erase a non-null handle. This internal overload assumes that the
+// caller obtained the plugin from this orchestrator; it does not validate
+// ownership itself.
 bool Orchestrator::set_plugin_active(Plugin *plugin, bool active)
 {
     if (plugin == nullptr)
@@ -1690,6 +1736,7 @@ bool Orchestrator::set_plugin_active(Plugin *plugin, bool active)
     return true;
 }
 
+// Resolve the ID and delegate activation to the handle overload.
 bool Orchestrator::set_plugin_active(const std::string &plugin_id, bool active)
 {
     return this->set_plugin_active(this->get_plugin(plugin_id), active);
@@ -1712,6 +1759,7 @@ std::vector<std::string> Orchestrator::active_plugin_dependency_errors() const
     return {errors.begin(), errors.end()};
 }
 
+// Expand dependencies iteratively; on a missing plugin, clear the output and return false.
 bool Orchestrator::plugin_dependency_closure(const std::vector<std::string> &ids,
                                             std::vector<std::string> &closure, std::string &error) const
 {
@@ -1740,6 +1788,8 @@ bool Orchestrator::plugin_dependency_closure(const std::vector<std::string> &ids
     return true;
 }
 
+// Validate and merge one activation-solidarity declaration without partially
+// mutating the accumulated groups when the declaration is invalid.
 bool Orchestrator::register_activation_group(const std::string &id,
     const std::vector<std::string> &members, std::string &error)
 {
@@ -1764,6 +1814,7 @@ bool Orchestrator::register_activation_group(const std::string &id,
     return true;
 }
 
+// Report groups containing IDs that are not registered yet.
 std::map<std::string, std::string> Orchestrator::incomplete_activation_groups() const
 {
     std::map<std::string, std::string> errors;
@@ -1778,6 +1829,7 @@ std::map<std::string, std::string> Orchestrator::incomplete_activation_groups() 
     return errors;
 }
 
+// Validate dependencies and group membership for a proposed complete selection.
 std::map<std::string, std::string> Orchestrator::plugin_activation_errors(
     const std::set<std::string> &selected) const
 {
@@ -1906,6 +1958,7 @@ void Orchestrator::block_unsatisfied_plugin_dependencies(const std::vector<std::
     } while (changed);
 }
 
+// Insert the plugin into a step while respecting dependency order and priority.
 void Orchestrator::add_plugin_to_step(Plugin *plugin, slicing_step_t step) {
     if (!plugin) {
         return;
@@ -1943,6 +1996,7 @@ void Orchestrator::add_plugin_to_step(Plugin *plugin, slicing_step_t step) {
     }
 }
 
+// Delegate one synchronous print through the configured step pipeline.
 void Orchestrator::slice(Print &print) {
     Steps::StepPipeline::run_slice(*this, print);
 }
@@ -1999,6 +2053,7 @@ std::string Orchestrator::export_gcode(Print &print,
     return path;
 }
 
+// Initialize active plugins and then validate their read-side configuration contracts.
 void Orchestrator::initialize_plugins() {
     for (const std::unique_ptr<Plugin> &plugin_ptr : m_registered_plugins) {
         if (this->is_plugin_active(plugin_ptr.get())) {
@@ -2054,9 +2109,12 @@ void Orchestrator::initialize_plugins() {
     }
 }
 
+// Start with empty plugin-owned storage.
 PluginStorage::PluginStorage() = default;
+// Member containers release their objects when storage is destroyed.
 PluginStorage::~PluginStorage() = default;
 
+// Destroy all objects and clear the tracking set; all exported storage handles become invalid.
 void PluginStorage::clear() {
     polylines.clear();
     polygons.clear();
@@ -2071,12 +2129,15 @@ void PluginStorage::clear() {
     generic_storage.clear();
 }
 
+// Test membership without modifying storage.
 bool PluginStorage::contains(void *ptr) const {
     return ptr != nullptr && generic_storage.find(ptr) != generic_storage.end();
 }
 
+// Return the number of currently tracked generic allocations.
 size_t PluginStorage::size() const { return generic_storage.size(); }
 
+// Release one tracked allocation; an unknown pointer is rejected and triggers the debug assertion.
 bool PluginStorage::free(void *ptr) {
     if (!contains(ptr)) {
         assert(false);

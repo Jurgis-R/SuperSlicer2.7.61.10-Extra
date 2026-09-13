@@ -174,8 +174,11 @@ public:
     public:
         PluginRegistrationScope(const PluginRegistrationScope &) = delete;
         PluginRegistrationScope &operator=(const PluginRegistrationScope &) = delete;
+        // Moving transfers the scope token; the source no longer closes the scope.
         PluginRegistrationScope(PluginRegistrationScope &&other) noexcept;
+        // Close this scope before taking ownership of another scope token.
         PluginRegistrationScope &operator=(PluginRegistrationScope &&other) noexcept;
+        // Close the scope when this is the last owner of its token.
         ~PluginRegistrationScope();
 
     private:
@@ -257,23 +260,37 @@ public:
         std::string message;
     };
 
+    // Return the process-wide orchestrator that owns registered plugins and host services.
     static Orchestrator &instance();
 
+    // Return borrowed pointers to every registered plugin.
     std::vector<Plugin *> registered_plugins() const;
+    // Return all registered plugins for a step, including inactive plugins.
     std::vector<Plugin *> get_all_plugins_for_step(slicing_step_t step) const;
+    // Return the active registered plugins for a step.
     std::vector<Plugin *> get_active_plugins_for_step(slicing_step_t step) const;
+    // Return the active plugins currently selected for a step.
     std::vector<Plugin *> get_current_plugins_for_step(slicing_step_t step) const;
+    // Find a plugin by ID; the returned pointer remains owned by the orchestrator.
     const Plugin *get_plugin(const std::string &plugin_id) const;
+    // Find a mutable plugin by ID; return nullptr when the ID is not registered.
     Plugin *get_plugin(const std::string &plugin_id);
     // Return true only when plugin is one of this orchestrator's owned,
     // registered instances. Public borrowed handles are validated with this
     // check before they are dereferenced or executed.
     bool owns_plugin(const Plugin *plugin) const;
+    // Associate a registered plugin with a pipeline step.
     void add_plugin_to_step(Plugin *plugin, slicing_step_t step);
+    // Query activation for a plugin handle.
     bool is_plugin_active(const Plugin *plugin) const;
+    // Query activation by plugin ID; unknown IDs are inactive.
     bool is_plugin_active(const std::string &plugin_id) const;
+    // Deactivate all plugins without removing their registrations.
     void clear_active_plugins();
+    // Set activation for a non-null plugin owned by this orchestrator. This
+    // internal overload trusts the pointer's origin and does not verify it.
     bool set_plugin_active(Plugin *plugin, bool active);
+    // Set activation by plugin ID and report success.
     bool set_plugin_active(const std::string &plugin_id, bool active);
 
     // Diagnose missing/inactive direct dependencies after the complete active
@@ -292,6 +309,7 @@ public:
     // Declarations accumulate members; registrations may arrive afterward.
     bool register_activation_group(const std::string &id, const std::vector<std::string> &members,
                                    std::string &error);
+    // Return the activation-solidarity declarations by borrowed reference.
     const std::map<std::string, std::set<std::string>> &activation_groups() const { return m_activation_groups; }
     // Report incomplete declarations even when nobody requested activation.
     std::map<std::string, std::string> incomplete_activation_groups() const;
@@ -308,7 +326,9 @@ public:
     // Called after the entire activation set is assembled. Reject invalid consumers
     // transitively and retain diagnostics for the startup notification and catalog.
     void block_unsatisfied_plugin_dependencies(const std::vector<std::string> &requested = {});
+    // Return the reasons recorded when plugin activation was blocked.
     const std::map<std::string, std::string> &blocked_plugin_activations() const { return m_blocked_plugin_activations; }
+    // Return active plugin handles; the orchestrator retains their ownership.
     const std::unordered_set<Plugin *> &active_plugins() const { return m_active_plugins; }
 
     // Preflight a future active-plugin set before it is written to disk by the
@@ -329,13 +349,16 @@ public:
     // several alternative plugins intentionally publish the same option.
     option_def_error_code create_new_print_config(const raw_config_option_def *def);
 
+    // Register a plugin instance and transfer its lifetime to the orchestrator.
     bool register_plugin(plugin_instance plugin);
 
     // Register and query plugin-defined service steps. Runtime ids are scoped
     // to this orchestrator; callers exchange the stable name, not the number.
     slicing_step_t register_step(const char *namespaced_name,
                                  slicing_step_t invalidates_step);
+    // Look up runtime step metadata by numeric ID.
     const DynamicStepInfo *step_info(slicing_step_t step) const;
+    // Look up runtime step metadata by stable namespaced name.
     const DynamicStepInfo *step_info(const char *namespaced_name) const;
 
     // Execute the normal setup/setup_run/run lifecycle for one plugin. The
@@ -355,8 +378,11 @@ public:
     void report_plugin_package_load_issue(const std::string &package_id,
                                           PluginPackageLoadIssue issue);
     void finish_plugin_package_load(const std::string &package_id);
+    // Clear load diagnostics without unloading registered plugins.
     void clear_plugin_package_load_reports();
+    // Return a borrowed report, or nullptr when the package has no report.
     const PluginPackageLoadReport *plugin_package_load_report(const std::string &package_id) const;
+    // Return all package reports by borrowed reference.
     const std::map<std::string, PluginPackageLoadReport> &plugin_package_load_reports() const
         { return m_plugin_package_load_reports; }
 
@@ -364,7 +390,9 @@ public:
     // plugin's register_plugin() export. It gives catalog registration a
     // package-relative root without exposing filesystem details through C.
     PluginRegistrationScope plugin_registration_scope(std::string package_root, bool external_plugin);
+    // Register a package-relative catalog while a registration scope is active.
     int32_t register_translation_catalog(const char *domain, const char *locale_directory);
+    // Return the registered translation catalogs by borrowed reference.
     const std::vector<TranslationCatalog> &translation_catalogs() const { return m_translation_catalogs; }
 
     // Add one plugin UI fragment to a target .ui file.
@@ -375,15 +403,22 @@ public:
                          const char *fragment_id,
                          const char *content,
                          int32_t priority);
+    // Return a sorted value snapshot of fragments registered for one UI file.
     std::vector<PluginUiFragment> ui_fragments_for_file(const std::string &target_file) const;
+    // Merge registered fragments into a base layout using default filtering.
     std::string merged_ui_layout(const std::string &target_file, const std::string &base_content) const;
+    // Merge registered fragments while excluding already implemented fragment IDs.
     std::string merged_ui_layout(const std::string &target_file,
                                  const std::string &base_content,
                                  const std::unordered_set<std::string> &implemented_fragment_ids) const;
+    // Register a GUI activation rule after validating its fields.
     bool add_gui_rule(const raw_gui_rule *rule);
+    // Return GUI rules by borrowed reference.
     const std::vector<PluginGuiRule> &gui_rules() const { return m_gui_rules; }
 
+    // Create a bridge-detector service handle from an ABI input.
     bridge_detector_instance create_bridge_detector(const bridge_detector_create_input &input);
+    // Run the slicing pipeline synchronously for one print.
     void slice(Print &print_to_slice);
 
     // Export the already-sliced print through the G-code side of the step
@@ -400,11 +435,15 @@ public:
     Orchestrator(Orchestrator&&) = delete;
     Orchestrator& operator=(Orchestrator&&) = delete;
 
+    // Access storage owned by registered plugins; clearing it invalidates exported handles.
     std::map<Plugin *, PluginStorage> &plugin_storage() { return m_plugin_storage; }
+    // Read-only access to plugin-owned storage.
     const std::map<Plugin *, PluginStorage> &plugin_storage() const { return m_plugin_storage; }
+    // Build the host context used by callbacks for one step and plugin.
     plugin_host_context prepare_plugin_host_context(slicing_step_t step,
                                                     Plugin *plugin,
                                                     Print *print = nullptr);
+    // Build the run context; the optional host context must outlive the run.
     plugin_run_context prepare_plugin_run_context(slicing_step_t step,
                                                   Plugin *plugin,
                                                   plugin_host_context *host_context = nullptr);
@@ -417,25 +456,39 @@ public:
     // Drain queued plugin diagnostics. The Plater uses this to turn plugin
     // warnings and errors into ImGui notifications without opening modal dialogs.
     std::vector<PluginMessage> consume_plugin_messages();
+    // Return whether cancellation was requested by the host.
     bool is_plugin_cancelled() const;
+    // Request cancellation; plugin code must observe it at a cancellation point.
     void request_plugin_cancel();
+    // Clear cancellation before starting an independent operation.
     void reset_plugin_cancel();
+    // Initialize active plugins after registration and activation are finalized.
     void initialize_plugins();
+    // Register a custom property descriptor and return its runtime type ID.
     slic3r_property_type register_property(const char *namespaced_name,
                                            uint32_t byte_count,
                                            uint32_t alignment);
+    // Find a property descriptor by runtime type; the pointer is borrowed.
     const PropertyInfo *property_info(slic3r_property_type type) const;
+    // Find a property descriptor by namespaced name; the pointer is borrowed.
     const PropertyInfo *property_info(const char *namespaced_name) const;
+    // Register a custom extrusion property and return its runtime type ID.
     extrusion_property_type register_custom_extrusion_property(const char *namespaced_name,
                                                                uint32_t byte_count,
                                                                uint32_t alignment);
+    // Find a custom extrusion property by runtime type; the pointer is borrowed.
     const CustomExtrusionPropertyInfo *custom_extrusion_property_info(extrusion_property_type type) const;
+    // Find a custom extrusion property by namespaced name; the pointer is borrowed.
     const CustomExtrusionPropertyInfo *custom_extrusion_property_info(const char *namespaced_name) const;
+    // Register or retrieve a runtime ID within one semantic ID namespace.
     orchestrator_runtime_id register_runtime_id(const char *id_type,
                                                 const char *namespaced_name);
+    // Resolve a runtime ID without creating a new registration.
     const std::string *runtime_id_name(const char *id_type,
                                       orchestrator_runtime_id id) const;
+    // Register metadata for one generic facets annotation.
     bool register_generic_facets_annotation(GenericFacetsAnnotationDefinition def);
+    // Return generic facet annotations by borrowed reference.
     const std::vector<GenericFacetsAnnotationDefinition> &generic_facets_annotations() const { return m_generic_facets_annotations; }
 
 private:
@@ -456,10 +509,15 @@ private:
         bool external_plugin = false;
     };
 
+    // Construct the empty process-wide registry.
     Orchestrator();
+    // Close one registration scope; the caller must own an active scope.
     void end_plugin_registration_scope();
+    // Resolve an optional plugin domain to the host domain.
     std::string resolved_translation_domain(const char *requested_domain) const;
+    // Check whether a domain is available from the given package root.
     bool is_translation_domain_available(const std::string &domain, const std::string &package_root) const;
+    // Reserve a host-defined runtime ID and reject conflicting mappings.
     bool register_static_runtime_id(const char *id_type,
                                     const char *namespaced_name,
                                     orchestrator_runtime_id id);
@@ -491,7 +549,7 @@ private:
     std::string m_initializing_plugin_failure;
 };
 
-// temporary storage for plugins
+// Own plugin-created objects while keeping their addresses stable across vector growth.
 template<class T> class StableOwnedVector
 {
 public:
@@ -499,23 +557,28 @@ public:
     using iterator = typename Storage::iterator;
     using const_iterator = typename Storage::const_iterator;
 
+    // Construct and retain one object; the returned reference is borrowed.
     template<class... Args> T &emplace_back(Args&&... args) {
         m_items.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
         return *m_items.back();
     }
 
+    // Insert an already-owned object and return a borrowed reference.
     T &push_back(std::unique_ptr<T> item) {
         assert(item != nullptr);
         m_items.push_back(std::move(item));
         return *m_items.back();
     }
 
+    // Iterators follow vector invalidation rules; erase and clear invalidate affected iterators.
     iterator begin() { return m_items.begin(); }
     iterator end() { return m_items.end(); }
     const_iterator begin() const { return m_items.begin(); }
     const_iterator end() const { return m_items.end(); }
 
+    // Erase one object and return the next iterator.
     iterator erase(iterator it) { return m_items.erase(it); }
+    // Destroy all objects and invalidate their references.
     void clear() { m_items.clear(); }
 
 private:
@@ -525,7 +588,9 @@ private:
 class PluginStorage
 {
 public:
+    // Start with no tracked plugin allocations.
     PluginStorage();
+    // Release every allocation still owned by this storage.
     ~PluginStorage();
 
     // Stored objects live behind unique_ptr so their addresses stay stable even
@@ -543,9 +608,13 @@ public:
     std::vector<std::unique_ptr<ApiClipper::ClipperShapes>> clipper_shapes;
     std::unordered_set<void *> generic_storage;
 
+    // Release all tracked allocations; previously returned pointers become invalid.
     void clear();
+    // Return the number of currently tracked generic allocations.
     size_t size() const;
+    // Test whether a pointer is currently tracked.
     bool contains(void *ptr) const;
+    // Release one tracked allocation; unknown pointers are rejected.
     bool free(void *ptr);
 
 };

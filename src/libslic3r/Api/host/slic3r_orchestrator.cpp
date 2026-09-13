@@ -220,7 +220,10 @@ const orchestrator_plugin_handle *orchestrator_find_plugin(orchestrator_handle *
     if (plugin_id == nullptr || plugin_id[0] == '\0')
         return nullptr;
     try {
-        const Slic3r::Plugin *plugin = to_orchestrator(orch)->get_plugin(plugin_id);
+        Slic3r::Orchestrator *orchestrator = to_orchestrator(orch);
+        const Slic3r::Plugin *plugin = orchestrator->get_plugin(plugin_id);
+        if (plugin == nullptr || !orchestrator->is_plugin_active(plugin))
+            return nullptr;
         return reinterpret_cast<const orchestrator_plugin_handle *>(plugin);
     } catch (...) {
         return nullptr;

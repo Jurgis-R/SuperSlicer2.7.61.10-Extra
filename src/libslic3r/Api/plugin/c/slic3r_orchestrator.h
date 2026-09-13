@@ -6,7 +6,7 @@
 #define slic3r_orchestrator_h_
 
 #define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 1u
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 4u
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 5u
 
 /*
 Property registration guide:
@@ -167,9 +167,16 @@ SLIC3R_HOST_API const char *orchestrator_step_name(
 );
 
 /*
-Find a plugin by its stable id, whether or not it is active.
+Find an active plugin by its stable id.
 
-Returns NULL for an invalid argument or an unknown id.
+plugin_id is invalid only when it is NULL or points to an empty string. A NULL
+orchestrator selects the process-wide orchestrator and is therefore valid.
+Returns NULL for an invalid plugin_id, an unknown id, or a plugin that is not
+part of the activation set established by the host.
+
+The returned handle is borrowed from the orchestrator. As a defensive measure,
+orchestrator_execute_plugin() validates the handle and its activation again
+before invoking the plugin.
 */
 SLIC3R_HOST_API const orchestrator_plugin_handle *orchestrator_find_plugin(
     orchestrator_handle *orchestrator,

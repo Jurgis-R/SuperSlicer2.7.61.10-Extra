@@ -166,8 +166,9 @@ public:
         return ConfigOptionDefinition(raw);
     }
 
-    // Find a registered plugin by exact id. The result may name an inactive
-    // plugin; execute() reports INACTIVE instead of running it.
+    // Find a plugin in the host's established activation set by exact,
+    // non-empty id. An empty, unknown or non-active id returns an invalid view.
+    // execute() defensively validates the handle and its activation again.
     PluginView find_plugin(const std::string &plugin_id) const
     {
         return PluginView(orchestrator_find_plugin(m_orchestrator, plugin_id.c_str()));
