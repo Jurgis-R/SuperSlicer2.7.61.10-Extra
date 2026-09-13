@@ -23,7 +23,7 @@ class Marlin2GCodeFirmwareSession : public DefaultGCodeFirmwareSession
 {
 public:
     using DefaultGCodeFirmwareSession::DefaultGCodeFirmwareSession;
-    std::string reader_plugin_id() const override { return "gcode.reader.marlin"; }
+    std::string reader_plugin_id() const override { return "gcode.reader.marlin2"; }
 
 protected:
     std::string resolve_empty_script(gcode_script_type script_type,

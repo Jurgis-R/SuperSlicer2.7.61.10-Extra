@@ -24,7 +24,7 @@ class Marlin1GCodeFirmwareSession :
 {
 public:
     using SingleAccelerationRegisterGCodeFirmwareSession::SingleAccelerationRegisterGCodeFirmwareSession;
-    std::string reader_plugin_id() const override { return "gcode.reader.marlin"; }
+    std::string reader_plugin_id() const override { return "gcode.reader.marlin1"; }
 
 protected:
     std::string resolve_empty_script(gcode_script_type script_type,

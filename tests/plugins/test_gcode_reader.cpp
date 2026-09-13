@@ -20,7 +20,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Plugins/GCode/Reader/BuiltinGCodeReaderBase.hpp"
 #include "libslic3r/Plugins/GCode/Reader/KlipperGCodeReader.hpp"
-#include "libslic3r/Plugins/GCode/Reader/MarlinGCodeReader.hpp"
+#include "libslic3r/Plugins/GCode/Reader/Marlin2GCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/Reader/RepRapGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/Reader/RepRapGCodeReaderState.hpp"
 
@@ -161,11 +161,11 @@ private:
 // Verify that a Marlin subclass inherits the common dispatcher and replaces
 // one Marlin-only handler without overriding consume_numeric_command().
 class MarlinHandlerOverrideReader final :
-    public slic3r_api::GCodeGeneration::Reader::MarlinGCodeReader
+    public slic3r_api::GCodeGeneration::Reader::Marlin2GCodeReader
 {
 public:
     explicit MarlinHandlerOverrideReader(orchestrator_handle *orchestrator) :
-        MarlinGCodeReader(orchestrator)
+        Marlin2GCodeReader(orchestrator)
     {}
 
 protected:
@@ -178,7 +178,7 @@ protected:
         uint32_t number,
         raw_gcode_reader_source source) const override
     {
-        if (MarlinGCodeReader::consume_numeric_command(
+        if (Marlin2GCodeReader::consume_numeric_command(
                 run_context, context, state, line, letter, number, source))
             return true;
         if (letter != 'M' || number != 700)
@@ -488,7 +488,19 @@ TEST_CASE("G-code reader detection recognizes firmware tags and falls back deter
     ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
     CHECK(detect_gcode_reader(orchestrator, nullptr,
-          "; generated for MaRlIn\nG1 X1\n") == "gcode.reader.marlin");
+          "; generated for MaRlIn\nG1 X1\n") == "gcode.reader.marlin2");
+    CHECK(detect_gcode_reader(orchestrator, nullptr,
+          "; firmware: MARLIN 1\nG1 X1\n") == "gcode.reader.marlin1");
+    CHECK(detect_gcode_reader(orchestrator, nullptr,
+          "; firmware: marlin1\nG1 X1\n") == "gcode.reader.marlin1");
+    CHECK(detect_gcode_reader(orchestrator, nullptr,
+          "; firmware: MARLIN 2\nG1 X1\n") == "gcode.reader.marlin2");
+    CHECK(detect_gcode_reader(orchestrator, nullptr,
+          "; firmware: marlin2\nG1 X1\n") == "gcode.reader.marlin2");
+    CHECK(detect_gcode_reader(orchestrator, nullptr,
+          "; PrUsA firmware based on Marlin 2\nG1 X1\n") == "gcode.reader.prusa");
+    CHECK(detect_gcode_reader(orchestrator, nullptr,
+          "; SPRINTER based on Marlin\nG1 X1\n") == "gcode.reader.sprinter");
     CHECK(detect_gcode_reader(orchestrator, nullptr,
           "; RepRapFirmware\nG1 X1\n") == "gcode.reader.reprap");
     CHECK(detect_gcode_reader(orchestrator, nullptr,
@@ -508,8 +520,10 @@ TEST_CASE("Built-in G-code readers are active addressable services",
     ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
     const char *const ids[] = {
-        "gcode.reader.default", "gcode.reader.marlin",
-        "gcode.reader.reprap", "gcode.reader.klipper"
+        "gcode.reader.default", "gcode.reader.marlin1",
+        "gcode.reader.marlin2", "gcode.reader.prusa",
+        "gcode.reader.sprinter", "gcode.reader.reprap",
+        "gcode.reader.klipper"
     };
     for (const char *id : ids) {
         Plugin *plugin = orchestrator.get_plugin(id);
@@ -518,6 +532,7 @@ TEST_CASE("Built-in G-code readers are active addressable services",
         CHECK(plugin->get_exclusive_group().empty());
         CHECK(orchestrator.is_plugin_active(plugin));
     }
+    CHECK(orchestrator.get_plugin("gcode.reader.marlin") == nullptr);
 }
 
 TEST_CASE("Dialect G-code readers preserve and update representable state",
@@ -531,16 +546,57 @@ TEST_CASE("Dialect G-code readers preserve and update representable state",
     const raw_gcode_reader_state reprap_initial = initial_state(
         reprap_initial_items, reprap_reader_state_id());
 
-    const slic3r_api::GCodeStateTracker marlin = read_gcode(
-        orchestrator, nullptr, "gcode.reader.marlin", initial,
+    const slic3r_api::GCodeStateTracker marlin1 = read_gcode(
+        orchestrator, nullptr, "gcode.reader.marlin1", initial,
         "M201 X1000 Y1000\nM204 S750\nM109 R180 T1\nM900 K0.04\nM600\n");
-    REQUIRE(marlin.x());
-    CHECK(*marlin.x() == Approx(1.0));
-    REQUIRE(marlin.value(RAW_GCODE_READER_ITEM_ACCELERATION));
-    CHECK(*marlin.value(RAW_GCODE_READER_ITEM_ACCELERATION) == Approx(750.0));
-    REQUIRE(marlin.tool_temperature(1));
-    CHECK(*marlin.tool_temperature(1) == Approx(180.0));
-    CHECK(marlin.known(RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE_REACHED, 1));
+    REQUIRE(marlin1.x());
+    CHECK(*marlin1.x() == Approx(1.0));
+    REQUIRE(marlin1.value(RAW_GCODE_READER_ITEM_ACCELERATION));
+    CHECK(*marlin1.value(RAW_GCODE_READER_ITEM_ACCELERATION) == Approx(750.0));
+    REQUIRE(marlin1.tool_temperature(1));
+    CHECK(*marlin1.tool_temperature(1) == Approx(180.0));
+    CHECK(marlin1.known(RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE_REACHED, 1));
+
+    const slic3r_api::GCodeStateTracker marlin2_print = read_gcode(
+        orchestrator, nullptr, "gcode.reader.marlin2", initial, "M204 P800\n");
+    REQUIRE(marlin2_print.value(RAW_GCODE_READER_ITEM_ACCELERATION));
+    CHECK(*marlin2_print.value(RAW_GCODE_READER_ITEM_ACCELERATION) == Approx(800.0));
+
+    const slic3r_api::GCodeStateTracker marlin2_travel = read_gcode(
+        orchestrator, nullptr, "gcode.reader.marlin2", initial, "M204 T1200\n");
+    REQUIRE(marlin2_travel.value(RAW_GCODE_READER_ITEM_ACCELERATION));
+    CHECK(*marlin2_travel.value(RAW_GCODE_READER_ITEM_ACCELERATION) == Approx(1200.0));
+
+    const slic3r_api::GCodeStateTracker marlin2_registers = read_gcode(
+        orchestrator, nullptr, "gcode.reader.marlin2", initial,
+        "M204 P800 R500 T1200\n");
+    CHECK_FALSE(marlin2_registers.value(RAW_GCODE_READER_ITEM_ACCELERATION));
+
+    const slic3r_api::GCodeStateTracker marlin2_retract = read_gcode(
+        orchestrator, nullptr, "gcode.reader.marlin2", initial, "M204 R500\n");
+    CHECK(marlin2_retract.x() == Approx(1.0));
+    CHECK_FALSE(marlin2_retract.value(RAW_GCODE_READER_ITEM_ACCELERATION));
+
+    const slic3r_api::GCodeStateTracker prusa = read_gcode(
+        orchestrator, nullptr, "gcode.reader.prusa", initial,
+        "M204 P850\nM601\n");
+    REQUIRE(prusa.value(RAW_GCODE_READER_ITEM_ACCELERATION));
+    CHECK(*prusa.value(RAW_GCODE_READER_ITEM_ACCELERATION) == Approx(850.0));
+    CHECK(prusa.x() == Approx(1.0));
+
+    ReaderProbe prusa_marker_probe;
+    prusa_marker_probe.chunks = {"M601\n"};
+    REQUIRE(execute_reader("gcode.reader.prusa", prusa_marker_probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(prusa_marker_probe.observed.size() == 1);
+    CHECK(prusa_marker_probe.observed.front().kind == RAW_GCODE_READER_EVENT_MARKER);
+
+    const slic3r_api::GCodeStateTracker sprinter = read_gcode(
+        orchestrator, nullptr, "gcode.reader.sprinter", initial,
+        "M204 P900\nM572 D0 S0.03\n");
+    REQUIRE(sprinter.value(RAW_GCODE_READER_ITEM_ACCELERATION));
+    CHECK(*sprinter.value(RAW_GCODE_READER_ITEM_ACCELERATION) == Approx(900.0));
+    CHECK(sprinter.x() == Approx(1.0));
 
     const slic3r_api::GCodeStateTracker reprap = read_gcode(
         orchestrator, nullptr, "gcode.reader.reprap", reprap_initial,
@@ -606,11 +662,17 @@ TEST_CASE("Dialect G-code readers preserve state across recognized control comma
     const raw_gcode_reader_state reprap_initial = initial_state(
         reprap_initial_items, reprap_reader_state_id());
 
-    const slic3r_api::GCodeStateTracker marlin = read_gcode(
-        orchestrator, nullptr, "gcode.reader.marlin", initial,
-        "G4 P1\nG10\nG11\nM201 X1000\nM203 X300\nM205 X8\n"
-        "M572 D0 S0.02\nM900 K0.02\nM906 T0 E800\nM0\nM600\nM601\nM226\n");
-    CHECK(marlin.x() == Approx(1.0));
+    const char *const marlin_family_ids[] = {
+        "gcode.reader.marlin1", "gcode.reader.marlin2",
+        "gcode.reader.prusa", "gcode.reader.sprinter"
+    };
+    for (const char *reader_id : marlin_family_ids) {
+        const slic3r_api::GCodeStateTracker marlin = read_gcode(
+            orchestrator, nullptr, reader_id, initial,
+            "G4 P1\nG10\nG11\nM201 X1000\nM203 X300\nM205 X8\n"
+            "M572 D0 S0.02\nM900 K0.02\nM906 T0 E800\nM0\nM600\nM601\nM226\n");
+        CHECK(marlin.x() == Approx(1.0));
+    }
 
     const slic3r_api::GCodeStateTracker reprap = read_gcode(
         orchestrator, nullptr, "gcode.reader.reprap", reprap_initial,
@@ -628,7 +690,7 @@ TEST_CASE("Dialect G-code readers preserve state across recognized control comma
     CHECK_FALSE(malformed_reprap.x());
 
     const slic3r_api::GCodeStateTracker unknown_marlin = read_gcode(
-        orchestrator, nullptr, "gcode.reader.marlin", initial, "M9999\n");
+        orchestrator, nullptr, "gcode.reader.marlin2", initial, "M9999\n");
     CHECK_FALSE(unknown_marlin.x());
 }
 

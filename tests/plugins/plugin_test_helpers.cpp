@@ -488,9 +488,12 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "gcode.settings_scripts");
         activate_plugin_or_fail(orchestrator, "gcode.feature_gcode");
         activate_plugin_or_fail(orchestrator, "gcode.reader.default");
-        activate_plugin_or_fail(orchestrator, "gcode.reader.marlin");
-        activate_plugin_or_fail(orchestrator, "gcode.reader.reprap");
         activate_plugin_or_fail(orchestrator, "gcode.reader.klipper");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.marlin1");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.marlin2");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.prusa");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.reprap");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.sprinter");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.a");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.b");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.lower_priority");

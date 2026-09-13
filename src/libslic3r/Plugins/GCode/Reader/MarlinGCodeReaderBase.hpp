@@ -2,31 +2,41 @@
 ///|/
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#ifndef slic3r_Plugins_GCode_Reader_MarlinGCodeReader_hpp_
-#define slic3r_Plugins_GCode_Reader_MarlinGCodeReader_hpp_
+#ifndef slic3r_Plugins_GCode_Reader_MarlinGCodeReaderBase_hpp_
+#define slic3r_Plugins_GCode_Reader_MarlinGCodeReaderBase_hpp_
 
 #include "BuiltinGCodeReaderBase.hpp"
 
 /*
-Marlin-family G-code reader
-===========================
+Common Marlin-family G-code reader
+==================================
 
-This provider adds the Marlin, Prusa and Sprinter commands emitted by the
-built-in firmware writers. Movement and modal state remain in the common base;
-only syntax whose meaning differs from the portable subset is handled here.
+Marlin 1, Marlin 2, Prusa and Sprinter share most command syntax. This abstract
+base keeps that common behavior in one place while leaving M204 to each
+concrete dialect:
+
+    BuiltinGCodeReaderBase
+        `-- MarlinGCodeReaderBase
+              |-- M109 R cooling waits
+              |-- shared neutral commands and timeline markers
+              `-- virtual process_M204()
+
+The class is not registered as a plugin. A concrete Reader supplies its stable
+plugin identity, probe and M204 interpretation. Parsing state belongs to one
+read invocation, so process-lived Reader instances remain safe for concurrent
+reads.
 */
 
 namespace slic3r_api { namespace GCodeGeneration { namespace Reader {
 
-class MarlinGCodeReader : public BuiltinGCodeReaderBase
+class MarlinGCodeReaderBase : public BuiltinGCodeReaderBase
 {
 public:
-    explicit MarlinGCodeReader(orchestrator_handle *orchestrator);
+    explicit MarlinGCodeReaderBase(orchestrator_handle *orchestrator);
 
 protected:
-    // Let the common dispatcher process portable commands first. M204 is the
-    // only additional numeric command introduced by this class; M109 is
-    // customized through its virtual common handler below.
+    // Dispatch common commands first, then route M204 to the concrete
+    // firmware dialect. True means that a handler published the command.
     bool consume_numeric_command(const plugin_run_context &run_context,
                                  const run_ctx_gcode_reader &context,
                                  GCodeStateTracker &state,
@@ -34,31 +44,25 @@ protected:
                                  char letter,
                                  uint32_t number,
                                  raw_gcode_reader_source source) const override;
-    // Marlin accepts R as the M109 target when S is absent. Every other M104 or
-    // M109 form delegates to the common implementation.
+    // Marlin accepts R as the M109 target when S is absent. Other temperature
+    // forms retain the portable implementation.
     void process_M104_M109(const plugin_run_context &run_context,
                            const run_ctx_gcode_reader &context,
                            GCodeStateTracker &state,
                            const GCodeLineParser::GCodeLine &line,
                            uint32_t number,
                            raw_gcode_reader_source source) const override;
-    // Publish the effective acceleration when Marlin's S/P/T parameters select
-    // one unambiguous value.
+    // M204 has incompatible parameter semantics across this family. Every
+    // concrete Reader must publish exactly one synchronous event for it.
     virtual void process_M204(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              raw_gcode_reader_source source) const = 0;
     bool is_neutral_command(char letter, uint32_t number) const override;
     bool is_marker_command(char letter, uint32_t number) const override;
-
-private:
-    const char *id_impl() const noexcept override;
-    const char *name_impl() const noexcept override;
-    const char *description_impl() const noexcept override;
-    uint32_t probe_impl(std::string_view prefix) const override;
 };
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader
 
-#endif // slic3r_Plugins_GCode_Reader_MarlinGCodeReader_hpp_
+#endif // slic3r_Plugins_GCode_Reader_MarlinGCodeReaderBase_hpp_

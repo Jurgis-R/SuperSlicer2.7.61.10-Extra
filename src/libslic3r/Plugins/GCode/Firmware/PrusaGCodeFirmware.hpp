@@ -22,6 +22,7 @@ class PrusaGCodeFirmwareSession : public Marlin2GCodeFirmwareSession
 {
 public:
     using Marlin2GCodeFirmwareSession::Marlin2GCodeFirmwareSession;
+    std::string reader_plugin_id() const override { return "gcode.reader.prusa"; }
 
 protected:
     std::string resolve_empty_script(gcode_script_type script_type,

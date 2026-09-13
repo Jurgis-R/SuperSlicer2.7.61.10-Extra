@@ -226,10 +226,10 @@ TEST_CASE("Built-in firmware dialects select their matching G-code readers",
           "[plugins][gcode][firmware][reader]")
 {
     using namespace slic3r_api::GCodeGeneration::Firmware;
-    CHECK(Marlin1GCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
-    CHECK(Marlin2GCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
-    CHECK(PrusaGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
-    CHECK(SprinterGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
+    CHECK(Marlin1GCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin1");
+    CHECK(Marlin2GCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin2");
+    CHECK(PrusaGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.prusa");
+    CHECK(SprinterGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.sprinter");
     CHECK(RepRapGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.reprap");
     CHECK(KlipperGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.klipper");
 }

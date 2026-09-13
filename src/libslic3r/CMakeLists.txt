@@ -237,12 +237,20 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/Reader/DefaultGCodeReader.hpp
 	Plugins/GCode/Reader/KlipperGCodeReader.cpp
 	Plugins/GCode/Reader/KlipperGCodeReader.hpp
-	Plugins/GCode/Reader/MarlinGCodeReader.cpp
-	Plugins/GCode/Reader/MarlinGCodeReader.hpp
+	Plugins/GCode/Reader/Marlin1GCodeReader.cpp
+	Plugins/GCode/Reader/Marlin1GCodeReader.hpp
+	Plugins/GCode/Reader/Marlin2GCodeReader.cpp
+	Plugins/GCode/Reader/Marlin2GCodeReader.hpp
+	Plugins/GCode/Reader/MarlinGCodeReaderBase.cpp
+	Plugins/GCode/Reader/MarlinGCodeReaderBase.hpp
+	Plugins/GCode/Reader/PrusaGCodeReader.cpp
+	Plugins/GCode/Reader/PrusaGCodeReader.hpp
 	Plugins/GCode/Reader/RepRapGCodeReader.cpp
 	Plugins/GCode/Reader/RepRapGCodeReader.hpp
 	Plugins/GCode/Reader/RepRapGCodeReaderState.cpp
 	Plugins/GCode/Reader/RepRapGCodeReaderState.hpp
+	Plugins/GCode/Reader/SprinterGCodeReader.cpp
+	Plugins/GCode/Reader/SprinterGCodeReader.hpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.cpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp
 	Plugins/GCode/FeatureGCode.cpp
