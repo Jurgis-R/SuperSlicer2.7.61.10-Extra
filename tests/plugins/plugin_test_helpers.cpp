@@ -495,6 +495,10 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.b");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.lower_priority");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.failing_probe");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.test.common_handlers");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.test.reprap_handlers");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.test.marlin_handlers");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.test.klipper_handlers");
         activate_plugin_or_fail(orchestrator, "gcode.custom_gcode_per_print_z");
         activate_plugin_or_fail(orchestrator, "gcode.firmware.marlin1");
         activate_plugin_or_fail(orchestrator, "gcode.firmware.marlin2");

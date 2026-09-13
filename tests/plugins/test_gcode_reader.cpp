@@ -18,6 +18,10 @@
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeStateTracker.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/Plugins/GCode/Reader/BuiltinGCodeReaderBase.hpp"
+#include "libslic3r/Plugins/GCode/Reader/KlipperGCodeReader.hpp"
+#include "libslic3r/Plugins/GCode/Reader/MarlinGCodeReader.hpp"
+#include "libslic3r/Plugins/GCode/Reader/RepRapGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/Reader/RepRapGCodeReaderState.hpp"
 
 /*
@@ -74,6 +78,211 @@ private:
     const char *m_id;
     int32_t m_priority;
     bool m_fail_probe;
+};
+
+// Exercise both supported extension styles of the common dispatcher. G91 is
+// replaced completely, while M220 delegates to the portable implementation
+// before publishing an additional diagnostic event.
+class CommonHandlerOverrideReader final :
+    public slic3r_api::GCodeGeneration::Reader::BuiltinGCodeReaderBase
+{
+public:
+    explicit CommonHandlerOverrideReader(orchestrator_handle *orchestrator) :
+        BuiltinGCodeReaderBase(orchestrator)
+    {}
+
+protected:
+    void process_G90_G91(const plugin_run_context &run_context,
+                         const run_ctx_gcode_reader &context,
+                         slic3r_api::GCodeStateTracker &state,
+                         uint32_t number,
+                         raw_gcode_reader_source source) const override
+    {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      {{RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, double(number)}});
+    }
+
+    void process_M220(const plugin_run_context &run_context,
+                      const run_ctx_gcode_reader &context,
+                      slic3r_api::GCodeStateTracker &state,
+                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line,
+                      raw_gcode_reader_source source) const override
+    {
+        BuiltinGCodeReaderBase::process_M220(
+            run_context, context, state, line, source);
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, source, {});
+    }
+
+private:
+    const char *id_impl() const noexcept override
+    { return "gcode.reader.test.common_handlers"; }
+    const char *name_impl() const noexcept override
+    { return "Common handler override test Reader"; }
+    const char *description_impl() const noexcept override
+    { return "Exercises virtual common G-code command handlers."; }
+    uint32_t probe_impl(std::string_view) const override { return 0u; }
+};
+
+// Replace one RepRap-only command while inheriting the remaining RRF
+// dispatcher. The test verifies that extending one handler does not require a
+// copy of consume_numeric_command().
+class RepRapHandlerOverrideReader final :
+    public slic3r_api::GCodeGeneration::Reader::RepRapGCodeReader
+{
+public:
+    explicit RepRapHandlerOverrideReader(orchestrator_handle *orchestrator) :
+        RepRapGCodeReader(orchestrator)
+    {}
+
+protected:
+    void process_G10(const plugin_run_context &run_context,
+                     const run_ctx_gcode_reader &context,
+                     slic3r_api::GCodeStateTracker &state,
+                     RepRapGCodeReaderState &,
+                     const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &,
+                     raw_gcode_reader_source source) const override
+    {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, source, {});
+    }
+
+private:
+    const char *id_impl() const noexcept override
+    { return "gcode.reader.test.reprap_handlers"; }
+    const char *name_impl() const noexcept override
+    { return "RepRap handler override test Reader"; }
+    const char *description_impl() const noexcept override
+    { return "Exercises virtual RepRapFirmware command handlers."; }
+    uint32_t probe_impl(std::string_view) const override { return 0u; }
+};
+
+// Verify that a Marlin subclass inherits the common dispatcher and replaces
+// one Marlin-only handler without overriding consume_numeric_command().
+class MarlinHandlerOverrideReader final :
+    public slic3r_api::GCodeGeneration::Reader::MarlinGCodeReader
+{
+public:
+    explicit MarlinHandlerOverrideReader(orchestrator_handle *orchestrator) :
+        MarlinGCodeReader(orchestrator)
+    {}
+
+protected:
+    bool consume_numeric_command(
+        const plugin_run_context &run_context,
+        const run_ctx_gcode_reader &context,
+        slic3r_api::GCodeStateTracker &state,
+        const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line,
+        char letter,
+        uint32_t number,
+        raw_gcode_reader_source source) const override
+    {
+        if (MarlinGCodeReader::consume_numeric_command(
+                run_context, context, state, line, letter, number, source))
+            return true;
+        if (letter != 'M' || number != 700)
+            return false;
+        process_M700(run_context, context, state, source);
+        return true;
+    }
+
+    void process_M204(const plugin_run_context &run_context,
+                      const run_ctx_gcode_reader &context,
+                      slic3r_api::GCodeStateTracker &state,
+                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &,
+                      raw_gcode_reader_source source) const override
+    {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      {{RAW_GCODE_READER_ITEM_ACCELERATION, 0, 204.0}});
+    }
+
+    void process_M700(const plugin_run_context &run_context,
+                      const run_ctx_gcode_reader &context,
+                      slic3r_api::GCodeStateTracker &state,
+                      raw_gcode_reader_source source) const
+    {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      {{RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, 700.0}});
+    }
+
+private:
+    const char *id_impl() const noexcept override
+    { return "gcode.reader.test.marlin_handlers"; }
+    const char *name_impl() const noexcept override
+    { return "Marlin handler override test Reader"; }
+    const char *description_impl() const noexcept override
+    { return "Exercises virtual Marlin command handlers."; }
+    uint32_t probe_impl(std::string_view) const override { return 0u; }
+};
+
+// Verify both textual and numeric handler replacement through Klipper's
+// chained dispatchers while ordinary common commands still reach the base.
+class KlipperHandlerOverrideReader final :
+    public slic3r_api::GCodeGeneration::Reader::KlipperGCodeReader
+{
+public:
+    explicit KlipperHandlerOverrideReader(orchestrator_handle *orchestrator) :
+        KlipperGCodeReader(orchestrator)
+    {}
+
+protected:
+    bool consume_text_command(
+        const plugin_run_context &run_context,
+        const run_ctx_gcode_reader &context,
+        slic3r_api::GCodeStateTracker &state,
+        const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line,
+        raw_gcode_reader_source source) const override
+    {
+        if (KlipperGCodeReader::consume_text_command(
+                run_context, context, state, line, source))
+            return true;
+        if (line.command() != "TEST_EXTENSION")
+            return false;
+        process_TEST_EXTENSION(run_context, context, state, source);
+        return true;
+    }
+
+    void process_PAUSE(const plugin_run_context &run_context,
+                       const run_ctx_gcode_reader &context,
+                       slic3r_api::GCodeStateTracker &state,
+                       raw_gcode_reader_source source) const override
+    {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, source, {});
+    }
+
+    void process_M204(const plugin_run_context &run_context,
+                      const run_ctx_gcode_reader &context,
+                      slic3r_api::GCodeStateTracker &state,
+                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &,
+                      raw_gcode_reader_source source) const override
+    {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      {{RAW_GCODE_READER_ITEM_EXTRUSION_FACTOR, 0, 204.0}});
+    }
+
+    void process_TEST_EXTENSION(const plugin_run_context &run_context,
+                                const run_ctx_gcode_reader &context,
+                                slic3r_api::GCodeStateTracker &state,
+                                raw_gcode_reader_source source) const
+    {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      {{RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, 701.0}});
+    }
+
+private:
+    const char *id_impl() const noexcept override
+    { return "gcode.reader.test.klipper_handlers"; }
+    const char *name_impl() const noexcept override
+    { return "Klipper handler override test Reader"; }
+    const char *description_impl() const noexcept override
+    { return "Exercises virtual Klipper command handlers."; }
+    uint32_t probe_impl(std::string_view) const override { return 0u; }
 };
 
 struct ObservedEvent
@@ -753,6 +962,83 @@ TEST_CASE("RepRap reader parses its operational private state",
     CHECK(tracked.fan_speed(7) == Approx(25.0));
 }
 
+TEST_CASE("Built-in Reader dispatches common commands through virtual handlers",
+          "[plugins][gcode][reader][dispatch]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {"G91\nM220 S75\n"};
+
+    REQUIRE(execute_reader("gcode.reader.test.common_handlers", probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 3);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE) == 1.0);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_SPEED_FACTOR) == 75.0);
+    CHECK(probe.observed[0].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    CHECK(probe.observed[1].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    CHECK(probe.observed[2].kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+}
+
+TEST_CASE("RepRap Reader dispatches one overridden dialect handler",
+          "[plugins][gcode][reader][dispatch][reprap]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {"G10\nM201 X1200\n"};
+
+    REQUIRE(execute_reader("gcode.reader.test.reprap_handlers", probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 2);
+    CHECK(probe.observed[0].kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+    CHECK(probe.observed[1].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    const RepRapGCodeReaderState state =
+        RepRapGCodeReaderState::from_tracker(*probe.final_state);
+    CHECK(state.max_acceleration[0] == 1200.0);
+}
+
+TEST_CASE("Marlin Reader chains common and overridden dialect handlers",
+          "[plugins][gcode][reader][dispatch][marlin]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {"G91\nM204 S500\nM700\n"};
+
+    REQUIRE(execute_reader("gcode.reader.test.marlin_handlers", probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 3);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE) == 0.0);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_ACCELERATION) == 204.0);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_SPEED_FACTOR) == 700.0);
+}
+
+TEST_CASE("Klipper Reader chains textual and numeric virtual handlers",
+          "[plugins][gcode][reader][dispatch][klipper]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {"G91\nPAUSE\nTEST_EXTENSION\nM204 S500\n"};
+
+    REQUIRE(execute_reader("gcode.reader.test.klipper_handlers", probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 4);
+    CHECK(probe.observed[1].kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE) == 0.0);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_EXTRUSION_FACTOR) == 204.0);
+    CHECK(probe.final_state->value(RAW_GCODE_READER_ITEM_SPEED_FACTOR) == 701.0);
+}
+
 TEST_CASE("G-code readers preserve opaque state only while commands stay understood",
           "[plugins][gcode][reader][state]")
 {
@@ -887,12 +1173,20 @@ void register_gcode_reader_test_providers(orchestrator_handle *orchestrator)
     static ProbeTestReader lexical_second(orchestrator, "gcode.reader.test.b", 10, false);
     static ProbeTestReader lower_priority(orchestrator, "gcode.reader.test.lower_priority", 20, false);
     static ProbeTestReader failing_probe(orchestrator, "gcode.reader.test.failing_probe", 0, true);
+    static CommonHandlerOverrideReader common_handlers(orchestrator);
+    static RepRapHandlerOverrideReader reprap_handlers(orchestrator);
+    static MarlinHandlerOverrideReader marlin_handlers(orchestrator);
+    static KlipperHandlerOverrideReader klipper_handlers(orchestrator);
     // Register lexical_second first so the tie-break test also proves that
     // discovery order cannot change the selected id.
     orchestrator_register_plugin(orchestrator, lexical_second.c_instance());
     orchestrator_register_plugin(orchestrator, lexical_first.c_instance());
     orchestrator_register_plugin(orchestrator, lower_priority.c_instance());
     orchestrator_register_plugin(orchestrator, failing_probe.c_instance());
+    orchestrator_register_plugin(orchestrator, common_handlers.c_instance());
+    orchestrator_register_plugin(orchestrator, reprap_handlers.c_instance());
+    orchestrator_register_plugin(orchestrator, marlin_handlers.c_instance());
+    orchestrator_register_plugin(orchestrator, klipper_handlers.c_instance());
 }
 
 } // namespace Slic3r::Test::Plugins

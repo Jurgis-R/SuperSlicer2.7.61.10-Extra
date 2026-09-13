@@ -18,16 +18,15 @@ only syntax whose meaning differs from the portable subset is handled here.
 
 namespace slic3r_api { namespace GCodeGeneration { namespace Reader {
 
-class MarlinGCodeReader final : public BuiltinGCodeReaderBase
+class MarlinGCodeReader : public BuiltinGCodeReaderBase
 {
 public:
     explicit MarlinGCodeReader(orchestrator_handle *orchestrator);
 
-private:
-    const char *id_impl() const noexcept override;
-    const char *name_impl() const noexcept override;
-    const char *description_impl() const noexcept override;
-    uint32_t probe_impl(std::string_view prefix) const override;
+protected:
+    // Let the common dispatcher process portable commands first. M204 is the
+    // only additional numeric command introduced by this class; M109 is
+    // customized through its virtual common handler below.
     bool consume_numeric_command(const plugin_run_context &run_context,
                                  const run_ctx_gcode_reader &context,
                                  GCodeStateTracker &state,
@@ -35,8 +34,29 @@ private:
                                  char letter,
                                  uint32_t number,
                                  raw_gcode_reader_source source) const override;
+    // Marlin accepts R as the M109 target when S is absent. Every other M104 or
+    // M109 form delegates to the common implementation.
+    void process_M104_M109(const plugin_run_context &run_context,
+                           const run_ctx_gcode_reader &context,
+                           GCodeStateTracker &state,
+                           const GCodeLineParser::GCodeLine &line,
+                           uint32_t number,
+                           raw_gcode_reader_source source) const override;
+    // Publish the effective acceleration when Marlin's S/P/T parameters select
+    // one unambiguous value.
+    virtual void process_M204(const plugin_run_context &run_context,
+                              const run_ctx_gcode_reader &context,
+                              GCodeStateTracker &state,
+                              const GCodeLineParser::GCodeLine &line,
+                              raw_gcode_reader_source source) const;
     bool is_neutral_command(char letter, uint32_t number) const override;
     bool is_marker_command(char letter, uint32_t number) const override;
+
+private:
+    const char *id_impl() const noexcept override;
+    const char *name_impl() const noexcept override;
+    const char *description_impl() const noexcept override;
+    uint32_t probe_impl(std::string_view prefix) const override;
 };
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

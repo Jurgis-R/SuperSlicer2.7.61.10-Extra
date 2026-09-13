@@ -24,8 +24,10 @@ Built-in G-code reader base
 ===========================
 
 This file translates the common modal G-code vocabulary into normalized Reader
-events. Concrete providers first receive a chance to handle dialect syntax,
-then this parser handles portable movement, temperature, fan and mode commands.
+events. The most-derived provider enters first, but each dispatcher calls its
+parent before trying additional commands. Common commands therefore reach this
+class once and are routed through virtual handlers, allowing a dialect to
+replace one interpretation without copying the dispatcher.
 
 One run owns one local GCodeStateTracker, so the same provider can serve a
 visible file or a firmware script without retaining input or parser state in
@@ -45,8 +47,9 @@ command reuse a value which arbitrary dialect G-code may have changed.
           v
     GCodeLineParser
           |
-          +-- supported command -> semantic event + state delta
-          `-- unknown command   -> INVALIDATE currently known portable state
+          +-- chained consume_*() -> virtual process_*() -> semantic event
+          +-- marker or neutral  -> timeline/state event
+          `-- no handler         -> INVALIDATE currently known portable state
 
 Each implementation intentionally recognizes a conservative subset. A command
 is only treated as harmless when the dialect guarantees that it cannot alter a
@@ -80,6 +83,17 @@ std::optional<double> final_axis_value(const GCodeStateTracker &state,
                                        uint32_t target,
                                        std::optional<float> parsed,
                                        bool relative);
+// Hold the portable movement delta separately from coordinates which were
+// present in the command but could not be resolved from an unknown relative
+// origin. Linear and arc handlers share this collection step.
+struct ParsedMovementItems
+{
+    std::vector<raw_gcode_reader_event_item> values;
+    std::vector<raw_gcode_reader_event_item> invalidated;
+};
+ParsedMovementItems parse_movement_items(
+    const GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line);
 
 std::optional<uint32_t> command_number(std::string_view command)
 {
@@ -136,6 +150,33 @@ std::optional<double> final_axis_value(const GCodeStateTracker &state,
     return previous ? std::optional<double>(*previous + value) : std::nullopt;
 }
 
+ParsedMovementItems parse_movement_items(
+    const GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line)
+{
+    ParsedMovementItems result;
+    const bool xyz_relative = !modal_bool(state, RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, true);
+    const bool e_relative = !modal_bool(state, RAW_GCODE_READER_ITEM_E_ABSOLUTE, true);
+    const std::pair<char, uint32_t> axes[] = {
+        {'X', RAW_GCODE_READER_ITEM_X}, {'Y', RAW_GCODE_READER_ITEM_Y},
+        {'Z', RAW_GCODE_READER_ITEM_Z}, {'E', RAW_GCODE_READER_ITEM_E}
+    };
+    for (const std::pair<char, uint32_t> &axis : axes) {
+        const uint32_t target = axis.first == 'E' ? active_tool_value(state) : 0;
+        const std::optional<double> value = final_axis_value(
+            state, axis.second, target, line.parameter_value(axis.first),
+            axis.first == 'E' ? e_relative : xyz_relative);
+        if (value)
+            result.values.push_back({axis.second, target, *value});
+        else if (line.has_parameter(axis.first))
+            result.invalidated.push_back({axis.second, target, 0.0});
+    }
+    if (const std::optional<float> speed = line.parameter_value('F'))
+        result.values.push_back({RAW_GCODE_READER_ITEM_FEEDRATE, 0,
+                                 double(*speed) * unit_scale(state)});
+    return result;
+}
+
 } // namespace
 
 uint32_t BuiltinGCodeReaderBase::active_tool(const GCodeStateTracker &state)
@@ -190,13 +231,6 @@ int32_t BuiltinGCodeReaderBase::priority_impl() const noexcept
 bool BuiltinGCodeReaderBase::consume_text_command(
     const plugin_run_context &, const run_ctx_gcode_reader &, GCodeStateTracker &,
     const GCodeLineParser::GCodeLine &, raw_gcode_reader_source) const
-{
-    return false;
-}
-
-bool BuiltinGCodeReaderBase::consume_numeric_command(
-    const plugin_run_context &, const run_ctx_gcode_reader &, GCodeStateTracker &,
-    const GCodeLineParser::GCodeLine &, char, uint32_t, raw_gcode_reader_source) const
 {
     return false;
 }
@@ -345,133 +379,7 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
                                     letter, *number, source))
             return;
 
-        std::vector<raw_gcode_reader_event_item> items;
-        if (letter == 'G' && (*number == 0 || *number == 1 || *number == 2 || *number == 3)) {
-            const bool xyz_relative = modal_bool(state, RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, true) == false;
-            const bool e_relative = modal_bool(state, RAW_GCODE_READER_ITEM_E_ABSOLUTE, true) == false;
-            const std::pair<char, uint32_t> axes[] = {
-                {'X', RAW_GCODE_READER_ITEM_X}, {'Y', RAW_GCODE_READER_ITEM_Y},
-                {'Z', RAW_GCODE_READER_ITEM_Z}, {'E', RAW_GCODE_READER_ITEM_E}
-            };
-            std::vector<raw_gcode_reader_event_item> invalidated;
-            for (const std::pair<char, uint32_t> &axis : axes) {
-                const uint32_t target = axis.first == 'E' ? active_tool(state) : 0;
-                const std::optional<double> value = final_axis_value(
-                    state, axis.second, target, line.parameter_value(axis.first),
-                    axis.first == 'E' ? e_relative : xyz_relative);
-                if (value)
-                    items.push_back({axis.second, target, *value});
-                else if (line.has_parameter(axis.first))
-                    invalidated.push_back({axis.second, target, 0.0});
-            }
-            if (const std::optional<float> speed = line.parameter_value('F'))
-                items.push_back({RAW_GCODE_READER_ITEM_FEEDRATE, 0, double(*speed) * unit_scale(state)});
-            if (*number == 2 || *number == 3) {
-                const std::pair<char, uint32_t> centers[] = {
-                    {'I', RAW_GCODE_READER_ITEM_ARC_CENTER_X},
-                    {'J', RAW_GCODE_READER_ITEM_ARC_CENTER_Y},
-                    {'K', RAW_GCODE_READER_ITEM_ARC_CENTER_Z}
-                };
-                for (const std::pair<char, uint32_t> &center : centers)
-                    if (const std::optional<float> value = line.parameter_value(center.first))
-                        items.push_back({center.second, 0, double(*value) * unit_scale(state)});
-                items.push_back({RAW_GCODE_READER_ITEM_ARC_CLOCKWISE, 0, *number == 2 ? 1.0 : 0.0});
-            }
-            // A relative move needs a known origin. Keep the structural move
-            // event for downstream timeline consumers, but explicitly discard
-            // each axis whose final coordinate cannot be derived from the
-            // previous state.
-            if (!invalidated.empty())
-                publish_items(run_context, context, state,
-                              RAW_GCODE_READER_EVENT_INVALIDATE, source, invalidated);
-            publish_items(run_context, context, state,
-                          *number <= 1 ? RAW_GCODE_READER_EVENT_LINEAR_MOVE : RAW_GCODE_READER_EVENT_ARC_MOVE,
-                          source, items);
-            return;
-        }
-        if (letter == 'G' && *number == 20)
-            items.push_back({RAW_GCODE_READER_ITEM_UNITS_MM, 0, 0.0});
-        else if (letter == 'G' && *number == 21)
-            items.push_back({RAW_GCODE_READER_ITEM_UNITS_MM, 0, 1.0});
-        else if (letter == 'G' && *number == 90)
-            items.push_back({RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, 0, 1.0});
-        else if (letter == 'G' && *number == 91)
-            items.push_back({RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, 0, 0.0});
-        else if (letter == 'G' && *number == 92) {
-            const std::pair<char, uint32_t> axes[] = {
-                {'X', RAW_GCODE_READER_ITEM_X}, {'Y', RAW_GCODE_READER_ITEM_Y},
-                {'Z', RAW_GCODE_READER_ITEM_Z}, {'E', RAW_GCODE_READER_ITEM_E}
-            };
-            for (const std::pair<char, uint32_t> &axis : axes)
-                if (const std::optional<float> value = line.parameter_value(axis.first))
-                    items.push_back({axis.second, axis.first == 'E' ? active_tool(state) : 0,
-                                     double(*value) * unit_scale(state)});
-            publish_items(run_context, context, state,
-                          RAW_GCODE_READER_EVENT_SET_POSITION, source, items);
-            return;
-        } else if (letter == 'M' && *number == 82)
-            items.push_back({RAW_GCODE_READER_ITEM_E_ABSOLUTE, 0, 1.0});
-        else if (letter == 'M' && *number == 83)
-            items.push_back({RAW_GCODE_READER_ITEM_E_ABSOLUTE, 0, 0.0});
-        else if (letter == 'T')
-            items.push_back({RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(*number)});
-        else if (letter == 'M' && (*number == 104 || *number == 109)) {
-            std::optional<float> temperature = line.parameter_value('S');
-            if (temperature) {
-                int32_t requested_tool = int32_t(active_tool(state));
-                line.parameter_value('T', requested_tool);
-                if (requested_tool >= 0)
-                    items.push_back({RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE,
-                                     uint32_t(requested_tool), double(*temperature)});
-                publish_items(run_context, context, state,
-                              *number == 109 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
-                                               RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
-                              source, items);
-                return;
-            }
-        } else if (letter == 'M' && (*number == 140 || *number == 190)) {
-            if (const std::optional<float> temperature = line.parameter_value('S')) {
-                items.push_back({RAW_GCODE_READER_ITEM_BED_TEMPERATURE, 0, double(*temperature)});
-                publish_items(run_context, context, state,
-                              *number == 190 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
-                                               RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
-                              source, items);
-                return;
-            }
-        } else if (letter == 'M' && (*number == 141 || *number == 191)) {
-            if (const std::optional<float> temperature = line.parameter_value('S')) {
-                items.push_back({RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE, 0, double(*temperature)});
-                publish_items(run_context, context, state,
-                              *number == 191 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
-                                               RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
-                              source, items);
-                return;
-            }
-        } else if (letter == 'M' && (*number == 106 || *number == 107)) {
-            int32_t fan = 0;
-            line.parameter_value('P', fan);
-            if (fan >= 0) {
-                const std::optional<float> raw_speed = *number == 107 ?
-                    std::optional<float>(0.0f) : line.parameter_value('S');
-                if (raw_speed) {
-                    items.push_back({RAW_GCODE_READER_ITEM_FAN_SPEED, uint32_t(fan),
-                                     std::clamp(double(*raw_speed) * 100.0 / 255.0, 0.0, 100.0)});
-                }
-            }
-        } else if (letter == 'M' && *number == 220) {
-            if (const std::optional<float> factor = line.parameter_value('S'))
-                items.push_back({RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, double(*factor)});
-        } else if (letter == 'M' && *number == 221) {
-            if (const std::optional<float> factor = line.parameter_value('S'))
-                items.push_back({RAW_GCODE_READER_ITEM_EXTRUSION_FACTOR, 0, double(*factor)});
-        } else if (letter == 'M' && *number == 117) {
-            // M117 displays text on the printer and does not change portable
-            // motion state. Publish its source for viewers without invalidating
-            // coordinates, modes or the active tool needed by the next move.
-            publish_items(run_context, context, state,
-                          RAW_GCODE_READER_EVENT_DIAGNOSTIC, source, {});
-            return;
-        } else if (is_neutral_command(letter, *number)) {
+        if (is_neutral_command(letter, *number)) {
             // These built-in commands affect timing, machine limits, pressure
             // advance, current or firmware retraction, none of which has a
             // portable scalar in raw_gcode_reader_state. Recognizing them as
@@ -484,9 +392,291 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
             publish_unknown(run_context, context, state, source);
             return;
         }
-        publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source, items);
+        publish_state_update(run_context, context, state, source);
     });
+}
+
+bool BuiltinGCodeReaderBase::consume_numeric_command(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    char letter,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    if (letter == 'G' && (number == 0 || number == 1))
+        process_G0_G1(run_context, context, state, line, source);
+    else if (letter == 'G' && (number == 2 || number == 3))
+        process_G2_G3(run_context, context, state, line, number, source);
+    else if (letter == 'G' && (number == 20 || number == 21))
+        process_G20_G21(run_context, context, state, number, source);
+    else if (letter == 'G' && (number == 90 || number == 91))
+        process_G90_G91(run_context, context, state, number, source);
+    else if (letter == 'G' && number == 92)
+        process_G92(run_context, context, state, line, source);
+    else if (letter == 'M' && (number == 82 || number == 83))
+        process_M82_M83(run_context, context, state, number, source);
+    else if (letter == 'T')
+        process_T(run_context, context, state, number, source);
+    else if (letter == 'M' && (number == 104 || number == 109))
+        process_M104_M109(run_context, context, state, line, number, source);
+    else if (letter == 'M' && (number == 140 || number == 190))
+        process_M140_M190(run_context, context, state, line, number, source);
+    else if (letter == 'M' && (number == 141 || number == 191))
+        process_M141_M191(run_context, context, state, line, number, source);
+    else if (letter == 'M' && (number == 106 || number == 107))
+        process_M106_M107(run_context, context, state, line, number, source);
+    else if (letter == 'M' && number == 220)
+        process_M220(run_context, context, state, line, source);
+    else if (letter == 'M' && number == 221)
+        process_M221(run_context, context, state, line, source);
+    else if (letter == 'M' && number == 117)
+        process_M117(run_context, context, state, source);
+    else
+        return false;
+    return true;
+}
+
+void BuiltinGCodeReaderBase::process_G0_G1(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    raw_gcode_reader_source source) const
+{
+    ParsedMovementItems movement = parse_movement_items(state, line);
+    if (!movement.invalidated.empty())
+        publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+                      source, movement.invalidated);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+                  source, movement.values);
+}
+
+void BuiltinGCodeReaderBase::process_G2_G3(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    ParsedMovementItems movement = parse_movement_items(state, line);
+    const std::pair<char, uint32_t> centers[] = {
+        {'I', RAW_GCODE_READER_ITEM_ARC_CENTER_X},
+        {'J', RAW_GCODE_READER_ITEM_ARC_CENTER_Y},
+        {'K', RAW_GCODE_READER_ITEM_ARC_CENTER_Z}
+    };
+    for (const std::pair<char, uint32_t> &center : centers)
+        if (const std::optional<float> value = line.parameter_value(center.first))
+            movement.values.push_back({center.second, 0,
+                                       double(*value) * unit_scale(state)});
+    movement.values.push_back({RAW_GCODE_READER_ITEM_ARC_CLOCKWISE, 0,
+                               number == 2 ? 1.0 : 0.0});
+    if (!movement.invalidated.empty())
+        publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+                      source, movement.invalidated);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_ARC_MOVE,
+                  source, movement.values);
+}
+
+void BuiltinGCodeReaderBase::process_G20_G21(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  source, {{RAW_GCODE_READER_ITEM_UNITS_MM, 0,
+                            number == 21 ? 1.0 : 0.0}});
+}
+
+void BuiltinGCodeReaderBase::process_G90_G91(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  source, {{RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, 0,
+                            number == 90 ? 1.0 : 0.0}});
+}
+
+void BuiltinGCodeReaderBase::process_G92(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    raw_gcode_reader_source source) const
+{
+    std::vector<raw_gcode_reader_event_item> items;
+    const std::pair<char, uint32_t> axes[] = {
+        {'X', RAW_GCODE_READER_ITEM_X}, {'Y', RAW_GCODE_READER_ITEM_Y},
+        {'Z', RAW_GCODE_READER_ITEM_Z}, {'E', RAW_GCODE_READER_ITEM_E}
+    };
+    for (const std::pair<char, uint32_t> &axis : axes)
+        if (const std::optional<float> value = line.parameter_value(axis.first))
+            items.push_back({axis.second, axis.first == 'E' ? active_tool(state) : 0,
+                             double(*value) * unit_scale(state)});
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_SET_POSITION,
+                  source, items);
+}
+
+void BuiltinGCodeReaderBase::process_M82_M83(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  source, {{RAW_GCODE_READER_ITEM_E_ABSOLUTE, 0,
+                            number == 82 ? 1.0 : 0.0}});
+}
+
+void BuiltinGCodeReaderBase::process_T(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    uint32_t tool,
+    raw_gcode_reader_source source) const
+{
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  source, {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(tool)}});
+}
+
+void BuiltinGCodeReaderBase::process_M104_M109(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    std::vector<raw_gcode_reader_event_item> items;
+    const std::optional<float> temperature = line.parameter_value('S');
+    if (!temperature) {
+        publish_state_update(run_context, context, state, source);
+        return;
+    }
+    int32_t requested_tool = int32_t(active_tool(state));
+    line.parameter_value('T', requested_tool);
+    if (requested_tool >= 0)
+        items.push_back({RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE,
+                         uint32_t(requested_tool), double(*temperature)});
+    publish_items(run_context, context, state,
+                  number == 109 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
+                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
+                  source, items);
+}
+
+void BuiltinGCodeReaderBase::process_M140_M190(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    std::vector<raw_gcode_reader_event_item> items;
+    const std::optional<float> temperature = line.parameter_value('S');
+    if (!temperature) {
+        publish_state_update(run_context, context, state, source);
+        return;
+    }
+    items.push_back({RAW_GCODE_READER_ITEM_BED_TEMPERATURE, 0,
+                     double(*temperature)});
+    publish_items(run_context, context, state,
+                  number == 190 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
+                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
+                  source, items);
+}
+
+void BuiltinGCodeReaderBase::process_M141_M191(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    std::vector<raw_gcode_reader_event_item> items;
+    const std::optional<float> temperature = line.parameter_value('S');
+    if (!temperature) {
+        publish_state_update(run_context, context, state, source);
+        return;
+    }
+    items.push_back({RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE, 0,
+                     double(*temperature)});
+    publish_items(run_context, context, state,
+                  number == 191 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
+                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
+                  source, items);
+}
+
+void BuiltinGCodeReaderBase::process_M106_M107(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    uint32_t number,
+    raw_gcode_reader_source source) const
+{
+    std::vector<raw_gcode_reader_event_item> items;
+    int32_t fan = 0;
+    line.parameter_value('P', fan);
+    if (fan >= 0) {
+        const std::optional<float> raw_speed = number == 107 ?
+            std::optional<float>(0.0f) : line.parameter_value('S');
+        if (raw_speed)
+            items.push_back({RAW_GCODE_READER_ITEM_FAN_SPEED, uint32_t(fan),
+                             std::clamp(double(*raw_speed) * 100.0 / 255.0,
+                                        0.0, 100.0)});
+    }
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  source, items);
+}
+
+void BuiltinGCodeReaderBase::process_M220(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    raw_gcode_reader_source source) const
+{
+    std::vector<raw_gcode_reader_event_item> items;
+    if (const std::optional<float> factor = line.parameter_value('S'))
+        items.push_back({RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, double(*factor)});
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  source, items);
+}
+
+void BuiltinGCodeReaderBase::process_M221(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    raw_gcode_reader_source source) const
+{
+    std::vector<raw_gcode_reader_event_item> items;
+    if (const std::optional<float> factor = line.parameter_value('S'))
+        items.push_back({RAW_GCODE_READER_ITEM_EXTRUSION_FACTOR, 0, double(*factor)});
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  source, items);
+}
+
+void BuiltinGCodeReaderBase::process_M117(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    raw_gcode_reader_source source) const
+{
+    // Display text belongs in the timeline but cannot change the portable
+    // motion state needed by the next movement.
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_DIAGNOSTIC,
+                  source, {});
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

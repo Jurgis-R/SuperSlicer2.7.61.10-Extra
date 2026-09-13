@@ -17,20 +17,24 @@
 Built-in G-code reader base
 ===========================
 
-BuiltinGCodeReaderBase implements the stream and state machinery shared by the
-built-in Readers. A concrete dialect only describes its metadata and overrides
-the smallest hook matching a syntax difference:
+BuiltinGCodeReaderBase implements the stream, portable command dispatcher and
+state machinery shared by the built-in Readers. Every derived dispatcher calls
+its parent first, then handles only commands introduced at its own level:
 
     chunks -> complete physical line -> textual dialect hook
-                                     -> numeric dialect hook
-                                     -> common modal parser
+                                     -> chained numeric dispatchers
+                                          +-> common virtual process_*()
+                                          `-> dialect virtual process_*()
                                      -> marker/neutral classification
                                      -> conservative state invalidation
 
-The textual hook is for commands such as Klipper's NAME=value syntax. The
-numeric hook is for dialect-specific G/M commands or variants of a common
-command. The two predicates classify commands which either produce a timeline
-marker or are understood but have no portable Reader state item.
+The textual hook is for commands such as Klipper's NAME=value syntax. A numeric
+dispatcher returns true only after calling a process_*() handler. To add a new
+command, a subclass calls the parent dispatcher and examines the command only
+after a false result. To change a command already known by a parent, it
+overrides that command's virtual process_*() handler instead. The two predicates
+classify commands which either produce a timeline marker or are understood but
+have no portable Reader state item.
 
 Returning true from a command hook means that the derived Reader has completely
 handled the command and published the required event. Returning false delegates
@@ -50,15 +54,20 @@ public:
     explicit BuiltinGCodeReaderBase(orchestrator_handle *orchestrator);
 
 protected:
-    // Handle a non-numeric dialect command before command-number parsing.
-    // A true result means the hook has synchronously published its event.
+    // Dispatch a textual command known by this class. A subclass first calls
+    // its parent and only tries its additional commands when false is returned.
+    // True therefore means that one process_*() handler was called and fully
+    // published the command's synchronous event.
     virtual bool consume_text_command(const plugin_run_context &run_context,
                                       const run_ctx_gcode_reader &context,
                                       GCodeStateTracker &state,
                                       const GCodeLineParser::GCodeLine &line,
                                       raw_gcode_reader_source source) const;
-    // Handle a numeric dialect command before the common modal parser. This is
-    // also where a dialect overrides a shared command's parameter semantics.
+    // Dispatch a numeric command known by this class. The built-in base routes
+    // the portable vocabulary to virtual process_*() handlers. A subclass
+    // calls this implementation first, then dispatches only additional command
+    // numbers when it returns false. Shared semantics are customized by
+    // overriding the corresponding process_*() handler instead.
     virtual bool consume_numeric_command(const plugin_run_context &run_context,
                                          const run_ctx_gcode_reader &context,
                                          GCodeStateTracker &state,
@@ -76,6 +85,106 @@ protected:
     // generic base has no private schema; dialects use this hook to reject an
     // incomplete snapshot even when the input stream contains no command.
     virtual void validate_private_state(const GCodeStateTracker &state) const;
+
+    // Common command handlers are virtual so a dialect can replace one
+    // command family without reimplementing line parsing or dispatch. An
+    // override owns the complete command and must synchronously publish every
+    // event it requires. It may call the qualified base implementation when
+    // the dialect only adds behavior around the portable interpretation.
+    // Resolve a linear destination, invalidate unresolved relative axes, then
+    // publish one LINEAR_MOVE containing the values that remain known.
+    virtual void process_G0_G1(const plugin_run_context &run_context,
+                               const run_ctx_gcode_reader &context,
+                               GCodeStateTracker &state,
+                               const GCodeLineParser::GCodeLine &line,
+                               raw_gcode_reader_source source) const;
+    // Resolve an arc destination and its I/J/K offsets, recording whether the
+    // command selected clockwise G2 or counter-clockwise G3 interpolation.
+    virtual void process_G2_G3(const plugin_run_context &run_context,
+                               const run_ctx_gcode_reader &context,
+                               GCodeStateTracker &state,
+                               const GCodeLineParser::GCodeLine &line,
+                               uint32_t number,
+                               raw_gcode_reader_source source) const;
+    // Select inches for G20 or millimetres for G21 in portable modal state.
+    virtual void process_G20_G21(const plugin_run_context &run_context,
+                                 const run_ctx_gcode_reader &context,
+                                 GCodeStateTracker &state,
+                                 uint32_t number,
+                                 raw_gcode_reader_source source) const;
+    // Select absolute G90 or relative G91 positioning for the XYZ axes.
+    virtual void process_G90_G91(const plugin_run_context &run_context,
+                                 const run_ctx_gcode_reader &context,
+                                 GCodeStateTracker &state,
+                                 uint32_t number,
+                                 raw_gcode_reader_source source) const;
+    // Replace only the coordinates explicitly supplied by G92. E belongs to
+    // the active tool while XYZ remain global.
+    virtual void process_G92(const plugin_run_context &run_context,
+                             const run_ctx_gcode_reader &context,
+                             GCodeStateTracker &state,
+                             const GCodeLineParser::GCodeLine &line,
+                             raw_gcode_reader_source source) const;
+    // Select absolute M82 or relative M83 coordinates for extrusion.
+    virtual void process_M82_M83(const plugin_run_context &run_context,
+                                 const run_ctx_gcode_reader &context,
+                                 GCodeStateTracker &state,
+                                 uint32_t number,
+                                 raw_gcode_reader_source source) const;
+    // Publish selection of the non-negative tool parsed from a numeric T word.
+    virtual void process_T(const plugin_run_context &run_context,
+                           const run_ctx_gcode_reader &context,
+                           GCodeStateTracker &state,
+                           uint32_t tool,
+                           raw_gcode_reader_source source) const;
+    // Set a tool target with M104 or wait for it with M109. Missing S leaves
+    // temperature state unchanged, matching the conservative parser contract.
+    virtual void process_M104_M109(const plugin_run_context &run_context,
+                                   const run_ctx_gcode_reader &context,
+                                   GCodeStateTracker &state,
+                                   const GCodeLineParser::GCodeLine &line,
+                                   uint32_t number,
+                                   raw_gcode_reader_source source) const;
+    // Set the bed target with M140 or wait for it with M190.
+    virtual void process_M140_M190(const plugin_run_context &run_context,
+                                   const run_ctx_gcode_reader &context,
+                                   GCodeStateTracker &state,
+                                   const GCodeLineParser::GCodeLine &line,
+                                   uint32_t number,
+                                   raw_gcode_reader_source source) const;
+    // Set the chamber target with M141 or wait for it with M191.
+    virtual void process_M141_M191(const plugin_run_context &run_context,
+                                   const run_ctx_gcode_reader &context,
+                                   GCodeStateTracker &state,
+                                   const GCodeLineParser::GCodeLine &line,
+                                   uint32_t number,
+                                   raw_gcode_reader_source source) const;
+    // Convert the conventional 0..255 M106 speed to percent, or stop the
+    // selected fan for M107. Dialects with other units override this handler.
+    virtual void process_M106_M107(const plugin_run_context &run_context,
+                                   const run_ctx_gcode_reader &context,
+                                   GCodeStateTracker &state,
+                                   const GCodeLineParser::GCodeLine &line,
+                                   uint32_t number,
+                                   raw_gcode_reader_source source) const;
+    // Store the M220 speed multiplier expressed as a percentage.
+    virtual void process_M220(const plugin_run_context &run_context,
+                              const run_ctx_gcode_reader &context,
+                              GCodeStateTracker &state,
+                              const GCodeLineParser::GCodeLine &line,
+                              raw_gcode_reader_source source) const;
+    // Store the M221 extrusion multiplier expressed as a percentage.
+    virtual void process_M221(const plugin_run_context &run_context,
+                              const run_ctx_gcode_reader &context,
+                              GCodeStateTracker &state,
+                              const GCodeLineParser::GCodeLine &line,
+                              raw_gcode_reader_source source) const;
+    // Preserve M117 as a diagnostic timeline entry without changing modal
+    // machine state.
+    virtual void process_M117(const plugin_run_context &run_context,
+                              const run_ctx_gcode_reader &context,
+                              GCodeStateTracker &state,
+                              raw_gcode_reader_source source) const;
 
     // Publish a caller-owned delta. The event and its temporary item storage
     // need only remain alive for this synchronous call.
