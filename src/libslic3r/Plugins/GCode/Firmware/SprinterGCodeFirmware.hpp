@@ -24,6 +24,7 @@ class SprinterGCodeFirmwareSession :
 {
 public:
     using SingleAccelerationRegisterGCodeFirmwareSession::SingleAccelerationRegisterGCodeFirmwareSession;
+    std::string reader_plugin_id() const override { return "gcode.reader.marlin"; }
 
 protected:
     std::string resolve_empty_script(gcode_script_type script_type,

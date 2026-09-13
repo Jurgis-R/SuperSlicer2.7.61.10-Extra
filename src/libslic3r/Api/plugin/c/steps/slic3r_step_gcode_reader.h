@@ -5,7 +5,7 @@
 #ifndef slic3r_step_gcode_reader_h_
 #define slic3r_step_gcode_reader_h_
 
-#define SLIC3R_PLUGIN_API_STEP_GCODE_READER_MAJOR 2u
+#define SLIC3R_PLUGIN_API_STEP_GCODE_READER_MAJOR 3u
 #define SLIC3R_PLUGIN_API_STEP_GCODE_READER_MINOR 0u
 
 #include "slic3r_step_common.h"
@@ -37,6 +37,10 @@ typedef enum raw_gcode_reader_operation {
 
 typedef struct run_ctx_gcode_reader {
     raw_gcode_reader_operation operation;
+    /* Optional read-only slicing context. It is available when a Reader is
+       called from an export and NULL for standalone imported files. A Reader
+       may use it to resolve dialect names, but must still support NULL. */
+    const print_handle *print;
     const raw_gcode_reader_state *initial_state;
     void *callback_context;
     gcode_reader_get_next_chunk_fn get_next_chunk;

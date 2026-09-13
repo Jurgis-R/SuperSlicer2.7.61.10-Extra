@@ -57,6 +57,7 @@ public:
     // Copy the borrowed initial state and take ownership of the source callable
     // for one synchronous execution. Input bytes remain owned by that source.
     ReaderInvocation(GCodeReaderChunkSource source,
+                     const Print *print,
                      const raw_gcode_reader_state &initial_state);
 
     // Build the borrowed C payload whose callback_context points back to this
@@ -93,6 +94,7 @@ private:
     static void initialize_success(raw_gcode_reader_result *result) noexcept;
     // Source bytes are borrowed through m_active_chunk until the next pull.
     GCodeReaderChunkSource m_source;
+    const Print *m_print;
     // Initial and replay states validate host input and provider events. Only
     // m_final_state is returned to the service caller.
     slic3r_api::GCodeStateTracker m_initial_state;
@@ -105,8 +107,9 @@ private:
 };
 
 ReaderInvocation::ReaderInvocation(GCodeReaderChunkSource source,
+                                   const Print *print,
                                    const raw_gcode_reader_state &initial_state)
-    : m_source(std::move(source)), m_initial_state(initial_state),
+    : m_source(std::move(source)), m_print(print), m_initial_state(initial_state),
       m_event_state(initial_state)
 {
     if (!m_source)
@@ -117,6 +120,7 @@ run_ctx_gcode_reader ReaderInvocation::context()
 {
     run_ctx_gcode_reader value = {};
     value.operation = RAW_GCODE_READER_OPERATION_READ;
+    value.print = reinterpret_cast<const print_handle *>(m_print);
     value.initial_state = &m_initial_state.state();
     value.callback_context = this;
     value.get_next_chunk = &ReaderInvocation::get_next_chunk_callback;
@@ -293,7 +297,7 @@ slic3r_api::GCodeStateTracker read_gcode(
 
     // invocation outlives execute_plugin(), therefore callback_context and all
     // borrowed diagnostics remain valid for every provider callback.
-    ReaderInvocation invocation(std::move(source), initial_state);
+    ReaderInvocation invocation(std::move(source), print, initial_state);
     run_ctx_gcode_reader context = invocation.context();
     raw_plugin_run_payload payload = {};
     payload.data = &context;
@@ -330,7 +334,7 @@ namespace {
 class ProbeInvocation
 {
 public:
-    explicit ProbeInvocation(std::string_view prefix);
+    ProbeInvocation(std::string_view prefix, const Print *print);
     run_ctx_gcode_reader context();
     uint32_t confidence() const;
 
@@ -342,17 +346,21 @@ private:
                                raw_gcode_reader_result *result) noexcept;
 
     std::string_view m_prefix;
+    const Print *m_print;
     uint32_t m_confidence = 0;
     bool m_supplied = false;
     bool m_reported = false;
 };
 
-ProbeInvocation::ProbeInvocation(std::string_view prefix) : m_prefix(prefix) {}
+ProbeInvocation::ProbeInvocation(std::string_view prefix, const Print *print)
+    : m_prefix(prefix), m_print(print)
+{}
 
 run_ctx_gcode_reader ProbeInvocation::context()
 {
     run_ctx_gcode_reader value = {};
     value.operation = RAW_GCODE_READER_OPERATION_PROBE;
+    value.print = reinterpret_cast<const print_handle *>(m_print);
     value.callback_context = this;
     value.get_next_chunk = &ProbeInvocation::next_callback;
     value.emit_probe = &ProbeInvocation::probe_callback;
@@ -411,7 +419,7 @@ std::string detect_gcode_reader(Orchestrator &orchestrator, Print *print,
     uint32_t winner_confidence = 0;
     const std::vector<Plugin *> readers = orchestrator.get_active_plugins_for_step(GCODE_READER);
     for (Plugin *plugin : readers) {
-        ProbeInvocation invocation(bounded);
+        ProbeInvocation invocation(bounded, print);
         run_ctx_gcode_reader context = invocation.context();
         raw_plugin_run_payload payload = {};
         payload.data = &context;

@@ -668,8 +668,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         orchestrator, "gcode.feature_gcode",
         slic3r_api::GCodeGeneration::FeatureGCodePlugin::register_feature_gcode_plugin);
     register_builtin_plugin(
-        orchestrator, "gcode.reader.default",
-        slic3r_api::GCodeGeneration::Reader::register_default_gcode_reader_plugin);
+        orchestrator, "built-in G-code readers",
+        slic3r_api::GCodeGeneration::Reader::register_builtin_gcode_reader_plugins);
     register_builtin_plugin(
         orchestrator, "custom G-code at height",
         slic3r_api::GCodeGeneration::CustomGCodePerPrintZPlugin::register_custom_gcode_per_print_z_plugins);

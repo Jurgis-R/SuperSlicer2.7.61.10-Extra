@@ -6,7 +6,7 @@
 #define slic3r_plugin_types_h_
 
 #define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MAJOR 1u
-#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 2u
+#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 3u
 
 #include <stdint.h>
 
@@ -193,10 +193,9 @@ typedef struct plugin_vtable {
     Plugins in the same exclusive group are alternatives: the project stores a
     selector setting and the host runs only the selected active plugin from the
     group. Return the plugin id when the plugin has no known alternatives yet;
-    the host also treats NULL or an empty string as the plugin id for backward
-    compatibility with older plugins. This gives every plugin a stable
-    singleton group that future alternatives may join without modifying the
-    original plugin.
+    NULL also requests this singleton fallback for older plugins. Return an
+    empty string only for an addressable service that deliberately has no
+    selector and may remain active alongside every other provider of its step.
 
     Some host-defined "unique" steps force all active plugins for that step into
     one exclusive group even if this callback returns empty. This lets old-style

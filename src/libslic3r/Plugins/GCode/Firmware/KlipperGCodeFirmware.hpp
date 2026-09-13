@@ -27,6 +27,7 @@ class KlipperGCodeFirmwareSession :
 {
 public:
     using SingleAccelerationRegisterGCodeFirmwareSession::SingleAccelerationRegisterGCodeFirmwareSession;
+    std::string reader_plugin_id() const override { return "gcode.reader.klipper"; }
 
 protected:
     std::string resolve_empty_script(gcode_script_type script_type,

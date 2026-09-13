@@ -5,20 +5,20 @@
 #ifndef slic3r_Plugins_GCode_Reader_DefaultGCodeReader_hpp_
 #define slic3r_Plugins_GCode_Reader_DefaultGCodeReader_hpp_
 
-struct orchestrator_handle;
+#include "BuiltinGCodeReaderBase.hpp"
 
 /*
 Built-in G-code reader registration
 ===================================
 
-This small public header exposes only registration. Parsing remains private to
-DefaultGCodeReader.cpp and is reached later through the generic GCODE_READER
-service by its stable id, or as the fallback after no active Reader recognizes
-an imported file.
+The default provider supplies the conservative fallback used when probing does
+not identify a firmware dialect. It inherits all supported commands from the
+common parser and deliberately adds none: an extension it cannot model must
+invalidate portable state instead of being guessed harmless.
 
-    PluginLoader -> register_default_gcode_reader_plugin()
-                 -> Orchestrator stores provider
-                 -> firmware requests "gcode.reader.default"
+    PluginLoader -> register_builtin_gcode_reader_plugins()
+                 -> Orchestrator stores all four providers
+                 -> firmware requests its dialect Reader
                  -> read_gcode() validates and executes that exact provider
 
 The registered object is process-lived and stateless. Per-stream parser state
@@ -27,11 +27,23 @@ is created on the stack for each run, allowing concurrent Reader executions.
 
 namespace slic3r_api { namespace GCodeGeneration { namespace Reader {
 
-// Register the built-in Marlin-like provider. The Orchestrator borrows the
-// process-lived static plugin instance; this function transfers no ownership.
-// It does not join an exclusive group: every Reader may stay active so the host
-// can probe all dialects and execute a specifically requested one.
-void register_default_gcode_reader_plugin(orchestrator_handle *orchestrator);
+class DefaultGCodeReader final : public BuiltinGCodeReaderBase
+{
+public:
+    explicit DefaultGCodeReader(orchestrator_handle *orchestrator);
+
+private:
+    const char *id_impl() const noexcept override;
+    const char *name_impl() const noexcept override;
+    const char *description_impl() const noexcept override;
+    uint32_t probe_impl(std::string_view prefix) const override;
+};
+
+// Register the default, Marlin, RepRapFirmware and Klipper providers. The
+// Orchestrator borrows the process-lived static plugin instances; this function
+// transfers no ownership. Readers do not join an exclusive group because the
+// host probes all active dialects and executes explicit ids independently.
+void register_builtin_gcode_reader_plugins(orchestrator_handle *orchestrator);
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader
 

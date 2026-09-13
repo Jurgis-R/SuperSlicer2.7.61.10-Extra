@@ -70,6 +70,13 @@ class PythonExecutionContextTests(unittest.TestCase):
         keepalive.append(common)
         return common, keepalive
 
+    def test_plugin_base_distinguishes_default_and_absent_exclusive_groups(self):
+        singleton = self.api_module.PluginBase("test.singleton", 1)
+        service = self.api_module.PluginBase("test.service", 1, exclusive_group="")
+
+        self.assertEqual(singleton.exclusive_group, "test.singleton")
+        self.assertEqual(service.exclusive_group, "")
+
     def test_simple_context_validates_step_and_wraps_borrowed_handles(self):
         payload = self.generated.RunCtxPrepareForPerimeters(ctypes.c_void_p(11), ctypes.c_void_p(12))
         common, keepalive = self.make_common(self.generated.STEP_PRE_PERIMETER, payload)

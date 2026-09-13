@@ -231,8 +231,16 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/Firmware/RepRapGCodeFirmware.hpp
 	Plugins/GCode/Firmware/SprinterGCodeFirmware.cpp
 	Plugins/GCode/Firmware/SprinterGCodeFirmware.hpp
+	Plugins/GCode/Reader/BuiltinGCodeReaderBase.cpp
+	Plugins/GCode/Reader/BuiltinGCodeReaderBase.hpp
 	Plugins/GCode/Reader/DefaultGCodeReader.cpp
 	Plugins/GCode/Reader/DefaultGCodeReader.hpp
+	Plugins/GCode/Reader/KlipperGCodeReader.cpp
+	Plugins/GCode/Reader/KlipperGCodeReader.hpp
+	Plugins/GCode/Reader/MarlinGCodeReader.cpp
+	Plugins/GCode/Reader/MarlinGCodeReader.hpp
+	Plugins/GCode/Reader/RepRapGCodeReader.cpp
+	Plugins/GCode/Reader/RepRapGCodeReader.hpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.cpp
 	Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp
 	Plugins/GCode/FeatureGCode.cpp

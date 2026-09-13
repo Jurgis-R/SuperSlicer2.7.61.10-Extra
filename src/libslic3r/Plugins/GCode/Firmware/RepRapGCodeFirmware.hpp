@@ -22,6 +22,7 @@ class RepRapGCodeFirmwareSession : public DefaultGCodeFirmwareSession
 {
 public:
     using DefaultGCodeFirmwareSession::DefaultGCodeFirmwareSession;
+    std::string reader_plugin_id() const override { return "gcode.reader.reprap"; }
 
 protected:
     std::string resolve_empty_script(gcode_script_type script_type,

@@ -254,6 +254,12 @@ private:
     // Bind every derived provider to the non-pipeline GCODE_READER service.
     slicing_step_t step_impl() const noexcept final { return GCODE_READER; }
 
+    // Readers are addressable services that may all remain active at once.
+    // Returning an empty id opts out of PluginBase's default singleton group;
+    // selection is performed explicitly by GCodeReaderService, never through
+    // a generated PrintConfig selector.
+    const char *exclusive_group_impl() const noexcept final { return ""; }
+
     // Validate the typed payload, create the per-run state, invoke the derived
     // parser and finally lend the complete state to the host. The final state
     // callback occurs only after read_impl() returned normally and cancellation

@@ -184,6 +184,19 @@ TEST_CASE("G-code firmware service exposes its printer selector and standard ses
     REQUIRE(migrated_selection != nullptr);
     CHECK(migrated_selection->get_id() == "gcode.firmware.marlin2");
 }
+
+TEST_CASE("Built-in firmware dialects select their matching G-code readers",
+          "[plugins][gcode][firmware][reader]")
+{
+    using namespace slic3r_api::GCodeGeneration::Firmware;
+    CHECK(Marlin1GCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
+    CHECK(Marlin2GCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
+    CHECK(PrusaGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
+    CHECK(SprinterGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.marlin");
+    CHECK(RepRapGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.reprap");
+    CHECK(KlipperGCodeFirmwareSession().reader_plugin_id() == "gcode.reader.klipper");
+}
+
 TEST_CASE("Built-in firmware dialects encode their machine envelope preamble",
           "[plugins][gcode][firmware][dialects][machine-envelope]")
 {

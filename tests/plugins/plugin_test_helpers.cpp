@@ -378,7 +378,7 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::GCodeGeneration::FeatureGCodePlugin::register_feature_gcode_plugin(
             orchestrator_handle_value);
-        slic3r_api::GCodeGeneration::Reader::register_default_gcode_reader_plugin(
+        slic3r_api::GCodeGeneration::Reader::register_builtin_gcode_reader_plugins(
             orchestrator_handle_value);
         register_gcode_reader_test_providers(orchestrator_handle_value);
         slic3r_api::GCodeGeneration::CustomGCodePerPrintZPlugin::register_custom_gcode_per_print_z_plugins(
@@ -488,6 +488,9 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "gcode.settings_scripts");
         activate_plugin_or_fail(orchestrator, "gcode.feature_gcode");
         activate_plugin_or_fail(orchestrator, "gcode.reader.default");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.marlin");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.reprap");
+        activate_plugin_or_fail(orchestrator, "gcode.reader.klipper");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.a");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.b");
         activate_plugin_or_fail(orchestrator, "gcode.reader.test.lower_priority");

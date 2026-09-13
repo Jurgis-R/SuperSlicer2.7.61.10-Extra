@@ -50,7 +50,7 @@ struct RecordingPluginState
     const char *id = nullptr;
     slicing_step_t step = STEP_NONE;
     int32_t priority = 0;
-    const char *exclusive_group = "";
+    const char *exclusive_group = nullptr;
     const char *exclusive_group_label = "";
     const char *exclusive_group_tooltip = "";
     std::vector<RecordedEvent> *events = nullptr;

@@ -66,6 +66,10 @@ inline constexpr size_t GCODE_READER_PROBE_PREFIX_SIZE = 256u * 1024u;
 class GCodeReaderService
 {
 public:
+    // Borrow the optional Print for the lifetime of this service. It lets a
+    // Reader resolve slicer configuration such as Klipper tool names; callers
+    // parsing an external file may pass null. The Print must outlive every
+    // synchronous read or probe made through this facade.
     GCodeReaderService(Orchestrator &orchestrator, Print *print);
     const raw_gcode_reader_service *c_service() const { return &m_service; }
     slic3r_api::GCodeStateTracker read(std::string_view reader_plugin_id,
