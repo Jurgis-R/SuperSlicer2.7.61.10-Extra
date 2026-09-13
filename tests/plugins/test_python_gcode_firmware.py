@@ -69,6 +69,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         generated_path.write_text(generator.generate(), encoding="utf-8")
         sys.path.insert(0, cls.generated_directory.name)
         cls.generated = importlib.import_module("slic3r_api_generated")
+        cls.reader_service = importlib.import_module("slic3r_gcode_reader_service")
         cls.firmware = importlib.import_module("steps.gcode_firmware")
         cls.thumbnail = importlib.import_module("steps.gcode_thumbnail")
         cls.datatree = importlib.import_module("slic3r_datatree_views")
@@ -82,7 +83,9 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         cls.generated_directory.cleanup()
 
     def test_reader_identity_and_custom_range_constants_are_generated(self):
-        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_GCODE_READER_MINOR, 0)
+        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_GCODE_READER_MINOR, 1)
+        self.assertEqual(self.generated.RAW_GCODE_READER_MARKER_SEAM, 1)
+        self.assertEqual(self.generated.RAW_GCODE_READER_MARKER_CUSTOM_GCODE, 4)
         self.assertNotIn("source", dict(self.generated.RawGcodeReaderEvent._fields_))
         self.assertGreater(
             self.generated.RAW_GCODE_READER_ITEM_READER_ID,
@@ -92,6 +95,38 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
             self.generated.RAW_GCODE_READER_ITEM_CUSTOM_BEGIN,
             0x80000000,
         )
+
+    def test_reader_marker_is_typed_and_event_only(self):
+        generated = self.generated
+        items = (generated.RawGcodeReaderEventItem * 2)(
+            generated.RawGcodeReaderEventItem(
+                generated.RAW_GCODE_READER_ITEM_MARKER,
+                0,
+                generated.RAW_GCODE_READER_MARKER_PAUSE_PRINT,
+            ),
+            generated.RawGcodeReaderEventItem(
+                generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0
+            ),
+        )
+        event = generated.RawGcodeReaderEvent(
+            generated.RAW_GCODE_READER_EVENT_MARKER, items, len(items)
+        )
+        copied = self.reader_service._copied_items(event, event.kind)
+        self.assertEqual(copied[0][2], generated.RAW_GCODE_READER_MARKER_PAUSE_PRINT)
+
+        with self.assertRaisesRegex(ValueError, "complete.*event-local marker"):
+            self.reader_service._copied_items(event)
+
+        line_only = (generated.RawGcodeReaderEventItem * 1)(
+            generated.RawGcodeReaderEventItem(
+                generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0
+            )
+        )
+        missing = generated.RawGcodeReaderEvent(
+            generated.RAW_GCODE_READER_EVENT_MARKER, line_only, len(line_only)
+        )
+        with self.assertRaisesRegex(ValueError, "needs a marker type"):
+            self.reader_service._copied_items(missing, missing.kind)
 
     def test_reader_service_routes_through_the_generic_orchestrator(self):
         seen = {}

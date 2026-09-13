@@ -76,9 +76,10 @@ protected:
     // Return true for a command understood by the dialect which cannot alter
     // any value represented by raw_gcode_reader_state.
     virtual bool is_neutral_command(char letter, uint32_t number) const;
-    // Return true for a pause or filament-change command represented as a
-    // timeline marker rather than a portable machine-state update.
-    virtual bool is_marker_command(char letter, uint32_t number) const;
+    // Return the point-in-time annotation produced by a command, or no value
+    // when normal command dispatch should continue.
+    virtual std::optional<raw_gcode_reader_marker_type> marker_type(
+        char letter, uint32_t number) const;
     // Validate provider-private state at both boundaries of one read. The
     // generic base has no private schema; dialects use this hook to reject an
     // incomplete snapshot even when the input stream contains no command.

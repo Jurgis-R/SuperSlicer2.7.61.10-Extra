@@ -240,9 +240,10 @@ bool BuiltinGCodeReaderBase::is_neutral_command(char, uint32_t) const
     return false;
 }
 
-bool BuiltinGCodeReaderBase::is_marker_command(char, uint32_t) const
+std::optional<raw_gcode_reader_marker_type>
+BuiltinGCodeReaderBase::marker_type(char, uint32_t) const
 {
-    return false;
+    return std::nullopt;
 }
 
 void BuiltinGCodeReaderBase::validate_private_state(const GCodeStateTracker &) const
@@ -369,9 +370,11 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
             // advance, current or firmware retraction, none of which has a
             // portable scalar in raw_gcode_reader_state. Recognizing them as
             // neutral preserves the state values they cannot change.
-        } else if (is_marker_command(letter, *number)) {
+        } else if (const std::optional<raw_gcode_reader_marker_type> marker =
+                       marker_type(letter, *number)) {
             publish_items(run_context, context, state,
-                          RAW_GCODE_READER_EVENT_MARKER, {});
+                          RAW_GCODE_READER_EVENT_MARKER,
+                          {{RAW_GCODE_READER_ITEM_MARKER, 0, double(*marker)}});
             return;
         } else {
             publish_unknown(run_context, context, state);

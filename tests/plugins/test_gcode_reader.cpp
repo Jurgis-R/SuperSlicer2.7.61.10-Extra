@@ -281,6 +281,7 @@ struct ObservedEvent
 {
     uint32_t kind = 0;
     uint32_t line_number = UINT32_MAX;
+    std::optional<uint32_t> marker;
 };
 
 struct ReaderProbe
@@ -341,12 +342,15 @@ void collect_event(void *context,
 {
     ReaderProbe *probe = static_cast<ReaderProbe *>(context);
     uint32_t line_number = UINT32_MAX;
+    std::optional<uint32_t> marker;
     for (uint32_t index = 0; index < event->item_count; ++index) {
         const raw_gcode_reader_event_item &item = event->items[index];
         if (item.type == RAW_GCODE_READER_ITEM_LINE_NUMBER)
             line_number = static_cast<uint32_t>(item.value);
+        else if (item.type == RAW_GCODE_READER_ITEM_MARKER)
+            marker = static_cast<uint32_t>(item.value);
     }
-    probe->observed.push_back({event->kind, line_number});
+    probe->observed.push_back({event->kind, line_number, marker});
     result->status = RAW_GCODE_READER_STATUS_SUCCESS;
 }
 
@@ -590,11 +594,16 @@ TEST_CASE("Dialect G-code readers preserve and update representable state",
     CHECK(prusa.x() == Approx(1.0));
 
     ReaderProbe prusa_marker_probe;
-    prusa_marker_probe.chunks = {"M601\n"};
+    prusa_marker_probe.chunks = {"M600\nM601\n"};
     REQUIRE(execute_reader("gcode.reader.prusa", prusa_marker_probe, initial) ==
             RAW_PLUGIN_EXECUTION_SUCCESS);
-    REQUIRE(prusa_marker_probe.observed.size() == 1);
-    CHECK(prusa_marker_probe.observed.front().kind == RAW_GCODE_READER_EVENT_MARKER);
+    REQUIRE(prusa_marker_probe.observed.size() == 2);
+    CHECK(prusa_marker_probe.observed[0].kind == RAW_GCODE_READER_EVENT_MARKER);
+    CHECK(prusa_marker_probe.observed[0].marker ==
+          RAW_GCODE_READER_MARKER_COLOR_CHANGE);
+    CHECK(prusa_marker_probe.observed[1].kind == RAW_GCODE_READER_EVENT_MARKER);
+    CHECK(prusa_marker_probe.observed[1].marker ==
+          RAW_GCODE_READER_MARKER_PAUSE_PRINT);
 
     const slic3r_api::GCodeStateTracker sprinter = read_gcode(
         orchestrator, nullptr, "gcode.reader.sprinter", initial,
@@ -620,6 +629,14 @@ TEST_CASE("Dialect G-code readers preserve and update representable state",
     CHECK(klipper.active_tool() == 2u);
     REQUIRE(klipper.value(RAW_GCODE_READER_ITEM_ACCELERATION));
     CHECK(*klipper.value(RAW_GCODE_READER_ITEM_ACCELERATION) == Approx(900.0));
+
+    ReaderProbe klipper_pause_probe;
+    klipper_pause_probe.chunks = {"PAUSE\n"};
+    REQUIRE(execute_reader("gcode.reader.klipper", klipper_pause_probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(klipper_pause_probe.observed.size() == 1);
+    CHECK(klipper_pause_probe.observed.front().marker ==
+          RAW_GCODE_READER_MARKER_PAUSE_PRINT);
 }
 
 TEST_CASE("Klipper G-code reader resolves configured tool names conservatively",
@@ -1072,6 +1089,43 @@ TEST_CASE("Host G-code reader derives tools and arc vertices from events",
     CHECK(result.moves.back().position.y() == Approx(1.0));
 }
 
+TEST_CASE("Host G-code reader creates typed marker vertices",
+          "[plugins][gcode][reader][viewer]")
+{
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    slic3r_api::GCodeStateTracker state(initial);
+    GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+
+    const uint32_t markers[] = {
+        RAW_GCODE_READER_MARKER_SEAM,
+        RAW_GCODE_READER_MARKER_COLOR_CHANGE,
+        RAW_GCODE_READER_MARKER_PAUSE_PRINT,
+        RAW_GCODE_READER_MARKER_CUSTOM_GCODE
+    };
+    for (uint32_t line = 0; line < 4; ++line) {
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_MARKER,
+            {{RAW_GCODE_READER_ITEM_MARKER, 0, double(markers[line])},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, double(line)}});
+        CHECK_FALSE(state.known(RAW_GCODE_READER_ITEM_MARKER));
+    }
+    consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+        {{RAW_GCODE_READER_ITEM_X, 0, 2.0},
+         {RAW_GCODE_READER_ITEM_E, 0, 1.0},
+         {RAW_GCODE_READER_ITEM_FEEDRATE, 0, 60.0},
+         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 4.0}});
+
+    const GCodeProcessorResult result = builder.finish(state);
+    REQUIRE(result.moves.size() == 5);
+    CHECK(result.moves[0].type == EMoveType::Seam);
+    CHECK(result.moves[1].type == EMoveType::Color_change);
+    CHECK(result.moves[2].type == EMoveType::Pause_Print);
+    CHECK(result.moves[3].type == EMoveType::Custom_GCode);
+    CHECK(result.moves[0].cp_color_id == 0u);
+    CHECK(result.moves[1].cp_color_id == 1u);
+    CHECK(result.moves.back().cp_color_id == 1u);
+}
+
 TEST_CASE("Host G-code reader initializes the built-in RepRap private schema",
           "[plugins][gcode][reader][viewer]")
 {
@@ -1181,6 +1235,53 @@ TEST_CASE("G-code reader requires a valid line number item", "[plugins][gcode][r
 
     invalid_line_items[0] = {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.5};
     CHECK_THROWS_AS(slic3r_api::GCodeStateTracker(invalid_line), std::invalid_argument);
+}
+
+TEST_CASE("G-code reader markers are typed event-only attributes",
+          "[plugins][gcode][reader]")
+{
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    slic3r_api::GCodeStateTracker state(initial);
+
+    const raw_gcode_reader_event_item valid_items[] = {
+        {RAW_GCODE_READER_ITEM_MARKER, 0, RAW_GCODE_READER_MARKER_PAUSE_PRINT},
+        {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}
+    };
+    const raw_gcode_reader_event valid = {
+        RAW_GCODE_READER_EVENT_MARKER, valid_items, 2
+    };
+    state.apply(valid);
+    CHECK_FALSE(state.known(RAW_GCODE_READER_ITEM_MARKER));
+
+    const raw_gcode_reader_event_item line_only[] = {
+        {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}
+    };
+    const raw_gcode_reader_event missing_type = {
+        RAW_GCODE_READER_EVENT_MARKER, line_only, 1
+    };
+    CHECK_THROWS_AS(state.apply(missing_type), std::invalid_argument);
+
+    const raw_gcode_reader_event wrong_kind = {
+        RAW_GCODE_READER_EVENT_STATE_UPDATE, valid_items, 2
+    };
+    CHECK_THROWS_AS(state.apply(wrong_kind), std::invalid_argument);
+
+    raw_gcode_reader_event_item invalid_items[] = {
+        {RAW_GCODE_READER_ITEM_MARKER, 0,
+         double(RAW_GCODE_READER_MARKER_CUSTOM_GCODE) + 1.0},
+        {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}
+    };
+    const raw_gcode_reader_event invalid_type = {
+        RAW_GCODE_READER_EVENT_MARKER, invalid_items, 2
+    };
+    CHECK_THROWS_AS(state.apply(invalid_type), std::invalid_argument);
+
+    raw_gcode_reader_state invalid_state = initial;
+    invalid_state.items = valid_items;
+    invalid_state.item_count = 2;
+    CHECK_THROWS_AS(slic3r_api::GCodeStateTracker(invalid_state),
+                    std::invalid_argument);
 }
 
 TEST_CASE("G-code reader normalizes and validates its provider identity",

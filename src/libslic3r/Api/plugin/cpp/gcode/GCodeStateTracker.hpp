@@ -101,6 +101,9 @@ public:
     void replace(const raw_gcode_reader_state &state)
     {
         validate_items(state.items, state.item_count);
+        for (uint32_t index = 0; index < state.item_count; ++index)
+            if (state.items[index].type == RAW_GCODE_READER_ITEM_MARKER)
+                throw std::invalid_argument("A complete G-code reader state contains an event-local marker.");
         std::map<Key, double> replacement;
         copy_items(state.items, state.item_count, replacement);
         require_line_number(replacement);
@@ -117,6 +120,10 @@ public:
         std::map<Key, double> updated = m_values;
         for (uint32_t index = 0; index < event.item_count; ++index) {
             const raw_gcode_reader_event_item &item = event.items[index];
+            // A marker annotates this one event; retaining it would make every
+            // later machine-state snapshot appear to contain the same marker.
+            if (item.type == RAW_GCODE_READER_ITEM_MARKER)
+                continue;
             const Key key{item.type, item.target};
             if (event.kind == RAW_GCODE_READER_EVENT_INVALIDATE &&
                 item.type != RAW_GCODE_READER_ITEM_LINE_NUMBER)
@@ -381,6 +388,10 @@ private:
              item.type == RAW_GCODE_READER_ITEM_ARC_CLOCKWISE) &&
             item.value > 1.0)
             throw std::invalid_argument("A G-code reader boolean item must be zero or one.");
+        if (item.type == RAW_GCODE_READER_ITEM_MARKER &&
+            (item.value < RAW_GCODE_READER_MARKER_SEAM ||
+             item.value > RAW_GCODE_READER_MARKER_CUSTOM_GCODE))
+            throw std::invalid_argument("A G-code reader marker item has an unknown marker type.");
     }
 
     // Validate a borrowed array and reject duplicate keys. Duplicate deltas are
@@ -407,11 +418,19 @@ private:
             event.kind > RAW_GCODE_READER_EVENT_INVALIDATE)
             throw std::invalid_argument("A G-code reader event has an invalid action kind.");
         bool has_line_number = false;
-        for (uint32_t index = 0; index < event.item_count; ++index)
+        bool has_marker = false;
+        for (uint32_t index = 0; index < event.item_count; ++index) {
             has_line_number = has_line_number ||
                 event.items[index].type == RAW_GCODE_READER_ITEM_LINE_NUMBER;
+            has_marker = has_marker ||
+                event.items[index].type == RAW_GCODE_READER_ITEM_MARKER;
+        }
         if (!has_line_number)
             throw std::invalid_argument("A G-code reader event has no line number.");
+        if (event.kind == RAW_GCODE_READER_EVENT_MARKER && !has_marker)
+            throw std::invalid_argument("A G-code reader marker event has no marker type.");
+        if (event.kind != RAW_GCODE_READER_EVENT_MARKER && has_marker)
+            throw std::invalid_argument("A non-marker G-code reader event contains a marker type.");
     }
 
     // Copy a validated borrowed array into an owning map.

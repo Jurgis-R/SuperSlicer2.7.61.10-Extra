@@ -6,7 +6,7 @@
 #define slic3r_gcode_reader_h_
 
 #define SLIC3R_PLUGIN_API_GCODE_READER_MAJOR 2u
-#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 0u
+#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 1u
 
 #include <stdint.h>
 
@@ -102,6 +102,16 @@ typedef struct raw_gcode_reader_event_item {
     double value;
 } raw_gcode_reader_event_item;
 
+/* Point-in-time annotations consumed by timeline builders. Unlike machine
+   state, a marker applies only to the event which carries it and is never
+   retained in the Reader's final state. */
+typedef enum raw_gcode_reader_marker_type {
+    RAW_GCODE_READER_MARKER_SEAM = 1,
+    RAW_GCODE_READER_MARKER_COLOR_CHANGE,
+    RAW_GCODE_READER_MARKER_PAUSE_PRINT,
+    RAW_GCODE_READER_MARKER_CUSTOM_GCODE
+} raw_gcode_reader_marker_type;
+
 typedef enum raw_gcode_reader_item_type {
     RAW_GCODE_READER_ITEM_X = 1,
     RAW_GCODE_READER_ITEM_Y,
@@ -132,6 +142,9 @@ typedef enum raw_gcode_reader_item_type {
     RAW_GCODE_READER_ITEM_HEIGHT,
     RAW_GCODE_READER_ITEM_LAYER,
     RAW_GCODE_READER_ITEM_OBJECT,
+    /* Event-local raw_gcode_reader_marker_type. A MARKER event contains
+       exactly one such item with target zero; no other event or complete
+       machine state may contain it. */
     RAW_GCODE_READER_ITEM_MARKER,
     RAW_GCODE_READER_ITEM_ARC_CENTER_X,
     RAW_GCODE_READER_ITEM_ARC_CENTER_Y,

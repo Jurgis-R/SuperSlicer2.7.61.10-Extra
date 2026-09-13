@@ -24,10 +24,14 @@ from slic3r_api_generated import (
     GCODE_READER_EMIT_FINAL_STATE,
     GCODE_READER_GET_NEXT_CHUNK,
     RAW_GCODE_READER_EVENT_INVALIDATE,
+    RAW_GCODE_READER_EVENT_MARKER,
     RAW_GCODE_READER_EVENT_STATE_UPDATE,
     RAW_GCODE_READER_ITEM_CUSTOM_BEGIN,
     RAW_GCODE_READER_ITEM_LINE_NUMBER,
+    RAW_GCODE_READER_ITEM_MARKER,
     RAW_GCODE_READER_ITEM_READER_ID,
+    RAW_GCODE_READER_MARKER_CUSTOM_GCODE,
+    RAW_GCODE_READER_MARKER_SEAM,
     RAW_GCODE_READER_OPERATION_READ,
     RAW_GCODE_READER_STATUS_ERROR,
     RAW_GCODE_READER_STATUS_INVALID_ARGUMENT,
@@ -47,8 +51,8 @@ from slic3r_orchestrator_views import OrchestratorView
 DEFAULT_GCODE_READER_PLUGIN_ID = "gcode.reader.default"
 
 
-def _copied_items(raw_state) -> tuple[tuple[int, int, float], ...]:
-    """Validate and copy one borrowed state or event item array."""
+def _copied_items(raw_state, event_kind=None) -> tuple[tuple[int, int, float], ...]:
+    """Validate and copy one borrowed state or one explicitly typed event."""
     count = int(raw_state.item_count)
     if count and not raw_state.items:
         raise ValueError("a G-code Reader item array is null")
@@ -89,6 +93,27 @@ def _copied_items(raw_state) -> tuple[tuple[int, int, float], ...]:
         or not reader_id[2].is_integer()
     ):
         raise ValueError("a G-code Reader identity must be an integral uint32 at target zero")
+    marker = next(
+        (item for item in copied if item[0] == int(RAW_GCODE_READER_ITEM_MARKER)),
+        None,
+    )
+    if marker is not None and (
+        marker[1] != 0
+        or marker[2] < int(RAW_GCODE_READER_MARKER_SEAM)
+        or marker[2] > int(RAW_GCODE_READER_MARKER_CUSTOM_GCODE)
+        or not marker[2].is_integer()
+    ):
+        raise ValueError("a G-code Reader marker must be a declared marker type at target zero")
+    if event_kind is None and marker is not None:
+        raise ValueError("a complete G-code Reader state cannot contain an event-local marker")
+    if event_kind == int(RAW_GCODE_READER_EVENT_MARKER) and marker is None:
+        raise ValueError("a G-code Reader marker event needs a marker type")
+    if (
+        event_kind is not None
+        and event_kind != int(RAW_GCODE_READER_EVENT_MARKER)
+        and marker is not None
+    ):
+        raise ValueError("a non-marker G-code Reader event cannot contain a marker type")
     return tuple(copied)
 
 
@@ -204,7 +229,7 @@ class GCodeReaderService:
                     kind = int(event.kind)
                     if kind < int(RAW_GCODE_READER_EVENT_STATE_UPDATE) or kind > int(RAW_GCODE_READER_EVENT_INVALIDATE):
                         raise ValueError("the Reader emitted an unknown event kind")
-                    _copied_items(event)
+                    _copied_items(event, kind)
                     result_pointer.contents.status = RAW_GCODE_READER_STATUS_SUCCESS
                     result_pointer.contents.error_message = None
                 except BaseException as exc:

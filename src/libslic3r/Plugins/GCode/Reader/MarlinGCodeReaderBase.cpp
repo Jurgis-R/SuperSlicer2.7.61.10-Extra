@@ -75,10 +75,16 @@ bool MarlinGCodeReaderBase::is_neutral_command(char letter, uint32_t number) con
                               number == 906));
 }
 
-bool MarlinGCodeReaderBase::is_marker_command(char letter, uint32_t number) const
+std::optional<raw_gcode_reader_marker_type>
+MarlinGCodeReaderBase::marker_type(char letter, uint32_t number) const
 {
-    return letter == 'M' &&
-           (number == 0 || number == 600 || number == 601 || number == 226);
+    if (letter != 'M')
+        return std::nullopt;
+    if (number == 600)
+        return RAW_GCODE_READER_MARKER_COLOR_CHANGE;
+    if (number == 0 || number == 601 || number == 226)
+        return RAW_GCODE_READER_MARKER_PAUSE_PRINT;
+    return std::nullopt;
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

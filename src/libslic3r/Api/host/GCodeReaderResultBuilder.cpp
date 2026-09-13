@@ -414,13 +414,63 @@ void GCodeReaderResultBuilder::process_temperature(
 }
 
 void GCodeReaderResultBuilder::process_marker(
-    const raw_gcode_reader_event &,
-    const slic3r_api::GCodeStateTracker &)
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &state)
 {
-    // TODO: Reader MARKER events need a mandatory MARKER value identifying
-    // seam, color change, pause and custom G-code. Current built-in Readers
-    // publish an untyped marker, so creating one of those viewer moves here
-    // would guess its meaning.
+    const uint32_t marker = static_cast<uint32_t>(
+        event_value(event, RAW_GCODE_READER_ITEM_MARKER).value_or(0.0));
+    EMoveType type = EMoveType::Noop;
+    switch (marker) {
+    case RAW_GCODE_READER_MARKER_SEAM:         type = EMoveType::Seam; break;
+    case RAW_GCODE_READER_MARKER_COLOR_CHANGE: type = EMoveType::Color_change; break;
+    case RAW_GCODE_READER_MARKER_PAUSE_PRINT:  type = EMoveType::Pause_Print; break;
+    case RAW_GCODE_READER_MARKER_CUSTOM_GCODE: type = EMoveType::Custom_GCode; break;
+    default:
+        throw std::invalid_argument("The viewer received an unknown Reader marker type.");
+    }
+
+    const uint32_t tool = state.active_tool().value_or(0);
+    ensure_tool(tool);
+    if (type == EMoveType::Color_change)
+        m_current_color = std::max<uint32_t>(m_current_color + 1u,
+            static_cast<uint32_t>(std::min<size_t>(m_result.extruders_count,
+                                                   UINT32_MAX)));
+
+    const uint32_t line = static_cast<uint32_t>(
+        event_value(event, RAW_GCODE_READER_ITEM_LINE_NUMBER).value_or(0.0));
+    const uint32_t gcode_id = type == EMoveType::Seam && !m_result.moves.empty() ?
+        m_result.moves.back().gcode_id : line + 1u;
+    const double offset_x = state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_X, 0.0, tool);
+    const double offset_y = state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Y, 0.0, tool);
+    const double offset_z = state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Z, 0.0, tool);
+    const uint32_t fan_id = static_cast<uint32_t>(state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_FAN, 0.0, tool));
+
+    // Markers have no geometric delta. They sample the current machine state
+    // so the viewer can place and color the point without parsing G-code text.
+    m_result.moves.emplace_back(
+        gcode_id, type, viewer_role(state),
+        static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)),
+        static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
+        static_cast<uint16_t>(std::min<uint32_t>(
+            static_cast<uint32_t>(state.value(
+                RAW_GCODE_READER_ITEM_OBJECT).value_or(0.0)), UINT16_MAX)),
+        Vec3f(static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_X, 0.0) + offset_x),
+              static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_Y, 0.0) + offset_y),
+              static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_Z, 0.0) + offset_z - m_result.z_offset)),
+        0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+        static_cast<float>(state.value(
+            RAW_GCODE_READER_ITEM_FAN_SPEED, fan_id).value_or(0.0)),
+        static_cast<float>(state.value(
+            RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, tool).value_or(0.0)),
+        m_total_time,
+        static_cast<uint16_t>(std::min<uint32_t>(
+            static_cast<uint32_t>(state.value(
+                RAW_GCODE_READER_ITEM_LAYER).value_or(0.0)), UINT16_MAX)),
+        false);
 }
 
 void GCodeReaderResultBuilder::process_diagnostic(
