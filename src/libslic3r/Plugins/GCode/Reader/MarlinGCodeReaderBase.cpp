@@ -69,7 +69,13 @@ void MarlinGCodeReaderBase::process_M104_M109(
 
 bool MarlinGCodeReaderBase::is_neutral_command(char letter, uint32_t number) const
 {
-    return (letter == 'G' && (number == 4 || number == 10 || number == 11)) ||
+    return letter == 'G' && number == 4;
+}
+
+bool MarlinGCodeReaderBase::has_unsupported_state_effect(
+    char letter, uint32_t number) const
+{
+    return (letter == 'G' && (number == 10 || number == 11)) ||
            (letter == 'M' && (number == 201 || number == 203 || number == 205 ||
                               number == 566 || number == 572 || number == 900 ||
                               number == 906));

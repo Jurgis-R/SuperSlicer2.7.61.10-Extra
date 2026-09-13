@@ -144,6 +144,8 @@ private:
     const char *description_impl() const noexcept override;
     uint32_t probe_impl(std::string_view prefix) const override;
     bool is_neutral_command(char letter, uint32_t number) const override;
+    bool has_unsupported_state_effect(char letter,
+                                      uint32_t number) const override;
     std::optional<raw_gcode_reader_marker_type> marker_type(
         char letter, uint32_t number) const override;
     void validate_private_state(const GCodeStateTracker &state) const override;

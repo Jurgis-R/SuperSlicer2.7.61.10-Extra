@@ -194,7 +194,8 @@ bool RepRapGCodeReader::consume_numeric_command(
     try {
         private_state = RepRapGCodeReaderState::from_tracker(state, m_reader_state_id);
     } catch (const std::exception &) {
-        publish_unknown(run_context, context, state);
+        publish_unknown(run_context, context, state,
+                        RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT);
         return true;
     }
 
@@ -554,8 +555,13 @@ void RepRapGCodeReader::process_T_minus_1(
 
 bool RepRapGCodeReader::is_neutral_command(char letter, uint32_t number) const
 {
-    return (letter == 'G' && number == 4) ||
-           (letter == 'M' && (number == 900 || number == 906));
+    return letter == 'G' && number == 4;
+}
+
+bool RepRapGCodeReader::has_unsupported_state_effect(
+    char letter, uint32_t number) const
+{
+    return letter == 'M' && (number == 900 || number == 906);
 }
 
 std::optional<raw_gcode_reader_marker_type>

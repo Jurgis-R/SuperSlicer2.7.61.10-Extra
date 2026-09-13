@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "test_data.hpp"
 
 #include "libslic3r/Api/host/GCodeReaderService.hpp"
 #include "libslic3r/Api/host/GCodeReaderResultBuilder.hpp"
@@ -19,12 +20,14 @@
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeStateTracker.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
+#include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Plugins/GCode/Reader/BuiltinGCodeReaderBase.hpp"
 #include "libslic3r/Plugins/GCode/Reader/KlipperGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/Reader/Marlin2GCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/Reader/RepRapGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/Reader/RepRapGCodeReaderState.hpp"
+#include "libslic3r/TriangleMesh.hpp"
 
 /*
 G-code reader event tests
@@ -111,8 +114,9 @@ protected:
     {
         BuiltinGCodeReaderBase::process_M220(
             run_context, context, state, line);
-        publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
+        publish_diagnostic(
+            run_context, context, state,
+            RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT);
     }
 
 private:
@@ -143,8 +147,9 @@ protected:
                      RepRapGCodeReaderState &,
                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &) const override
     {
-        publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
+        publish_diagnostic(
+            run_context, context, state,
+            RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT);
     }
 
 private:
@@ -244,8 +249,9 @@ protected:
                        const run_ctx_gcode_reader &context,
                        slic3r_api::GCodeStateTracker &state) const override
     {
-        publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
+        publish_diagnostic(
+            run_context, context, state,
+            RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT);
     }
 
     void process_M204(const plugin_run_context &run_context,
@@ -282,6 +288,7 @@ struct ObservedEvent
     uint32_t kind = 0;
     uint32_t line_number = UINT32_MAX;
     std::optional<uint32_t> marker;
+    std::optional<uint32_t> diagnostic;
 };
 
 struct ReaderProbe
@@ -343,14 +350,17 @@ void collect_event(void *context,
     ReaderProbe *probe = static_cast<ReaderProbe *>(context);
     uint32_t line_number = UINT32_MAX;
     std::optional<uint32_t> marker;
+    std::optional<uint32_t> diagnostic;
     for (uint32_t index = 0; index < event->item_count; ++index) {
         const raw_gcode_reader_event_item &item = event->items[index];
         if (item.type == RAW_GCODE_READER_ITEM_LINE_NUMBER)
             line_number = static_cast<uint32_t>(item.value);
         else if (item.type == RAW_GCODE_READER_ITEM_MARKER)
             marker = static_cast<uint32_t>(item.value);
+        else if (item.type == RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE)
+            diagnostic = static_cast<uint32_t>(item.value);
     }
-    probe->observed.push_back({event->kind, line_number, marker});
+    probe->observed.push_back({event->kind, line_number, marker, diagnostic});
     result->status = RAW_GCODE_READER_STATUS_SUCCESS;
 }
 
@@ -483,12 +493,20 @@ TEST_CASE("G-code reader invalidates stale state after an unknown command",
     ensure_plugin_test_runtime_initialized();
     std::vector<raw_gcode_reader_event_item> initial_items;
     const raw_gcode_reader_state initial = initial_state(initial_items);
-    const slic3r_api::GCodeStateTracker state = read_gcode(
-        Orchestrator::instance(), nullptr, "gcode.reader.default", initial, "M900 K0.05\n");
+    ReaderProbe probe;
+    probe.chunks = {"M900 K0.05\n"};
+    REQUIRE(execute_default_reader(probe, initial) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    const slic3r_api::GCodeStateTracker &state = *probe.final_state;
 
     CHECK_FALSE(state.x().has_value());
     CHECK_FALSE(state.active_tool().has_value());
     CHECK(state.line_number() == 1u);
+    REQUIRE(probe.observed.size() == 2);
+    CHECK(probe.observed[0].kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+    CHECK(probe.observed[0].diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND);
+    CHECK(probe.observed[1].kind == RAW_GCODE_READER_EVENT_INVALIDATE);
 }
 
 TEST_CASE("G-code reader detection recognizes firmware tags and falls back deterministically",
@@ -661,16 +679,46 @@ TEST_CASE("Klipper G-code reader resolves configured tool names conservatively",
         "ACTIVATE_EXTRUDER EXTRUDER=right_hotend\n");
     CHECK_FALSE(unavailable.active_tool());
 
-    const slic3r_api::GCodeStateTracker configured_unknown = read_gcode(
-        orchestrator, &print, "gcode.reader.klipper", initial,
-        "ACTIVATE_EXTRUDER EXTRUDER=extruder\n");
-    CHECK_FALSE(configured_unknown.active_tool());
+    ReaderProbe unknown_probe;
+    unknown_probe.chunks = {"ACTIVATE_EXTRUDER EXTRUDER=extruder\n"};
+    REQUIRE(execute_reader(
+        "gcode.reader.klipper", unknown_probe, initial, &print) ==
+        RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(unknown_probe.final_state);
+    CHECK_FALSE(unknown_probe.final_state->active_tool());
+    REQUIRE(unknown_probe.observed.size() == 2);
+    CHECK(unknown_probe.observed[0].diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_TOOL);
 
     config.tool_name.set(std::vector<std::string>{"duplicate", "duplicate"});
-    const slic3r_api::GCodeStateTracker ambiguous = read_gcode(
-        orchestrator, &print, "gcode.reader.klipper", initial,
-        "ACTIVATE_EXTRUDER EXTRUDER=duplicate\n");
-    CHECK_FALSE(ambiguous.active_tool());
+    ReaderProbe ambiguous_probe;
+    ambiguous_probe.chunks = {"ACTIVATE_EXTRUDER EXTRUDER=duplicate\n"};
+    REQUIRE(execute_reader(
+        "gcode.reader.klipper", ambiguous_probe, initial, &print) ==
+        RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(ambiguous_probe.final_state);
+    CHECK_FALSE(ambiguous_probe.final_state->active_tool());
+    REQUIRE(ambiguous_probe.observed.size() == 2);
+    CHECK(ambiguous_probe.observed[0].diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_AMBIGUOUS_TOOL);
+
+    ReaderProbe invalid_parameters_probe;
+    invalid_parameters_probe.chunks = {"ACTIVATE_EXTRUDER\n"};
+    REQUIRE(execute_reader(
+        "gcode.reader.klipper", invalid_parameters_probe, initial, &print) ==
+        RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(invalid_parameters_probe.observed.size() == 2);
+    CHECK(invalid_parameters_probe.observed[0].diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+
+    ReaderProbe unsupported_effect_probe;
+    unsupported_effect_probe.chunks = {"M201 X1200\n"};
+    REQUIRE(execute_reader(
+        "gcode.reader.klipper", unsupported_effect_probe, initial, &print) ==
+        RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(unsupported_effect_probe.observed.size() == 1);
+    CHECK(unsupported_effect_probe.observed[0].diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT);
 }
 
 TEST_CASE("Dialect G-code readers preserve state across recognized control commands",
@@ -1126,6 +1174,74 @@ TEST_CASE("Host G-code reader creates typed marker vertices",
     CHECK(result.moves.back().cp_color_id == 1u);
 }
 
+TEST_CASE("Host G-code reader owns typed diagnostics in stream order",
+          "[plugins][gcode][reader][viewer][diagnostic]")
+{
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    slic3r_api::GCodeStateTracker state(initial);
+    GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+
+    const std::vector<raw_gcode_reader_diagnostic_type> types = {
+        RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND,
+        RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS,
+        RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_TOOL,
+        RAW_GCODE_READER_DIAGNOSTIC_AMBIGUOUS_TOOL,
+        RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT
+    };
+    const std::vector<std::string> messages = {
+        "The G-code Reader encountered an unknown command.",
+        "The G-code Reader encountered invalid command parameters.",
+        "The G-code Reader could not identify the requested tool.",
+        "The G-code Reader found several tools matching the requested tool.",
+        "The G-code Reader recognized a command whose machine-state effect is not supported."
+    };
+    for (uint32_t index = 0; index < types.size(); ++index) {
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_DIAGNOSTIC,
+            {{RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE, 0, double(types[index])},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, double(index)}});
+    }
+
+    const GCodeProcessorResult result = builder.finish(state);
+    REQUIRE(result.reader_diagnostics.size() == types.size());
+    for (uint32_t index = 0; index < types.size(); ++index) {
+        const GCodeProcessorResult::ReaderDiagnostic &diagnostic =
+            result.reader_diagnostics[index];
+        CHECK(diagnostic.type == types[index]);
+        CHECK(diagnostic.line == index);
+        CHECK(diagnostic.level == PrintStateBase::WarningLevel::NON_CRITICAL);
+        CHECK(diagnostic.message == messages[index]);
+    }
+}
+
+TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
+          "[plugins][gcode][reader][viewer][diagnostic]")
+{
+    ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    Slic3r::Test::init_print(
+        {make_cube(10.0, 10.0, 10.0)}, print, model,
+        DynamicPrintConfig::full_print_config());
+    Print::StatusMonitor status(print);
+    REQUIRE(status.set_started(psGCodeExport));
+
+    GCodeReaderService service(Orchestrator::instance(), &print);
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.default", "M9999\n");
+    REQUIRE(result.reader_diagnostics.size() == 1);
+
+    const PrintStateBase::StateWithWarnings step =
+        print.step_state_with_warnings(psGCodeExport);
+    REQUIRE(step.warnings.size() == 1);
+    CHECK(step.warnings.front().level ==
+          PrintStateBase::WarningLevel::NON_CRITICAL);
+    CHECK(step.warnings.front().message.find("gcode.reader.default") !=
+          std::string::npos);
+    CHECK(step.warnings.front().message.find("line 1") != std::string::npos);
+    status.set_done(psGCodeExport);
+}
+
 TEST_CASE("Host G-code reader initializes the built-in RepRap private schema",
           "[plugins][gcode][reader][viewer]")
 {
@@ -1186,7 +1302,7 @@ TEST_CASE("G-code reader keeps modal state across an M117 display message",
     const slic3r_api::GCodeStateTracker &state = *probe.final_state;
 
     REQUIRE(probe.observed.size() == 1);
-    CHECK(probe.observed.front().kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+    CHECK(probe.observed.front().kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
     CHECK(state.x() == 1.0);
     CHECK(state.active_tool() == 0u);
     CHECK(state.line_number() == 1u);
@@ -1279,6 +1395,80 @@ TEST_CASE("G-code reader markers are typed event-only attributes",
 
     raw_gcode_reader_state invalid_state = initial;
     invalid_state.items = valid_items;
+    invalid_state.item_count = 2;
+    CHECK_THROWS_AS(slic3r_api::GCodeStateTracker(invalid_state),
+                    std::invalid_argument);
+}
+
+TEST_CASE("G-code reader diagnostics are typed event-only attributes",
+          "[plugins][gcode][reader][diagnostic]")
+{
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    slic3r_api::GCodeStateTracker state(initial);
+
+    for (uint32_t type = RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND;
+         type <= RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT;
+         ++type) {
+        const raw_gcode_reader_event_item valid_items[] = {
+            {RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE, 0, double(type)},
+            {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, double(type)}
+        };
+        const raw_gcode_reader_event valid = {
+            RAW_GCODE_READER_EVENT_DIAGNOSTIC, valid_items, 2
+        };
+        state.apply(valid);
+        CHECK_FALSE(state.known(RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE));
+    }
+
+    const raw_gcode_reader_event_item line_only[] = {
+        {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 6.0}
+    };
+    const raw_gcode_reader_event missing_type = {
+        RAW_GCODE_READER_EVENT_DIAGNOSTIC, line_only, 1
+    };
+    CHECK_THROWS_AS(state.apply(missing_type), std::invalid_argument);
+
+    raw_gcode_reader_event_item diagnostic_items[] = {
+        {RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE, 0,
+         RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND},
+        {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 6.0}
+    };
+    const raw_gcode_reader_event wrong_kind = {
+        RAW_GCODE_READER_EVENT_STATE_UPDATE, diagnostic_items, 2
+    };
+    CHECK_THROWS_AS(state.apply(wrong_kind), std::invalid_argument);
+
+    diagnostic_items[0].target = 1;
+    const raw_gcode_reader_event invalid_target = {
+        RAW_GCODE_READER_EVENT_DIAGNOSTIC, diagnostic_items, 2
+    };
+    CHECK_THROWS_AS(state.apply(invalid_target), std::invalid_argument);
+    diagnostic_items[0].target = 0;
+
+    diagnostic_items[0].value = 1.5;
+    const raw_gcode_reader_event non_integral = {
+        RAW_GCODE_READER_EVENT_DIAGNOSTIC, diagnostic_items, 2
+    };
+    CHECK_THROWS_AS(state.apply(non_integral), std::invalid_argument);
+    diagnostic_items[0].value =
+        double(RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT) + 1.0;
+    const raw_gcode_reader_event unknown_type = {
+        RAW_GCODE_READER_EVENT_DIAGNOSTIC, diagnostic_items, 2
+    };
+    CHECK_THROWS_AS(state.apply(unknown_type), std::invalid_argument);
+
+    diagnostic_items[0].value = RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND;
+    const raw_gcode_reader_event_item duplicate_items[] = {
+        diagnostic_items[0], diagnostic_items[0], diagnostic_items[1]
+    };
+    const raw_gcode_reader_event duplicate_type = {
+        RAW_GCODE_READER_EVENT_DIAGNOSTIC, duplicate_items, 3
+    };
+    CHECK_THROWS_AS(state.apply(duplicate_type), std::invalid_argument);
+
+    raw_gcode_reader_state invalid_state = initial;
+    invalid_state.items = diagnostic_items;
     invalid_state.item_count = 2;
     CHECK_THROWS_AS(slic3r_api::GCodeStateTracker(invalid_state),
                     std::invalid_argument);

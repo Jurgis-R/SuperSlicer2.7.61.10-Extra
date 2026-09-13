@@ -23,10 +23,14 @@ from slic3r_api_generated import (
     GCODE_READER_EMIT_EVENT,
     GCODE_READER_EMIT_FINAL_STATE,
     GCODE_READER_GET_NEXT_CHUNK,
+    RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND,
+    RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT,
+    RAW_GCODE_READER_EVENT_DIAGNOSTIC,
     RAW_GCODE_READER_EVENT_INVALIDATE,
     RAW_GCODE_READER_EVENT_MARKER,
     RAW_GCODE_READER_EVENT_STATE_UPDATE,
     RAW_GCODE_READER_ITEM_CUSTOM_BEGIN,
+    RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE,
     RAW_GCODE_READER_ITEM_LINE_NUMBER,
     RAW_GCODE_READER_ITEM_MARKER,
     RAW_GCODE_READER_ITEM_READER_ID,
@@ -58,7 +62,7 @@ def _copied_items(raw_state, event_kind=None) -> tuple[tuple[int, int, float], .
         raise ValueError("a G-code Reader item array is null")
     copied = []
     seen = set()
-    last_standard = int(RAW_GCODE_READER_ITEM_READER_ID)
+    last_standard = int(RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE)
     for index in range(count):
         item = raw_state.items[index]
         item_type = int(item.type)
@@ -114,6 +118,27 @@ def _copied_items(raw_state, event_kind=None) -> tuple[tuple[int, int, float], .
         and marker is not None
     ):
         raise ValueError("a non-marker G-code Reader event cannot contain a marker type")
+    diagnostic = next(
+        (item for item in copied if item[0] == int(RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE)),
+        None,
+    )
+    if diagnostic is not None and (
+        diagnostic[1] != 0
+        or diagnostic[2] < int(RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND)
+        or diagnostic[2] > int(RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT)
+        or not diagnostic[2].is_integer()
+    ):
+        raise ValueError("a G-code Reader diagnostic must be a declared diagnostic type at target zero")
+    if event_kind is None and diagnostic is not None:
+        raise ValueError("a complete G-code Reader state cannot contain an event-local diagnostic")
+    if event_kind == int(RAW_GCODE_READER_EVENT_DIAGNOSTIC) and diagnostic is None:
+        raise ValueError("a G-code Reader diagnostic event needs a diagnostic type")
+    if (
+        event_kind is not None
+        and event_kind != int(RAW_GCODE_READER_EVENT_DIAGNOSTIC)
+        and diagnostic is not None
+    ):
+        raise ValueError("a non-diagnostic G-code Reader event cannot contain a diagnostic type")
     return tuple(copied)
 
 

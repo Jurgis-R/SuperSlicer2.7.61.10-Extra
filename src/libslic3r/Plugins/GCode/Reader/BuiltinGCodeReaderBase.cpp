@@ -240,6 +240,11 @@ bool BuiltinGCodeReaderBase::is_neutral_command(char, uint32_t) const
     return false;
 }
 
+bool BuiltinGCodeReaderBase::has_unsupported_state_effect(char, uint32_t) const
+{
+    return false;
+}
+
 std::optional<raw_gcode_reader_marker_type>
 BuiltinGCodeReaderBase::marker_type(char, uint32_t) const
 {
@@ -319,10 +324,23 @@ void BuiltinGCodeReaderBase::publish_state_update(
                   RAW_GCODE_READER_EVENT_STATE_UPDATE, {});
 }
 
+void BuiltinGCodeReaderBase::publish_diagnostic(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    raw_gcode_reader_diagnostic_type type) const
+{
+    publish_items(run_context, context, state,
+                  RAW_GCODE_READER_EVENT_DIAGNOSTIC,
+                  {{RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE, 0, double(type)}});
+}
+
 void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_context,
                                              const run_ctx_gcode_reader &context,
-                                             GCodeStateTracker &state) const
+                                             GCodeStateTracker &state,
+                                             raw_gcode_reader_diagnostic_type diagnostic) const
 {
+    publish_diagnostic(run_context, context, state, diagnostic);
     // One unsupported command may have changed any portable or private value. Send
     // an INVALIDATE item for every currently known value so downstream writers
     // re-establish state explicitly instead of continuing from stale data.
@@ -360,16 +378,20 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
         const char letter = command.front();
         const std::optional<uint32_t> number = command_number(command);
         if (!number)
-            return publish_unknown(run_context, context, state);
+            return publish_unknown(run_context, context, state,
+                                   RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND);
         if (consume_numeric_command(run_context, context, state, line,
                                     letter, *number))
             return;
 
-        if (is_neutral_command(letter, *number)) {
-            // These built-in commands affect timing, machine limits, pressure
-            // advance, current or firmware retraction, none of which has a
-            // portable scalar in raw_gcode_reader_state. Recognizing them as
-            // neutral preserves the state values they cannot change.
+        if (has_unsupported_state_effect(letter, *number)) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT);
+            return;
+        } else if (is_neutral_command(letter, *number)) {
+            // A neutral command is known not to change any modeled machine
+            // state. Keep an event for its source line without warning.
         } else if (const std::optional<raw_gcode_reader_marker_type> marker =
                        marker_type(letter, *number)) {
             publish_items(run_context, context, state,
@@ -377,7 +399,8 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
                           {{RAW_GCODE_READER_ITEM_MARKER, 0, double(*marker)}});
             return;
         } else {
-            publish_unknown(run_context, context, state);
+            publish_unknown(run_context, context, state,
+                            RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND);
             return;
         }
         publish_state_update(run_context, context, state);
@@ -631,9 +654,9 @@ void BuiltinGCodeReaderBase::process_M117(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state) const
 {
-    // Display text belongs in the timeline but cannot change the portable
-    // motion state needed by the next movement.
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
+    // Display text is deliberately absent from the numeric Reader contract.
+    // Recognizing M117 preserves modal state without fabricating a warning.
+    publish_state_update(run_context, context, state);
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

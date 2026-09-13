@@ -83,7 +83,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         cls.generated_directory.cleanup()
 
     def test_reader_identity_and_custom_range_constants_are_generated(self):
-        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_GCODE_READER_MINOR, 1)
+        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_GCODE_READER_MINOR, 2)
         self.assertEqual(self.generated.RAW_GCODE_READER_MARKER_SEAM, 1)
         self.assertEqual(self.generated.RAW_GCODE_READER_MARKER_CUSTOM_GCODE, 4)
         self.assertNotIn("source", dict(self.generated.RawGcodeReaderEvent._fields_))
@@ -127,6 +127,57 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "needs a marker type"):
             self.reader_service._copied_items(missing, missing.kind)
+
+    def test_reader_diagnostic_is_typed_and_event_only(self):
+        generated = self.generated
+        for diagnostic_type in range(
+            generated.RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND,
+            generated.RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT + 1,
+        ):
+            items = (generated.RawGcodeReaderEventItem * 2)(
+                generated.RawGcodeReaderEventItem(
+                    generated.RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE,
+                    0,
+                    diagnostic_type,
+                ),
+                generated.RawGcodeReaderEventItem(
+                    generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0
+                ),
+            )
+            event = generated.RawGcodeReaderEvent(
+                generated.RAW_GCODE_READER_EVENT_DIAGNOSTIC, items, len(items)
+            )
+            copied = self.reader_service._copied_items(event, event.kind)
+            self.assertEqual(copied[0][2], diagnostic_type)
+
+        with self.assertRaisesRegex(ValueError, "complete.*event-local diagnostic"):
+            self.reader_service._copied_items(event)
+
+        line_only = (generated.RawGcodeReaderEventItem * 1)(
+            generated.RawGcodeReaderEventItem(
+                generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0
+            )
+        )
+        missing = generated.RawGcodeReaderEvent(
+            generated.RAW_GCODE_READER_EVENT_DIAGNOSTIC,
+            line_only,
+            len(line_only),
+        )
+        with self.assertRaisesRegex(ValueError, "needs a diagnostic type"):
+            self.reader_service._copied_items(missing, missing.kind)
+
+        items[0].target = 1
+        with self.assertRaisesRegex(ValueError, "diagnostic"):
+            self.reader_service._copied_items(event, event.kind)
+        items[0].target = 0
+        items[0].value = 1.5
+        with self.assertRaisesRegex(ValueError, "diagnostic"):
+            self.reader_service._copied_items(event, event.kind)
+        items[0].value = (
+            generated.RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT + 1
+        )
+        with self.assertRaisesRegex(ValueError, "declared diagnostic type"):
+            self.reader_service._copied_items(event, event.kind)
 
     def test_reader_service_routes_through_the_generic_orchestrator(self):
         seen = {}

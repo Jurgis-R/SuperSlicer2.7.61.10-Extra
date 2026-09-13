@@ -540,7 +540,18 @@ GCodeProcessorResult GCodeReaderService::read_for_viewer(
         throw std::runtime_error(invocation.error());
     if (status != RAW_PLUGIN_EXECUTION_SUCCESS)
         throw std::runtime_error(viewer_execution_error(status, id));
-    return invocation.take_result();
+    GCodeProcessorResult result = invocation.take_result();
+    if (m_print != nullptr) {
+        Print::StatusMonitor status(*m_print);
+        for (const GCodeProcessorResult::ReaderDiagnostic &diagnostic :
+             result.reader_diagnostics) {
+            const std::string message = "G-code Reader '" + id + "', line " +
+                std::to_string(uint64_t(diagnostic.line) + 1u) + ": " +
+                diagnostic.message;
+            status.active_step_add_warning(diagnostic.level, message);
+        }
+    }
+    return result;
 }
 
 GCodeProcessorResult GCodeReaderService::read_for_viewer(

@@ -76,6 +76,11 @@ protected:
     // Return true for a command understood by the dialect which cannot alter
     // any value represented by raw_gcode_reader_state.
     virtual bool is_neutral_command(char letter, uint32_t number) const;
+    // Return true for a recognized command which changes machine state that
+    // this Reader cannot represent yet. Such commands produce a warning but
+    // do not invalidate unrelated portable values.
+    virtual bool has_unsupported_state_effect(char letter,
+                                              uint32_t number) const;
     // Return the point-in-time annotation produced by a command, or no value
     // when normal command dispatch should continue.
     virtual std::optional<raw_gcode_reader_marker_type> marker_type(
@@ -165,8 +170,8 @@ protected:
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               const GCodeLineParser::GCodeLine &line) const;
-    // Preserve M117 as a diagnostic timeline entry without changing modal
-    // machine state.
+    // Recognize M117 without changing modal state. Display text is not part of
+    // the portable Reader model, and a valid display command is not a warning.
     virtual void process_M117(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state) const;
@@ -178,15 +183,23 @@ protected:
                        GCodeStateTracker &state,
                        raw_gcode_reader_event_kind kind,
                        const std::vector<raw_gcode_reader_event_item> &items) const;
+    // Report one stable non-fatal condition. The host maps this code to its
+    // localized wording and severity; no plugin-owned text crosses the ABI.
+    void publish_diagnostic(const plugin_run_context &run_context,
+                            const run_ctx_gcode_reader &context,
+                            GCodeStateTracker &state,
+                            raw_gcode_reader_diagnostic_type type) const;
     // Publish a recognized command which changes no portable state.
     void publish_state_update(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state) const;
-    // Discard every currently known portable and provider-private value after
-    // an unsupported command, while preserving identity and the line cursor.
+    // Report why the command cannot be represented, then discard every known
+    // portable and provider-private value while preserving identity and line.
     void publish_unknown(const plugin_run_context &run_context,
                          const run_ctx_gcode_reader &context,
-                         GCodeStateTracker &state) const;
+                         GCodeStateTracker &state,
+                         raw_gcode_reader_diagnostic_type diagnostic =
+                             RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS) const;
 
     // Shared parsing helpers are protected so a dialect can use exactly the
     // same strict command and parameter rules as the common parser.

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -28,11 +29,17 @@ namespace {
 
 // Resolve one Klipper extruder section name without inventing a tool when a
 // custom or duplicate configuration makes the mapping ambiguous.
-std::optional<uint32_t> klipper_tool_id(const run_ctx_gcode_reader &context,
-                                        std::string_view name);
+struct KlipperToolResolution
+{
+    enum class Status { Found, Unknown, Ambiguous };
+    Status status = Status::Unknown;
+    uint32_t tool = 0;
+};
+KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
+                                      std::string_view name);
 
-std::optional<uint32_t> klipper_tool_id(const run_ctx_gcode_reader &context,
-                                        std::string_view name)
+KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
+                                      std::string_view name)
 {
     std::vector<uint32_t> matches;
     if (context.print != nullptr) {
@@ -43,8 +50,10 @@ std::optional<uint32_t> klipper_tool_id(const run_ctx_gcode_reader &context,
                 if (names.is_enabled(index) && names.get_string(index) == name)
                     matches.push_back(index);
         }
-        return matches.size() == 1 ?
-            std::optional<uint32_t>(matches.front()) : std::nullopt;
+        if (matches.size() == 1)
+            return {KlipperToolResolution::Status::Found, matches.front()};
+        return {matches.empty() ? KlipperToolResolution::Status::Unknown :
+                                  KlipperToolResolution::Status::Ambiguous, 0};
     }
 
     if (name == "extruder") {
@@ -56,7 +65,9 @@ std::optional<uint32_t> klipper_tool_id(const run_ctx_gcode_reader &context,
         if (parsed.ec == std::errc() && parsed.ptr == name.data() + name.size())
             matches.push_back(index);
     }
-    return matches.size() == 1 ? std::optional<uint32_t>(matches.front()) : std::nullopt;
+    if (matches.size() == 1)
+        return {KlipperToolResolution::Status::Found, matches.front()};
+    return {KlipperToolResolution::Status::Unknown, 0};
 }
 
 } // namespace
@@ -138,15 +149,21 @@ void KlipperGCodeReader::process_ACTIVATE_EXTRUDER(
         publish_unknown(run_context, context, state);
         return;
     }
-    const std::optional<uint32_t> tool = klipper_tool_id(context, *name);
-    if (tool)
+    const KlipperToolResolution tool = klipper_tool_id(context, *name);
+    if (tool.status == KlipperToolResolution::Status::Found) {
         publish_items(run_context, context, state,
                       RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                      {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(*tool)}});
-    else
+                      {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(tool.tool)}});
+    } else {
+        publish_diagnostic(
+            run_context, context, state,
+            tool.status == KlipperToolResolution::Status::Ambiguous ?
+                RAW_GCODE_READER_DIAGNOSTIC_AMBIGUOUS_TOOL :
+                RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_TOOL);
         publish_items(run_context, context, state,
                       RAW_GCODE_READER_EVENT_INVALIDATE,
                       {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0}});
+    }
 }
 
 void KlipperGCodeReader::process_SET_PRESSURE_ADVANCE(
@@ -155,11 +172,39 @@ void KlipperGCodeReader::process_SET_PRESSURE_ADVANCE(
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line) const
 {
-    if (!named_parameter(line.raw(), "ADVANCE")) {
+    const std::optional<std::string_view> advance_text =
+        named_parameter(line.raw(), "ADVANCE");
+    double advance = 0.0;
+    if (!advance_text || advance_text->empty()) {
         publish_unknown(run_context, context, state);
         return;
     }
-    publish_state_update(run_context, context, state);
+    const std::from_chars_result parsed = std::from_chars(
+        advance_text->data(), advance_text->data() + advance_text->size(),
+        advance);
+    if (parsed.ec != std::errc() ||
+        parsed.ptr != advance_text->data() + advance_text->size() ||
+        !std::isfinite(advance)) {
+        publish_unknown(run_context, context, state);
+        return;
+    }
+
+    const std::optional<std::string_view> name =
+        named_parameter(line.raw(), "EXTRUDER");
+    if (name) {
+        const KlipperToolResolution tool = klipper_tool_id(context, *name);
+        if (tool.status != KlipperToolResolution::Status::Found) {
+            publish_diagnostic(
+                run_context, context, state,
+                tool.status == KlipperToolResolution::Status::Ambiguous ?
+                    RAW_GCODE_READER_DIAGNOSTIC_AMBIGUOUS_TOOL :
+                    RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_TOOL);
+            return;
+        }
+    }
+    publish_diagnostic(
+        run_context, context, state,
+        RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT);
 }
 
 void KlipperGCodeReader::process_PAUSE(
@@ -199,7 +244,13 @@ void KlipperGCodeReader::process_M204(
 
 bool KlipperGCodeReader::is_neutral_command(char letter, uint32_t number) const
 {
-    return (letter == 'G' && (number == 4 || number == 10 || number == 11)) ||
+    return letter == 'G' && number == 4;
+}
+
+bool KlipperGCodeReader::has_unsupported_state_effect(
+    char letter, uint32_t number) const
+{
+    return (letter == 'G' && (number == 10 || number == 11)) ||
            (letter == 'M' && (number == 201 || number == 203 || number == 205 ||
                               number == 566 || number == 572 || number == 900 ||
                               number == 906));

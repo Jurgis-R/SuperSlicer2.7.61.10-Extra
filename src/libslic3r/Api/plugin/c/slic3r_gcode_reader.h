@@ -6,7 +6,7 @@
 #define slic3r_gcode_reader_h_
 
 #define SLIC3R_PLUGIN_API_GCODE_READER_MAJOR 2u
-#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 1u
+#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 2u
 
 #include <stdint.h>
 
@@ -112,6 +112,17 @@ typedef enum raw_gcode_reader_marker_type {
     RAW_GCODE_READER_MARKER_CUSTOM_GCODE
 } raw_gcode_reader_marker_type;
 
+/* Stable reasons for non-fatal Reader diagnostics. The host owns their
+   localized wording and severity; plugins only identify the condition. A
+   fatal parsing failure is still returned through raw_gcode_reader_status. */
+typedef enum raw_gcode_reader_diagnostic_type {
+    RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND = 1,
+    RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS,
+    RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_TOOL,
+    RAW_GCODE_READER_DIAGNOSTIC_AMBIGUOUS_TOOL,
+    RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT
+} raw_gcode_reader_diagnostic_type;
+
 typedef enum raw_gcode_reader_item_type {
     RAW_GCODE_READER_ITEM_X = 1,
     RAW_GCODE_READER_ITEM_Y,
@@ -165,7 +176,11 @@ typedef enum raw_gcode_reader_item_type {
        portable items. Zero permanently identifies the public portable schema,
        which carries no provider-private fields. Missing values are normalized
        to that portable identity by the C++ tracker. The target is always zero. */
-    RAW_GCODE_READER_ITEM_READER_ID
+    RAW_GCODE_READER_ITEM_READER_ID,
+    /* Event-local raw_gcode_reader_diagnostic_type. A DIAGNOSTIC event
+       contains exactly one such item with target zero. It is forbidden in
+       every other event and in a complete machine state. */
+    RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE
 } raw_gcode_reader_item_type;
 
 /* Registry type used to intern private Reader-state schema names. */

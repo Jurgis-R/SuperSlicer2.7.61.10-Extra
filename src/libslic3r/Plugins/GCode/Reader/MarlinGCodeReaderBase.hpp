@@ -57,6 +57,8 @@ protected:
                               GCodeStateTracker &state,
                               const GCodeLineParser::GCodeLine &line) const = 0;
     bool is_neutral_command(char letter, uint32_t number) const override;
+    bool has_unsupported_state_effect(char letter,
+                                      uint32_t number) const override;
     std::optional<raw_gcode_reader_marker_type> marker_type(
         char letter, uint32_t number) const override;
 };

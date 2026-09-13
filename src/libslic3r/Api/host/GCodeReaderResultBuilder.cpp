@@ -14,6 +14,7 @@
 
 #include "libslic3r/Api/plugin/c/slic3r_extrusions.h"
 #include "libslic3r/ExtrusionRole.hpp"
+#include "libslic3r/I18N.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
@@ -474,12 +475,45 @@ void GCodeReaderResultBuilder::process_marker(
 }
 
 void GCodeReaderResultBuilder::process_diagnostic(
-    const raw_gcode_reader_event &,
+    const raw_gcode_reader_event &event,
     const slic3r_api::GCodeStateTracker &)
 {
-    // TODO: DIAGNOSTIC needs severity and borrowed text attributes before the
-    // host can expose parser warnings in the viewer instead of only retaining
-    // the successfully reconstructed geometry.
+    const std::optional<double> raw_type = event_value(
+        event, RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE);
+    const std::optional<double> raw_line = event_value(
+        event, RAW_GCODE_READER_ITEM_LINE_NUMBER);
+    if (!raw_type || !raw_line)
+        throw std::invalid_argument("The viewer received an incomplete Reader diagnostic.");
+
+    const raw_gcode_reader_diagnostic_type type =
+        static_cast<raw_gcode_reader_diagnostic_type>(uint32_t(*raw_type));
+    std::string message;
+    switch (type) {
+    case RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND:
+        message = _u8L("The G-code Reader encountered an unknown command.");
+        break;
+    case RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS:
+        message = _u8L("The G-code Reader encountered invalid command parameters.");
+        break;
+    case RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_TOOL:
+        message = _u8L("The G-code Reader could not identify the requested tool.");
+        break;
+    case RAW_GCODE_READER_DIAGNOSTIC_AMBIGUOUS_TOOL:
+        message = _u8L("The G-code Reader found several tools matching the requested tool.");
+        break;
+    case RAW_GCODE_READER_DIAGNOSTIC_UNSUPPORTED_STATE_EFFECT:
+        message = _u8L("The G-code Reader recognized a command whose machine-state effect is not supported.");
+        break;
+    default:
+        throw std::invalid_argument("The viewer received an unknown Reader diagnostic type.");
+    }
+
+    // Diagnostics are historical observations, not modal state. Preserve
+    // every occurrence in stream order so the viewer can associate it with
+    // the source line even when multiple lines report the same condition.
+    m_result.reader_diagnostics.push_back({
+        type, static_cast<uint32_t>(*raw_line),
+        PrintStateBase::WarningLevel::NON_CRITICAL, std::move(message)});
 }
 
 void GCodeReaderResultBuilder::process_invalidation(

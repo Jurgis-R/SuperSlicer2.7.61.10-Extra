@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "libslic3r/CustomGCode.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_gcode_reader.h"
 #include "libslic3r/ExtrusionRole.hpp"
 #include "libslic3r/GCodeReader.hpp"
 #include "libslic3r/Point.hpp"
@@ -116,6 +117,19 @@ namespace Slic3r {
             }
         };
 
+        // Owned presentation of one non-fatal condition reported by the
+        // selected Reader. The plugin transports only type and line; the host
+        // supplies stable wording and severity for every consumer.
+        struct ReaderDiagnostic
+        {
+            raw_gcode_reader_diagnostic_type type =
+                RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND;
+            uint32_t line = 0;
+            PrintStateBase::WarningLevel level =
+                PrintStateBase::WarningLevel::NON_CRITICAL;
+            std::string message;
+        };
+
         struct MoveVertex
         {
             MoveVertex() {}
@@ -155,6 +169,7 @@ namespace Slic3r {
         // Reader selected by the firmware which produced this file. Empty for
         // externally loaded files until the Reader probe phase chooses one.
         std::string reader_plugin_id;
+        std::vector<ReaderDiagnostic> reader_diagnostics;
         bool is_binary_file;
         unsigned int id;
         std::vector<MoveVertex> moves;
