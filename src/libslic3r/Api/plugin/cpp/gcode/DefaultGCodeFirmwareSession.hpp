@@ -13,7 +13,7 @@
 
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp"
-#include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
+#include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderService.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeThumbnailViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFormatter.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeScriptProcessorViews.hpp"
@@ -66,9 +66,10 @@ public:
     std::string begin_print(const Print &print, const PrintingPlan &plan) override;
     // Renderer and orchestrator are borrowed until firmware destruction.
     void set_thumbnail_services(orchestrator_handle *, const raw_gcode_thumbnail_renderer *);
-    // The reader service is borrowed for this export. It interprets custom
-    // G-code after placeholder processing and returns the resulting state.
-    void set_gcode_reader_service(const raw_gcode_reader_service *service);
+    // Build the plugin-side Reader client used to interpret custom G-code.
+    // Both handles remain host-owned and must outlive this firmware session.
+    void set_gcode_reader_context(orchestrator_handle *orchestrator,
+                                  const print_handle *print);
     // Set the runtime identity of the state schema exchanged with the selected
     // Reader. Provider wiring calls this before the session is published.
     void set_reader_state_id(orchestrator_runtime_id reader_state_id);
@@ -222,7 +223,7 @@ protected:
 private:
     orchestrator_handle *m_thumbnail_orchestrator = nullptr;
     const raw_gcode_thumbnail_renderer *m_thumbnail_renderer = nullptr;
-    const raw_gcode_reader_service *m_gcode_reader_service = nullptr;
+    std::unique_ptr<GCodeReaderService> m_gcode_reader_service;
     friend class GCodePreamble;
     std::unique_ptr<GCodePreamble> m_preamble;
     struct RequestedState;

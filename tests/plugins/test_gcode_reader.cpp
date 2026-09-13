@@ -729,18 +729,26 @@ TEST_CASE("G-code reader detection rejects an unavailable default fallback",
     REQUIRE(orchestrator.set_plugin_active(DEFAULT_GCODE_READER_PLUGIN_ID, true));
 }
 
-TEST_CASE("G-code reader C++ service view executes the requested Reader synchronously",
+TEST_CASE("G-code reader C++ plugin helper executes the requested Reader synchronously",
           "[plugins][gcode][reader][service]")
 {
     ensure_plugin_test_runtime_initialized();
     std::vector<raw_gcode_reader_event_item> initial_items;
     const raw_gcode_reader_state initial = initial_state(initial_items);
-    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    slic3r_api::GCodeReaderService service(
+        reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()));
     const slic3r_api::GCodeStateTracker state =
-        slic3r_api::GCodeReaderServiceView(service.c_service()).read("", initial, "G1 X5\n");
+        service.read("", initial, "G1 X5\n");
 
     REQUIRE(state.x());
     CHECK(*state.x() == Approx(5.0));
+}
+
+TEST_CASE("G-code reader C++ plugin helper rejects a null orchestrator",
+          "[plugins][gcode][reader][service]")
+{
+    CHECK_THROWS_WITH(slic3r_api::GCodeReaderService(nullptr),
+                      Catch::Matchers::Contains("requires an orchestrator handle"));
 }
 
 TEST_CASE("G-code reader execution rejects an unknown explicit provider",
@@ -751,7 +759,7 @@ TEST_CASE("G-code reader execution rejects an unknown explicit provider",
     const raw_gcode_reader_state initial = initial_state(initial_items);
     CHECK_THROWS_WITH(read_gcode(Orchestrator::instance(), nullptr,
         "gcode.reader.missing", initial, "G1 X1\n"),
-        Catch::Matchers::Contains("is not loaded"));
+        Catch::Matchers::Contains("unavailable in the host activation set"));
 }
 
 TEST_CASE("G-code reader execution rejects inactive and wrong-step providers",
@@ -765,7 +773,7 @@ TEST_CASE("G-code reader execution rejects inactive and wrong-step providers",
     REQUIRE(orchestrator.set_plugin_active("gcode.reader.test.a", false));
     CHECK_THROWS_WITH(read_gcode(orchestrator, nullptr,
         "gcode.reader.test.a", initial, "G1 X1\n"),
-        Catch::Matchers::Contains("is inactive"));
+        Catch::Matchers::Contains("unavailable in the host activation set"));
     REQUIRE(orchestrator.set_plugin_active("gcode.reader.test.a", true));
 
     CHECK_THROWS_WITH(read_gcode(orchestrator, nullptr,

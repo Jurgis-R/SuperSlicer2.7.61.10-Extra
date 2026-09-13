@@ -176,6 +176,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/gcode/Gantry.hpp
 	Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp
 	Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp
+	Api/plugin/cpp/gcode/GCodeReaderService.hpp
 	Api/plugin/cpp/gcode/GCodeStateTracker.hpp
 	Api/plugin/cpp/gcode/GCodeFormatter.cpp
 	Api/plugin/cpp/gcode/GCodeFormatter.hpp

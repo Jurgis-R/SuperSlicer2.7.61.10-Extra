@@ -286,7 +286,7 @@ void BuiltinGCodeFirmwarePlugin::run_impl(const plugin_run_context *run_ctx) con
     default_session.set_reader_state_id(m_reader_state_id);
     default_session.set_thumbnail_services(
         m_orchestrator, context->thumbnail_renderer);
-    default_session.set_gcode_reader_service(context->reader_service);
+    default_session.set_gcode_reader_context(m_orchestrator, context->print);
     context->instance = make_gcode_firmware_instance(std::move(session));
 }
 

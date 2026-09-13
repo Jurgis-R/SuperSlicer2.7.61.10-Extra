@@ -37,8 +37,6 @@ from slic3r_api_generated import (
     GCODE_FIRMWARE_DESTROY,
     GCODE_FIRMWARE_END_SCOPE,
     GCODE_FIRMWARE_READER_PLUGIN_ID,
-    GCODE_READER_EMIT_FINAL_STATE,
-    GCODE_READER_GET_NEXT_CHUNK,
     GCODE_FIRMWARE_WRITE_EVENT,
     GCODE_FIRMWARE_WRITE_EXTRUSION,
     GCODE_SCRIPT_TYPE_INVALID,
@@ -48,20 +46,12 @@ from slic3r_api_generated import (
     RAW_GCODE_FIRMWARE_STATUS_SUCCESS,
     RAW_GCODE_FIRMWARE_STATUS_UNSET,
     RAW_GCODE_SCRIPT_STATUS_SUCCESS,
-    RAW_GCODE_READER_STATUS_ERROR,
-    RAW_GCODE_READER_STATUS_SUCCESS,
-    RAW_GCODE_READER_STATUS_UNSET,
     RAW_GCODE_THUMBNAIL_STATUS_ERROR,
     RAW_GCODE_THUMBNAIL_STATUS_INVALID_ARGUMENT,
     RAW_GCODE_THUMBNAIL_STATUS_SUCCESS,
     RAW_GCODE_THUMBNAIL_STATUS_UNSET,
     RawGcodeFirmwareInstance,
     RawGcodeFirmwareResult,
-    RawGcodeReaderChunk,
-    RawGcodeReaderEventItem,
-    RawGcodeReaderResult,
-    RawGcodeReaderService,
-    RawGcodeReaderState,
     RawGcodeThumbnailRenderRequest,
     RawGcodeScriptProcessor,
     RawGcodeScriptResult,
@@ -78,6 +68,7 @@ from .gcode_thumbnail import (
 )
 from slic3r_datatree_views import Config, MutableConfig, Print
 from slic3r_extrusion_views import ExtrusionEntity
+from slic3r_gcode_reader_service import GCodeReaderService
 from slic3r_printing_plan_views import (
     PrintingPlan,
     PrintingExtrusion,
@@ -85,100 +76,6 @@ from slic3r_printing_plan_views import (
     PrintingLayerGroup,
     PrintingToolGroup,
 )
-
-
-@abi_requires_headers("slic3r_gcode_reader.h")
-class GCodeReaderServiceView:
-    """Borrow the host service that executes a named G-code Reader.
-
-    This is a firmware-side client, not a Reader provider and not the host
-    service implementation. A firmware uses it to parse text it has generated
-    (notably custom G-code) with the Reader dialect selected by that firmware.
-    The service resolves and runs the exact ``reader_plugin_id`` synchronously;
-    an empty id requests ``gcode.reader.default`` and a non-empty unavailable
-    id is an error rather than a request for automatic detection.
-
-    The native service pointer is borrowed from ``GCodeFirmwareContext`` and
-    must not outlive the published firmware session. Callback buffers and raw
-    states are valid only during :meth:`read`; its returned tuples are Python
-    values copied before the native call returns and require no explicit free.
-    """
-
-    def __init__(self, service) -> None:
-        self._service = ctypes.cast(service, ctypes.POINTER(RawGcodeReaderService))
-        if not self._service or not self._service.contents.read:
-            raise ValueError("the G-code Reader service is incomplete")
-
-    def read(self, reader_plugin_id: str, initial_items, text: str):
-        """Parse one text fragment and return an owned final Reader state.
-
-        ``initial_items`` is an iterable of ``(type, target, value)`` triples.
-        Both it and the UTF-8 encoding of ``text`` are lent only for this
-        synchronous call. The result is a tuple of copied triples; failures in
-        provider lookup, parsing, validation, or final-state publication raise
-        ``RuntimeError``.
-        """
-        encoded = text.encode("utf-8")
-        initial_values = [RawGcodeReaderEventItem(*item) for item in initial_items]
-        initial_array = (RawGcodeReaderEventItem * len(initial_values))(*initial_values)
-        initial = RawGcodeReaderState(
-            initial_array if initial_values else None, len(initial_values)
-        )
-        state = {"supplied": False, "items": None, "error": None}
-
-        def next_chunk(_context, chunk_pointer, result_pointer):
-            try:
-                chunk_pointer.contents.bytes = None
-                chunk_pointer.contents.byte_count = 0
-                if not state["supplied"] and encoded:
-                    state["supplied"] = True
-                    chunk_pointer.contents.bytes = encoded
-                    chunk_pointer.contents.byte_count = len(encoded)
-                else:
-                    state["supplied"] = True
-                result_pointer.contents.status = RAW_GCODE_READER_STATUS_SUCCESS
-            except BaseException as exc:
-                state["error"] = str(exc).encode("utf-8", errors="replace")
-                result_pointer.contents.status = RAW_GCODE_READER_STATUS_ERROR
-                result_pointer.contents.error_message = state["error"]
-
-        def final_state(_context, state_pointer, result_pointer):
-            try:
-                raw = state_pointer.contents
-                state["items"] = tuple(
-                    (int(raw.items[index].type), int(raw.items[index].target),
-                     float(raw.items[index].value))
-                    for index in range(int(raw.item_count))
-                )
-                result_pointer.contents.status = RAW_GCODE_READER_STATUS_SUCCESS
-            except BaseException as exc:
-                state["error"] = str(exc).encode("utf-8", errors="replace")
-                result_pointer.contents.status = RAW_GCODE_READER_STATUS_ERROR
-                result_pointer.contents.error_message = state["error"]
-
-        next_callback = GCODE_READER_GET_NEXT_CHUNK(next_chunk)
-        final_callback = GCODE_READER_EMIT_FINAL_STATE(final_state)
-        result = RawGcodeReaderResult(RAW_GCODE_READER_STATUS_UNSET, None)
-        self._service.contents.read(
-            self._service.contents.context,
-            reader_plugin_id.encode("utf-8"),
-            ctypes.byref(initial),
-            None,
-            next_callback,
-            None,
-            final_callback,
-            ctypes.byref(result),
-        )
-        if int(result.status) != int(RAW_GCODE_READER_STATUS_SUCCESS):
-            message = (
-                result.error_message.decode("utf-8", errors="replace")
-                if result.error_message
-                else "G-code Reader service failed"
-            )
-            raise RuntimeError(message)
-        if state["items"] is None:
-            raise RuntimeError("G-code Reader service returned without a final state")
-        return state["items"]
 
 
 def _address(handle) -> int:
@@ -872,14 +769,14 @@ class GCodeFirmwareContext:
         """Borrow the processor that remains valid for the published session."""
         return GCodeScriptProcessorView(self.api, self.payload.script_processor)
 
-    def gcode_reader_service(self) -> GCodeReaderServiceView:
-        """Borrow the firmware-side Reader client.
-
-        Use it to run the Reader named by the firmware over generated text.
-        Do not retain the view after the published firmware session is
-        destroyed; the host owns the underlying service and its callback.
-        """
-        return GCodeReaderServiceView(self.payload.reader_service)
+    @abi_requires_headers(
+        "slic3r_gcode_reader.h",
+        "slic3r_orchestrator.h",
+        "steps/slic3r_step_gcode_reader.h",
+    )
+    def gcode_reader_service(self) -> GCodeReaderService:
+        """Create a Reader client for this export's orchestrator and Print."""
+        return GCodeReaderService(self.api, self.gcode_firmware_print())
 
     def publish_gcode_firmware(self, session: GCodeFirmwareSession) -> None:
         """Transfer one fresh provider session into the host-owned payload."""
@@ -896,7 +793,7 @@ __all__ = [
     "GCodeFirmwareContext",
     "GCodeFirmwareSession",
     "GCodeFirmwareView",
-    "GCodeReaderServiceView",
+    "GCodeReaderService",
     "GCodeScriptConfig",
     "GCodeScriptContext",
     "GCodeScriptProcessorView",

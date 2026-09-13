@@ -230,28 +230,6 @@ typedef void (*gcode_reader_emit_probe_fn)(void *context,
                                            uint32_t confidence,
                                            raw_gcode_reader_result *result);
 
-/* Execute one Reader selected by its stable plugin id. The service and its
-   context are borrowed for the firmware session lifetime. An empty id requests
-   gcode.reader.default; a non-empty unavailable id is an error. The service
-   validates the provider's events and lends the copied final state to
-   receive_final_state before returning. */
-typedef void (*gcode_reader_service_read_fn)(
-    void *service_context,
-    const char *reader_plugin_id,
-    const raw_gcode_reader_state *initial_state,
-    void *source_context,
-    gcode_reader_get_next_chunk_fn get_next_chunk,
-    void *final_state_context,
-    gcode_reader_emit_final_state_fn receive_final_state,
-    raw_gcode_reader_result *result);
-
-typedef struct raw_gcode_reader_service {
-    /* Both fields are borrowed. read() is synchronous and non-reentrant for a
-       given service instance; all callback data is consumed before it returns. */
-    void *context;
-    gcode_reader_service_read_fn read;
-} raw_gcode_reader_service;
-
 #ifdef __cplusplus
 }
 #endif

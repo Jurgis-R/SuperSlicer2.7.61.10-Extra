@@ -76,6 +76,9 @@ if (TARGET Python3::Python)
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_geometry_views.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_geometry_views.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_gcode_reader_service.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_gcode_reader_service.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_extrusion_views.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_extrusion_views.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

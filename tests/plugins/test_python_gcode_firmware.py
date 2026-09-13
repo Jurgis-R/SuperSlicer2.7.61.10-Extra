@@ -92,44 +92,166 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
             0x80000000,
         )
 
-    def test_reader_service_view_routes_id_streams_text_and_copies_final_state(self):
+    def test_reader_service_routes_through_the_generic_orchestrator(self):
         seen = {}
+        generated = self.generated
 
-        def read(_context, reader_id, initial, source_context, next_chunk,
-                 final_context, emit_final, result):
-            seen["id"] = reader_id.decode("utf-8")
-            chunks = []
-            while True:
-                chunk = self.generated.RawGcodeReaderChunk()
-                chunk_result = self.generated.RawGcodeReaderResult(
-                    self.generated.RAW_GCODE_READER_STATUS_UNSET, None
-                )
-                next_chunk(source_context, ctypes.byref(chunk), ctypes.byref(chunk_result))
-                self.assertEqual(
-                    chunk_result.status,
-                    self.generated.RAW_GCODE_READER_STATUS_SUCCESS,
-                )
-                if not chunk.bytes and chunk.byte_count == 0:
-                    break
-                chunks.append(ctypes.string_at(chunk.bytes, chunk.byte_count))
-            seen["text"] = b"".join(chunks)
-            final_result = self.generated.RawGcodeReaderResult(
-                self.generated.RAW_GCODE_READER_STATUS_UNSET, None
-            )
-            emit_final(final_context, initial, ctypes.byref(final_result))
-            self.assertEqual(
-                final_result.status,
-                self.generated.RAW_GCODE_READER_STATUS_SUCCESS,
-            )
-            result.contents.status = self.generated.RAW_GCODE_READER_STATUS_SUCCESS
+        class Host:
+            def orchestrator_find_plugin(self, _orchestrator, plugin_id):
+                seen["id"] = plugin_id.decode("utf-8")
+                return 21 if seen["id"] == "gcode.reader.test" else 0
 
-        callback = self.generated.GCODE_READER_SERVICE_READ(read)
-        raw = self.generated.RawGcodeReaderService(None, callback)
-        view = self.firmware.GCodeReaderServiceView(ctypes.pointer(raw))
+            @staticmethod
+            def orchestrator_plugin_step(_plugin):
+                return generated.GCODE_READER
+
+            def orchestrator_execute_plugin(
+                self, _orchestrator, _plugin, _print, payloads, payload_count
+            ):
+                self_outer.assertEqual(payload_count, 1)
+                payload = ctypes.cast(
+                    payloads[0].data, ctypes.POINTER(generated.RunCtxGcodeReader)
+                ).contents
+                chunks = []
+                while True:
+                    chunk = generated.RawGcodeReaderChunk()
+                    result = generated.RawGcodeReaderResult()
+                    payload.get_next_chunk(
+                        payload.callback_context,
+                        ctypes.byref(chunk),
+                        ctypes.byref(result),
+                    )
+                    self_outer.assertEqual(
+                        result.status, generated.RAW_GCODE_READER_STATUS_SUCCESS
+                    )
+                    if not chunk.bytes and chunk.byte_count == 0:
+                        break
+                    chunks.append(ctypes.string_at(chunk.bytes, chunk.byte_count))
+                seen["text"] = b"".join(chunks)
+                result = generated.RawGcodeReaderResult()
+                payload.emit_final_state(
+                    payload.callback_context,
+                    payload.initial_state,
+                    ctypes.byref(result),
+                )
+                self_outer.assertEqual(
+                    result.status, generated.RAW_GCODE_READER_STATUS_SUCCESS
+                )
+                return generated.RAW_PLUGIN_EXECUTION_SUCCESS
+
+        self_outer = self
+        api = types.SimpleNamespace(orchestrator=ctypes.c_void_p(1), host=Host())
+        service = self.firmware.GCodeReaderService(api)
         items = ((self.generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 7.0),)
 
-        self.assertEqual(view.read("gcode.reader.test", items, "G1 X4\n"), items)
+        self.assertEqual(
+            service.read("gcode.reader.test", items, ("G1 ", "X4\n")), items
+        )
         self.assertEqual(seen, {"id": "gcode.reader.test", "text": b"G1 X4\n"})
+
+    def test_reader_service_callback_contract_is_absent_from_generated_api(self):
+        self.assertFalse(hasattr(self.generated, "RawGcodeReaderService"))
+        self.assertFalse(hasattr(self.generated, "GCODE_READER_SERVICE_READ"))
+        self.assertNotIn(
+            "reader_service",
+            dict(self.generated.RunCtxGcodeFirmware._fields_),
+        )
+
+    def test_reader_service_rejects_selection_and_completion_errors(self):
+        generated = self.generated
+        items = ((generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0),)
+
+        class Host:
+            selected = ""
+            execution_status = generated.RAW_PLUGIN_EXECUTION_SUCCESS
+
+            def orchestrator_find_plugin(self, _orchestrator, plugin_id):
+                self.selected = plugin_id.decode("utf-8")
+                return 0 if self.selected == "missing" else 31
+
+            def orchestrator_plugin_step(self, _plugin):
+                return 999 if self.selected == "wrong.step" else generated.GCODE_READER
+
+            def orchestrator_execute_plugin(
+                self, _orchestrator, _plugin, _print, _payloads, _payload_count
+            ):
+                return self.execution_status
+
+        host = Host()
+        api = types.SimpleNamespace(orchestrator=ctypes.c_void_p(1), host=host)
+        service = self.firmware.GCodeReaderService(api)
+
+        with self.assertRaisesRegex(RuntimeError, "activation set"):
+            service.read("missing", items, "")
+        with self.assertRaisesRegex(RuntimeError, "not a G-code reader"):
+            service.read("wrong.step", items, "")
+        with self.assertRaisesRegex(RuntimeError, "without a final state"):
+            service.read("valid.reader", items, "")
+
+        host.execution_status = generated.RAW_PLUGIN_EXECUTION_INACTIVE
+        with self.assertRaisesRegex(RuntimeError, "no longer active"):
+            service.read("valid.reader", items, "")
+
+    def test_reader_service_rejects_premature_and_duplicate_final_states(self):
+        generated = self.generated
+        items = ((generated.RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0),)
+
+        class Host:
+            mode = "premature"
+
+            @staticmethod
+            def orchestrator_find_plugin(_orchestrator, _plugin_id):
+                return 41
+
+            @staticmethod
+            def orchestrator_plugin_step(_plugin):
+                return generated.GCODE_READER
+
+            def orchestrator_execute_plugin(
+                self, _orchestrator, _plugin, _print, payloads, _payload_count
+            ):
+                payload = ctypes.cast(
+                    payloads[0].data, ctypes.POINTER(generated.RunCtxGcodeReader)
+                ).contents
+                result = generated.RawGcodeReaderResult()
+                if self.mode == "premature":
+                    payload.emit_final_state(
+                        payload.callback_context,
+                        payload.initial_state,
+                        ctypes.byref(result),
+                    )
+                    return generated.RAW_PLUGIN_EXECUTION_SUCCESS
+
+                while True:
+                    chunk = generated.RawGcodeReaderChunk()
+                    payload.get_next_chunk(
+                        payload.callback_context,
+                        ctypes.byref(chunk),
+                        ctypes.byref(result),
+                    )
+                    if not chunk.bytes and chunk.byte_count == 0:
+                        break
+                payload.emit_final_state(
+                    payload.callback_context,
+                    payload.initial_state,
+                    ctypes.byref(result),
+                )
+                payload.emit_final_state(
+                    payload.callback_context,
+                    payload.initial_state,
+                    ctypes.byref(result),
+                )
+                return generated.RAW_PLUGIN_EXECUTION_SUCCESS
+
+        host = Host()
+        api = types.SimpleNamespace(orchestrator=ctypes.c_void_p(1), host=host)
+        service = self.firmware.GCodeReaderService(api)
+        with self.assertRaisesRegex(RuntimeError, "before end-of-stream"):
+            service.read("reader", items, "G1 X1\n")
+
+        host.mode = "duplicate"
+        with self.assertRaisesRegex(RuntimeError, "more than one final state"):
+            service.read("reader", items, "G1 X1\n")
 
     def test_thumbnail_result_is_copied_and_parameters_are_explicit(self):
         pixels = (ctypes.c_uint8 * 8)(*range(8))

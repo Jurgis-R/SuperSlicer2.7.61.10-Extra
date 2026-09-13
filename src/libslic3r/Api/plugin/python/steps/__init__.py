@@ -23,6 +23,7 @@ from .gcode_firmware import (
     GCodeScriptProcessorView,
     make_gcode_firmware_instance,
 )
+from slic3r_gcode_reader_service import GCodeReaderService
 from .gcode_thumbnail import (
     GCodeThumbnailContext,
     GCodeThumbnailEncoderSession,
@@ -80,6 +81,7 @@ __all__ = [
     "GCodeScriptConfig",
     "GCodeScriptContext",
     "GCodeScriptProcessorView",
+    "GCodeReaderService",
     "make_gcode_firmware_instance",
     "GCodeThumbnailContext",
     "GCodeThumbnailEncoderSession",

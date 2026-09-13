@@ -259,7 +259,6 @@ void create_firmware_session(Orchestrator &orchestrator,
                              Print &print,
                              const raw_gcode_script_processor *script_processor,
                              const raw_gcode_thumbnail_renderer *renderer,
-                             const raw_gcode_reader_service *reader_service,
                              FirmwareInstanceOwner &owner);
 
 std::string speed_value_text(const float value)
@@ -659,7 +658,6 @@ void create_firmware_session(Orchestrator &orchestrator,
                              Print &print,
                              const raw_gcode_script_processor *script_processor,
                              const raw_gcode_thumbnail_renderer *renderer,
-                             const raw_gcode_reader_service *reader_service,
                              FirmwareInstanceOwner &owner)
 {
     Plugin *firmware_plugin = selected_or_active_plugin_for_step(
@@ -675,7 +673,6 @@ void create_firmware_session(Orchestrator &orchestrator,
     payload.print = reinterpret_cast<const print_handle *>(&print);
     payload.script_processor = script_processor;
     payload.thumbnail_renderer = renderer;
-    payload.reader_service = reader_service;
     run_context.data = &payload;
 
     firmware_plugin->setup(run_context, 1);
@@ -824,13 +821,13 @@ std::string run_step(Orchestrator &orchestrator, Print &print, const std::string
     // gives the plugin a valid empty plan instead of a null handle.
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
 
-    // The host parser outlives the borrowed firmware view and is destroyed
-    // only after the firmware session has released every reference to it.
+    // The host facade validates the Reader identity selected by the firmware.
+    // Firmware sessions execute that Reader through their plugin-side helper.
     GCodeScriptProcessor scripts(print, orchestrator);
     GCodeReaderService readers(orchestrator, &print);
     FirmwareInstanceOwner firmware;
     create_firmware_session(orchestrator, print, scripts.c_processor(), thumbnail_renderer,
-                            readers.c_service(), firmware);
+                            firmware);
     const slic3r_api::GCodeFirmwareView firmware_view(firmware.instance());
     const std::string reader_plugin_id = readers.validated_reader_id(
         firmware_view.reader_plugin_id());

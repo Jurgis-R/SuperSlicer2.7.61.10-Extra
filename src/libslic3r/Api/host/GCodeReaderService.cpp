@@ -6,9 +6,6 @@
 #include "GCodeReaderService.hpp"
 
 #include <algorithm>
-#include <cstdint>
-#include <limits>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -25,258 +22,16 @@
 Host G-code reader service implementation
 ==========================================
 
-ReaderInvocation is the temporary bridge used during one plugin run. It owns
-the input callback, validates the order of all provider callbacks and copies
-the final state. Its static C callbacks catch every exception so neither the
-host source nor the state validator can unwind through the plugin ABI.
+The plugin-side GCodeReaderService owns the complete synchronous read bridge:
+it supplies chunks, validates callbacks and copies the final state. This host
+facade only adds automatic probing for files whose producing firmware is not
+already known.
 
-    GCodeReaderChunkSource
-             |
-             v
-      ReaderInvocation::get_next_chunk_callback
-             |
-             v
-       provider read_impl
-          |          |
-          | events   | final state
-          v          v
-      m_event_state  m_final_state
-
-m_event_state is intentionally independent from m_final_state. Replaying each
-event validates the event stream as it arrives. The separately copied final
-state also includes state changes, such as physical line advancement, which do
-not need an action event.
+    known Reader id --> plugin helper --> exact Reader plugin
+    unknown dialect --> host probes ----^
 */
 
 namespace Slic3r {
-namespace {
-
-class ReaderInvocation
-{
-public:
-    // Copy the borrowed initial state and take ownership of the source callable
-    // for one synchronous execution. Input bytes remain owned by that source.
-    ReaderInvocation(GCodeReaderChunkSource source,
-                     const Print *print,
-                     const raw_gcode_reader_state &initial_state);
-
-    // Build the borrowed C payload whose callback_context points back to this
-    // invocation. The payload must not outlive the ReaderInvocation object.
-    run_ctx_gcode_reader context();
-    // Move the host-owned final state out after successful plugin execution.
-    // A successful provider which omitted the final callback violates the API.
-    slic3r_api::GCodeStateTracker take_final_state();
-    // Return the last callback diagnostic copied into host-owned storage.
-    const std::string &error() const { return m_error; }
-
-private:
-    // C ABI entry points. They validate pointers, translate exceptions into a
-    // raw result and never permit C++ unwinding through provider code.
-    static void get_next_chunk_callback(void *opaque,
-                                        raw_gcode_reader_chunk *chunk,
-                                        raw_gcode_reader_result *result) noexcept;
-    static void emit_event_callback(void *opaque,
-                                    const raw_gcode_reader_event *event,
-                                    raw_gcode_reader_result *result) noexcept;
-    static void emit_final_state_callback(void *opaque,
-                                          const raw_gcode_reader_state *state,
-                                          raw_gcode_reader_result *result) noexcept;
-    // Implement the ordered host side of the three Reader callbacks.
-    void get_next_chunk(raw_gcode_reader_chunk &chunk);
-    void emit_event(const raw_gcode_reader_event &event);
-    void emit_final_state(const raw_gcode_reader_state &state);
-    // Keep the diagnostic alive in this invocation and expose it through the
-    // borrowed result channel. A null result cannot receive the diagnostic.
-    void fail(raw_gcode_reader_result *result,
-              raw_gcode_reader_status status,
-              const std::string &message) noexcept;
-    // Mark a non-null callback result as accepted and clear stale diagnostics.
-    static void initialize_success(raw_gcode_reader_result *result) noexcept;
-    // Source bytes are borrowed through m_active_chunk until the next pull.
-    GCodeReaderChunkSource m_source;
-    const Print *m_print;
-    // Initial and replay states validate host input and provider events. Only
-    // m_final_state is returned to the service caller.
-    slic3r_api::GCodeStateTracker m_initial_state;
-    slic3r_api::GCodeStateTracker m_event_state;
-    std::optional<slic3r_api::GCodeStateTracker> m_final_state;
-    std::string_view m_active_chunk;
-    std::string m_error;
-    uint64_t m_supplied_bytes = 0;
-    bool m_end_reached = false;
-};
-
-ReaderInvocation::ReaderInvocation(GCodeReaderChunkSource source,
-                                   const Print *print,
-                                   const raw_gcode_reader_state &initial_state)
-    : m_source(std::move(source)), m_print(print), m_initial_state(initial_state),
-      m_event_state(initial_state)
-{
-    if (!m_source)
-        throw std::invalid_argument("G-code reader requires an input chunk source.");
-}
-
-run_ctx_gcode_reader ReaderInvocation::context()
-{
-    run_ctx_gcode_reader value = {};
-    value.operation = RAW_GCODE_READER_OPERATION_READ;
-    value.print = reinterpret_cast<const print_handle *>(m_print);
-    value.initial_state = &m_initial_state.state();
-    value.callback_context = this;
-    value.get_next_chunk = &ReaderInvocation::get_next_chunk_callback;
-    value.emit_event = &ReaderInvocation::emit_event_callback;
-    value.emit_final_state = &ReaderInvocation::emit_final_state_callback;
-    return value;
-}
-
-slic3r_api::GCodeStateTracker ReaderInvocation::take_final_state()
-{
-    if (!m_final_state)
-        throw std::runtime_error("The G-code reader returned successfully without a final state.");
-    return std::move(*m_final_state);
-}
-
-void ReaderInvocation::get_next_chunk(raw_gcode_reader_chunk &chunk)
-{
-    if (m_final_state)
-        throw std::logic_error("The G-code reader requested input after publishing its final state.");
-    chunk = {};
-    if (m_end_reached)
-        return;
-
-    // Keep the view in the invocation so its lifetime boundary is visible: a
-    // subsequent source call may reuse the storage behind the previous view.
-    m_active_chunk = m_source();
-    if (m_active_chunk.empty()) {
-        m_end_reached = true;
-        return;
-    }
-    if (m_active_chunk.size() > std::numeric_limits<uint64_t>::max() - m_supplied_bytes)
-        throw std::overflow_error("G-code reader input exceeds the uint64_t source range.");
-    m_supplied_bytes += static_cast<uint64_t>(m_active_chunk.size());
-    chunk.bytes = m_active_chunk.data();
-    chunk.byte_count = static_cast<uint64_t>(m_active_chunk.size());
-}
-
-void ReaderInvocation::emit_event(const raw_gcode_reader_event &event)
-{
-    if (m_final_state)
-        throw std::logic_error("The G-code reader emitted an event after its final state.");
-    if (event.source.end > m_supplied_bytes)
-        throw std::invalid_argument("A G-code reader event refers to bytes not supplied by the host.");
-
-    // Replay independently from the provider. apply() validates the complete
-    // event before mutating this host-owned state. The separately copied final
-    // state remains authoritative for state changes which intentionally have
-    // no action event.
-    m_event_state.apply(event);
-}
-
-void ReaderInvocation::emit_final_state(const raw_gcode_reader_state &state)
-{
-    if (!m_end_reached)
-        throw std::logic_error("The G-code reader published its final state before reaching end-of-stream.");
-    if (m_final_state)
-        throw std::logic_error("The G-code reader published more than one final state.");
-
-    // Empty and comment-only lines advance the provider's line cursor without
-    // producing action events, so the final state is authoritative rather than
-    // required to equal the host's event replay byte-for-byte.
-    m_final_state.emplace(state);
-}
-
-void ReaderInvocation::initialize_success(raw_gcode_reader_result *result) noexcept
-{
-    if (result == nullptr)
-        return;
-    result->status = RAW_GCODE_READER_STATUS_SUCCESS;
-    result->error_message = nullptr;
-}
-
-void ReaderInvocation::fail(raw_gcode_reader_result *result,
-                            raw_gcode_reader_status status,
-                            const std::string &message) noexcept
-{
-    m_error = message;
-    if (result == nullptr)
-        return;
-    result->status = status;
-    result->error_message = m_error.c_str();
-}
-
-void ReaderInvocation::get_next_chunk_callback(void *opaque,
-                                               raw_gcode_reader_chunk *chunk,
-                                               raw_gcode_reader_result *result) noexcept
-{
-    ReaderInvocation *invocation = static_cast<ReaderInvocation *>(opaque);
-    if (invocation == nullptr || chunk == nullptr) {
-        if (invocation != nullptr)
-            invocation->fail(result, RAW_GCODE_READER_STATUS_INVALID_ARGUMENT,
-                             "G-code reader requested a chunk with an invalid output structure.");
-        return;
-    }
-    try {
-        invocation->get_next_chunk(*chunk);
-        initialize_success(result);
-    } catch (const std::invalid_argument &error) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_INVALID_ARGUMENT, error.what());
-    } catch (const std::exception &error) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_ERROR, error.what());
-    } catch (...) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_ERROR,
-                         "Unknown exception while supplying G-code input.");
-    }
-}
-
-void ReaderInvocation::emit_event_callback(void *opaque,
-                                           const raw_gcode_reader_event *event,
-                                           raw_gcode_reader_result *result) noexcept
-{
-    ReaderInvocation *invocation = static_cast<ReaderInvocation *>(opaque);
-    if (invocation == nullptr || event == nullptr) {
-        if (invocation != nullptr)
-            invocation->fail(result, RAW_GCODE_READER_STATUS_INVALID_ARGUMENT,
-                             "G-code reader emitted a null event.");
-        return;
-    }
-    try {
-        invocation->emit_event(*event);
-        initialize_success(result);
-    } catch (const std::invalid_argument &error) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_INVALID_ARGUMENT, error.what());
-    } catch (const std::exception &error) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_ERROR, error.what());
-    } catch (...) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_ERROR,
-                         "Unknown exception while receiving a G-code reader event.");
-    }
-}
-
-void ReaderInvocation::emit_final_state_callback(void *opaque,
-                                                 const raw_gcode_reader_state *state,
-                                                 raw_gcode_reader_result *result) noexcept
-{
-    ReaderInvocation *invocation = static_cast<ReaderInvocation *>(opaque);
-    if (invocation == nullptr || state == nullptr) {
-        if (invocation != nullptr)
-            invocation->fail(result, RAW_GCODE_READER_STATUS_INVALID_ARGUMENT,
-                             "G-code reader emitted a null final state.");
-        return;
-    }
-    try {
-        invocation->emit_final_state(*state);
-        initialize_success(result);
-    } catch (const std::invalid_argument &error) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_INVALID_ARGUMENT, error.what());
-    } catch (const std::exception &error) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_ERROR, error.what());
-    } catch (...) {
-        invocation->fail(result, RAW_GCODE_READER_STATUS_ERROR,
-                         "Unknown exception while receiving the G-code reader final state.");
-    }
-}
-
-} // namespace
 
 slic3r_api::GCodeStateTracker read_gcode(
     Orchestrator &orchestrator,
@@ -285,29 +40,10 @@ slic3r_api::GCodeStateTracker read_gcode(
     const raw_gcode_reader_state &initial_state,
     GCodeReaderChunkSource source)
 {
-    const std::string id = reader_plugin_id.empty() ? DEFAULT_GCODE_READER_PLUGIN_ID :
-        std::string(reader_plugin_id);
-    Plugin *plugin = orchestrator.get_plugin(id);
-    if (plugin == nullptr)
-        throw std::runtime_error("G-code reader plugin '" + id + "' is not loaded.");
-    if (plugin->get_step() != GCODE_READER)
-        throw std::runtime_error("Plugin '" + id + "' is not a G-code reader.");
-    if (!orchestrator.is_plugin_active(plugin))
-        throw std::runtime_error("G-code reader plugin '" + id + "' is inactive.");
-
-    // invocation outlives execute_plugin(), therefore callback_context and all
-    // borrowed diagnostics remain valid for every provider callback.
-    ReaderInvocation invocation(std::move(source), print, initial_state);
-    run_ctx_gcode_reader context = invocation.context();
-    raw_plugin_run_payload payload = {};
-    payload.data = &context;
-    const raw_plugin_execution_status status = orchestrator.execute_plugin(*plugin, print, &payload, 1);
-    if (status != RAW_PLUGIN_EXECUTION_SUCCESS) {
-        const std::string message = invocation.error().empty() ?
-            "The selected G-code reader provider failed." : invocation.error();
-        throw std::runtime_error(message);
-    }
-    return invocation.take_final_state();
+    return slic3r_api::GCodeReaderService(
+        reinterpret_cast<orchestrator_handle *>(&orchestrator),
+        reinterpret_cast<const print_handle *>(print)).read(
+            reader_plugin_id, initial_state, std::move(source));
 }
 
 slic3r_api::GCodeStateTracker read_gcode(
@@ -317,16 +53,10 @@ slic3r_api::GCodeStateTracker read_gcode(
     const raw_gcode_reader_state &initial_state,
     std::string_view text)
 {
-    // Adapt the in-memory text to the same pull protocol as streamed files.
-    // The second call is the explicit end marker required by the contract.
-    bool supplied = false;
-    GCodeReaderChunkSource source = [text, &supplied]() mutable -> std::string_view {
-        if (supplied)
-            return {};
-        supplied = true;
-        return text;
-    };
-    return read_gcode(orchestrator, print, reader_plugin_id, initial_state, std::move(source));
+    return slic3r_api::GCodeReaderService(
+        reinterpret_cast<orchestrator_handle *>(&orchestrator),
+        reinterpret_cast<const print_handle *>(print)).read(
+            reader_plugin_id, initial_state, text);
 }
 
 namespace {
@@ -460,7 +190,8 @@ std::string detect_gcode_reader(Orchestrator &orchestrator, Print *print,
 
 GCodeReaderService::GCodeReaderService(Orchestrator &orchestrator, Print *print)
     : m_orchestrator(orchestrator), m_print(print),
-      m_service{this, &GCodeReaderService::read_callback}
+      m_reader(reinterpret_cast<orchestrator_handle *>(&orchestrator),
+               reinterpret_cast<const print_handle *>(print))
 {}
 
 slic3r_api::GCodeStateTracker GCodeReaderService::read(
@@ -468,8 +199,7 @@ slic3r_api::GCodeStateTracker GCodeReaderService::read(
     const raw_gcode_reader_state &initial_state,
     GCodeReaderChunkSource source) const
 {
-    return read_gcode(m_orchestrator, m_print, reader_plugin_id, initial_state,
-                      std::move(source));
+    return m_reader.read(reader_plugin_id, initial_state, std::move(source));
 }
 
 slic3r_api::GCodeStateTracker GCodeReaderService::read(
@@ -477,7 +207,7 @@ slic3r_api::GCodeStateTracker GCodeReaderService::read(
     const raw_gcode_reader_state &initial_state,
     std::string_view text) const
 {
-    return read_gcode(m_orchestrator, m_print, reader_plugin_id, initial_state, text);
+    return m_reader.read(reader_plugin_id, initial_state, text);
 }
 
 std::string GCodeReaderService::detect(std::string_view prefix) const
@@ -487,85 +217,7 @@ std::string GCodeReaderService::detect(std::string_view prefix) const
 
 std::string GCodeReaderService::validated_reader_id(std::string_view reader_plugin_id) const
 {
-    const std::string id = reader_plugin_id.empty() ? DEFAULT_GCODE_READER_PLUGIN_ID :
-        std::string(reader_plugin_id);
-    Plugin *plugin = m_orchestrator.get_plugin(id);
-    if (plugin == nullptr)
-        throw std::runtime_error("G-code reader plugin '" + id + "' is not loaded.");
-    if (plugin->get_step() != GCODE_READER)
-        throw std::runtime_error("Plugin '" + id + "' is not a G-code reader.");
-    if (!m_orchestrator.is_plugin_active(plugin))
-        throw std::runtime_error("G-code reader plugin '" + id + "' is inactive.");
-    return id;
-}
-
-void GCodeReaderService::read_from_callbacks(
-    const char *reader_plugin_id,
-    const raw_gcode_reader_state &initial_state,
-    void *source_context,
-    gcode_reader_get_next_chunk_fn get_next_chunk,
-    void *final_state_context,
-    gcode_reader_emit_final_state_fn receive_final_state)
-{
-    if (get_next_chunk == nullptr || receive_final_state == nullptr)
-        throw std::invalid_argument("G-code Reader service received incomplete callbacks.");
-    GCodeReaderChunkSource source = [source_context, get_next_chunk, this]() -> std::string_view {
-        raw_gcode_reader_chunk chunk = {};
-        raw_gcode_reader_result result = {};
-        result.status = RAW_GCODE_READER_STATUS_UNSET;
-        get_next_chunk(source_context, &chunk, &result);
-        if (result.status != RAW_GCODE_READER_STATUS_SUCCESS)
-            throw std::runtime_error(result.error_message != nullptr ? result.error_message :
-                                     "G-code Reader service input callback failed.");
-        if (chunk.bytes == nullptr && chunk.byte_count == 0)
-            return {};
-        if (chunk.bytes == nullptr || chunk.byte_count == 0 ||
-            chunk.byte_count > uint64_t(std::numeric_limits<size_t>::max()))
-            throw std::invalid_argument("G-code Reader service input callback returned an invalid chunk.");
-        return std::string_view(chunk.bytes, static_cast<size_t>(chunk.byte_count));
-    };
-    const slic3r_api::GCodeStateTracker state = read_gcode(
-        m_orchestrator, m_print, reader_plugin_id != nullptr ? reader_plugin_id : "",
-        initial_state, std::move(source));
-    raw_gcode_reader_result result = {};
-    result.status = RAW_GCODE_READER_STATUS_UNSET;
-    receive_final_state(final_state_context, &state.state(), &result);
-    if (result.status != RAW_GCODE_READER_STATUS_SUCCESS)
-        throw std::runtime_error(result.error_message != nullptr ? result.error_message :
-                                 "G-code Reader service final-state callback failed.");
-}
-
-void GCodeReaderService::read_callback(
-    void *service_context, const char *reader_plugin_id,
-    const raw_gcode_reader_state *initial_state, void *source_context,
-    gcode_reader_get_next_chunk_fn get_next_chunk, void *final_state_context,
-    gcode_reader_emit_final_state_fn receive_final_state,
-    raw_gcode_reader_result *result) noexcept
-{
-    GCodeReaderService *service = static_cast<GCodeReaderService *>(service_context);
-    if (result == nullptr)
-        return;
-    if (service == nullptr || initial_state == nullptr) {
-        result->status = RAW_GCODE_READER_STATUS_INVALID_ARGUMENT;
-        result->error_message = "G-code Reader service received an invalid context or initial state.";
-        return;
-    }
-    const std::lock_guard<std::mutex> lock(service->m_mutex);
-    try {
-        service->read_from_callbacks(reader_plugin_id, *initial_state, source_context,
-                                     get_next_chunk, final_state_context,
-                                     receive_final_state);
-        result->status = RAW_GCODE_READER_STATUS_SUCCESS;
-        result->error_message = nullptr;
-    } catch (const std::exception &error) {
-        service->m_error = error.what();
-        result->status = RAW_GCODE_READER_STATUS_ERROR;
-        result->error_message = service->m_error.c_str();
-    } catch (...) {
-        service->m_error = "Unknown error while executing the requested G-code Reader.";
-        result->status = RAW_GCODE_READER_STATUS_ERROR;
-        result->error_message = service->m_error.c_str();
-    }
+    return m_reader.validated_reader_id(reader_plugin_id);
 }
 
 } // namespace Slic3r

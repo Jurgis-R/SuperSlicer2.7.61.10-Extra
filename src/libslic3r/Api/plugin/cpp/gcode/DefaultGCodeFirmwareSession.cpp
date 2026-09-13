@@ -338,10 +338,10 @@ void DefaultGCodeFirmwareSession::set_thumbnail_services(
     m_thumbnail_renderer = renderer;
 }
 
-void DefaultGCodeFirmwareSession::set_gcode_reader_service(
-    const raw_gcode_reader_service *service)
+void DefaultGCodeFirmwareSession::set_gcode_reader_context(
+    orchestrator_handle *orchestrator, const print_handle *print)
 {
-    m_gcode_reader_service = service;
+    m_gcode_reader_service.reset(new GCodeReaderService(orchestrator, print));
 }
 
 void DefaultGCodeFirmwareSession::set_reader_state_id(orchestrator_runtime_id reader_state_id)
@@ -1064,7 +1064,7 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     // The reader service copies the provider's final callback while it is
     // valid and returns a self-contained value; no parser-owned pointer escapes
     // the synchronous plugin invocation.
-    const GCodeStateTracker tracked = GCodeReaderServiceView(m_gcode_reader_service).read(
+    const GCodeStateTracker tracked = m_gcode_reader_service->read(
         reader_plugin_id(), initial, text);
     if (tracked.reader_id() != reader_state_id())
         throw std::runtime_error("The G-code Reader returned state for another firmware identity.");
