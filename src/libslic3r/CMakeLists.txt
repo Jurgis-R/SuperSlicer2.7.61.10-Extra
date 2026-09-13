@@ -46,6 +46,8 @@ set(SLIC3R_SOURCES
     Algorithm/RegionExpansion.cpp
 	AnyPtr.hpp
 	Api/host/ApiHostUtils.hpp
+	Api/host/GCodeReaderResultBuilder.cpp
+	Api/host/GCodeReaderResultBuilder.hpp
 	Api/host/GCodeReaderService.cpp
 	Api/host/GCodeReaderService.hpp
 	Api/host/GCodeScriptProcessor.cpp

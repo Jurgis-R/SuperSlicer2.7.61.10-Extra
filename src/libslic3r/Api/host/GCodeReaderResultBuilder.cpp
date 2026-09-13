@@ -1,0 +1,626 @@
+///|/ Copyright (c) SuperSlicer 2026 Durand Remi @supermerill
+///|/
+///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
+///|/
+
+#include "GCodeReaderResultBuilder.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <utility>
+
+#include "libslic3r/Api/plugin/c/slic3r_extrusions.h"
+#include "libslic3r/ExtrusionRole.hpp"
+#include "libslic3r/Model.hpp"
+#include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
+
+/*
+Host Reader timeline implementation
+===================================
+
+The implementation intentionally contains no command strings. Reader plugins
+own syntax; the host owns presentation and aggregate calculations. A movement
+listener compares the state before and after an event, classifies the move,
+then updates the viewer vertex and statistics from the same normalized delta.
+
+Some legacy viewer metadata is textual or structurally richer than the current
+numeric Reader event vocabulary. Those listeners are already part of the
+dispatch below and carry focused TODO comments naming the missing payload. This
+makes the second phase additive without hiding parsing in the host again.
+*/
+
+namespace Slic3r {
+
+namespace {
+
+constexpr float DEFAULT_VIEWER_FILAMENT_DIAMETER = 1.75f;
+constexpr float DEFAULT_VIEWER_FILAMENT_DENSITY = 1.245f;
+constexpr float DEFAULT_VIEWER_FILAMENT_COST = 0.0f;
+constexpr float DEFAULT_VIEWER_TOOLPATH_HEIGHT = 0.2f;
+constexpr double MM_PER_ARC_SEGMENT = 1.0;
+
+// Give independently produced results distinct cache identities.
+std::atomic<unsigned int> s_reader_result_id{0};
+
+// Read one scalar without converting an unknown value into a physical zero.
+std::optional<double> event_value(const raw_gcode_reader_event &event,
+                                  uint32_t type,
+                                  uint32_t target = 0)
+{
+    for (uint32_t index = 0; index < event.item_count; ++index) {
+        const raw_gcode_reader_event_item &item = event.items[index];
+        if (item.type == type && item.target == target)
+            return item.value;
+    }
+    return std::nullopt;
+}
+
+// Return a known coordinate or the supplied fallback. Movement events are
+// skipped when their position is unknowable, so this is used only after that
+// check or for non-moving markers.
+double state_value_or(const slic3r_api::GCodeStateTracker &state,
+                      uint32_t type,
+                      double fallback,
+                      uint32_t target = 0)
+{
+    const std::optional<double> value = state.value(type, target);
+    return value ? *value : fallback;
+}
+
+// Convert the public extrusion-role bit mask to the compact viewer category.
+// Invalid or mixed masks stay visible as None instead of asserting in host UI.
+GCodeExtrusionRole viewer_role(const slic3r_api::GCodeStateTracker &state)
+{
+    const std::optional<double> value = state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE);
+    if (!value)
+        return GCodeExtrusionRole::None;
+    const uint32_t role = static_cast<uint32_t>(*value);
+    const bool perimeter = (role & RAW_EXTRUSION_ROLE_PERIMETER) != 0;
+    const bool infill = (role & RAW_EXTRUSION_ROLE_INFILL) != 0;
+    const bool support = (role & RAW_EXTRUSION_ROLE_SUPPORT) != 0;
+    if ((role & RAW_EXTRUSION_ROLE_TRAVEL) != 0)
+        return GCodeExtrusionRole::Travel;
+    if ((role & RAW_EXTRUSION_ROLE_WIPE_TOWER) != 0)
+        return GCodeExtrusionRole::WipeTower;
+    if ((role & RAW_EXTRUSION_ROLE_MILL) != 0)
+        return GCodeExtrusionRole::Milling;
+    if ((role & RAW_EXTRUSION_ROLE_SKIRT) != 0)
+        return GCodeExtrusionRole::Skirt;
+    if (support)
+        return (role & RAW_EXTRUSION_ROLE_EXTERNAL) != 0 ?
+            GCodeExtrusionRole::SupportMaterialInterface :
+            GCodeExtrusionRole::SupportMaterial;
+    if (perimeter) {
+        if ((role & RAW_EXTRUSION_ROLE_BRIDGE) != 0)
+            return GCodeExtrusionRole::OverhangPerimeter;
+        return (role & RAW_EXTRUSION_ROLE_EXTERNAL) != 0 ?
+            GCodeExtrusionRole::ExternalPerimeter : GCodeExtrusionRole::Perimeter;
+    }
+    if (infill) {
+        if ((role & RAW_EXTRUSION_ROLE_IRONING) != 0)
+            return GCodeExtrusionRole::Ironing;
+        if ((role & RAW_EXTRUSION_ROLE_BRIDGE) != 0)
+            return (role & RAW_EXTRUSION_ROLE_EXTERNAL) != 0 ?
+                GCodeExtrusionRole::BridgeInfill : GCodeExtrusionRole::InternalBridgeInfill;
+        if ((role & RAW_EXTRUSION_ROLE_SOLID) != 0)
+            return (role & RAW_EXTRUSION_ROLE_EXTERNAL) != 0 ?
+                GCodeExtrusionRole::TopSolidInfill : GCodeExtrusionRole::SolidInfill;
+        return GCodeExtrusionRole::InternalInfill;
+    }
+    if ((role & RAW_EXTRUSION_ROLE_THIN) != 0)
+        return (role & RAW_EXTRUSION_ROLE_EXTERNAL) != 0 ?
+            GCodeExtrusionRole::ThinWall : GCodeExtrusionRole::GapFill;
+    return GCodeExtrusionRole::None;
+}
+
+// Keep vector-valued settings aligned with the number of logical tools.
+template<class Value>
+Value vector_value_or(const std::vector<Value> &values, size_t index, Value fallback)
+{
+    if (values.empty())
+        return fallback;
+    return index < values.size() ? values[index] : values.front();
+}
+
+} // namespace
+
+GCodeReaderResultBuilder::GCodeReaderResultBuilder(
+    const Print *print,
+    std::string reader_plugin_id,
+    const slic3r_api::GCodeStateTracker &initial_state)
+    : m_previous_state(initial_state)
+{
+    initialize_result(print, reader_plugin_id);
+}
+
+void GCodeReaderResultBuilder::initialize_result(
+    const Print *print, const std::string &reader_plugin_id)
+{
+    m_result.reset();
+    m_result.id = ++s_reader_result_id;
+    m_result.reader_plugin_id = reader_plugin_id;
+    m_result.filament_diameters.assign(1, DEFAULT_VIEWER_FILAMENT_DIAMETER);
+    m_result.filament_densities.assign(1, DEFAULT_VIEWER_FILAMENT_DENSITY);
+    m_result.filament_cost.assign(1, DEFAULT_VIEWER_FILAMENT_COST);
+    if (print == nullptr) {
+        m_result.extruders_count = 1;
+        // TODO: external-file metadata needs Reader events for producer,
+        // extruder/filament RGB colors, object names, profile ids, filament
+        // density/cost and print metadata. Numeric movement events cannot
+        // reconstruct those text and indexed-array values yet.
+        return;
+    }
+
+    const PrintConfig &config = print->config();
+    const size_t tool_count = std::max<size_t>(config.nozzle_diameter.size(), 1);
+    m_result.extruders_count = tool_count;
+    m_result.max_print_height = static_cast<float>(config.max_print_height.value);
+    m_result.z_offset = static_cast<float>(config.z_offset.value);
+    m_result.bed_shape = config.bed_shape.get_values();
+    m_result.extruder_colors = config.extruder_colour.get_values();
+    m_result.filament_colors = config.filament_colour.get_values();
+    m_result.filament_diameters.resize(tool_count);
+    m_result.filament_densities.resize(tool_count);
+    m_result.filament_cost.resize(tool_count);
+    for (size_t tool = 0; tool < tool_count; ++tool) {
+        m_result.filament_diameters[tool] = config.filament_diameter.size() == 0 ?
+            DEFAULT_VIEWER_FILAMENT_DIAMETER : static_cast<float>(
+                config.filament_diameter.get_at(
+                    std::min(tool, config.filament_diameter.size() - 1)));
+        m_result.filament_densities[tool] = config.filament_density.size() == 0 ?
+            DEFAULT_VIEWER_FILAMENT_DENSITY : static_cast<float>(
+                config.filament_density.get_at(
+                    std::min(tool, config.filament_density.size() - 1)));
+        m_result.filament_cost[tool] = config.filament_cost.size() == 0 ?
+            DEFAULT_VIEWER_FILAMENT_COST : static_cast<float>(
+                config.filament_cost.get_at(
+                    std::min(tool, config.filament_cost.size() - 1)));
+    }
+
+    const DynamicPrintConfig &full_config = print->full_print_config();
+    const ConfigOptionString *print_id =
+        full_config.option<ConfigOptionString>("print_settings_id");
+    const ConfigOptionStrings *filament_ids =
+        full_config.option<ConfigOptionStrings>("filament_settings_id");
+    const ConfigOptionString *printer_id =
+        full_config.option<ConfigOptionString>("printer_settings_id");
+    if (print_id != nullptr)
+        m_result.settings_ids.print = print_id->value;
+    if (filament_ids != nullptr)
+        m_result.settings_ids.filament = filament_ids->get_values();
+    if (printer_id != nullptr)
+        m_result.settings_ids.printer = printer_id->value;
+
+    for (const PrintObject &object : print->objects())
+        m_result.object_names.push_back(object.model_object()->name);
+}
+
+void GCodeReaderResultBuilder::consume_chunk(std::string_view chunk)
+{
+    if (m_finished)
+        throw std::logic_error("Cannot append G-code bytes after finalizing viewer data.");
+    if (chunk.size() > std::numeric_limits<uint64_t>::max() - m_source_size)
+        throw std::overflow_error("G-code source exceeds the viewer byte index range.");
+    if (m_result.lines_ends.empty())
+        m_result.lines_ends.emplace_back();
+    for (size_t index = 0; index < chunk.size(); ++index)
+        if (chunk[index] == '\n')
+            m_result.lines_ends.front().push_back(
+                static_cast<size_t>(m_source_size + index + 1));
+    m_source_size += static_cast<uint64_t>(chunk.size());
+    m_source_ends_with_newline = chunk.empty() ? m_source_ends_with_newline : chunk.back() == '\n';
+}
+
+void GCodeReaderResultBuilder::consume_event(
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &post_state)
+{
+    if (m_finished)
+        throw std::logic_error("Cannot append a Reader event after finalizing viewer data.");
+    switch (event.kind) {
+    case RAW_GCODE_READER_EVENT_STATE_UPDATE:
+        process_state_update(event, post_state);
+        break;
+    case RAW_GCODE_READER_EVENT_LINEAR_MOVE:
+        process_linear_move(event, post_state);
+        break;
+    case RAW_GCODE_READER_EVENT_ARC_MOVE:
+        process_arc_move(event, post_state);
+        break;
+    case RAW_GCODE_READER_EVENT_SET_POSITION:
+    case RAW_GCODE_READER_EVENT_SET_ORIGIN:
+        process_position_change(event, post_state);
+        break;
+    case RAW_GCODE_READER_EVENT_SET_TEMPERATURE:
+    case RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE:
+        process_temperature(event, post_state);
+        break;
+    case RAW_GCODE_READER_EVENT_MARKER:
+        process_marker(event, post_state);
+        break;
+    case RAW_GCODE_READER_EVENT_DIAGNOSTIC:
+        process_diagnostic(event, post_state);
+        break;
+    case RAW_GCODE_READER_EVENT_INVALIDATE:
+        process_invalidation(event, post_state);
+        break;
+    default:
+        throw std::invalid_argument("The viewer received an unknown Reader event kind.");
+    }
+    m_previous_state = post_state;
+}
+
+void GCodeReaderResultBuilder::process_state_update(
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &state)
+{
+    const std::optional<uint32_t> previous_tool = m_previous_state.active_tool();
+    const std::optional<uint32_t> current_tool = state.active_tool();
+    if (!previous_tool || !current_tool || *previous_tool == *current_tool)
+        return;
+    ensure_tool(*current_tool);
+
+    const Vec3d position(
+        state_value_or(state, RAW_GCODE_READER_ITEM_X, 0.0),
+        state_value_or(state, RAW_GCODE_READER_ITEM_Y, 0.0),
+        state_value_or(state, RAW_GCODE_READER_ITEM_Z, 0.0));
+    const uint32_t line = static_cast<uint32_t>(
+        event_value(event, RAW_GCODE_READER_ITEM_LINE_NUMBER).value_or(0.0));
+    const double offset_x = state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_X, 0.0, *current_tool);
+    const double offset_y = state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Y, 0.0, *current_tool);
+    const double offset_z = state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Z, 0.0, *current_tool);
+    const uint32_t fan_id = static_cast<uint32_t>(state_value_or(
+        state, RAW_GCODE_READER_ITEM_TOOL_FAN, 0.0, *current_tool));
+    m_result.moves.emplace_back(
+        line + 1u, EMoveType::Tool_change, viewer_role(state),
+        static_cast<uint8_t>(std::min<uint32_t>(*current_tool, UINT8_MAX)),
+        static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)), 0,
+        Vec3f(static_cast<float>(position.x() + offset_x),
+              static_cast<float>(position.y() + offset_y),
+              static_cast<float>(position.z() + offset_z - m_result.z_offset)),
+        0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+        static_cast<float>(state.value(
+            RAW_GCODE_READER_ITEM_FAN_SPEED, fan_id).value_or(0.0)),
+        static_cast<float>(state.value(
+            RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, *current_tool).value_or(0.0)),
+        m_total_time, 0, false);
+}
+
+void GCodeReaderResultBuilder::process_linear_move(
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &state)
+{
+    if (!m_previous_state.x() || !m_previous_state.y() || !m_previous_state.z() ||
+        !state.x() || !state.y() || !state.z()) {
+        // TODO: add a Reader discontinuity event carrying a trusted restart
+        // position. After an unknown command, partial coordinates cannot be
+        // turned into an honest viewer segment.
+        return;
+    }
+    const uint32_t tool = state.active_tool().value_or(0);
+    const Vec3d start(*m_previous_state.x(), *m_previous_state.y(), *m_previous_state.z());
+    const Vec3d end(*state.x(), *state.y(), *state.z());
+    const double start_e = state_value_or(
+        m_previous_state, RAW_GCODE_READER_ITEM_E, 0.0, tool);
+    const double end_e = state_value_or(state, RAW_GCODE_READER_ITEM_E, start_e, tool);
+    append_move(event, state, start, end, start_e, end_e, false);
+}
+
+void GCodeReaderResultBuilder::process_arc_move(
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &state)
+{
+    if (!m_previous_state.x() || !m_previous_state.y() || !m_previous_state.z() ||
+        !state.x() || !state.y() || !state.z())
+        return;
+
+    const Vec3d start(*m_previous_state.x(), *m_previous_state.y(), *m_previous_state.z());
+    const Vec3d end(*state.x(), *state.y(), *state.z());
+    const std::optional<double> center_x =
+        event_value(event, RAW_GCODE_READER_ITEM_ARC_CENTER_X);
+    const std::optional<double> center_y =
+        event_value(event, RAW_GCODE_READER_ITEM_ARC_CENTER_Y);
+    const std::optional<double> plane =
+        event_value(event, RAW_GCODE_READER_ITEM_ARC_PLANE);
+    const uint32_t tool = state.active_tool().value_or(0);
+    const double start_e = state_value_or(
+        m_previous_state, RAW_GCODE_READER_ITEM_E, 0.0, tool);
+    const double end_e = state_value_or(state, RAW_GCODE_READER_ITEM_E, start_e, tool);
+
+    if (!center_x || !center_y || (plane && *plane != 0.0)) {
+        // TODO: add an ARC_RADIUS item and documented plane values. R arcs and
+        // non-XY planes cannot be reconstructed from the current event, so the
+        // endpoint is retained as one conservative straight viewer segment.
+        append_move(event, state, start, end, start_e, end_e, false);
+        return;
+    }
+
+    const Vec2d center(start.x() + *center_x, start.y() + *center_y);
+    const Vec2d start_radius = start.head<2>() - center;
+    const Vec2d end_radius = end.head<2>() - center;
+    const double radius = start_radius.norm();
+    if (!(radius > 0.0) || !std::isfinite(radius)) {
+        append_move(event, state, start, end, start_e, end_e, false);
+        return;
+    }
+    double angle = std::atan2(start_radius.x() * end_radius.y() - start_radius.y() * end_radius.x(),
+                              start_radius.dot(end_radius));
+    const bool full_circle = (start.head<2>() - end.head<2>()).norm() < EPSILON;
+    const bool clockwise = event_value(event, RAW_GCODE_READER_ITEM_ARC_CLOCKWISE).value_or(0.0) != 0.0;
+    const uint32_t turns = std::max<uint32_t>(1u, static_cast<uint32_t>(
+        event_value(event, RAW_GCODE_READER_ITEM_ARC_TURNS).value_or(1.0)));
+    if (full_circle)
+        angle = (clockwise ? -2.0 : 2.0) * PI * turns;
+    else if (clockwise && angle >= 0.0)
+        angle -= 2.0 * PI;
+    else if (!clockwise && angle <= 0.0)
+        angle += 2.0 * PI;
+    if (!full_circle && turns > 1)
+        angle += (clockwise ? -2.0 : 2.0) * PI * (turns - 1);
+    const size_t segments = std::max<size_t>(
+        static_cast<size_t>(std::ceil(std::abs(angle) * radius / MM_PER_ARC_SEGMENT)), 1);
+    Vec3d previous = start;
+    double previous_e = start_e;
+    for (size_t segment = 1; segment <= segments; ++segment) {
+        const double ratio = double(segment) / double(segments);
+        const double segment_angle = angle * ratio;
+        const double cosine = std::cos(segment_angle);
+        const double sine = std::sin(segment_angle);
+        Vec3d point;
+        point.x() = center.x() + start_radius.x() * cosine - start_radius.y() * sine;
+        point.y() = center.y() + start_radius.x() * sine + start_radius.y() * cosine;
+        point.z() = start.z() + (end.z() - start.z()) * ratio;
+        if (segment == segments)
+            point = end;
+        const double next_e = start_e + (end_e - start_e) * ratio;
+        append_move(event, state, previous, point, previous_e, next_e,
+                    segment != segments);
+        previous = point;
+        previous_e = next_e;
+    }
+}
+
+void GCodeReaderResultBuilder::process_position_change(
+    const raw_gcode_reader_event &,
+    const slic3r_api::GCodeStateTracker &)
+{
+    // G92 and origin changes alter the coordinate model but do not move the
+    // nozzle. m_previous_state is replaced by consume_event() after return.
+}
+
+void GCodeReaderResultBuilder::process_temperature(
+    const raw_gcode_reader_event &,
+    const slic3r_api::GCodeStateTracker &)
+{
+    // Temperatures are sampled from the complete state when a movement vertex
+    // is stored. A target-only command has no geometry of its own.
+}
+
+void GCodeReaderResultBuilder::process_marker(
+    const raw_gcode_reader_event &,
+    const slic3r_api::GCodeStateTracker &)
+{
+    // TODO: Reader MARKER events need a mandatory MARKER value identifying
+    // seam, color change, pause and custom G-code. Current built-in Readers
+    // publish an untyped marker, so creating one of those viewer moves here
+    // would guess its meaning.
+}
+
+void GCodeReaderResultBuilder::process_diagnostic(
+    const raw_gcode_reader_event &,
+    const slic3r_api::GCodeStateTracker &)
+{
+    // TODO: DIAGNOSTIC needs severity and borrowed text attributes before the
+    // host can expose parser warnings in the viewer instead of only retaining
+    // the successfully reconstructed geometry.
+}
+
+void GCodeReaderResultBuilder::process_invalidation(
+    const raw_gcode_reader_event &,
+    const slic3r_api::GCodeStateTracker &)
+{
+    // Invalidation already removed untrusted values from post_state. The next
+    // movement listener will resume only when enough position data is known.
+}
+
+void GCodeReaderResultBuilder::append_move(
+    const raw_gcode_reader_event &event,
+    const slic3r_api::GCodeStateTracker &state,
+    const Vec3d &start,
+    const Vec3d &end,
+    double start_e,
+    double end_e,
+    bool internal_only)
+{
+    const uint32_t tool = state.active_tool().value_or(0);
+    ensure_tool(tool);
+    const Vec3d delta = end - start;
+    const double xyz_distance = delta.norm();
+    const bool xyz_changed = xyz_distance > EPSILON;
+    const bool volumetric = state.value(RAW_GCODE_READER_ITEM_VOLUMETRIC).value_or(0.0) != 0.0;
+    const double diameter = vector_value_or(
+        m_result.filament_diameters, tool, DEFAULT_VIEWER_FILAMENT_DIAMETER);
+    const double filament_area = PI * std::pow(0.5 * diameter, 2.0);
+    const double e_delta_raw = end_e - start_e;
+    const double e_delta = volumetric && filament_area > 0.0 ?
+        e_delta_raw / filament_area : e_delta_raw;
+    const double extrusion_factor =
+        state.value(RAW_GCODE_READER_ITEM_EXTRUSION_FACTOR).value_or(100.0) * 0.01;
+    const GCodeExtrusionRole role = viewer_role(state);
+    const uint32_t raw_role = static_cast<uint32_t>(
+        state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE).value_or(0.0));
+
+    // TODO: built-in Readers do not yet publish LAYER, OBJECT,
+    // EXTRUSION_ROLE, WIDTH or HEIGHT from slicer comments. The host already
+    // consumes and calculates with these normalized values when supplied, but
+    // otherwise keeps the documented neutral/default viewer values below.
+
+    EMoveType type = EMoveType::Noop;
+    if ((raw_role & RAW_EXTRUSION_ROLE_WIPE) != 0)
+        type = EMoveType::Wipe;
+    else if ((raw_role & RAW_EXTRUSION_ROLE_RETRACT) != 0)
+        type = EMoveType::Retract;
+    else if ((raw_role & RAW_EXTRUSION_ROLE_UNRETRACT) != 0)
+        type = EMoveType::Unretract;
+    else if (e_delta < -EPSILON)
+        type = xyz_changed ? EMoveType::Travel : EMoveType::Retract;
+    else if (e_delta > EPSILON)
+        type = xyz_changed && (std::abs(delta.x()) > EPSILON || std::abs(delta.y()) > EPSILON) ?
+            EMoveType::Extrude : (xyz_changed ? EMoveType::Travel : EMoveType::Unretract);
+    else if (xyz_changed)
+        type = EMoveType::Travel;
+    if (type == EMoveType::Noop)
+        return;
+
+    double consumed_filament = 0.0;
+    if (e_delta < 0.0)
+        m_retracted_filament[tool] += -e_delta;
+    else if (e_delta > 0.0) {
+        const double restored = std::min(e_delta, m_retracted_filament[tool]);
+        m_retracted_filament[tool] -= restored;
+        consumed_filament = e_delta - restored;
+    }
+    const double volume = consumed_filament * filament_area * extrusion_factor;
+
+    const double feedrate_mm_min =
+        state.value(RAW_GCODE_READER_ITEM_FEEDRATE).value_or(0.0);
+    const double speed_factor =
+        state.value(RAW_GCODE_READER_ITEM_SPEED_FACTOR).value_or(100.0) * 0.01;
+    const float feedrate = static_cast<float>(feedrate_mm_min * speed_factor / 60.0);
+    const double movement_distance = xyz_changed ? xyz_distance : std::abs(e_delta);
+    const float elapsed = feedrate > 0.0f ?
+        static_cast<float>(movement_distance / feedrate) : 0.0f;
+    m_total_time += elapsed;
+
+    const double mm3_per_mm = type == EMoveType::Extrude && xyz_distance > EPSILON ?
+        volume / xyz_distance : 0.0;
+    float height = static_cast<float>(
+        state.value(RAW_GCODE_READER_ITEM_HEIGHT).value_or(DEFAULT_VIEWER_TOOLPATH_HEIGHT));
+    float width = static_cast<float>(state.value(RAW_GCODE_READER_ITEM_WIDTH).value_or(0.0));
+    if (type == EMoveType::Extrude && width <= 0.0f && height > 0.0f)
+        width = static_cast<float>(mm3_per_mm / height + height * (1.0 - 0.25 * PI));
+
+    const double offset_x = state_value_or(state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_X, 0.0, tool);
+    const double offset_y = state_value_or(state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Y, 0.0, tool);
+    const double offset_z = state_value_or(state, RAW_GCODE_READER_ITEM_TOOL_OFFSET_Z, 0.0, tool);
+    const uint32_t line = static_cast<uint32_t>(
+        event_value(event, RAW_GCODE_READER_ITEM_LINE_NUMBER).value_or(0.0));
+    const uint32_t layer = std::min<uint32_t>(static_cast<uint32_t>(
+        state.value(RAW_GCODE_READER_ITEM_LAYER).value_or(0.0)), UINT16_MAX);
+    const uint32_t object = static_cast<uint32_t>(
+        state.value(RAW_GCODE_READER_ITEM_OBJECT).value_or(0.0));
+    const uint32_t fan_id = static_cast<uint32_t>(
+        state.value(RAW_GCODE_READER_ITEM_TOOL_FAN, tool).value_or(0.0));
+    const double fan = state.value(RAW_GCODE_READER_ITEM_FAN_SPEED, fan_id).value_or(0.0);
+    const double temperature =
+        state.value(RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, tool).value_or(0.0);
+
+    m_result.moves.emplace_back(
+        line + 1u, type, role,
+        static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)),
+        static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
+        static_cast<uint16_t>(std::min<uint32_t>(object, UINT16_MAX)),
+        Vec3f(static_cast<float>(end.x() + offset_x),
+              static_cast<float>(end.y() + offset_y),
+              static_cast<float>(end.z() + offset_z - m_result.z_offset)),
+        static_cast<float>(e_delta), feedrate, width, height,
+        static_cast<float>(mm3_per_mm), static_cast<float>(fan),
+        static_cast<float>(temperature), m_total_time,
+        static_cast<uint16_t>(std::min<uint32_t>(layer, UINT16_MAX)), internal_only);
+
+    m_move_times[static_cast<size_t>(type)] += elapsed;
+    m_role_times[static_cast<size_t>(role)] += elapsed;
+    if (layer >= m_layer_times.size())
+        m_layer_times.resize(static_cast<size_t>(layer) + 1, 0.0f);
+    m_layer_times[layer] += elapsed;
+    if (type == EMoveType::Travel)
+        m_result.print_statistics.modes[0].travel_time += elapsed;
+
+    if (volume > 0.0) {
+        m_result.print_statistics.volumes_per_extruder[tool] += volume;
+        m_result.print_statistics.volumes_per_role_per_extruder_per_object[object][tool][role] += volume;
+        const double length_m = filament_area > 0.0 ? volume / filament_area * 0.001 : 0.0;
+        const double density = vector_value_or(
+            m_result.filament_densities, tool, DEFAULT_VIEWER_FILAMENT_DENSITY);
+        const double mass_g = volume * density * 0.001;
+        std::pair<double, double> &role_filament =
+            m_result.print_statistics.used_filaments_per_role[role];
+        role_filament.first += length_m;
+        role_filament.second += mass_g;
+        const double cost_per_kg = vector_value_or(
+            m_result.filament_cost, tool, DEFAULT_VIEWER_FILAMENT_COST);
+        m_result.print_statistics.cost_per_extruder[tool] += mass_g * cost_per_kg * 0.001;
+        if (m_color_volumes.size() <= m_current_color)
+            m_color_volumes.resize(static_cast<size_t>(m_current_color) + 1, 0.0);
+        m_color_volumes[m_current_color] += volume;
+    }
+}
+
+void GCodeReaderResultBuilder::ensure_tool(uint32_t tool)
+{
+    if (tool > UINT8_MAX)
+        throw std::invalid_argument(
+            "The G-code viewer cannot represent a tool id above 255.");
+    const size_t required = static_cast<size_t>(tool) + 1;
+    if (m_retracted_filament.size() < required)
+        m_retracted_filament.resize(required, 0.0);
+    if (m_result.extruders_count >= required)
+        return;
+
+    const float diameter = vector_value_or(
+        m_result.filament_diameters, tool, DEFAULT_VIEWER_FILAMENT_DIAMETER);
+    const float density = vector_value_or(
+        m_result.filament_densities, tool, DEFAULT_VIEWER_FILAMENT_DENSITY);
+    const float cost = vector_value_or(
+        m_result.filament_cost, tool, DEFAULT_VIEWER_FILAMENT_COST);
+    m_result.filament_diameters.resize(required, diameter);
+    m_result.filament_densities.resize(required, density);
+    m_result.filament_cost.resize(required, cost);
+    m_result.extruders_count = required;
+}
+
+void GCodeReaderResultBuilder::finalize_statistics()
+{
+    PrintEstimatedStatistics::Mode &normal = m_result.print_statistics.modes[0];
+    normal.time = m_total_time;
+    normal.layers_times = m_layer_times;
+    for (size_t index = 0; index < m_move_times.size(); ++index)
+        if (m_move_times[index] > 0.0f)
+            normal.moves_times.emplace_back(static_cast<EMoveType>(index), m_move_times[index]);
+    for (size_t index = 0; index < m_role_times.size(); ++index)
+        if (m_role_times[index] > 0.0f)
+            normal.roles_times.emplace_back(
+                static_cast<GCodeExtrusionRole>(index), m_role_times[index]);
+    m_result.print_statistics.volumes_per_color_change = m_color_volumes;
+
+    // TODO: exact planner time needs portable machine-limit, jerk and command
+    // delay events. Until then the host reports nominal path time and leaves
+    // Stealth empty instead of presenting a false acceleration simulation.
+    m_result.print_statistics.modes[
+        static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Stealth)].reset();
+}
+
+GCodeProcessorResult GCodeReaderResultBuilder::finish(
+    const slic3r_api::GCodeStateTracker &final_state)
+{
+    if (m_finished)
+        throw std::logic_error("G-code viewer data was finalized more than once.");
+    if (final_state.reader_id() != m_previous_state.reader_id())
+        throw std::invalid_argument("The Reader final state changed schema identity.");
+    if (m_result.lines_ends.empty())
+        m_result.lines_ends.emplace_back();
+    if (m_source_size != 0 && !m_source_ends_with_newline)
+        m_result.lines_ends.front().push_back(static_cast<size_t>(m_source_size));
+    finalize_statistics();
+    m_finished = true;
+    return std::move(m_result);
+}
+
+} // namespace Slic3r

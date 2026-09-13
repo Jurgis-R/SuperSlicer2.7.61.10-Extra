@@ -5,10 +5,12 @@
 #ifndef slic3r_Api_host_GCodeReaderService_hpp_
 #define slic3r_Api_host_GCodeReaderService_hpp_
 
+#include <mutex>
 #include <string>
 #include <string_view>
 
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderService.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
 
 /*
 Host G-code reader service
@@ -19,16 +21,18 @@ stable id. For imported text, detect_gcode_reader() separately probes every
 active provider against the same bounded prefix. No PrintConfig option or
 exclusive group participates in either operation.
 
-The plugin-side slic3r_api::GCodeReaderService owns the common execution and
-validation path. This host facade adds only automatic detection, which needs
-access to all active Reader providers and their priorities.
+The plugin-side slic3r_api::GCodeReaderService owns the common exact-read path
+used when only a final machine state is needed. This host facade adds the two
+operations which require host knowledge: automatic provider detection and
+construction of the legacy GCodeProcessorResult consumed by GCodeViewer.
 
     firmware/viewer -> explicit id or detect_gcode_reader()
                               |
                               v
-    host caller -> GCodeReaderService -> plugin-side Reader helper
-                         |                         |
-                         +-- detect()              +-- exact Reader execution
+    host caller -> GCodeReaderService
+                         |-- read() ----------> plugin-side Reader helper
+                         |-- detect() --------> all active Reader probes
+                         `-- read_for_viewer() -> event listeners -> viewer result
 
 A chunk source returns a non-empty view while input remains and an empty view
 at end-of-stream. Its bytes must remain valid until the source is called again.
@@ -51,8 +55,8 @@ inline constexpr const char *DEFAULT_GCODE_READER_PLUGIN_ID =
     slic3r_api::DEFAULT_GCODE_READER_PLUGIN_ID;
 inline constexpr size_t GCODE_READER_PROBE_PREFIX_SIZE = 256u * 1024u;
 
-// Host facade for Reader execution and automatic dialect detection. Exact
-// execution delegates to the same helper available to C++ plugins.
+// Host facade for exact Reader execution, automatic dialect detection and
+// conversion of Reader events into the data model consumed by GCodeViewer.
 class GCodeReaderService
 {
 public:
@@ -67,6 +71,17 @@ public:
     slic3r_api::GCodeStateTracker read(std::string_view reader_plugin_id,
                                        const raw_gcode_reader_state &initial_state,
                                        std::string_view text) const;
+    // Build the initial machine snapshot which the selected Reader will refine.
+    // This captures known slicer settings without claiming that the G-code
+    // explicitly established them.
+    slic3r_api::GCodeStateTracker initial_state(
+        std::string_view reader_plugin_id) const;
+    // Parse a stream and derive the existing viewer result from validated
+    // semantic events. No G-code syntax is interpreted by the host builder.
+    GCodeProcessorResult read_for_viewer(std::string_view reader_plugin_id,
+                                         GCodeReaderChunkSource source) const;
+    GCodeProcessorResult read_for_viewer(std::string_view reader_plugin_id,
+                                         std::string_view text) const;
     std::string detect(std::string_view prefix) const;
     std::string validated_reader_id(std::string_view reader_plugin_id) const;
 
@@ -74,6 +89,7 @@ private:
     Orchestrator &m_orchestrator;
     Print *m_print;
     slic3r_api::GCodeReaderService m_reader;
+    mutable std::mutex m_viewer_mutex;
 };
 
 // Resolve exactly reader_plugin_id, consume the source synchronously and return

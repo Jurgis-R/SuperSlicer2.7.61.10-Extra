@@ -744,6 +744,135 @@ TEST_CASE("G-code reader C++ plugin helper executes the requested Reader synchro
     CHECK(*state.x() == Approx(5.0));
 }
 
+TEST_CASE("Host G-code reader builds viewer movements and derived statistics",
+          "[plugins][gcode][reader][viewer]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const std::string gcode =
+        "M104 S210\n"
+        "M106 S255\n"
+        "G1 X60 F600\n"
+        "G1 X120 E10\n";
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.default", gcode);
+
+    REQUIRE(result.lines_ends.size() == 1);
+    REQUIRE(result.lines_ends.front().size() == 4);
+    CHECK(result.lines_ends.front().back() == gcode.size());
+    REQUIRE(result.moves.size() == 2);
+    CHECK(result.moves[0].type == EMoveType::Travel);
+    CHECK(result.moves[0].gcode_id == 3u);
+    CHECK(result.moves[0].position.x() == Approx(60.0));
+    CHECK(result.moves[0].feedrate == Approx(10.0));
+    CHECK(result.moves[0].fan_speed == Approx(100.0));
+    CHECK(result.moves[0].temperature == Approx(210.0));
+    CHECK(result.moves[0].move_time == Approx(6.0));
+    CHECK(result.moves[1].type == EMoveType::Extrude);
+    CHECK(result.moves[1].gcode_id == 4u);
+    CHECK(result.moves[1].position.x() == Approx(120.0));
+    CHECK(result.moves[1].delta_extruder == Approx(10.0));
+    CHECK(result.moves[1].move_time == Approx(12.0));
+
+    const double filament_area = PI * std::pow(1.75 * 0.5, 2.0);
+    REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
+    CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
+          Approx(filament_area * 10.0));
+    CHECK(result.print_statistics.modes[0].time == Approx(12.0));
+    CHECK(result.print_statistics.modes[0].travel_time == Approx(6.0));
+}
+
+TEST_CASE("Host G-code reader seeds tools and viewer metadata from Print settings",
+          "[plugins][gcode][reader][viewer]")
+{
+    ensure_plugin_test_runtime_initialized();
+    Print print;
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.nozzle_diameter.set(std::vector<double>{0.4, 0.6});
+    config.filament_diameter.set(std::vector<double>{1.75, 2.85});
+    config.filament_density.set(std::vector<double>{1.1, 1.3});
+    config.filament_cost.set(std::vector<double>{20.0, 30.0});
+    config.extruder_offset.deserialize("0x0,2x3", false);
+    config.extruder_colour.set(std::vector<std::string>{"#112233", "#445566"});
+    config.filament_colour.set(std::vector<std::string>{"#778899", "#aabbcc"});
+
+    GCodeReaderService service(Orchestrator::instance(), &print);
+    const slic3r_api::GCodeStateTracker initial =
+        service.initial_state("gcode.reader.marlin2");
+    CHECK(initial.e(0) == Approx(0.0));
+    CHECK(initial.e(1) == Approx(0.0));
+    CHECK(initial.value(RAW_GCODE_READER_ITEM_TOOL_FILAMENT_DIAMETER, 1) ==
+          Approx(2.85));
+    CHECK(initial.value(RAW_GCODE_READER_ITEM_TOOL_OFFSET_X, 1) == Approx(2.0));
+    CHECK(initial.value(RAW_GCODE_READER_ITEM_TOOL_OFFSET_Y, 1) == Approx(3.0));
+    CHECK(initial.value(RAW_GCODE_READER_ITEM_FAN_SPEED, 1) == Approx(0.0));
+
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.marlin2", "T1\nM106 P1 S128\nG1 X10 F600\n");
+    CHECK(result.extruders_count == 2);
+    CHECK(result.extruder_colors ==
+          std::vector<std::string>{"#112233", "#445566"});
+    CHECK(result.filament_colors ==
+          std::vector<std::string>{"#778899", "#aabbcc"});
+    REQUIRE(result.moves.size() == 2);
+    CHECK(result.moves[0].type == EMoveType::Tool_change);
+    CHECK(result.moves[1].extruder_id == 1u);
+    CHECK(result.moves[1].position.x() == Approx(12.0));
+    CHECK(result.moves[1].position.y() == Approx(3.0));
+    CHECK(result.moves[1].fan_speed == Approx(128.0 / 255.0 * 100.0));
+}
+
+TEST_CASE("Host G-code reader excludes retraction recovery from material usage",
+          "[plugins][gcode][reader][viewer]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.default",
+        "G1 E-2 F120\n"
+        "G1 E0\n"
+        "G1 X10 E1 F600\n");
+
+    REQUIRE(result.moves.size() == 3);
+    CHECK(result.moves[0].type == EMoveType::Retract);
+    CHECK(result.moves[1].type == EMoveType::Unretract);
+    CHECK(result.moves[2].type == EMoveType::Extrude);
+    const double filament_area = PI * std::pow(1.75 * 0.5, 2.0);
+    REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
+    CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
+          Approx(filament_area));
+}
+
+TEST_CASE("Host G-code reader derives tools and arc vertices from events",
+          "[plugins][gcode][reader][viewer]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.default",
+        "T1\n"
+        "G1 X1 Y0 F60\n"
+        "G3 X0 Y1 I-1 J0\n");
+
+    CHECK(result.extruders_count == 2);
+    REQUIRE(result.moves.size() >= 3);
+    CHECK(result.moves[result.moves.size() - 2].internal_only);
+    CHECK_FALSE(result.moves.back().internal_only);
+    CHECK(result.moves.back().extruder_id == 1u);
+    CHECK(result.moves.back().position.x() == Approx(0.0));
+    CHECK(result.moves.back().position.y() == Approx(1.0));
+}
+
+TEST_CASE("Host G-code reader initializes the built-in RepRap private schema",
+          "[plugins][gcode][reader][viewer]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const slic3r_api::GCodeStateTracker initial =
+        service.initial_state("gcode.reader.reprap");
+    CHECK(initial.reader_id() == reprap_reader_state_id());
+}
+
 TEST_CASE("G-code reader C++ plugin helper rejects a null orchestrator",
           "[plugins][gcode][reader][service]")
 {
