@@ -276,6 +276,7 @@ class PythonOrchestratorBridgeViewTests(unittest.TestCase):
             name: (result, arguments)
             for name, result, arguments in self.generated.C_FUNCTION_SIGNATURES
         }
+        self.assertEqual(self.generated.GCODE_SCRIPT_ID_TYPE, "gcode_script_type")
         self.assertEqual(self.generated.ORCHESTRATOR_RUNTIME_ID_INVALID, 0xFFFFFFFF)
         self.assertEqual(
             self.generated.ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN, 0x80000000
@@ -288,6 +289,8 @@ class PythonOrchestratorBridgeViewTests(unittest.TestCase):
             signatures["orchestrator_runtime_id_name"],
             (ctypes.c_char_p, [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]),
         )
+        self.assertNotIn("gcode_script_register_type", signatures)
+        self.assertNotIn("gcode_script_type_name", signatures)
 
     def test_bridge_detector_owns_instance_and_writes_to_owned_outputs(self):
         api, host = self.make_api()

@@ -322,12 +322,12 @@ config_handle *GCodeScriptProcessor::Impl::prepare(
     m_specific_keys.clear();
     m_output.clear();
     m_error.clear();
-    const char *script_name = gcode_script_type_name(reinterpret_cast<const orchestrator_handle *>(&m_orchestrator),
-                                                     script_type);
+    const std::string *script_name = m_orchestrator.runtime_id_name(
+        GCODE_SCRIPT_ID_TYPE, static_cast<orchestrator_runtime_id>(script_type));
     if (script_name == nullptr)
         throw std::invalid_argument("Unknown G-code script type.");
     create_machine_options();
-    create_specific_options(script_name);
+    create_specific_options(*script_name);
     merge_producer_config(producer_config);
     if (script_type == GCODE_SCRIPT_TYPE_START_GCODE)
         m_public_config.option<ConfigOptionInt>("start_gcode_bed_temperature")->value = m_first_layer_bed_temperature;

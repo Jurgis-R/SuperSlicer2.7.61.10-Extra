@@ -5,7 +5,7 @@
 #ifndef slic3r_gcode_script_h_
 #define slic3r_gcode_script_h_
 
-#define SLIC3R_PLUGIN_API_GCODE_SCRIPT_MAJOR 1u
+#define SLIC3R_PLUGIN_API_GCODE_SCRIPT_MAJOR 2u
 #define SLIC3R_PLUGIN_API_GCODE_SCRIPT_MINOR 0u
 
 #include <stdint.h>
@@ -48,6 +48,16 @@ events, never in a serialized project or plugin configuration.
 */
 typedef uint32_t gcode_script_type;
 
+/*
+Runtime-id registry containing G-code script types.
+
+Built-in script names are reserved by the host with the fixed values below.
+Plugins register additional names with orchestrator_register_runtime_id() and
+resolve them with orchestrator_runtime_id_name(). The registry belongs to one
+orchestrator, so custom numeric values must never be serialized.
+*/
+#define GCODE_SCRIPT_ID_TYPE "gcode_script_type"
+
 #define GCODE_SCRIPT_TYPE_INVALID ((gcode_script_type) 0u)
 #define GCODE_SCRIPT_TYPE_START_GCODE ((gcode_script_type) 1u)
 #define GCODE_SCRIPT_TYPE_END_GCODE ((gcode_script_type) 2u)
@@ -65,19 +75,6 @@ typedef uint32_t gcode_script_type;
 #define GCODE_SCRIPT_TYPE_CUSTOM_BEGIN ((gcode_script_type) 0x80000000u)
 
 typedef struct config_handle config_handle;
-typedef struct orchestrator_handle orchestrator_handle;
-
-/*
-Register a stable namespaced script name and receive its compact runtime id.
-
-Registering the same name repeatedly is idempotent. Built-in names return their
-fixed ids. An empty name or an exhausted registry returns
-GCODE_SCRIPT_TYPE_INVALID.
-*/
-SLIC3R_HOST_API gcode_script_type gcode_script_register_type(orchestrator_handle *orch, const char *namespaced_name);
-
-/* Return the stable name of a built-in or registered script type. */
-SLIC3R_HOST_API const char *gcode_script_type_name(const orchestrator_handle *orch, gcode_script_type type);
 
 typedef struct raw_gcode_script_result {
     uint32_t struct_size;

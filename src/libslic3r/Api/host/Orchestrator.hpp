@@ -195,12 +195,6 @@ public:
 
     using PropertyInfo = CustomExtrusionPropertyInfo;
 
-    struct GCodeScriptTypeInfo
-    {
-        gcode_script_type type;
-        std::string name;
-    };
-
     struct DynamicStepInfo
     {
         // name is the stable cross-plugin identity. id is only a compact key
@@ -437,9 +431,6 @@ public:
                                                                uint32_t alignment);
     const CustomExtrusionPropertyInfo *custom_extrusion_property_info(extrusion_property_type type) const;
     const CustomExtrusionPropertyInfo *custom_extrusion_property_info(const char *namespaced_name) const;
-    gcode_script_type register_gcode_script_type(const char *namespaced_name);
-    const GCodeScriptTypeInfo *gcode_script_type_info(gcode_script_type type) const;
-    const GCodeScriptTypeInfo *gcode_script_type_info(const char *namespaced_name) const;
     orchestrator_runtime_id register_runtime_id(const char *id_type,
                                                 const char *namespaced_name);
     const std::string *runtime_id_name(const char *id_type,
@@ -488,8 +479,6 @@ private:
     std::map<std::string, PluginPackageLoadReport> m_plugin_package_load_reports;
     std::vector<PropertyInfo> m_custom_property_infos;
     slic3r_property_type m_next_custom_property_type { SLIC3R_PROPERTY_TYPE_CUSTOM_BEGIN };
-    std::vector<GCodeScriptTypeInfo> m_custom_gcode_script_type_infos;
-    gcode_script_type m_next_custom_gcode_script_type{GCODE_SCRIPT_TYPE_CUSTOM_BEGIN};
     std::map<slicing_step_t, DynamicStepInfo> m_dynamic_step_infos;
     uint32_t m_next_dynamic_step { uint32_t(SLICING_STEP_CUSTOM_BEGIN) };
     std::map<std::string, RuntimeIdRegistry> m_runtime_id_registries;

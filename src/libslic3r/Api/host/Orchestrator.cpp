@@ -23,6 +23,7 @@
 
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_gcode_reader.h"
+#include "libslic3r/Api/plugin/c/slic3r_gcode_script.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/slic3r_plugin_types.h"
 #include "libslic3r/Config/ConfigDef.hpp"
@@ -681,6 +682,32 @@ Orchestrator::Orchestrator()
         GCODE_READER_STATE_ID_TYPE, "slic3r.portable", GCODE_READER_STATE_ID_PORTABLE);
     assert(portable_reader_registered);
     (void) portable_reader_registered;
+
+    // Script events keep their compact historical values in PrintingPlan.
+    // Reserving every stable name in the generic registry gives built-in and
+    // plugin-defined scripts the same lookup path without making the numeric
+    // value persistent outside this process.
+    const std::pair<const char *, orchestrator_runtime_id> builtin_scripts[] = {
+        {"start_gcode", GCODE_SCRIPT_TYPE_START_GCODE},
+        {"end_gcode", GCODE_SCRIPT_TYPE_END_GCODE},
+        {"extrusion_custom_gcode_script", GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM},
+        {"start_filament_gcode", GCODE_SCRIPT_TYPE_START_FILAMENT_GCODE},
+        {"end_filament_gcode", GCODE_SCRIPT_TYPE_END_FILAMENT_GCODE},
+        {"before_layer_gcode", GCODE_SCRIPT_TYPE_BEFORE_LAYER_GCODE},
+        {"layer_gcode", GCODE_SCRIPT_TYPE_LAYER_GCODE},
+        {"toolchange_gcode", GCODE_SCRIPT_TYPE_TOOLCHANGE_GCODE},
+        {"between_objects_gcode", GCODE_SCRIPT_TYPE_BETWEEN_OBJECTS_GCODE},
+        {"feature_gcode", GCODE_SCRIPT_TYPE_FEATURE_GCODE},
+        {"color_change_gcode", GCODE_SCRIPT_TYPE_COLOR_CHANGE_GCODE},
+        {"pause_print_gcode", GCODE_SCRIPT_TYPE_PAUSE_PRINT_GCODE},
+        {"template_custom_gcode", GCODE_SCRIPT_TYPE_TEMPLATE_CUSTOM_GCODE},
+    };
+    bool builtin_scripts_registered = true;
+    for (const std::pair<const char *, orchestrator_runtime_id> &script : builtin_scripts)
+        builtin_scripts_registered = this->register_static_runtime_id(
+            GCODE_SCRIPT_ID_TYPE, script.first, script.second) && builtin_scripts_registered;
+    assert(builtin_scripts_registered);
+    (void) builtin_scripts_registered;
     // Built-in seam painting is registered in the same table as plugin generic
     // facet annotations. The GUI still creates a fixed toolbar button for seam
     // today, but using the registry keeps the storage key and future plugin
@@ -1186,30 +1213,6 @@ extrusion_property_type Orchestrator::register_custom_extrusion_property(const c
     return static_cast<extrusion_property_type>(this->register_property(namespaced_name, byte_count, alignment));
 }
 
-gcode_script_type Orchestrator::register_gcode_script_type(const char *namespaced_name) {
-    if (namespaced_name == nullptr || namespaced_name[0] == '\0')
-        return GCODE_SCRIPT_TYPE_INVALID;
-
-    /*
-    Script ids follow the same runtime-registry contract as custom property
-    ids. The stable name crosses plugin boundaries; the integer is only the
-    compact key carried by one in-memory PrintingPlan.
-    */
-    if (const GCodeScriptTypeInfo *existing = this->gcode_script_type_info(namespaced_name))
-        return existing->type;
-
-    // Once uint32_t wraps, stay exhausted instead of entering the reserved
-    // built-in range on a later registration attempt.
-    if (m_next_custom_gcode_script_type < GCODE_SCRIPT_TYPE_CUSTOM_BEGIN)
-        return GCODE_SCRIPT_TYPE_INVALID;
-
-    GCodeScriptTypeInfo info;
-    info.type = m_next_custom_gcode_script_type++;
-    info.name = namespaced_name;
-    m_custom_gcode_script_type_infos.emplace_back(std::move(info));
-    return m_custom_gcode_script_type_infos.back().type;
-}
-
 bool Orchestrator::register_generic_facets_annotation(GenericFacetsAnnotationDefinition def)
 {
     if (def.key.empty() || def.label.empty() || def.enforce_label.empty() || def.block_label.empty())
@@ -1281,22 +1284,6 @@ Orchestrator::property_info(const char *namespaced_name) const
         return nullptr;
 
     for (const PropertyInfo &info : m_custom_property_infos)
-        if (info.name == namespaced_name)
-            return &info;
-    return nullptr;
-}
-
-const Orchestrator::GCodeScriptTypeInfo *Orchestrator::gcode_script_type_info(gcode_script_type type) const {
-    for (const GCodeScriptTypeInfo &info : m_custom_gcode_script_type_infos)
-        if (info.type == type)
-            return &info;
-    return nullptr;
-}
-
-const Orchestrator::GCodeScriptTypeInfo *Orchestrator::gcode_script_type_info(const char *namespaced_name) const {
-    if (namespaced_name == nullptr)
-        return nullptr;
-    for (const GCodeScriptTypeInfo &info : m_custom_gcode_script_type_infos)
         if (info.name == namespaced_name)
             return &info;
     return nullptr;

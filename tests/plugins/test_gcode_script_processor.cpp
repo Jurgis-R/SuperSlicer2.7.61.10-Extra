@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -20,6 +21,7 @@
 #include "libslic3r/Api/host/GCodeScriptProcessor.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_gcode_reader.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode.h"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/DefaultGCodeFirmwareSession.hpp"
@@ -113,6 +115,7 @@ TEST_CASE("Host G-code script processor prepares typed isolated contexts",
     GCodeScriptProcessor host_processor(print, orchestrator);
     const slic3r_api::GCodeGeneration::GCodeScriptProcessorView scripts(
         host_processor.c_processor());
+    CHECK_THROWS(scripts.prepare(GCODE_SCRIPT_TYPE_INVALID));
     CHECK_THROWS(scripts.prepare(GCODE_SCRIPT_TYPE_CUSTOM_BEGIN - 1));
 
     PluginStorage argument_storage;
@@ -508,29 +511,60 @@ TEST_CASE("G-code script types have stable built-in and runtime identities", "[p
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
 
-    CHECK(gcode_script_register_type(handle, "start_gcode") == GCODE_SCRIPT_TYPE_START_GCODE);
-    CHECK(gcode_script_register_type(handle, "end_gcode") == GCODE_SCRIPT_TYPE_END_GCODE);
-    CHECK(gcode_script_register_type(handle, "extrusion_custom_gcode_script") == GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM);
-    CHECK(gcode_script_register_type(handle, "start_filament_gcode") == GCODE_SCRIPT_TYPE_START_FILAMENT_GCODE);
-    CHECK(gcode_script_register_type(handle, "end_filament_gcode") == GCODE_SCRIPT_TYPE_END_FILAMENT_GCODE);
-    CHECK(gcode_script_register_type(handle, "before_layer_gcode") == GCODE_SCRIPT_TYPE_BEFORE_LAYER_GCODE);
-    CHECK(gcode_script_register_type(handle, "layer_gcode") == GCODE_SCRIPT_TYPE_LAYER_GCODE);
-    CHECK(gcode_script_register_type(handle, "toolchange_gcode") == GCODE_SCRIPT_TYPE_TOOLCHANGE_GCODE);
-    CHECK(gcode_script_register_type(handle, "between_objects_gcode") == GCODE_SCRIPT_TYPE_BETWEEN_OBJECTS_GCODE);
-    CHECK(gcode_script_register_type(handle, "feature_gcode") == GCODE_SCRIPT_TYPE_FEATURE_GCODE);
-    CHECK(std::string(gcode_script_type_name(handle, GCODE_SCRIPT_TYPE_START_GCODE)) == "start_gcode");
+    const std::array<std::pair<gcode_script_type, const char *>, 13> builtins = {{
+        {GCODE_SCRIPT_TYPE_START_GCODE, "start_gcode"},
+        {GCODE_SCRIPT_TYPE_END_GCODE, "end_gcode"},
+        {GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM, "extrusion_custom_gcode_script"},
+        {GCODE_SCRIPT_TYPE_START_FILAMENT_GCODE, "start_filament_gcode"},
+        {GCODE_SCRIPT_TYPE_END_FILAMENT_GCODE, "end_filament_gcode"},
+        {GCODE_SCRIPT_TYPE_BEFORE_LAYER_GCODE, "before_layer_gcode"},
+        {GCODE_SCRIPT_TYPE_LAYER_GCODE, "layer_gcode"},
+        {GCODE_SCRIPT_TYPE_TOOLCHANGE_GCODE, "toolchange_gcode"},
+        {GCODE_SCRIPT_TYPE_BETWEEN_OBJECTS_GCODE, "between_objects_gcode"},
+        {GCODE_SCRIPT_TYPE_FEATURE_GCODE, "feature_gcode"},
+        {GCODE_SCRIPT_TYPE_COLOR_CHANGE_GCODE, "color_change_gcode"},
+        {GCODE_SCRIPT_TYPE_PAUSE_PRINT_GCODE, "pause_print_gcode"},
+        {GCODE_SCRIPT_TYPE_TEMPLATE_CUSTOM_GCODE, "template_custom_gcode"},
+    }};
+    for (const std::pair<gcode_script_type, const char *> &builtin : builtins) {
+        CHECK(orchestrator_register_runtime_id(handle, GCODE_SCRIPT_ID_TYPE, builtin.second) == builtin.first);
+        const char *resolved = orchestrator_runtime_id_name(handle, GCODE_SCRIPT_ID_TYPE, builtin.first);
+        REQUIRE(resolved != nullptr);
+        CHECK(std::string(resolved) == builtin.second);
+    }
 
-    const gcode_script_type first = gcode_script_register_type(handle, "test.script_type.first");
-    const gcode_script_type repeated = gcode_script_register_type(handle, "test.script_type.first");
-    const gcode_script_type second = gcode_script_register_type(handle, "test.script_type.second");
+    const orchestrator_runtime_id first_id = orchestrator_register_runtime_id(
+        handle, GCODE_SCRIPT_ID_TYPE, "test.script_type.first");
+    const orchestrator_runtime_id repeated_id = orchestrator_register_runtime_id(
+        handle, GCODE_SCRIPT_ID_TYPE, "test.script_type.first");
+    const orchestrator_runtime_id second_id = orchestrator_register_runtime_id(
+        handle, GCODE_SCRIPT_ID_TYPE, "test.script_type.second");
+    const gcode_script_type first = static_cast<gcode_script_type>(first_id);
     REQUIRE(first >= GCODE_SCRIPT_TYPE_CUSTOM_BEGIN);
-    CHECK(repeated == first);
-    CHECK(second != first);
-    CHECK(std::string(gcode_script_type_name(handle, first)) == "test.script_type.first");
+    CHECK(repeated_id == first_id);
+    CHECK(second_id != first_id);
+    const char *first_name = orchestrator_runtime_id_name(
+        handle, GCODE_SCRIPT_ID_TYPE, first_id);
+    REQUIRE(first_name != nullptr);
+    CHECK(std::string(first_name) == "test.script_type.first");
 
-    CHECK(gcode_script_register_type(handle, "") == GCODE_SCRIPT_TYPE_INVALID);
-    CHECK(gcode_script_type_name(handle, GCODE_SCRIPT_TYPE_INVALID) == nullptr);
-    CHECK(gcode_script_type_name(handle, GCODE_SCRIPT_TYPE_CUSTOM_BEGIN - 1) == nullptr);
+    const orchestrator_runtime_id reader_id = orchestrator_register_runtime_id(
+        handle, GCODE_READER_STATE_ID_TYPE, "test.script_type.first");
+    REQUIRE(reader_id != ORCHESTRATOR_RUNTIME_ID_INVALID);
+    const char *reader_name = orchestrator_runtime_id_name(
+        handle, GCODE_READER_STATE_ID_TYPE, reader_id);
+    REQUIRE(reader_name != nullptr);
+    CHECK(std::string(reader_name) == "test.script_type.first");
+    CHECK(std::string(first_name) == "test.script_type.first");
+
+    CHECK(orchestrator_register_runtime_id(handle, GCODE_SCRIPT_ID_TYPE, "") ==
+          ORCHESTRATOR_RUNTIME_ID_INVALID);
+    CHECK(orchestrator_register_runtime_id(nullptr, GCODE_SCRIPT_ID_TYPE, "test.invalid") ==
+          ORCHESTRATOR_RUNTIME_ID_INVALID);
+    CHECK(orchestrator_runtime_id_name(handle, GCODE_SCRIPT_ID_TYPE,
+                                       GCODE_SCRIPT_TYPE_INVALID) == nullptr);
+    CHECK(orchestrator_runtime_id_name(handle, GCODE_SCRIPT_ID_TYPE,
+                                       GCODE_SCRIPT_TYPE_CUSTOM_BEGIN - 1) == nullptr);
 }
 TEST_CASE("G-code script type survives entity copies moves and diagnostics",
           "[plugins][gcode][script-type][diagnostic]") {

@@ -230,11 +230,13 @@ size_t count_command_lines(const std::string &text, const std::string &command)
 
 gcode_script_type registered_script_type(Orchestrator &orchestrator, const std::string &name)
 {
-    const gcode_script_type type = gcode_script_register_type(
-        reinterpret_cast<orchestrator_handle *>(&orchestrator), name.c_str());
-    if (type == GCODE_SCRIPT_TYPE_INVALID)
+    const orchestrator_runtime_id id = orchestrator_register_runtime_id(
+        reinterpret_cast<orchestrator_handle *>(&orchestrator),
+        GCODE_SCRIPT_ID_TYPE,
+        name.c_str());
+    if (id == ORCHESTRATOR_RUNTIME_ID_INVALID)
         throw std::runtime_error("The test could not register G-code script type '" + name + "'.");
-    return type;
+    return static_cast<gcode_script_type>(id);
 }
 
 DynamicConfig stored_script_config(const ExtrusionEntity &entity,
