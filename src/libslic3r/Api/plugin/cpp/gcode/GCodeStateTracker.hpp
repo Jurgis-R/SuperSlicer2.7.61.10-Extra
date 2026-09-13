@@ -399,15 +399,13 @@ private:
     }
 
     // Validate event metadata in addition to its items. Every event carries a
-    // physical line number so errors and source ranges remain attributable.
+    // physical line number so consumers can associate it with source text.
     static void validate_event(const raw_gcode_reader_event &event)
     {
         validate_items(event.items, event.item_count);
         if (event.kind < RAW_GCODE_READER_EVENT_STATE_UPDATE ||
             event.kind > RAW_GCODE_READER_EVENT_INVALIDATE)
             throw std::invalid_argument("A G-code reader event has an invalid action kind.");
-        if (event.source.begin > event.source.end)
-            throw std::invalid_argument("A G-code reader action has an invalid source range.");
         bool has_line_number = false;
         for (uint32_t index = 0; index < event.item_count; ++index)
             has_line_number = has_line_number ||

@@ -46,8 +46,7 @@ protected:
     bool consume_text_command(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const override;
+                              const GCodeLineParser::GCodeLine &line) const override;
     // Chain all portable commands first, then load private RRF state only for
     // an additional command which this class is about to process.
     bool consume_numeric_command(const plugin_run_context &run_context,
@@ -55,8 +54,7 @@ protected:
                                  GCodeStateTracker &state,
                                  const GCodeLineParser::GCodeLine &line,
                                  char letter,
-                                 uint32_t number,
-                                 raw_gcode_reader_source source) const override;
+                                 uint32_t number) const override;
     // RepRap command handlers are virtual so a more specialized RRF dialect
     // can replace one command without copying the numeric dispatcher. Each
     // handler owns the complete command and publishes its event before return.
@@ -66,92 +64,79 @@ protected:
                              const run_ctx_gcode_reader &context,
                              GCodeStateTracker &state,
                              RepRapGCodeReaderState &private_state,
-                             const GCodeLineParser::GCodeLine &line,
-                             raw_gcode_reader_source source) const;
+                             const GCodeLineParser::GCodeLine &line) const;
     // Clear the private retracted state of the currently active tool.
     virtual void process_G11(const plugin_run_context &run_context,
                              const run_ctx_gcode_reader &context,
                              GCodeStateTracker &state,
-                             RepRapGCodeReaderState &private_state,
-                             raw_gcode_reader_source source) const;
+                             RepRapGCodeReaderState &private_state) const;
     // Publish a wait event for one requested tool or all known tool targets.
     virtual void process_M116(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Resolve omitted P through the active tool's private fan mapping and use
     // RepRapFirmware's normalized 0..1 fan speed.
     void process_M106_M107(const plugin_run_context &run_context,
                            const run_ctx_gcode_reader &context,
                            GCodeStateTracker &state,
                            const GCodeLineParser::GCodeLine &line,
-                           uint32_t number,
-                           raw_gcode_reader_source source) const override;
+                           uint32_t number) const override;
     // Store per-axis maximum accelerations in the private RRF snapshot.
     virtual void process_M201(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Store maximum and minimum feedrates after converting mm/min to mm/s.
     virtual void process_M203(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Update distinct print/travel acceleration registers and publish a
     // portable effective acceleration only when the command determines one.
     virtual void process_M204(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Store the job-level jerk limits expressed by RepRapFirmware M205.
     virtual void process_M205(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Replace one tool's drive, heater and fan mappings. Device lists must be
     // complete non-negative colon-separated identifiers.
     virtual void process_M563(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Store machine jerk limits after converting mm/min to mm/s.
     virtual void process_M566(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Update active and standby temperatures for one logical RRF tool.
     virtual void process_M568(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Store pressure advance for the drive selected by D.
     virtual void process_M572(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
                               RepRapGCodeReaderState &private_state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     // Represent T-1 by invalidating active-tool knowledge; zero would mean T0
     // and therefore cannot encode the deselected state.
     virtual void process_T_minus_1(const plugin_run_context &run_context,
                                   const run_ctx_gcode_reader &context,
-                                  GCodeStateTracker &state,
-                                  raw_gcode_reader_source source) const;
+                                  GCodeStateTracker &state) const;
 
 private:
     const char *id_impl() const noexcept override;

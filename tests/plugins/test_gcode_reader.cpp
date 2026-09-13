@@ -95,24 +95,22 @@ protected:
     void process_G90_G91(const plugin_run_context &run_context,
                          const run_ctx_gcode_reader &context,
                          slic3r_api::GCodeStateTracker &state,
-                         uint32_t number,
-                         raw_gcode_reader_source source) const override
+                         uint32_t number) const override
     {
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
                       {{RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, double(number)}});
     }
 
     void process_M220(const plugin_run_context &run_context,
                       const run_ctx_gcode_reader &context,
                       slic3r_api::GCodeStateTracker &state,
-                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line,
-                      raw_gcode_reader_source source) const override
+                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line) const override
     {
         BuiltinGCodeReaderBase::process_M220(
-            run_context, context, state, line, source);
+            run_context, context, state, line);
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, source, {});
+                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
     }
 
 private:
@@ -141,11 +139,10 @@ protected:
                      const run_ctx_gcode_reader &context,
                      slic3r_api::GCodeStateTracker &state,
                      RepRapGCodeReaderState &,
-                     const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &,
-                     raw_gcode_reader_source source) const override
+                     const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &) const override
     {
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, source, {});
+                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
     }
 
 private:
@@ -175,36 +172,33 @@ protected:
         slic3r_api::GCodeStateTracker &state,
         const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line,
         char letter,
-        uint32_t number,
-        raw_gcode_reader_source source) const override
+        uint32_t number) const override
     {
         if (Marlin2GCodeReader::consume_numeric_command(
-                run_context, context, state, line, letter, number, source))
+                run_context, context, state, line, letter, number))
             return true;
         if (letter != 'M' || number != 700)
             return false;
-        process_M700(run_context, context, state, source);
+        process_M700(run_context, context, state);
         return true;
     }
 
     void process_M204(const plugin_run_context &run_context,
                       const run_ctx_gcode_reader &context,
                       slic3r_api::GCodeStateTracker &state,
-                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &,
-                      raw_gcode_reader_source source) const override
+                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &) const override
     {
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
                       {{RAW_GCODE_READER_ITEM_ACCELERATION, 0, 204.0}});
     }
 
     void process_M700(const plugin_run_context &run_context,
                       const run_ctx_gcode_reader &context,
-                      slic3r_api::GCodeStateTracker &state,
-                      raw_gcode_reader_source source) const
+                      slic3r_api::GCodeStateTracker &state) const
     {
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
                       {{RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, 700.0}});
     }
 
@@ -233,45 +227,41 @@ protected:
         const plugin_run_context &run_context,
         const run_ctx_gcode_reader &context,
         slic3r_api::GCodeStateTracker &state,
-        const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line,
-        raw_gcode_reader_source source) const override
+        const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &line) const override
     {
         if (KlipperGCodeReader::consume_text_command(
-                run_context, context, state, line, source))
+                run_context, context, state, line))
             return true;
         if (line.command() != "TEST_EXTENSION")
             return false;
-        process_TEST_EXTENSION(run_context, context, state, source);
+        process_TEST_EXTENSION(run_context, context, state);
         return true;
     }
 
     void process_PAUSE(const plugin_run_context &run_context,
                        const run_ctx_gcode_reader &context,
-                       slic3r_api::GCodeStateTracker &state,
-                       raw_gcode_reader_source source) const override
+                       slic3r_api::GCodeStateTracker &state) const override
     {
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, source, {});
+                      RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
     }
 
     void process_M204(const plugin_run_context &run_context,
                       const run_ctx_gcode_reader &context,
                       slic3r_api::GCodeStateTracker &state,
-                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &,
-                      raw_gcode_reader_source source) const override
+                      const slic3r_api::GCodeGeneration::GCodeLineParser::GCodeLine &) const override
     {
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
                       {{RAW_GCODE_READER_ITEM_EXTRUSION_FACTOR, 0, 204.0}});
     }
 
     void process_TEST_EXTENSION(const plugin_run_context &run_context,
                                 const run_ctx_gcode_reader &context,
-                                slic3r_api::GCodeStateTracker &state,
-                                raw_gcode_reader_source source) const
+                                slic3r_api::GCodeStateTracker &state) const
     {
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
                       {{RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, 701.0}});
     }
 
@@ -289,7 +279,6 @@ struct ObservedEvent
 {
     uint32_t kind = 0;
     uint32_t line_number = UINT32_MAX;
-    raw_gcode_reader_source source = {};
 };
 
 struct ReaderProbe
@@ -355,7 +344,7 @@ void collect_event(void *context,
         if (item.type == RAW_GCODE_READER_ITEM_LINE_NUMBER)
             line_number = static_cast<uint32_t>(item.value);
     }
-    probe->observed.push_back({event->kind, line_number, event->source});
+    probe->observed.push_back({event->kind, line_number});
     result->status = RAW_GCODE_READER_STATUS_SUCCESS;
 }
 
@@ -449,8 +438,6 @@ TEST_CASE("G-code reader publishes semantic actions and an owned final state",
     CHECK(probe.observed[5].kind == RAW_GCODE_READER_EVENT_SET_TEMPERATURE);
     CHECK(probe.observed[6].kind == RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE);
     CHECK(probe.observed[1].line_number == 1u);
-    CHECK(probe.observed[1].source.begin == 4u);
-    CHECK(probe.observed[1].source.end == 12u);
     REQUIRE(state.x());
     REQUIRE(state.y());
     REQUIRE(state.z());
@@ -943,10 +930,6 @@ TEST_CASE("G-code reader line number follows physical newlines", "[plugins][gcod
     REQUIRE(probe.observed.size() == 2);
     CHECK(probe.observed[0].line_number == 2u);
     CHECK(probe.observed[1].line_number == 3u);
-    CHECK(probe.observed[0].source.begin == 12u);
-    CHECK(probe.observed[0].source.end == 17u);
-    CHECK(probe.observed[1].source.begin == 19u);
-    CHECK(probe.observed[1].source.end == 24u);
     CHECK(state.line_number() == 3u);
 }
 
@@ -962,7 +945,6 @@ TEST_CASE("G-code reader requires a valid line number item", "[plugins][gcode][r
 
     raw_gcode_reader_event missing_line_event = {};
     missing_line_event.kind = RAW_GCODE_READER_EVENT_STATE_UPDATE;
-    missing_line_event.source = {0, 1};
     missing_line_event.items = missing_line_items;
     missing_line_event.item_count = 1;
     CHECK_THROWS_AS(slic3r_api::GCodeStateTracker().apply(missing_line_event), std::invalid_argument);
@@ -1025,12 +1007,12 @@ TEST_CASE("G-code reader transports provider-private scalar state opaquely",
         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}
     };
     raw_gcode_reader_event update = {
-        RAW_GCODE_READER_EVENT_STATE_UPDATE, {0, 0}, update_items, 2
+        RAW_GCODE_READER_EVENT_STATE_UPDATE, update_items, 2
     };
     moved.apply(update);
     CHECK(moved.value(private_type, 94u) == 7.0);
     raw_gcode_reader_event invalidate = {
-        RAW_GCODE_READER_EVENT_INVALIDATE, {0, 0}, update_items, 2
+        RAW_GCODE_READER_EVENT_INVALIDATE, update_items, 2
     };
     moved.apply(invalidate);
     CHECK_FALSE(moved.known(private_type, 94u));

@@ -89,23 +89,22 @@ bool KlipperGCodeReader::consume_text_command(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     if (BuiltinGCodeReaderBase::consume_text_command(
-            run_context, context, state, line, source))
+            run_context, context, state, line))
         return true;
     const std::string_view command = line.command();
     if (command == "ACTIVATE_EXTRUDER") {
-        process_ACTIVATE_EXTRUDER(run_context, context, state, line, source);
+        process_ACTIVATE_EXTRUDER(run_context, context, state, line);
         return true;
     }
     if (command == "SET_PRESSURE_ADVANCE") {
-        process_SET_PRESSURE_ADVANCE(run_context, context, state, line, source);
+        process_SET_PRESSURE_ADVANCE(run_context, context, state, line);
         return true;
     }
     if (command == "PAUSE") {
-        process_PAUSE(run_context, context, state, source);
+        process_PAUSE(run_context, context, state);
         return true;
     }
     return false;
@@ -117,15 +116,14 @@ bool KlipperGCodeReader::consume_numeric_command(
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
     char letter,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     if (BuiltinGCodeReaderBase::consume_numeric_command(
-            run_context, context, state, line, letter, number, source))
+            run_context, context, state, line, letter, number))
         return true;
     if (letter != 'M' || number != 204)
         return false;
-    process_M204(run_context, context, state, line, source);
+    process_M204(run_context, context, state, line);
     return true;
 }
 
@@ -133,22 +131,21 @@ void KlipperGCodeReader::process_ACTIVATE_EXTRUDER(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     const std::optional<std::string_view> name = named_parameter(line.raw(), "EXTRUDER");
     if (!name) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     const std::optional<uint32_t> tool = klipper_tool_id(context, *name);
     if (tool)
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_STATE_UPDATE, source,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
                       {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(*tool)}});
     else
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_INVALIDATE, source,
+                      RAW_GCODE_READER_EVENT_INVALIDATE,
                       {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0}});
 }
 
@@ -156,32 +153,29 @@ void KlipperGCodeReader::process_SET_PRESSURE_ADVANCE(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     if (!named_parameter(line.raw(), "ADVANCE")) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void KlipperGCodeReader::process_PAUSE(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
-    GCodeStateTracker &state,
-    raw_gcode_reader_source source) const
+    GCodeStateTracker &state) const
 {
     publish_items(run_context, context, state,
-                  RAW_GCODE_READER_EVENT_MARKER, source, {});
+                  RAW_GCODE_READER_EVENT_MARKER, {});
 }
 
 void KlipperGCodeReader::process_M204(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     std::optional<float> acceleration = line.parameter_value('S');
     if (!acceleration) {
@@ -198,7 +192,7 @@ void KlipperGCodeReader::process_M204(
     if (acceleration)
         items.push_back({RAW_GCODE_READER_ITEM_ACCELERATION, 0, double(*acceleration)});
     publish_items(run_context, context, state,
-                  RAW_GCODE_READER_EVENT_STATE_UPDATE, source, items);
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE, items);
 }
 
 bool KlipperGCodeReader::is_neutral_command(char letter, uint32_t number) const

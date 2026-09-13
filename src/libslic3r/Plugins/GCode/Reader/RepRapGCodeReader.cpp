@@ -160,15 +160,14 @@ bool RepRapGCodeReader::consume_text_command(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     if (BuiltinGCodeReaderBase::consume_text_command(
-            run_context, context, state, line, source))
+            run_context, context, state, line))
         return true;
     if (line.command() != "T-1")
         return false;
-    process_T_minus_1(run_context, context, state, source);
+    process_T_minus_1(run_context, context, state);
     return true;
 }
 
@@ -178,11 +177,10 @@ bool RepRapGCodeReader::consume_numeric_command(
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
     char letter,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     if (BuiltinGCodeReaderBase::consume_numeric_command(
-            run_context, context, state, line, letter, number, source))
+            run_context, context, state, line, letter, number))
         return true;
     const bool is_G_command = letter == 'G' && (number == 10 || number == 11);
     const bool is_M_command = letter == 'M' &&
@@ -196,32 +194,32 @@ bool RepRapGCodeReader::consume_numeric_command(
     try {
         private_state = RepRapGCodeReaderState::from_tracker(state, m_reader_state_id);
     } catch (const std::exception &) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return true;
     }
 
     if (letter == 'G' && number == 10)
-        process_G10(run_context, context, state, private_state, line, source);
+        process_G10(run_context, context, state, private_state, line);
     else if (letter == 'G' && number == 11)
-        process_G11(run_context, context, state, private_state, source);
+        process_G11(run_context, context, state, private_state);
     else if (letter == 'M' && number == 116)
-        process_M116(run_context, context, state, line, source);
+        process_M116(run_context, context, state, line);
     else if (letter == 'M' && number == 201)
-        process_M201(run_context, context, state, private_state, line, source);
+        process_M201(run_context, context, state, private_state, line);
     else if (letter == 'M' && number == 203)
-        process_M203(run_context, context, state, private_state, line, source);
+        process_M203(run_context, context, state, private_state, line);
     else if (letter == 'M' && number == 204)
-        process_M204(run_context, context, state, private_state, line, source);
+        process_M204(run_context, context, state, private_state, line);
     else if (letter == 'M' && number == 205)
-        process_M205(run_context, context, state, private_state, line, source);
+        process_M205(run_context, context, state, private_state, line);
     else if (letter == 'M' && number == 563)
-        process_M563(run_context, context, state, private_state, line, source);
+        process_M563(run_context, context, state, private_state, line);
     else if (letter == 'M' && number == 566)
-        process_M566(run_context, context, state, private_state, line, source);
+        process_M566(run_context, context, state, private_state, line);
     else if (letter == 'M' && number == 568)
-        process_M568(run_context, context, state, private_state, line, source);
+        process_M568(run_context, context, state, private_state, line);
     else
-        process_M572(run_context, context, state, private_state, line, source);
+        process_M572(run_context, context, state, private_state, line);
     return true;
 }
 
@@ -230,12 +228,11 @@ void RepRapGCodeReader::process_G10(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     const std::optional<uint32_t> tool = command_tool(line, state);
     if (!tool) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     RepRapToolState &tool_state = private_state.tools[*tool];
@@ -247,12 +244,12 @@ void RepRapGCodeReader::process_G10(
         // Bare G10 is firmware retraction. Parameterized but unsupported forms
         // may alter coordinate systems and therefore invalidate known state.
         if (has_command_arguments(line)) {
-            publish_unknown(run_context, context, state, source);
+            publish_unknown(run_context, context, state);
             return;
         }
         tool_state.retracted = true;
         commit_private_state(private_state, state, m_reader_state_id);
-        publish_state_update(run_context, context, state, source);
+        publish_state_update(run_context, context, state);
         return;
     }
     if (standby_temperature)
@@ -266,42 +263,40 @@ void RepRapGCodeReader::process_G10(
     commit_private_state(private_state, state, m_reader_state_id);
     if (active_temperature)
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_SET_TEMPERATURE, source,
+                      RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
                       {{RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE,
                         *tool, double(*active_temperature)}});
     else
-        publish_state_update(run_context, context, state, source);
+        publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_G11(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    RepRapGCodeReaderState &private_state,
-    raw_gcode_reader_source source) const
+    RepRapGCodeReaderState &private_state) const
 {
     const std::optional<uint32_t> tool = state.active_tool();
     if (!tool) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     private_state.tools[*tool].retracted = false;
     commit_private_state(private_state, state, m_reader_state_id);
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_M116(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     std::vector<raw_gcode_reader_event_item> reached;
     if (line.has_parameter('P')) {
         const std::optional<uint32_t> requested_tool = command_tool(line, state);
         if (!requested_tool) {
-            publish_unknown(run_context, context, state, source);
+            publish_unknown(run_context, context, state);
             return;
         }
         const std::optional<double> target = state.tool_temperature(*requested_tool);
@@ -315,7 +310,7 @@ void RepRapGCodeReader::process_M116(
                 reached.push_back(raw.items[index]);
     }
     publish_items(run_context, context, state,
-                  RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE, source, reached);
+                  RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE, reached);
 }
 
 void RepRapGCodeReader::process_M106_M107(
@@ -323,21 +318,20 @@ void RepRapGCodeReader::process_M106_M107(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     RepRapGCodeReaderState private_state;
     try {
         private_state = RepRapGCodeReaderState::from_tracker(state, m_reader_state_id);
     } catch (const std::exception &) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     std::vector<uint32_t> fans;
     int32_t explicit_fan = -1;
     if (line.has_parameter('P')) {
         if (!line.parameter_value('P', explicit_fan) || explicit_fan < 0) {
-            publish_unknown(run_context, context, state, source);
+            publish_unknown(run_context, context, state);
             return;
         }
         fans.push_back(static_cast<uint32_t>(explicit_fan));
@@ -348,13 +342,13 @@ void RepRapGCodeReader::process_M106_M107(
             fans = found->second.fans;
     }
     if (fans.empty()) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     const std::optional<float> speed = number == 107 ?
         std::optional<float>(0.0f) : line.parameter_value('S');
     if (!speed) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     std::vector<raw_gcode_reader_event_item> items;
@@ -362,7 +356,7 @@ void RepRapGCodeReader::process_M106_M107(
         items.push_back({RAW_GCODE_READER_ITEM_FAN_SPEED, fan,
                          std::clamp(double(*speed) * 100.0, 0.0, 100.0)});
     publish_items(run_context, context, state,
-                  RAW_GCODE_READER_EVENT_STATE_UPDATE, source, items);
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE, items);
 }
 
 void RepRapGCodeReader::process_M201(
@@ -370,15 +364,14 @@ void RepRapGCodeReader::process_M201(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     if (!update_axes(line, private_state.max_acceleration, 1.0)) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     commit_private_state(private_state, state, m_reader_state_id);
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_M203(
@@ -386,8 +379,7 @@ void RepRapGCodeReader::process_M203(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     bool changed = update_axes(line, private_state.max_feedrate, 1.0 / 60.0);
     if (const std::optional<float> minimum = line.parameter_value('I')) {
@@ -395,11 +387,11 @@ void RepRapGCodeReader::process_M203(
         changed = true;
     }
     if (!changed) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     commit_private_state(private_state, state, m_reader_state_id);
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_M204(
@@ -407,8 +399,7 @@ void RepRapGCodeReader::process_M204(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     std::optional<float> acceleration = line.parameter_value('S');
     const std::optional<float> print = line.parameter_value('P');
@@ -427,7 +418,7 @@ void RepRapGCodeReader::process_M204(
             acceleration = travel;
     }
     if (!acceleration && !print && !travel) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     commit_private_state(private_state, state, m_reader_state_id);
@@ -435,7 +426,7 @@ void RepRapGCodeReader::process_M204(
     if (acceleration)
         items.push_back({RAW_GCODE_READER_ITEM_ACCELERATION, 0, double(*acceleration)});
     publish_items(run_context, context, state,
-                  RAW_GCODE_READER_EVENT_STATE_UPDATE, source, items);
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE, items);
 }
 
 void RepRapGCodeReader::process_M205(
@@ -443,15 +434,14 @@ void RepRapGCodeReader::process_M205(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     if (!update_axes(line, private_state.job_jerk, 1.0)) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     commit_private_state(private_state, state, m_reader_state_id);
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_M563(
@@ -459,12 +449,11 @@ void RepRapGCodeReader::process_M563(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     int32_t requested_tool = -1;
     if (!line.parameter_value('P', requested_tool) || requested_tool < 0) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     RepRapToolState &tool_state = private_state.tools[static_cast<uint32_t>(requested_tool)];
@@ -476,17 +465,17 @@ void RepRapGCodeReader::process_M563(
         if (!line.has_parameter(mapping.first))
             continue;
         if (!parse_device_list(line.parameter_position(mapping.first), *mapping.second)) {
-            publish_unknown(run_context, context, state, source);
+            publish_unknown(run_context, context, state);
             return;
         }
         changed = true;
     }
     if (!changed) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     commit_private_state(private_state, state, m_reader_state_id);
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_M566(
@@ -494,15 +483,14 @@ void RepRapGCodeReader::process_M566(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     if (!update_axes(line, private_state.machine_jerk, 1.0 / 60.0)) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     commit_private_state(private_state, state, m_reader_state_id);
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_M568(
@@ -510,18 +498,17 @@ void RepRapGCodeReader::process_M568(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     const std::optional<uint32_t> tool = command_tool(line, state);
     if (!tool) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     const std::optional<float> active_temperature = line.parameter_value('S');
     const std::optional<float> standby_temperature = line.parameter_value('R');
     if (!active_temperature && !standby_temperature) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     if (standby_temperature)
@@ -529,11 +516,11 @@ void RepRapGCodeReader::process_M568(
     commit_private_state(private_state, state, m_reader_state_id);
     if (active_temperature)
         publish_items(run_context, context, state,
-                      RAW_GCODE_READER_EVENT_SET_TEMPERATURE, source,
+                      RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
                       {{RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, *tool,
                         double(*active_temperature)}});
     else
-        publish_state_update(run_context, context, state, source);
+        publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_M572(
@@ -541,31 +528,28 @@ void RepRapGCodeReader::process_M572(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     RepRapGCodeReaderState &private_state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     int32_t drive = -1;
     const std::optional<float> pressure = line.parameter_value('S');
     if (!pressure || !line.parameter_value('D', drive) || drive < 0) {
-        publish_unknown(run_context, context, state, source);
+        publish_unknown(run_context, context, state);
         return;
     }
     private_state.pressure_advance[static_cast<uint32_t>(drive)] = *pressure;
     commit_private_state(private_state, state, m_reader_state_id);
-    publish_state_update(run_context, context, state, source);
+    publish_state_update(run_context, context, state);
 }
 
 void RepRapGCodeReader::process_T_minus_1(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
-    GCodeStateTracker &state,
-    raw_gcode_reader_source source) const
+    GCodeStateTracker &state) const
 {
     const raw_gcode_reader_event_item active_tool = {
         RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0
     };
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE,
-                  source, {active_tool});
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, {active_tool});
 }
 
 bool RepRapGCodeReader::is_neutral_command(char letter, uint32_t number) const

@@ -254,11 +254,6 @@ private:
                 m_end_reached = true;
                 return;
             }
-            if (m_active_chunk.size() >
-                std::numeric_limits<uint64_t>::max() - m_supplied_bytes)
-                throw std::overflow_error(
-                    "G-code reader input exceeds the uint64_t source range.");
-            m_supplied_bytes += static_cast<uint64_t>(m_active_chunk.size());
             chunk.bytes = m_active_chunk.data();
             chunk.byte_count = static_cast<uint64_t>(m_active_chunk.size());
         }
@@ -268,9 +263,6 @@ private:
             if (m_final_state)
                 throw std::logic_error(
                     "The G-code reader emitted an event after its final state.");
-            if (event.source.end > m_supplied_bytes)
-                throw std::invalid_argument(
-                    "A G-code reader event refers to bytes not supplied by the caller.");
             m_event_state.apply(event);
         }
 
@@ -311,7 +303,6 @@ private:
         std::optional<GCodeStateTracker> m_final_state;
         std::string_view m_active_chunk;
         std::string m_error;
-        uint64_t m_supplied_bytes = 0;
         bool m_end_reached = false;
     };
 

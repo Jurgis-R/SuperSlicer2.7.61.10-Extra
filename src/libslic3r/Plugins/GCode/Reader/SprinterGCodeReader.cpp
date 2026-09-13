@@ -47,14 +47,13 @@ void SprinterGCodeReader::process_M204(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     if (const std::optional<float> acceleration = line.parameter_value('P'))
         items.push_back({RAW_GCODE_READER_ITEM_ACCELERATION, 0, double(*acceleration)});
     publish_items(run_context, context, state,
-                  RAW_GCODE_READER_EVENT_STATE_UPDATE, source, items);
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE, items);
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

@@ -5,8 +5,8 @@
 #ifndef slic3r_gcode_reader_h_
 #define slic3r_gcode_reader_h_
 
-#define SLIC3R_PLUGIN_API_GCODE_READER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 3u
+#define SLIC3R_PLUGIN_API_GCODE_READER_MAJOR 2u
+#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 0u
 
 #include <stdint.h>
 
@@ -37,9 +37,13 @@ The call sequence is:
       |<------- emit_final_state() ------|  exactly once, after end-of-stream
       |<---------------- return ---------|
 
-Published events describe what parsed commands did and retain their source byte
-ranges. Blank or comment-only lines may advance the final line cursor without
-an event. The final state describes only what is known after all commands.
+Published events describe what parsed commands did and identify their physical
+line through the mandatory LINE_NUMBER item. Blank or comment-only lines may
+advance the final line cursor without an event. The Reader is responsible for
+tracking this cursor across chunks, and the host treats the reported line as
+authoritative. The host separately indexes line endings for consumers that need
+to recover source text. The final state describes only what is known after all
+commands.
 Consumers which need a timeline use events; consumers which only need to
 continue generating G-code use the final state.
 
@@ -69,14 +73,6 @@ typedef struct raw_gcode_reader_result {
     raw_gcode_reader_status status;
     const char *error_message;
 } raw_gcode_reader_result;
-
-/* Zero-based half-open byte range in the complete input stream. Chunks are
-   contiguous, so a provider computes absolute ranges by accumulating their
-   byte counts. Empty ranges are valid for actions without textual payload. */
-typedef struct raw_gcode_reader_source {
-    uint64_t begin;
-    uint64_t end;
-} raw_gcode_reader_source;
 
 /* Semantic category of one parsed command. It is deliberately separate from
    state items: G1 X10 and G92 X10 may produce the same final X value but have
@@ -170,14 +166,13 @@ typedef enum raw_gcode_reader_item_type {
    selected Reader; callers must not transfer them to an unrelated Reader. */
 #define RAW_GCODE_READER_ITEM_CUSTOM_BEGIN ((uint32_t)0x80000000u)
 
-/* One normalized action. source identifies the command bytes in the complete
-   stream, not offsets within the current chunk. items contains the state delta
-   associated with the action and must include LINE_NUMBER. The structure and
-   item array are borrowed only during emit_event(); the host validates and
-   copies anything it keeps before returning. */
+/* One normalized action. items contains the state delta associated with the
+   action and must include LINE_NUMBER. The Reader supplies the authoritative
+   source line; several events may identify the same line. The structure and
+   item array are borrowed only during emit_event(); the host validates their
+   shape and copies anything it keeps before returning. */
 typedef struct raw_gcode_reader_event {
     uint32_t kind;
-    raw_gcode_reader_source source;
     const raw_gcode_reader_event_item *items;
     uint32_t item_count;
 } raw_gcode_reader_event;

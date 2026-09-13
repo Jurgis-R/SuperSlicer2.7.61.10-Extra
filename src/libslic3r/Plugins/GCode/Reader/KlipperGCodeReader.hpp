@@ -30,44 +30,38 @@ protected:
     bool consume_text_command(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const override;
+                              const GCodeLineParser::GCodeLine &line) const override;
     // Chain portable numeric commands first, then add Klipper M204.
     bool consume_numeric_command(const plugin_run_context &run_context,
                                  const run_ctx_gcode_reader &context,
                                  GCodeStateTracker &state,
                                  const GCodeLineParser::GCodeLine &line,
                                  char letter,
-                                 uint32_t number,
-                                 raw_gcode_reader_source source) const override;
+                                 uint32_t number) const override;
     // Resolve EXTRUDER=name against the Print configuration or conventional
     // external-file names and publish the resulting active tool.
     virtual void process_ACTIVATE_EXTRUDER(
         const plugin_run_context &run_context,
         const run_ctx_gcode_reader &context,
         GCodeStateTracker &state,
-        const GCodeLineParser::GCodeLine &line,
-        raw_gcode_reader_source source) const;
+        const GCodeLineParser::GCodeLine &line) const;
     // Preserve a valid pressure-advance command as a known state update. Its
     // value has no portable Reader item yet.
     virtual void process_SET_PRESSURE_ADVANCE(
         const plugin_run_context &run_context,
         const run_ctx_gcode_reader &context,
         GCodeStateTracker &state,
-        const GCodeLineParser::GCodeLine &line,
-        raw_gcode_reader_source source) const;
+        const GCodeLineParser::GCodeLine &line) const;
     // Publish Klipper PAUSE as a timeline marker.
     virtual void process_PAUSE(const plugin_run_context &run_context,
                                const run_ctx_gcode_reader &context,
-                               GCodeStateTracker &state,
-                               raw_gcode_reader_source source) const;
+                               GCodeStateTracker &state) const;
     // Resolve Klipper's S/P/T forms to the single portable acceleration active
     // after the command.
     virtual void process_M204(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const;
+                              const GCodeLineParser::GCodeLine &line) const;
     bool is_neutral_command(char letter, uint32_t number) const override;
     bool is_marker_command(char letter, uint32_t number) const override;
 

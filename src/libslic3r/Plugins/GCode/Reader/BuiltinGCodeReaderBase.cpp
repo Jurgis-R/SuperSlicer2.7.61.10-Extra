@@ -34,7 +34,7 @@ visible file or a firmware script without retaining input or parser state in
 the plugin singleton.
 
 Input may arrive in arbitrary chunks. The parser retains only an unfinished
-last line during run(), assigns byte ranges while complete lines are consumed,
+last line during run(), assigns line numbers while complete lines are consumed,
 then emits a normalized event for each command. Unknown commands invalidate
 portable and private machine state instead of letting a later host-generated
 command reuse a value which arbitrary dialect G-code may have changed.
@@ -230,7 +230,7 @@ int32_t BuiltinGCodeReaderBase::priority_impl() const noexcept
 
 bool BuiltinGCodeReaderBase::consume_text_command(
     const plugin_run_context &, const run_ctx_gcode_reader &, GCodeStateTracker &,
-    const GCodeLineParser::GCodeLine &, raw_gcode_reader_source) const
+    const GCodeLineParser::GCodeLine &) const
 {
     return false;
 }
@@ -256,13 +256,8 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
     // Chunks may split anywhere, including in CRLF and numeric parameters.
     // Retain only bytes after the last complete newline between pulls.
     std::string pending;
-    uint64_t pending_begin = 0;
-    uint64_t supplied_bytes = 0;
     std::string_view chunk;
     while (next_chunk(run_context, context, chunk)) {
-        if (chunk.size() > std::numeric_limits<uint64_t>::max() - supplied_bytes)
-            throw std::overflow_error("G-code reader input exceeds the uint64_t source range.");
-        supplied_bytes += static_cast<uint64_t>(chunk.size());
         pending.append(chunk.data(), chunk.size());
         size_t consumed = 0;
         size_t line_end = 0;
@@ -271,8 +266,7 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
             const size_t text_size = line_end > 0 && pending[line_end - 1] == '\r' ? line_end - 1 : line_end;
             const size_t line_size = text_size - line_begin;
             consume_line(run_context, context, state,
-                         std::string_view(pending.data() + line_begin, line_size),
-                         pending_begin + line_begin, pending_begin + text_size);
+                         std::string_view(pending.data() + line_begin, line_size));
             consumed = line_end + 1;
             state.advance_line_number();
         }
@@ -282,11 +276,10 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
         // and make a large input chunk quadratic to consume.
         if (consumed != 0) {
             pending.erase(0, consumed);
-            pending_begin += static_cast<uint64_t>(consumed);
         }
     }
     if (!pending.empty())
-        consume_line(run_context, context, state, pending, pending_begin, pending_begin + pending.size());
+        consume_line(run_context, context, state, pending);
     validate_private_state(state);
 }
 
@@ -295,7 +288,6 @@ void BuiltinGCodeReaderBase::publish_items(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     raw_gcode_reader_event_kind kind,
-    raw_gcode_reader_source source,
     const std::vector<raw_gcode_reader_event_item> &items) const
 {
     // LINE_NUMBER is mandatory in every event and belongs to this session's
@@ -312,7 +304,6 @@ void BuiltinGCodeReaderBase::publish_items(
 
     raw_gcode_reader_event event = {};
     event.kind = kind;
-    event.source = source;
     event.items = event_items.data();
     event.item_count = static_cast<uint32_t>(event_items.size());
     publish(run_context, context, state, event);
@@ -321,17 +312,15 @@ void BuiltinGCodeReaderBase::publish_items(
 void BuiltinGCodeReaderBase::publish_state_update(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
-    GCodeStateTracker &state,
-    raw_gcode_reader_source source) const
+    GCodeStateTracker &state) const
 {
     publish_items(run_context, context, state,
-                  RAW_GCODE_READER_EVENT_STATE_UPDATE, source, {});
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE, {});
 }
 
 void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_context,
                                              const run_ctx_gcode_reader &context,
-                                             GCodeStateTracker &state,
-                                             raw_gcode_reader_source source) const
+                                             GCodeStateTracker &state) const
 {
     // One unsupported command may have changed any portable or private value. Send
     // an INVALIDATE item for every currently known value so downstream writers
@@ -346,37 +335,33 @@ void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_conte
             item.type != RAW_GCODE_READER_ITEM_READER_ID)
             items.push_back(item);
     }
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, source, items);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, items);
 }
 
 void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
                                          const run_ctx_gcode_reader &context,
                                          GCodeStateTracker &state,
-                                         std::string_view text,
-                                         uint64_t begin,
-                                         uint64_t end) const
+                                         std::string_view text) const
 {
     // Convert one parsed command into the shared event vocabulary. Commands
     // outside the common subset and the derived dialect hooks invalidate
     // portable state so later output never relies on guessed machine values.
     GCodeLineParser parser;
     parser.parse_line(std::string(text),
-                      [this, &run_context, &context, &state, begin, end](
+                      [this, &run_context, &context, &state](
                           GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
         const std::string_view command = line.command();
         if (command.empty())
             return;
-        raw_gcode_reader_source source = {begin, end};
-
-        if (consume_text_command(run_context, context, state, line, source))
+        if (consume_text_command(run_context, context, state, line))
             return;
 
         const char letter = command.front();
         const std::optional<uint32_t> number = command_number(command);
         if (!number)
-            return publish_unknown(run_context, context, state, source);
+            return publish_unknown(run_context, context, state);
         if (consume_numeric_command(run_context, context, state, line,
-                                    letter, *number, source))
+                                    letter, *number))
             return;
 
         if (is_neutral_command(letter, *number)) {
@@ -386,13 +371,13 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
             // neutral preserves the state values they cannot change.
         } else if (is_marker_command(letter, *number)) {
             publish_items(run_context, context, state,
-                          RAW_GCODE_READER_EVENT_MARKER, source, {});
+                          RAW_GCODE_READER_EVENT_MARKER, {});
             return;
         } else {
-            publish_unknown(run_context, context, state, source);
+            publish_unknown(run_context, context, state);
             return;
         }
-        publish_state_update(run_context, context, state, source);
+        publish_state_update(run_context, context, state);
     });
 }
 
@@ -402,37 +387,36 @@ bool BuiltinGCodeReaderBase::consume_numeric_command(
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
     char letter,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     if (letter == 'G' && (number == 0 || number == 1))
-        process_G0_G1(run_context, context, state, line, source);
+        process_G0_G1(run_context, context, state, line);
     else if (letter == 'G' && (number == 2 || number == 3))
-        process_G2_G3(run_context, context, state, line, number, source);
+        process_G2_G3(run_context, context, state, line, number);
     else if (letter == 'G' && (number == 20 || number == 21))
-        process_G20_G21(run_context, context, state, number, source);
+        process_G20_G21(run_context, context, state, number);
     else if (letter == 'G' && (number == 90 || number == 91))
-        process_G90_G91(run_context, context, state, number, source);
+        process_G90_G91(run_context, context, state, number);
     else if (letter == 'G' && number == 92)
-        process_G92(run_context, context, state, line, source);
+        process_G92(run_context, context, state, line);
     else if (letter == 'M' && (number == 82 || number == 83))
-        process_M82_M83(run_context, context, state, number, source);
+        process_M82_M83(run_context, context, state, number);
     else if (letter == 'T')
-        process_T(run_context, context, state, number, source);
+        process_T(run_context, context, state, number);
     else if (letter == 'M' && (number == 104 || number == 109))
-        process_M104_M109(run_context, context, state, line, number, source);
+        process_M104_M109(run_context, context, state, line, number);
     else if (letter == 'M' && (number == 140 || number == 190))
-        process_M140_M190(run_context, context, state, line, number, source);
+        process_M140_M190(run_context, context, state, line, number);
     else if (letter == 'M' && (number == 141 || number == 191))
-        process_M141_M191(run_context, context, state, line, number, source);
+        process_M141_M191(run_context, context, state, line, number);
     else if (letter == 'M' && (number == 106 || number == 107))
-        process_M106_M107(run_context, context, state, line, number, source);
+        process_M106_M107(run_context, context, state, line, number);
     else if (letter == 'M' && number == 220)
-        process_M220(run_context, context, state, line, source);
+        process_M220(run_context, context, state, line);
     else if (letter == 'M' && number == 221)
-        process_M221(run_context, context, state, line, source);
+        process_M221(run_context, context, state, line);
     else if (letter == 'M' && number == 117)
-        process_M117(run_context, context, state, source);
+        process_M117(run_context, context, state);
     else
         return false;
     return true;
@@ -442,15 +426,12 @@ void BuiltinGCodeReaderBase::process_G0_G1(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     ParsedMovementItems movement = parse_movement_items(state, line);
     if (!movement.invalidated.empty())
-        publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE,
-                      source, movement.invalidated);
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
-                  source, movement.values);
+        publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, movement.invalidated);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE, movement.values);
 }
 
 void BuiltinGCodeReaderBase::process_G2_G3(
@@ -458,8 +439,7 @@ void BuiltinGCodeReaderBase::process_G2_G3(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     ParsedMovementItems movement = parse_movement_items(state, line);
     const std::pair<char, uint32_t> centers[] = {
@@ -474,21 +454,17 @@ void BuiltinGCodeReaderBase::process_G2_G3(
     movement.values.push_back({RAW_GCODE_READER_ITEM_ARC_CLOCKWISE, 0,
                                number == 2 ? 1.0 : 0.0});
     if (!movement.invalidated.empty())
-        publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE,
-                      source, movement.invalidated);
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_ARC_MOVE,
-                  source, movement.values);
+        publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, movement.invalidated);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_ARC_MOVE, movement.values);
 }
 
 void BuiltinGCodeReaderBase::process_G20_G21(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                  source, {{RAW_GCODE_READER_ITEM_UNITS_MM, 0,
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE, {{RAW_GCODE_READER_ITEM_UNITS_MM, 0,
                             number == 21 ? 1.0 : 0.0}});
 }
 
@@ -496,11 +472,9 @@ void BuiltinGCodeReaderBase::process_G90_G91(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                  source, {{RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, 0,
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE, {{RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, 0,
                             number == 90 ? 1.0 : 0.0}});
 }
 
@@ -508,8 +482,7 @@ void BuiltinGCodeReaderBase::process_G92(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     const std::pair<char, uint32_t> axes[] = {
@@ -520,19 +493,16 @@ void BuiltinGCodeReaderBase::process_G92(
         if (const std::optional<float> value = line.parameter_value(axis.first))
             items.push_back({axis.second, axis.first == 'E' ? active_tool(state) : 0,
                              double(*value) * unit_scale(state)});
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_SET_POSITION,
-                  source, items);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_SET_POSITION, items);
 }
 
 void BuiltinGCodeReaderBase::process_M82_M83(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                  source, {{RAW_GCODE_READER_ITEM_E_ABSOLUTE, 0,
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE, {{RAW_GCODE_READER_ITEM_E_ABSOLUTE, 0,
                             number == 82 ? 1.0 : 0.0}});
 }
 
@@ -540,11 +510,9 @@ void BuiltinGCodeReaderBase::process_T(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    uint32_t tool,
-    raw_gcode_reader_source source) const
+    uint32_t tool) const
 {
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                  source, {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(tool)}});
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE, {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(tool)}});
 }
 
 void BuiltinGCodeReaderBase::process_M104_M109(
@@ -552,13 +520,12 @@ void BuiltinGCodeReaderBase::process_M104_M109(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     const std::optional<float> temperature = line.parameter_value('S');
     if (!temperature) {
-        publish_state_update(run_context, context, state, source);
+        publish_state_update(run_context, context, state);
         return;
     }
     int32_t requested_tool = int32_t(active_tool(state));
@@ -568,8 +535,7 @@ void BuiltinGCodeReaderBase::process_M104_M109(
                          uint32_t(requested_tool), double(*temperature)});
     publish_items(run_context, context, state,
                   number == 109 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
-                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
-                  source, items);
+                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE, items);
 }
 
 void BuiltinGCodeReaderBase::process_M140_M190(
@@ -577,21 +543,19 @@ void BuiltinGCodeReaderBase::process_M140_M190(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     const std::optional<float> temperature = line.parameter_value('S');
     if (!temperature) {
-        publish_state_update(run_context, context, state, source);
+        publish_state_update(run_context, context, state);
         return;
     }
     items.push_back({RAW_GCODE_READER_ITEM_BED_TEMPERATURE, 0,
                      double(*temperature)});
     publish_items(run_context, context, state,
                   number == 190 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
-                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
-                  source, items);
+                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE, items);
 }
 
 void BuiltinGCodeReaderBase::process_M141_M191(
@@ -599,21 +563,19 @@ void BuiltinGCodeReaderBase::process_M141_M191(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     const std::optional<float> temperature = line.parameter_value('S');
     if (!temperature) {
-        publish_state_update(run_context, context, state, source);
+        publish_state_update(run_context, context, state);
         return;
     }
     items.push_back({RAW_GCODE_READER_ITEM_CHAMBER_TEMPERATURE, 0,
                      double(*temperature)});
     publish_items(run_context, context, state,
                   number == 191 ? RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE :
-                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE,
-                  source, items);
+                                  RAW_GCODE_READER_EVENT_SET_TEMPERATURE, items);
 }
 
 void BuiltinGCodeReaderBase::process_M106_M107(
@@ -621,8 +583,7 @@ void BuiltinGCodeReaderBase::process_M106_M107(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     int32_t fan = 0;
@@ -635,48 +596,41 @@ void BuiltinGCodeReaderBase::process_M106_M107(
                              std::clamp(double(*raw_speed) * 100.0 / 255.0,
                                         0.0, 100.0)});
     }
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                  source, items);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE, items);
 }
 
 void BuiltinGCodeReaderBase::process_M220(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     if (const std::optional<float> factor = line.parameter_value('S'))
         items.push_back({RAW_GCODE_READER_ITEM_SPEED_FACTOR, 0, double(*factor)});
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                  source, items);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE, items);
 }
 
 void BuiltinGCodeReaderBase::process_M221(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
-    const GCodeLineParser::GCodeLine &line,
-    raw_gcode_reader_source source) const
+    const GCodeLineParser::GCodeLine &line) const
 {
     std::vector<raw_gcode_reader_event_item> items;
     if (const std::optional<float> factor = line.parameter_value('S'))
         items.push_back({RAW_GCODE_READER_ITEM_EXTRUSION_FACTOR, 0, double(*factor)});
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
-                  source, items);
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE, items);
 }
 
 void BuiltinGCodeReaderBase::process_M117(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
-    GCodeStateTracker &state,
-    raw_gcode_reader_source source) const
+    GCodeStateTracker &state) const
 {
     // Display text belongs in the timeline but cannot change the portable
     // motion state needed by the next movement.
-    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_DIAGNOSTIC,
-                  source, {});
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_DIAGNOSTIC, {});
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

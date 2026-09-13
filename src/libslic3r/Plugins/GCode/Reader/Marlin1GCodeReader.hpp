@@ -28,8 +28,7 @@ protected:
     void process_M204(const plugin_run_context &run_context,
                       const run_ctx_gcode_reader &context,
                       GCodeStateTracker &state,
-                      const GCodeLineParser::GCodeLine &line,
-                      raw_gcode_reader_source source) const override;
+                      const GCodeLineParser::GCodeLine &line) const override;
 
 private:
     const char *id_impl() const noexcept override;

@@ -42,23 +42,20 @@ protected:
                                  GCodeStateTracker &state,
                                  const GCodeLineParser::GCodeLine &line,
                                  char letter,
-                                 uint32_t number,
-                                 raw_gcode_reader_source source) const override;
+                                 uint32_t number) const override;
     // Marlin accepts R as the M109 target when S is absent. Other temperature
     // forms retain the portable implementation.
     void process_M104_M109(const plugin_run_context &run_context,
                            const run_ctx_gcode_reader &context,
                            GCodeStateTracker &state,
                            const GCodeLineParser::GCodeLine &line,
-                           uint32_t number,
-                           raw_gcode_reader_source source) const override;
+                           uint32_t number) const override;
     // M204 has incompatible parameter semantics across this family. Every
     // concrete Reader must publish exactly one synchronous event for it.
     virtual void process_M204(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state,
-                              const GCodeLineParser::GCodeLine &line,
-                              raw_gcode_reader_source source) const = 0;
+                              const GCodeLineParser::GCodeLine &line) const = 0;
     bool is_neutral_command(char letter, uint32_t number) const override;
     bool is_marker_command(char letter, uint32_t number) const override;
 };

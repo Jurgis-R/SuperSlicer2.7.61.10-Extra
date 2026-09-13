@@ -30,15 +30,14 @@ bool MarlinGCodeReaderBase::consume_numeric_command(
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
     char letter,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     if (BuiltinGCodeReaderBase::consume_numeric_command(
-            run_context, context, state, line, letter, number, source))
+            run_context, context, state, line, letter, number))
         return true;
     if (letter != 'M' || number != 204)
         return false;
-    process_M204(run_context, context, state, line, source);
+    process_M204(run_context, context, state, line);
     return true;
 }
 
@@ -47,8 +46,7 @@ void MarlinGCodeReaderBase::process_M104_M109(
     const run_ctx_gcode_reader &context,
     GCodeStateTracker &state,
     const GCodeLineParser::GCodeLine &line,
-    uint32_t number,
-    raw_gcode_reader_source source) const
+    uint32_t number) const
 {
     // R on M109 selects the same target as S but also waits while cooling.
     if (number == 109 && !line.parameter_value('S')) {
@@ -61,12 +59,12 @@ void MarlinGCodeReaderBase::process_M104_M109(
                 items.push_back({RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE,
                                  uint32_t(requested_tool), double(*temperature)});
             publish_items(run_context, context, state,
-                          RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE, source, items);
+                          RAW_GCODE_READER_EVENT_WAIT_TEMPERATURE, items);
             return;
         }
     }
     BuiltinGCodeReaderBase::process_M104_M109(
-        run_context, context, state, line, number, source);
+        run_context, context, state, line, number);
 }
 
 bool MarlinGCodeReaderBase::is_neutral_command(char letter, uint32_t number) const

@@ -160,7 +160,6 @@ class GCodeReaderService:
             _copied_items(initial)
             invocation = {
                 "end_reached": False,
-                "supplied_bytes": 0,
                 "final_items": None,
                 "error": None,
                 "active_chunk": b"",
@@ -190,9 +189,6 @@ class GCodeReaderService:
                     if not raw_chunk:
                         invocation["end_reached"] = True
                     else:
-                        invocation["supplied_bytes"] += len(raw_chunk)
-                        if invocation["supplied_bytes"] > 0xFFFFFFFFFFFFFFFF:
-                            raise OverflowError("G-code Reader input exceeds uint64 range")
                         chunk_pointer.contents.bytes = raw_chunk
                         chunk_pointer.contents.byte_count = len(raw_chunk)
                     result_pointer.contents.status = RAW_GCODE_READER_STATUS_SUCCESS
@@ -208,10 +204,6 @@ class GCodeReaderService:
                     kind = int(event.kind)
                     if kind < int(RAW_GCODE_READER_EVENT_STATE_UPDATE) or kind > int(RAW_GCODE_READER_EVENT_INVALIDATE):
                         raise ValueError("the Reader emitted an unknown event kind")
-                    if int(event.source.begin) > int(event.source.end):
-                        raise ValueError("the Reader emitted an inverted source range")
-                    if int(event.source.end) > invocation["supplied_bytes"]:
-                        raise ValueError("the Reader event refers to bytes not supplied by the caller")
                     _copied_items(event)
                     result_pointer.contents.status = RAW_GCODE_READER_STATUS_SUCCESS
                     result_pointer.contents.error_message = None
