@@ -67,6 +67,7 @@ struct FirmwareDefinition
     const char *name;
     const char *description;
     int32_t priority;
+    const char *reader_state_name;
     FirmwareSessionFactory factory;
     const raw_used_config_key *extra_used_config_keys;
     size_t extra_used_config_key_count;
@@ -137,6 +138,7 @@ const FirmwareDefinition k_marlin2_definition = {
     "Marlin 2",
     "G-code firmware session for Marlin 2.",
     0,
+    nullptr,
     &create_session<Marlin2GCodeFirmwareSession>,
     nullptr,
     0,
@@ -148,6 +150,7 @@ const FirmwareDefinition k_marlin1_definition = {
     "Marlin 1",
     "G-code firmware session for Marlin 1.",
     10,
+    nullptr,
     &create_session<Marlin1GCodeFirmwareSession>,
     nullptr,
     0,
@@ -159,6 +162,7 @@ const FirmwareDefinition k_prusa_definition = {
     "Prusa firmware",
     "G-code firmware session for Prusa firmware.",
     20,
+    nullptr,
     &create_session<PrusaGCodeFirmwareSession>,
     nullptr,
     0,
@@ -170,6 +174,7 @@ const FirmwareDefinition k_reprap_definition = {
     "RepRapFirmware",
     "G-code firmware session for RepRapFirmware.",
     30,
+    Reader::REPRAP_READER_STATE_NAME,
     &create_session<RepRapGCodeFirmwareSession>,
     nullptr,
     0,
@@ -181,6 +186,7 @@ const FirmwareDefinition k_sprinter_definition = {
     "Sprinter",
     "G-code firmware session for Sprinter.",
     40,
+    nullptr,
     &create_session<SprinterGCodeFirmwareSession>,
     nullptr,
     0,
@@ -192,6 +198,7 @@ const FirmwareDefinition k_klipper_definition = {
     "Klipper",
     "G-code firmware session for Klipper.",
     50,
+    nullptr,
     &create_session<KlipperGCodeFirmwareSession>,
     k_klipper_used_config_keys,
     std::size(k_klipper_used_config_keys),
@@ -204,8 +211,15 @@ public:
     BuiltinGCodeFirmwarePlugin(orchestrator_handle *orchestrator,
                                const FirmwareDefinition &definition) :
         PluginBase(orchestrator),
-        m_definition(definition)
-    {}
+        m_definition(definition),
+        m_reader_state_id(definition.reader_state_name == nullptr ?
+            GCODE_READER_STATE_ID_PORTABLE :
+            orchestrator_register_runtime_id(orchestrator,
+                GCODE_READER_STATE_ID_TYPE, definition.reader_state_name))
+    {
+        if (m_reader_state_id == ORCHESTRATOR_RUNTIME_ID_INVALID)
+            throw std::runtime_error("The firmware Reader state identity could not be registered.");
+    }
 
 private:
     const char *id_impl() const noexcept override { return m_definition.id; }
@@ -225,6 +239,7 @@ private:
     void run_impl(const plugin_run_context *run_ctx) const override;
 
     const FirmwareDefinition &m_definition;
+    uint32_t m_reader_state_id;
 };
 
 int32_t BuiltinGCodeFirmwarePlugin::used_config_keys(raw_used_config_key *keys) const noexcept
@@ -266,10 +281,12 @@ void BuiltinGCodeFirmwarePlugin::run_impl(const plugin_run_context *run_ctx) con
     const GCodeScriptProcessorView scripts = context->script_processor != nullptr ?
         GCodeScriptProcessorView(context->script_processor) : GCodeScriptProcessorView();
     std::unique_ptr<GCodeFirmwareSession> session = m_definition.factory(scripts, run_ctx->plugin_storage);
-    static_cast<DefaultGCodeFirmwareSession &>(*session).set_thumbnail_services(
+    DefaultGCodeFirmwareSession &default_session =
+        static_cast<DefaultGCodeFirmwareSession &>(*session);
+    default_session.set_reader_state_id(m_reader_state_id);
+    default_session.set_thumbnail_services(
         m_orchestrator, context->thumbnail_renderer);
-    static_cast<DefaultGCodeFirmwareSession &>(*session).set_gcode_reader_service(
-        context->reader_service);
+    default_session.set_gcode_reader_service(context->reader_service);
     context->instance = make_gcode_firmware_instance(std::move(session));
 }
 

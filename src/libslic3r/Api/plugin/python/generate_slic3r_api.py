@@ -64,6 +64,7 @@ TYPE_ALIASES = {
     "extrusion_data_id": "uint32_t",
     "print_record_id": "uint32_t",
     "gcode_script_type": "uint32_t",
+    "orchestrator_runtime_id": "uint32_t",
     "infill_pattern_runtime_id": "uint32_t",
     "expolygon_status": "int32_t",
     "raw_extrusion_split_status": "int32_t",
@@ -264,8 +265,14 @@ def clean_type(c_type: str) -> str:
 
 
 def strip_casts(expr: str) -> str:
+    # Public constants commonly cast a sentinel to their semantic typedef.
+    # Keep this list derived from TYPE_ALIASES so adding another generated
+    # scalar typedef does not silently make its constants disappear.
+    cast_types = [r"uint\d+_t", r"int\d+_t"] + [
+        re.escape(alias) for alias in TYPE_ALIASES
+    ]
     return re.sub(
-        r"\(\s*(?:uint\d+_t|int\d+_t|coord_t|distf_t|coordf_t|slic3r_property_type|plugin_property_type|extrusion_property_type|extrusion_data_id|gcode_script_type)\s*\)",
+        r"\(\s*(?:" + "|".join(cast_types) + r")\s*\)",
         "",
         expr,
     )

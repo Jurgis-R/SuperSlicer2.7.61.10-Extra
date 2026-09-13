@@ -322,7 +322,10 @@ raw_plugin_execution_status execute_default_reader(
 raw_plugin_execution_status execute_reader(
     const char *reader_id, ReaderProbe &probe,
     const raw_gcode_reader_state &initial, Print *print = nullptr);
-raw_gcode_reader_state initial_state(std::vector<raw_gcode_reader_event_item> &items);
+uint32_t reprap_reader_state_id();
+raw_gcode_reader_state initial_state(
+    std::vector<raw_gcode_reader_event_item> &items,
+    uint32_t reader_state_id = GCODE_READER_STATE_ID_PORTABLE);
 
 void supply_chunk(void *context,
                   raw_gcode_reader_chunk *chunk,
@@ -392,7 +395,20 @@ raw_plugin_execution_status execute_reader(
     return orchestrator.execute_plugin(*plugin, print, &payload, 1);
 }
 
-raw_gcode_reader_state initial_state(std::vector<raw_gcode_reader_event_item> &items)
+uint32_t reprap_reader_state_id()
+{
+    const orchestrator_runtime_id id = orchestrator_register_runtime_id(
+        reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+        GCODE_READER_STATE_ID_TYPE,
+        slic3r_api::GCodeGeneration::Reader::REPRAP_READER_STATE_NAME);
+    if (id == ORCHESTRATOR_RUNTIME_ID_INVALID)
+        throw std::runtime_error("The RepRap Reader state identity could not be registered for the test.");
+    return id;
+}
+
+raw_gcode_reader_state initial_state(
+    std::vector<raw_gcode_reader_event_item> &items,
+    uint32_t reader_state_id)
 {
     items = {
         {RAW_GCODE_READER_ITEM_X, 0, 1.0},
@@ -403,6 +419,7 @@ raw_gcode_reader_state initial_state(std::vector<raw_gcode_reader_event_item> &i
         {RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE, 0, 1.0},
         {RAW_GCODE_READER_ITEM_E_ABSOLUTE, 0, 1.0},
         {RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+        {RAW_GCODE_READER_ITEM_READER_ID, 0, double(reader_state_id)},
         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}
     };
     raw_gcode_reader_state state = {};
@@ -510,6 +527,9 @@ TEST_CASE("Dialect G-code readers preserve and update representable state",
     Orchestrator &orchestrator = Orchestrator::instance();
     std::vector<raw_gcode_reader_event_item> initial_items;
     const raw_gcode_reader_state initial = initial_state(initial_items);
+    std::vector<raw_gcode_reader_event_item> reprap_initial_items;
+    const raw_gcode_reader_state reprap_initial = initial_state(
+        reprap_initial_items, reprap_reader_state_id());
 
     const slic3r_api::GCodeStateTracker marlin = read_gcode(
         orchestrator, nullptr, "gcode.reader.marlin", initial,
@@ -523,7 +543,7 @@ TEST_CASE("Dialect G-code readers preserve and update representable state",
     CHECK(marlin.known(RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE_REACHED, 1));
 
     const slic3r_api::GCodeStateTracker reprap = read_gcode(
-        orchestrator, nullptr, "gcode.reader.reprap", initial,
+        orchestrator, nullptr, "gcode.reader.reprap", reprap_initial,
         "G10 P1 S215\nM116 P1\nM106 P2 S0.5\nM566 X600\nM572 D1 S0.03\n");
     REQUIRE(reprap.tool_temperature(1));
     CHECK(*reprap.tool_temperature(1) == Approx(215.0));
@@ -582,6 +602,9 @@ TEST_CASE("Dialect G-code readers preserve state across recognized control comma
     Orchestrator &orchestrator = Orchestrator::instance();
     std::vector<raw_gcode_reader_event_item> initial_items;
     const raw_gcode_reader_state initial = initial_state(initial_items);
+    std::vector<raw_gcode_reader_event_item> reprap_initial_items;
+    const raw_gcode_reader_state reprap_initial = initial_state(
+        reprap_initial_items, reprap_reader_state_id());
 
     const slic3r_api::GCodeStateTracker marlin = read_gcode(
         orchestrator, nullptr, "gcode.reader.marlin", initial,
@@ -590,7 +613,7 @@ TEST_CASE("Dialect G-code readers preserve state across recognized control comma
     CHECK(marlin.x() == Approx(1.0));
 
     const slic3r_api::GCodeStateTracker reprap = read_gcode(
-        orchestrator, nullptr, "gcode.reader.reprap", initial,
+        orchestrator, nullptr, "gcode.reader.reprap", reprap_initial,
         "G4 P1\nM201 X1000\nM203 X18000\nM204 P800 T1000\n"
         "M566 X600\nM572 D0 S0.02\nM906 E800\nM600\nM226\n");
     CHECK(reprap.x() == Approx(1.0));
@@ -601,7 +624,7 @@ TEST_CASE("Dialect G-code readers preserve state across recognized control comma
     CHECK(klipper.x() == Approx(1.0));
 
     const slic3r_api::GCodeStateTracker malformed_reprap = read_gcode(
-        orchestrator, nullptr, "gcode.reader.reprap", initial, "G10 P0\n");
+        orchestrator, nullptr, "gcode.reader.reprap", reprap_initial, "G10 P0\n");
     CHECK_FALSE(malformed_reprap.x());
 
     const slic3r_api::GCodeStateTracker unknown_marlin = read_gcode(
@@ -820,21 +843,34 @@ TEST_CASE("G-code reader transports provider-private scalar state opaquely",
 TEST_CASE("G-code reader rejects a state owned by another Reader identity",
           "[plugins][gcode][reader][state]")
 {
-    slic3r_api::GCodeStateTracker tracker;
-    tracker.set_reader_id(19u);
-    CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker),
-                      Catch::Matchers::Contains("does not belong to RepRapFirmware"));
+    const uint32_t expected_id = reprap_reader_state_id();
+    REQUIRE(expected_id >= ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN);
 
-    RepRapGCodeReaderState state;
-    CHECK_THROWS_WITH(state.write_to(tracker),
-                      Catch::Matchers::Contains("another Reader identity"));
+    SECTION("missing identity normalizes to the portable schema") {
+        slic3r_api::GCodeStateTracker tracker;
+        CHECK(tracker.reader_id() == GCODE_READER_STATE_ID_PORTABLE);
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, expected_id),
+                          Catch::Matchers::Contains("does not belong to RepRapFirmware"));
+    }
+    SECTION("foreign dynamic identity") {
+        slic3r_api::GCodeStateTracker tracker;
+        tracker.set_reader_id(expected_id + 1u);
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, expected_id),
+                          Catch::Matchers::Contains("does not belong to RepRapFirmware"));
+
+        RepRapGCodeReaderState state;
+        CHECK_THROWS_WITH(state.write_to(tracker, expected_id),
+                          Catch::Matchers::Contains("another Reader identity"));
+    }
 }
 
 TEST_CASE("RepRap reader private state round-trips mappings and preserves unknown keys",
           "[plugins][gcode][reader][reprap][state]")
 {
     using namespace slic3r_api::GCodeGeneration::Reader;
+    const uint32_t reader_state_id = reprap_reader_state_id();
     slic3r_api::GCodeStateTracker tracker;
+    tracker.set_reader_id(reader_state_id);
     const uint32_t future_key = RAW_GCODE_READER_ITEM_CUSTOM_BEGIN + 0x700000u;
     tracker.set_custom_value(future_key, 4u, 19.0);
 
@@ -851,9 +887,10 @@ TEST_CASE("RepRap reader private state round-trips mappings and preserves unknow
     tool.offset = {1.5, -2.0, 0.25};
     tool.retracted = true;
     written.tools[9];
-    written.write_to(tracker);
+    written.write_to(tracker, reader_state_id);
 
-    const RepRapGCodeReaderState decoded = RepRapGCodeReaderState::from_tracker(tracker);
+    const RepRapGCodeReaderState decoded =
+        RepRapGCodeReaderState::from_tracker(tracker, reader_state_id);
     CHECK(decoded.print_acceleration == 800.0);
     CHECK(decoded.travel_acceleration == 1500.0);
     CHECK(decoded.max_feedrate[0] == 300.0);
@@ -874,43 +911,49 @@ TEST_CASE("RepRap reader private mappings reject malformed slot lists",
           "[plugins][gcode][reader][reprap][state]")
 {
     using namespace slic3r_api::GCodeGeneration::Reader;
+    const uint32_t reader_state_id = reprap_reader_state_id();
     SECTION("missing slot") {
         slic3r_api::GCodeStateTracker tracker;
+        tracker.set_reader_id(reader_state_id);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_COUNT, 0, 2.0);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_SLOT_BEGIN, 0, 3.0);
-        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker),
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, reader_state_id),
                           Catch::Matchers::Contains("missing indexed slot"));
     }
     SECTION("duplicate device") {
         slic3r_api::GCodeStateTracker tracker;
+        tracker.set_reader_id(reader_state_id);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_COUNT, 0, 2.0);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_SLOT_BEGIN, 0, 3.0);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_SLOT_BEGIN + 1u, 0, 3.0);
-        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker),
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, reader_state_id),
                           Catch::Matchers::Contains("duplicate device"));
     }
     SECTION("slot beyond count") {
         slic3r_api::GCodeStateTracker tracker;
+        tracker.set_reader_id(reader_state_id);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_COUNT, 0, 1.0);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_SLOT_BEGIN, 0, 3.0);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_SLOT_BEGIN + 1u, 0, 4.0);
-        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker),
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, reader_state_id),
                           Catch::Matchers::Contains("beyond its count"));
     }
     SECTION("invalid count") {
         slic3r_api::GCodeStateTracker tracker;
+        tracker.set_reader_id(reader_state_id);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_COUNT, 0, -1.0);
-        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker),
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, reader_state_id),
                           Catch::Matchers::Contains("exact uint32"));
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_COUNT, 0, 1.5);
-        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker),
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, reader_state_id),
                           Catch::Matchers::Contains("exact uint32"));
     }
     SECTION("invalid device id") {
         slic3r_api::GCodeStateTracker tracker;
+        tracker.set_reader_id(reader_state_id);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_COUNT, 0, 1.0);
         tracker.set_custom_value(RRF_ITEM_TOOL_DRIVE_SLOT_BEGIN, 0, 2.5);
-        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker),
+        CHECK_THROWS_WITH(RepRapGCodeReaderState::from_tracker(tracker, reader_state_id),
                           Catch::Matchers::Contains("exact uint32"));
     }
 }
@@ -921,7 +964,8 @@ TEST_CASE("RepRap reader parses its operational private state",
     ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
     std::vector<raw_gcode_reader_event_item> initial_items;
-    const raw_gcode_reader_state initial = initial_state(initial_items);
+    const uint32_t reader_state_id = reprap_reader_state_id();
+    const raw_gcode_reader_state initial = initial_state(initial_items, reader_state_id);
 
     const slic3r_api::GCodeStateTracker tracked = read_gcode(
         orchestrator, nullptr, "gcode.reader.reprap", initial,
@@ -938,7 +982,8 @@ TEST_CASE("RepRap reader parses its operational private state",
         "M106 S0.25\n"
         "G10\nG11\nM116\n");
 
-    const RepRapGCodeReaderState state = RepRapGCodeReaderState::from_tracker(tracked);
+    const RepRapGCodeReaderState state =
+        RepRapGCodeReaderState::from_tracker(tracked, reader_state_id);
     REQUIRE(state.tools.count(2) == 1);
     const RepRapToolState &tool = state.tools.at(2);
     CHECK(tool.drives == std::vector<uint32_t>{3, 4});
@@ -987,7 +1032,8 @@ TEST_CASE("RepRap Reader dispatches one overridden dialect handler",
 {
     ensure_plugin_test_runtime_initialized();
     std::vector<raw_gcode_reader_event_item> initial_items;
-    const raw_gcode_reader_state initial = initial_state(initial_items);
+    const uint32_t reader_state_id = reprap_reader_state_id();
+    const raw_gcode_reader_state initial = initial_state(initial_items, reader_state_id);
     ReaderProbe probe;
     probe.chunks = {"G10\nM201 X1200\n"};
 
@@ -998,7 +1044,7 @@ TEST_CASE("RepRap Reader dispatches one overridden dialect handler",
     CHECK(probe.observed[0].kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
     CHECK(probe.observed[1].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
     const RepRapGCodeReaderState state =
-        RepRapGCodeReaderState::from_tracker(*probe.final_state);
+        RepRapGCodeReaderState::from_tracker(*probe.final_state, reader_state_id);
     CHECK(state.max_acceleration[0] == 1200.0);
 }
 

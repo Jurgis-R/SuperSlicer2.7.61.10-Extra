@@ -82,7 +82,7 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         cls.generated_directory.cleanup()
 
     def test_reader_identity_and_custom_range_constants_are_generated(self):
-        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_GCODE_READER_MINOR, 2)
+        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_GCODE_READER_MINOR, 3)
         self.assertGreater(
             self.generated.RAW_GCODE_READER_ITEM_READER_ID,
             self.generated.RAW_GCODE_READER_ITEM_LINE_NUMBER,

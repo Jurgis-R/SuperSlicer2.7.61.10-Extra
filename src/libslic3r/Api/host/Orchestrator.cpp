@@ -22,6 +22,7 @@
 #include <boost/filesystem.hpp>
 
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_gcode_reader.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/slic3r_plugin_types.h"
 #include "libslic3r/Config/ConfigDef.hpp"
@@ -673,6 +674,13 @@ namespace Slic3r {
 Orchestrator::Orchestrator()
 {
     link_config_definition_api();
+    // Zero is a real schema identity, not an allocation failure. Registering it
+    // here lets generic callers resolve the portable Reader schema by name
+    // while keeping the complete lower half unavailable to plugin allocation.
+    const bool portable_reader_registered = this->register_static_runtime_id(
+        GCODE_READER_STATE_ID_TYPE, "slic3r.portable", GCODE_READER_STATE_ID_PORTABLE);
+    assert(portable_reader_registered);
+    (void) portable_reader_registered;
     // Built-in seam painting is registered in the same table as plugin generic
     // facet annotations. The GUI still creates a fixed toolbar button for seam
     // today, but using the registry keeps the storage key and future plugin
@@ -924,6 +932,69 @@ slicing_step_t Orchestrator::register_step(const char *namespaced_name,
     const slicing_step_t id = info.id;
     m_dynamic_step_infos.emplace(id, std::move(info));
     return id;
+}
+
+// Intern one name in the registry selected by id_type. Dynamic counters are
+// independent per type, therefore a numeric id is meaningful only together
+// with the type supplied here.
+orchestrator_runtime_id Orchestrator::register_runtime_id(
+    const char *id_type, const char *namespaced_name)
+{
+    if (id_type == nullptr || id_type[0] == '\0' ||
+        namespaced_name == nullptr || namespaced_name[0] == '\0')
+        return ORCHESTRATOR_RUNTIME_ID_INVALID;
+
+    RuntimeIdRegistry &registry = m_runtime_id_registries[id_type];
+    const std::map<std::string, orchestrator_runtime_id>::const_iterator existing =
+        registry.ids_by_name.find(namespaced_name);
+    if (existing != registry.ids_by_name.end())
+        return existing->second;
+    if (registry.next_dynamic_id == ORCHESTRATOR_RUNTIME_ID_INVALID)
+        return ORCHESTRATOR_RUNTIME_ID_INVALID;
+
+    const orchestrator_runtime_id id = registry.next_dynamic_id++;
+    registry.ids_by_name.emplace(namespaced_name, id);
+    registry.names_by_id.emplace(id, namespaced_name);
+    return id;
+}
+
+// Resolve an id without creating either its type registry or a new name.
+const std::string *Orchestrator::runtime_id_name(
+    const char *id_type, orchestrator_runtime_id id) const
+{
+    if (id_type == nullptr || id_type[0] == '\0')
+        return nullptr;
+    const std::map<std::string, RuntimeIdRegistry>::const_iterator registry =
+        m_runtime_id_registries.find(id_type);
+    if (registry == m_runtime_id_registries.end())
+        return nullptr;
+    const std::map<orchestrator_runtime_id, std::string>::const_iterator name =
+        registry->second.names_by_id.find(id);
+    return name == registry->second.names_by_id.end() ? nullptr : &name->second;
+}
+
+// Reserve a host-defined id in the lower half. Both directions are checked so
+// a duplicate is accepted only when it describes exactly the same mapping.
+bool Orchestrator::register_static_runtime_id(
+    const char *id_type, const char *namespaced_name, orchestrator_runtime_id id)
+{
+    if (id_type == nullptr || id_type[0] == '\0' ||
+        namespaced_name == nullptr || namespaced_name[0] == '\0' ||
+        id >= ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN)
+        return false;
+
+    RuntimeIdRegistry &registry = m_runtime_id_registries[id_type];
+    const std::map<std::string, orchestrator_runtime_id>::const_iterator existing_id =
+        registry.ids_by_name.find(namespaced_name);
+    const std::map<orchestrator_runtime_id, std::string>::const_iterator existing_name =
+        registry.names_by_id.find(id);
+    if (existing_id != registry.ids_by_name.end() || existing_name != registry.names_by_id.end())
+        return existing_id != registry.ids_by_name.end() && existing_id->second == id &&
+               existing_name != registry.names_by_id.end() && existing_name->second == namespaced_name;
+
+    registry.ids_by_name.emplace(namespaced_name, id);
+    registry.names_by_id.emplace(id, namespaced_name);
+    return true;
 }
 
 // Resolve runtime step metadata by its compact id.

@@ -343,6 +343,13 @@ void DefaultGCodeFirmwareSession::set_gcode_reader_service(
 {
     m_gcode_reader_service = service;
 }
+
+void DefaultGCodeFirmwareSession::set_reader_state_id(orchestrator_runtime_id reader_state_id)
+{
+    if (reader_state_id == ORCHESTRATOR_RUNTIME_ID_INVALID)
+        throw std::invalid_argument("A firmware session cannot use an invalid Reader state identity.");
+    m_reader_state_id = reader_state_id;
+}
 std::vector<GCodeThumbnailRequest> DefaultGCodeFirmwareSession::thumbnail_requests(
     const Print &print, const PrintingPlan &)
 {

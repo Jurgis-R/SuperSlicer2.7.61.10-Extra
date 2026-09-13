@@ -27,10 +27,6 @@ public:
 
 protected:
     void setup_firmware(const Config &config) override;
-    uint32_t reader_state_id() const override
-    {
-        return Reader::REPRAP_READER_ID;
-    }
     void append_reader_private_state(
         std::vector<raw_gcode_reader_event_item> &items) const override;
     void synchronize_reader_private_state(const GCodeStateTracker &state) override;

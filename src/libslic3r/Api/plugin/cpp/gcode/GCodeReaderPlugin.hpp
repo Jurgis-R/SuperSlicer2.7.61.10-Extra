@@ -210,10 +210,12 @@ protected:
     // by generic Readers; 100 is reserved for an exact identifying marker.
     virtual uint32_t probe_impl(std::string_view) const { return 0; }
 
-    // Return the numeric identity which scopes provider-private state. Zero is
-    // the provisional value used until identities are allocated by the host.
-    // A mismatch is rejected before the provider sees any input chunk.
-    virtual uint32_t reader_state_id_impl() const { return 0u; }
+    // Return the orchestrator-local identity which scopes provider-private
+    // state. The portable schema has the permanent static id zero; a provider
+    // with private keys registers a stable schema name and returns its dynamic
+    // id. A mismatch is rejected before the provider sees any input chunk.
+    virtual uint32_t reader_state_id_impl() const
+    { return GCODE_READER_STATE_ID_PORTABLE; }
 
     // Check common plugin cancellation, request one host chunk and convert its
     // borrowed byte pair into a string_view. Return false only for the valid

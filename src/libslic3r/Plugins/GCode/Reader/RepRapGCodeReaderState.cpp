@@ -167,9 +167,10 @@ void validate_finite(const std::optional<double> &value, const char *description
 
 } // namespace
 
-RepRapGCodeReaderState RepRapGCodeReaderState::from_tracker(const GCodeStateTracker &tracker)
+RepRapGCodeReaderState RepRapGCodeReaderState::from_tracker(
+    const GCodeStateTracker &tracker, uint32_t reader_state_id)
 {
-    if (tracker.reader_id() != REPRAP_READER_ID)
+    if (tracker.reader_id() != reader_state_id)
         throw std::invalid_argument("The G-code Reader state does not belong to RepRapFirmware.");
 
     RepRapGCodeReaderState result;
@@ -247,9 +248,10 @@ void RepRapGCodeReaderState::validate() const
     }
 }
 
-void RepRapGCodeReaderState::write_to(GCodeStateTracker &tracker) const
+void RepRapGCodeReaderState::write_to(
+    GCodeStateTracker &tracker, uint32_t reader_state_id) const
 {
-    if (tracker.reader_id() != REPRAP_READER_ID)
+    if (tracker.reader_id() != reader_state_id)
         throw std::invalid_argument("Cannot write RepRapFirmware state for another Reader identity.");
 
     validate();

@@ -57,6 +57,22 @@ class OrchestratorBridgeHost:
     def orchestrator_step_name(self, _orchestrator, step):
         return b"example.service" if int(step) == 10001 else None
 
+    def orchestrator_register_runtime_id(self, orchestrator, id_type, name):
+        self.registered_runtime_id = (
+            address(orchestrator), id_type.decode(), name.decode()
+        )
+        if not id_type or not name:
+            return self.generated.ORCHESTRATOR_RUNTIME_ID_INVALID
+        return self.generated.ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN + 7
+
+    def orchestrator_runtime_id_name(self, _orchestrator, id_type, runtime_id):
+        if (
+            id_type == b"example.kind"
+            and int(runtime_id) == self.generated.ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN + 7
+        ):
+            return b"example.value"
+        return None
+
     def orchestrator_find_plugin(self, _orchestrator, plugin_id):
         return 101 if plugin_id == b"example.provider" else 0
 
@@ -162,6 +178,7 @@ class PythonOrchestratorBridgeViewTests(unittest.TestCase):
         generated_path.write_text(generator.generate(), encoding="utf-8")
         sys.path.insert(0, cls.generated_directory.name)
         cls.generated = importlib.import_module("slic3r_api_generated")
+        cls.api_module = importlib.import_module("slic3r_api")
         cls.orchestrator_views = importlib.import_module(
             "slic3r_orchestrator_views"
         )
@@ -224,6 +241,53 @@ class PythonOrchestratorBridgeViewTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             foreign.execute(plugin)
+
+    def test_runtime_ids_are_registered_and_resolved_inside_their_type(self):
+        api, host = self.make_api()
+        orchestrator = self.orchestrator_views.OrchestratorView(api)
+
+        runtime_id = orchestrator.register_runtime_id("example.kind", "example.value")
+        self.assertEqual(
+            runtime_id, self.generated.ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN + 7
+        )
+        self.assertEqual(
+            host.registered_runtime_id, (10, "example.kind", "example.value")
+        )
+        self.assertEqual(
+            orchestrator.runtime_id_name("example.kind", runtime_id),
+            "example.value",
+        )
+        self.assertEqual(orchestrator.runtime_id_name("other.kind", runtime_id), "")
+
+        public_api = object.__new__(self.api_module.Slic3rAPI)
+        public_api.host = host
+        public_api.orchestrator = ctypes.c_void_p(10)
+        self.assertEqual(
+            public_api.register_runtime_id("example.kind", "example.value"),
+            runtime_id,
+        )
+        self.assertEqual(
+            public_api.runtime_id_name("example.kind", runtime_id),
+            "example.value",
+        )
+
+    def test_generated_runtime_id_contract(self):
+        signatures = {
+            name: (result, arguments)
+            for name, result, arguments in self.generated.C_FUNCTION_SIGNATURES
+        }
+        self.assertEqual(self.generated.ORCHESTRATOR_RUNTIME_ID_INVALID, 0xFFFFFFFF)
+        self.assertEqual(
+            self.generated.ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN, 0x80000000
+        )
+        self.assertEqual(
+            signatures["orchestrator_register_runtime_id"],
+            (ctypes.c_uint32, [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]),
+        )
+        self.assertEqual(
+            signatures["orchestrator_runtime_id_name"],
+            (ctypes.c_char_p, [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]),
+        )
 
     def test_bridge_detector_owns_instance_and_writes_to_owned_outputs(self):
         api, host = self.make_api()

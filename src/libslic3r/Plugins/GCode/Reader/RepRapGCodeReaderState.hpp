@@ -55,11 +55,17 @@ An absent scalar means unknown, not zero. An absent mapping count means the
 same empty mapping as count zero; encoding always writes the count explicitly.
 The tracker owns its copied `(type,target,value)` entries. RepRapReaderState is
 an independent C++ value and retains no pointer into the tracker.
+
+REPRAP_READER_STATE_NAME is the stable schema identity. The Reader and firmware
+register that same name independently in the orchestrator's
+GCODE_READER_STATE_ID_TYPE registry and pass the returned process-local number
+to from_tracker()/write_to(). The number must never be stored in a profile or
+file; only the stable name may cross an orchestrator lifetime.
 */
 
 namespace slic3r_api { namespace GCodeGeneration { namespace Reader {
 
-constexpr uint32_t REPRAP_READER_ID = 0u;
+constexpr const char *REPRAP_READER_STATE_NAME = "slic3r.reprap";
 constexpr uint32_t REPRAP_MAPPING_SLOT_COUNT = 65536u;
 
 enum RepRapGCodeReaderItem : uint32_t {
@@ -110,17 +116,21 @@ class RepRapGCodeReaderState
 {
 public:
     // Decode and validate every known RRF key without modifying the tracker.
+    // reader_state_id is the value registered for REPRAP_READER_STATE_NAME;
+    // a portable or foreign state is rejected before any private field is read.
     // Unknown custom keys are deliberately ignored and remain tracker-owned.
-    static RepRapGCodeReaderState from_tracker(const GCodeStateTracker &tracker);
+    static RepRapGCodeReaderState from_tracker(const GCodeStateTracker &tracker,
+                                               uint32_t reader_state_id);
 
     // Validate the semantic domains which the generic tracker intentionally
     // cannot know. Limits, accelerations, jerk and pressure advance are
     // non-negative; temperatures and offsets may be signed but remain finite.
     void validate() const;
 
-    // Replace only the known RRF key ranges. Other providers' or future keys
-    // stay untouched so a newer state can pass through an older implementation.
-    void write_to(GCodeStateTracker &tracker) const;
+    // Replace only the known RRF key ranges after verifying that the tracker's
+    // identity equals reader_state_id. Other providers' or future keys stay
+    // untouched so a newer state can pass through an older implementation.
+    void write_to(GCodeStateTracker &tracker, uint32_t reader_state_id) const;
 
     std::optional<double> print_acceleration;
     std::optional<double> travel_acceleration;

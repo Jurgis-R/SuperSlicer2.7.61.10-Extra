@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeThumbnailViews.hpp"
@@ -68,6 +69,9 @@ public:
     // The reader service is borrowed for this export. It interprets custom
     // G-code after placeholder processing and returns the resulting state.
     void set_gcode_reader_service(const raw_gcode_reader_service *service);
+    // Set the runtime identity of the state schema exchanged with the selected
+    // Reader. Provider wiring calls this before the session is published.
+    void set_reader_state_id(orchestrator_runtime_id reader_state_id);
     std::string reader_plugin_id() const override { return "gcode.reader.default"; }
     std::string begin_group(const PrintingGroup &group) override;
     std::string begin_layer(const PrintingLayerGroup &layer) override;
@@ -157,7 +161,7 @@ protected:
     // scalar keys. A dialect appends its snapshot before a custom script and
     // imports the validated final snapshot afterwards. Implementations must
     // preserve PrintingPlan requests and update only their encoded knowledge.
-    virtual uint32_t reader_state_id() const { return 0u; }
+    orchestrator_runtime_id reader_state_id() const { return m_reader_state_id; }
     virtual void append_reader_private_state(
         std::vector<raw_gcode_reader_event_item> &items) const;
     virtual void synchronize_reader_private_state(const GCodeStateTracker &state);
@@ -278,6 +282,7 @@ private:
     std::vector<uint8_t> m_native_retraction_active;
     bool m_wipe_tag_open = false;
     bool m_is_setup = false;
+    orchestrator_runtime_id m_reader_state_id = GCODE_READER_STATE_ID_PORTABLE;
     GCodeScriptProcessorView m_scripts;
     // Reused for one script at a time. The processor clones every option during
     // prepare(), so this storage may be cleared before the following script.

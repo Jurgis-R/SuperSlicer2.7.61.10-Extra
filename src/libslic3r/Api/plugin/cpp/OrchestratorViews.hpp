@@ -111,6 +111,27 @@ public:
         return name == nullptr ? std::string() : std::string(name);
     }
 
+    // Intern a stable name in one typed registry. The returned number is a
+    // compact orchestrator-local key; persist the two strings, never this id.
+    orchestrator_runtime_id register_runtime_id(const std::string &id_type,
+                                                const std::string &namespaced_name) const
+    {
+        const orchestrator_runtime_id id = orchestrator_register_runtime_id(
+            m_orchestrator, id_type.c_str(), namespaced_name.c_str());
+        if (id == ORCHESTRATOR_RUNTIME_ID_INVALID)
+            throw std::runtime_error("The runtime identifier could not be registered.");
+        return id;
+    }
+
+    // Copy the stable name associated with an id in one registry. Empty means
+    // that either the type or the numeric id is unknown.
+    std::string runtime_id_name(const std::string &id_type,
+                                orchestrator_runtime_id id) const
+    {
+        const char *name = orchestrator_runtime_id_name(m_orchestrator, id_type.c_str(), id);
+        return name == nullptr ? std::string() : std::string(name);
+    }
+
     // Copy the ordered global option-key catalogue. RAW_CO_NONE returns every
     // definition; another value keeps only definitions of that exact ABI type.
     std::vector<ConfigOptionKey> option_keys(raw_config_option_type type_filter = RAW_CO_NONE) const

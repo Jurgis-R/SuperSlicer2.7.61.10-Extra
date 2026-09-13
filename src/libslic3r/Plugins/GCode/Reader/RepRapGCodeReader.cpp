@@ -45,7 +45,8 @@ bool update_axes(const GCodeLineParser::GCodeLine &line,
                  double factor);
 // Store private state before publishing the portable command event.
 void commit_private_state(RepRapGCodeReaderState &private_state,
-                          GCodeStateTracker &state);
+                          GCodeStateTracker &state,
+                          uint32_t reader_state_id);
 
 bool parse_device_list(std::string_view parameter, std::vector<uint32_t> &devices)
 {
@@ -118,16 +119,22 @@ bool update_axes(const GCodeLineParser::GCodeLine &line,
 }
 
 void commit_private_state(RepRapGCodeReaderState &private_state,
-                          GCodeStateTracker &state)
+                          GCodeStateTracker &state,
+                          uint32_t reader_state_id)
 {
-    private_state.write_to(state);
+    private_state.write_to(state, reader_state_id);
 }
 
 } // namespace
 
 RepRapGCodeReader::RepRapGCodeReader(orchestrator_handle *orchestrator) :
-    BuiltinGCodeReaderBase(orchestrator)
-{}
+    BuiltinGCodeReaderBase(orchestrator),
+    m_reader_state_id(orchestrator_register_runtime_id(
+        orchestrator, GCODE_READER_STATE_ID_TYPE, REPRAP_READER_STATE_NAME))
+{
+    if (m_reader_state_id == ORCHESTRATOR_RUNTIME_ID_INVALID)
+        throw std::runtime_error("The RepRapFirmware Reader state identity could not be registered.");
+}
 
 const char *RepRapGCodeReader::id_impl() const noexcept
 {
@@ -187,7 +194,7 @@ bool RepRapGCodeReader::consume_numeric_command(
 
     RepRapGCodeReaderState private_state;
     try {
-        private_state = RepRapGCodeReaderState::from_tracker(state);
+        private_state = RepRapGCodeReaderState::from_tracker(state, m_reader_state_id);
     } catch (const std::exception &) {
         publish_unknown(run_context, context, state, source);
         return true;
@@ -244,7 +251,7 @@ void RepRapGCodeReader::process_G10(
             return;
         }
         tool_state.retracted = true;
-        commit_private_state(private_state, state);
+        commit_private_state(private_state, state, m_reader_state_id);
         publish_state_update(run_context, context, state, source);
         return;
     }
@@ -256,7 +263,7 @@ void RepRapGCodeReader::process_G10(
         tool_state.offset[1] = *value;
     if (const std::optional<float> value = line.parameter_value('Z'))
         tool_state.offset[2] = *value;
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     if (active_temperature)
         publish_items(run_context, context, state,
                       RAW_GCODE_READER_EVENT_SET_TEMPERATURE, source,
@@ -279,7 +286,7 @@ void RepRapGCodeReader::process_G11(
         return;
     }
     private_state.tools[*tool].retracted = false;
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     publish_state_update(run_context, context, state, source);
 }
 
@@ -321,7 +328,7 @@ void RepRapGCodeReader::process_M106_M107(
 {
     RepRapGCodeReaderState private_state;
     try {
-        private_state = RepRapGCodeReaderState::from_tracker(state);
+        private_state = RepRapGCodeReaderState::from_tracker(state, m_reader_state_id);
     } catch (const std::exception &) {
         publish_unknown(run_context, context, state, source);
         return;
@@ -370,7 +377,7 @@ void RepRapGCodeReader::process_M201(
         publish_unknown(run_context, context, state, source);
         return;
     }
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     publish_state_update(run_context, context, state, source);
 }
 
@@ -391,7 +398,7 @@ void RepRapGCodeReader::process_M203(
         publish_unknown(run_context, context, state, source);
         return;
     }
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     publish_state_update(run_context, context, state, source);
 }
 
@@ -423,7 +430,7 @@ void RepRapGCodeReader::process_M204(
         publish_unknown(run_context, context, state, source);
         return;
     }
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     std::vector<raw_gcode_reader_event_item> items;
     if (acceleration)
         items.push_back({RAW_GCODE_READER_ITEM_ACCELERATION, 0, double(*acceleration)});
@@ -443,7 +450,7 @@ void RepRapGCodeReader::process_M205(
         publish_unknown(run_context, context, state, source);
         return;
     }
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     publish_state_update(run_context, context, state, source);
 }
 
@@ -478,7 +485,7 @@ void RepRapGCodeReader::process_M563(
         publish_unknown(run_context, context, state, source);
         return;
     }
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     publish_state_update(run_context, context, state, source);
 }
 
@@ -494,7 +501,7 @@ void RepRapGCodeReader::process_M566(
         publish_unknown(run_context, context, state, source);
         return;
     }
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     publish_state_update(run_context, context, state, source);
 }
 
@@ -519,7 +526,7 @@ void RepRapGCodeReader::process_M568(
     }
     if (standby_temperature)
         private_state.tools[*tool].standby_temperature = *standby_temperature;
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     if (active_temperature)
         publish_items(run_context, context, state,
                       RAW_GCODE_READER_EVENT_SET_TEMPERATURE, source,
@@ -544,7 +551,7 @@ void RepRapGCodeReader::process_M572(
         return;
     }
     private_state.pressure_advance[static_cast<uint32_t>(drive)] = *pressure;
-    commit_private_state(private_state, state);
+    commit_private_state(private_state, state, m_reader_state_id);
     publish_state_update(run_context, context, state, source);
 }
 
@@ -577,7 +584,7 @@ void RepRapGCodeReader::validate_private_state(const GCodeStateTracker &state) c
 {
     // Decoding performs identity, scalar-domain and complete mapping checks.
     // The resulting value is intentionally discarded at this boundary.
-    RepRapGCodeReaderState::from_tracker(state);
+    RepRapGCodeReaderState::from_tracker(state, m_reader_state_id);
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

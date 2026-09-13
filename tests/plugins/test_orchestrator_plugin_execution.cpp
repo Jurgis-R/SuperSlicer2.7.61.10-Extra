@@ -8,6 +8,7 @@
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_gcode_reader.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
@@ -408,6 +409,57 @@ TEST_CASE("The orchestrator registers service steps by stable name",
 
     CHECK(orchestrator.get_plugin(g_private_numeric.id) != nullptr);
     CHECK(orchestrator_step_name(handle, g_private_numeric.step) == nullptr);
+}
+
+TEST_CASE("The orchestrator interns typed runtime identities",
+          "[plugins][orchestrator][runtime-id]")
+{
+    Orchestrator &orchestrator = Orchestrator::instance();
+    orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
+
+    CHECK(orchestrator_register_runtime_id(
+              handle, GCODE_READER_STATE_ID_TYPE, "slic3r.portable") ==
+          GCODE_READER_STATE_ID_PORTABLE);
+    CHECK(std::string(orchestrator_runtime_id_name(
+              handle, GCODE_READER_STATE_ID_TYPE, GCODE_READER_STATE_ID_PORTABLE)) ==
+          "slic3r.portable");
+
+    const orchestrator_runtime_id first = orchestrator_register_runtime_id(
+        handle, "test.runtime.alpha", "example.shared");
+    const orchestrator_runtime_id second = orchestrator_register_runtime_id(
+        handle, "test.runtime.alpha", "example.second");
+    const orchestrator_runtime_id independent = orchestrator_register_runtime_id(
+        handle, "test.runtime.beta", "example.shared");
+    REQUIRE(first >= ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN);
+    CHECK(second == first + 1u);
+    CHECK(independent == ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN);
+    CHECK(orchestrator_register_runtime_id(
+              handle, "test.runtime.alpha", "example.shared") == first);
+    CHECK(std::string(orchestrator_runtime_id_name(
+              handle, "test.runtime.alpha", first)) == "example.shared");
+    CHECK(std::string(orchestrator_runtime_id_name(
+              handle, "test.runtime.beta", independent)) == "example.shared");
+
+    const slic3r_api::OrchestratorView view(handle);
+    CHECK(view.register_runtime_id("test.runtime.alpha", "example.second") == second);
+    CHECK(view.runtime_id_name("test.runtime.alpha", second) == "example.second");
+    CHECK(view.runtime_id_name("test.runtime.alpha", ORCHESTRATOR_RUNTIME_ID_INVALID).empty());
+
+    CHECK(orchestrator_register_runtime_id(nullptr, "test.runtime", "example") ==
+          ORCHESTRATOR_RUNTIME_ID_INVALID);
+    CHECK(orchestrator_register_runtime_id(handle, nullptr, "example") ==
+          ORCHESTRATOR_RUNTIME_ID_INVALID);
+    CHECK(orchestrator_register_runtime_id(handle, "", "example") ==
+          ORCHESTRATOR_RUNTIME_ID_INVALID);
+    CHECK(orchestrator_register_runtime_id(handle, "test.runtime", nullptr) ==
+          ORCHESTRATOR_RUNTIME_ID_INVALID);
+    CHECK(orchestrator_register_runtime_id(handle, "test.runtime", "") ==
+          ORCHESTRATOR_RUNTIME_ID_INVALID);
+    CHECK(orchestrator_runtime_id_name(nullptr, "test.runtime.alpha", first) == nullptr);
+    CHECK(orchestrator_runtime_id_name(handle, nullptr, first) == nullptr);
+    CHECK(orchestrator_runtime_id_name(handle, "", first) == nullptr);
+    CHECK(orchestrator_runtime_id_name(handle, "test.runtime.alpha",
+                                       ORCHESTRATOR_RUNTIME_ID_INVALID) == nullptr);
 }
 
 TEST_CASE("Activation group declarations merge atomically and defer member lookup",

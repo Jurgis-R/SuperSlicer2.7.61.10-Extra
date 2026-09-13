@@ -42,6 +42,7 @@
 #include "libslic3r/Plugins/GCode/Firmware/PrusaGCodeFirmware.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/RepRapGCodeFirmware.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/SprinterGCodeFirmware.hpp"
+#include "libslic3r/Plugins/GCode/Reader/RepRapGCodeReaderState.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/PrintObject.hpp"
@@ -240,6 +241,12 @@ TEST_CASE("RepRap firmware round-trips private Reader acceleration state",
     using slic3r_api::GCodeGeneration::Reader::RepRapGCodeReaderState;
 
     RepRapReaderStateProbe firmware;
+    const orchestrator_runtime_id reader_state_id = orchestrator_register_runtime_id(
+        reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+        GCODE_READER_STATE_ID_TYPE,
+        slic3r_api::GCodeGeneration::Reader::REPRAP_READER_STATE_NAME);
+    REQUIRE(reader_state_id != ORCHESTRATOR_RUNTIME_ID_INVALID);
+    firmware.set_reader_state_id(reader_state_id);
     MachineEnvelope envelope;
     envelope.max_acceleration_x = 1000.0;
     envelope.max_acceleration_y = 1100.0;
@@ -252,12 +259,13 @@ TEST_CASE("RepRap firmware round-trips private Reader acceleration state",
 
     std::vector<raw_gcode_reader_event_item> items = {
         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0},
-        {RAW_GCODE_READER_ITEM_READER_ID, 0, 0.0}
+        {RAW_GCODE_READER_ITEM_READER_ID, 0, double(reader_state_id)}
     };
     firmware.append_reader_private_state(items);
     raw_gcode_reader_state raw = {items.data(), static_cast<uint32_t>(items.size())};
     slic3r_api::GCodeStateTracker tracker(raw);
-    RepRapGCodeReaderState state = RepRapGCodeReaderState::from_tracker(tracker);
+    RepRapGCodeReaderState state =
+        RepRapGCodeReaderState::from_tracker(tracker, reader_state_id);
     CHECK(state.max_acceleration[1] == 1100.0);
     CHECK(state.max_feedrate[0] == 300.0);
     CHECK(state.print_acceleration == 800.0);
@@ -271,7 +279,7 @@ TEST_CASE("RepRap firmware round-trips private Reader acceleration state",
     slic3r_api::GCodeGeneration::Reader::RepRapToolState &tool = state.tools[2];
     tool.drives = {3, 4};
     tool.fans = {6, 7};
-    state.write_to(tracker);
+    state.write_to(tracker, reader_state_id);
     firmware.synchronize_reader_private_state(tracker);
     CHECK(firmware.requested_print() == 700u);
     CHECK(firmware.requested_travel() == 1400u);

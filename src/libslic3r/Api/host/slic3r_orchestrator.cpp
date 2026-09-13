@@ -219,6 +219,32 @@ slicing_step_t orchestrator_register_step(orchestrator_handle *orch,
     }
 }
 
+orchestrator_runtime_id orchestrator_register_runtime_id(
+    orchestrator_handle *orch, const char *id_type, const char *namespaced_name)
+{
+    if (orch == nullptr)
+        return ORCHESTRATOR_RUNTIME_ID_INVALID;
+    try {
+        return to_orchestrator(orch)->register_runtime_id(id_type, namespaced_name);
+    } catch (...) {
+        return ORCHESTRATOR_RUNTIME_ID_INVALID;
+    }
+}
+
+const char *orchestrator_runtime_id_name(
+    const orchestrator_handle *orch, const char *id_type, orchestrator_runtime_id id)
+{
+    if (orch == nullptr)
+        return nullptr;
+    try {
+        const Slic3r::Orchestrator *orchestrator = to_orchestrator(orch);
+        const std::string *name = orchestrator->runtime_id_name(id_type, id);
+        return name == nullptr ? nullptr : name->c_str();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 const char *orchestrator_step_name(const orchestrator_handle *orch, slicing_step_t step)
 {
     try {

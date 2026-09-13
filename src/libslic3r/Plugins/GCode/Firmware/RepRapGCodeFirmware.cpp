@@ -85,7 +85,7 @@ void RepRapGCodeFirmwareSession::append_reader_private_state(
     raw.items = items.empty() ? nullptr : items.data();
     raw.item_count = static_cast<uint32_t>(items.size());
     GCodeStateTracker tracker(raw);
-    m_reader_state.write_to(tracker);
+    m_reader_state.write_to(tracker, reader_state_id());
     const raw_gcode_reader_state &complete = tracker.state();
     items.assign(complete.items, complete.items + complete.item_count);
 }
@@ -96,7 +96,7 @@ void RepRapGCodeFirmwareSession::synchronize_reader_private_state(
     // Decode to a temporary first. A malformed private snapshot therefore
     // leaves both the cached RRF model and all encoded gantry registers intact.
     const Reader::RepRapGCodeReaderState decoded =
-        Reader::RepRapGCodeReaderState::from_tracker(state);
+        Reader::RepRapGCodeReaderState::from_tracker(state, reader_state_id());
     gantry().synchronize_encoded_print_acceleration(
         acceleration_register(decoded.print_acceleration));
     gantry().synchronize_encoded_travel_acceleration(

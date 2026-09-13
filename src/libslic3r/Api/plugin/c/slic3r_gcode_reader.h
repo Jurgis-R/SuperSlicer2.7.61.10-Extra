@@ -6,7 +6,7 @@
 #define slic3r_gcode_reader_h_
 
 #define SLIC3R_PLUGIN_API_GCODE_READER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 2u
+#define SLIC3R_PLUGIN_API_GCODE_READER_MINOR 3u
 
 #include <stdint.h>
 
@@ -153,11 +153,16 @@ typedef enum raw_gcode_reader_item_type {
        in every event and state, uses target zero and is an exact uint32_t. */
     RAW_GCODE_READER_ITEM_LINE_NUMBER,
     /* Numeric identity of the Reader-specific state carried alongside the
-       portable items. Zero is the provisional identity used when no provider
-       identity has been assigned. Missing values are normalized to zero by
-       the C++ tracker. The target is always zero. */
+       portable items. Zero permanently identifies the public portable schema,
+       which carries no provider-private fields. Missing values are normalized
+       to that portable identity by the C++ tracker. The target is always zero. */
     RAW_GCODE_READER_ITEM_READER_ID
 } raw_gcode_reader_item_type;
+
+/* Registry type used to intern private Reader-state schema names. */
+#define GCODE_READER_STATE_ID_TYPE "gcode_reader_state"
+/* Static schema containing only the portable raw_gcode_reader_item_type data. */
+#define GCODE_READER_STATE_ID_PORTABLE ((uint32_t)0u)
 
 /* Provider-private scalar items use this range. The generic host validates
    only that their transported double is finite, then copies them without

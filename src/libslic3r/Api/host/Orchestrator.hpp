@@ -440,10 +440,24 @@ public:
     gcode_script_type register_gcode_script_type(const char *namespaced_name);
     const GCodeScriptTypeInfo *gcode_script_type_info(gcode_script_type type) const;
     const GCodeScriptTypeInfo *gcode_script_type_info(const char *namespaced_name) const;
+    orchestrator_runtime_id register_runtime_id(const char *id_type,
+                                                const char *namespaced_name);
+    const std::string *runtime_id_name(const char *id_type,
+                                      orchestrator_runtime_id id) const;
     bool register_generic_facets_annotation(GenericFacetsAnnotationDefinition def);
     const std::vector<GenericFacetsAnnotationDefinition> &generic_facets_annotations() const { return m_generic_facets_annotations; }
 
 private:
+    // One bidirectional intern table per semantic id type. Keeping this host
+    // detail private prevents callers from bypassing static reservations or
+    // assigning their own numeric values.
+    struct RuntimeIdRegistry
+    {
+        std::map<std::string, orchestrator_runtime_id> ids_by_name;
+        std::map<orchestrator_runtime_id, std::string> names_by_id;
+        orchestrator_runtime_id next_dynamic_id = ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN;
+    };
+
     struct PluginRegistrationSource
     {
         std::string package_root;
@@ -455,6 +469,9 @@ private:
     void end_plugin_registration_scope();
     std::string resolved_translation_domain(const char *requested_domain) const;
     bool is_translation_domain_available(const std::string &domain, const std::string &package_root) const;
+    bool register_static_runtime_id(const char *id_type,
+                                    const char *namespaced_name,
+                                    orchestrator_runtime_id id);
 
     std::vector<std::unique_ptr<Plugin>> m_registered_plugins;
     std::unordered_set<Plugin *> m_active_plugins;
@@ -475,6 +492,7 @@ private:
     gcode_script_type m_next_custom_gcode_script_type{GCODE_SCRIPT_TYPE_CUSTOM_BEGIN};
     std::map<slicing_step_t, DynamicStepInfo> m_dynamic_step_infos;
     uint32_t m_next_dynamic_step { uint32_t(SLICING_STEP_CUSTOM_BEGIN) };
+    std::map<std::string, RuntimeIdRegistry> m_runtime_id_registries;
     std::vector<GenericFacetsAnnotationDefinition> m_generic_facets_annotations;
     std::atomic_bool m_plugin_cancel_requested { false };
     std::mutex m_plugin_messages_mutex;

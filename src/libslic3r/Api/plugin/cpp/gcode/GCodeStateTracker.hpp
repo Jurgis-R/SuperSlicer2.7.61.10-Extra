@@ -51,7 +51,7 @@ public:
     GCodeStateTracker()
     {
         set_line_number(0);
-        set_reader_id(0);
+        set_reader_id(GCODE_READER_STATE_ID_PORTABLE);
     }
 
     // Copy and validate a borrowed complete state. No pointer from the source
@@ -172,9 +172,9 @@ public:
         rebuild_state();
     }
 
-    // Store the identity which scopes provider-private items. Zero means that
-    // no orchestrator-assigned identity exists yet; it remains a real value so
-    // both ends can already exercise the ownership and validation contract.
+    // Store the identity which scopes provider-private items. Zero permanently
+    // names the portable schema and therefore promises that no private key
+    // requires a provider-specific interpretation.
     void set_reader_id(uint32_t value)
     {
         m_values[Key{RAW_GCODE_READER_ITEM_READER_ID, 0}] = double(value);
@@ -434,11 +434,12 @@ private:
     }
 
     // Reader identity was introduced after the first complete-state fixtures.
-    // Normalize an omitted value to the provisional identity instead of
-    // forcing every existing producer to synthesize the same default.
+    // Normalize an omitted value to the portable schema so generic producers
+    // need not synthesize a redundant item.
     static void normalize_reader_id(std::map<Key, double> &values)
     {
-        values.emplace(Key{RAW_GCODE_READER_ITEM_READER_ID, 0}, 0.0);
+        values.emplace(Key{RAW_GCODE_READER_ITEM_READER_ID, 0},
+                       double(GCODE_READER_STATE_ID_PORTABLE));
     }
 
     // Rebuild the contiguous C view after every mutation, copy or move. Its

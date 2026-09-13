@@ -424,6 +424,16 @@ class Slic3rAPI:
                 "each declaration needs at least two distinct nonempty members."
             )
 
+    @abi_requires_headers("slic3r_orchestrator.h")
+    def register_runtime_id(self, id_type: str, namespaced_name: str) -> int:
+        """Intern a stable typed name and return its orchestrator-local id."""
+        return self.orchestrator_view().register_runtime_id(id_type, namespaced_name)
+
+    @abi_requires_headers("slic3r_orchestrator.h")
+    def runtime_id_name(self, id_type: str, runtime_id: int) -> str:
+        """Copy the stable name for an id, or return empty when it is unknown."""
+        return self.orchestrator_view().runtime_id_name(id_type, runtime_id)
+
     def register_translation_catalog(self, domain: str, locale_directory: str) -> int:
         """Register one gettext domain from this plugin package during registration."""
         return int(self.host.orchestrator_register_translation_catalog(

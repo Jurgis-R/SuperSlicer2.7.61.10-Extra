@@ -161,6 +161,9 @@ private:
     bool is_neutral_command(char letter, uint32_t number) const override;
     bool is_marker_command(char letter, uint32_t number) const override;
     void validate_private_state(const GCodeStateTracker &state) const override;
+    uint32_t reader_state_id_impl() const override { return m_reader_state_id; }
+
+    uint32_t m_reader_state_id;
 };
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader

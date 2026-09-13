@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from slic3r_abi import abi_requires_headers
 from slic3r_api_generated import (
     ConstStrings,
+    ORCHESTRATOR_RUNTIME_ID_INVALID,
     RAW_CO_NONE,
     RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT,
     RawPluginRunPayload,
@@ -151,6 +152,31 @@ class OrchestratorView:
     def step_name(self, step: int) -> str:
         """Copy a dynamic step name; built-in and unknown steps return empty."""
         value = self.api.host.orchestrator_step_name(self.c_handle(), int(step))
+        return "" if not value else value.decode("utf-8", errors="replace")
+
+    def register_runtime_id(self, id_type: str, namespaced_name: str) -> int:
+        """Intern a stable name and return its orchestrator-local numeric id.
+
+        Persist ``id_type`` and ``namespaced_name``, never the returned number.
+        Separate types own independent numeric namespaces.
+        """
+        value = int(
+            self.api.host.orchestrator_register_runtime_id(
+                self.c_handle(), id_type.encode("utf-8"), namespaced_name.encode("utf-8")
+            )
+        )
+        if value == int(ORCHESTRATOR_RUNTIME_ID_INVALID):
+            raise ValueError(
+                "runtime id registration failed: type and name must be nonempty "
+                "and the registry must have free dynamic ids"
+            )
+        return value
+
+    def runtime_id_name(self, id_type: str, runtime_id: int) -> str:
+        """Copy the registered name, or return an empty string when unknown."""
+        value = self.api.host.orchestrator_runtime_id_name(
+            self.c_handle(), id_type.encode("utf-8"), int(runtime_id)
+        )
         return "" if not value else value.decode("utf-8", errors="replace")
 
     @abi_requires_headers("slic3r_config_def.h")

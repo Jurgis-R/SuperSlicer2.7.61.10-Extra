@@ -6,7 +6,7 @@
 #define slic3r_orchestrator_h_
 
 #define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 1u
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 3u
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 4u
 
 /*
 Property registration guide:
@@ -21,6 +21,22 @@ Property registration guide:
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*
+Compact identifier interned by one orchestrator.
+
+The pair (id_type, namespaced_name) is the stable identity. The numeric value
+is only a process-local lookup key and must not be serialized. Each id_type has
+an independent numeric namespace, so equal numbers from different types are
+unrelated.
+
+The lower half is reserved for host-defined static ids. Plugins receive ids
+from the upper half and cannot choose their numeric value.
+*/
+typedef uint32_t orchestrator_runtime_id;
+
+#define ORCHESTRATOR_RUNTIME_ID_INVALID ((orchestrator_runtime_id)UINT32_MAX)
+#define ORCHESTRATOR_RUNTIME_ID_DYNAMIC_BEGIN ((orchestrator_runtime_id)0x80000000u)
 
 /* ========================= REGISTRATION ========================= */
 
@@ -111,6 +127,32 @@ SLIC3R_HOST_API slicing_step_t orchestrator_register_step(
     orchestrator_handle *orchestrator,
     const char *namespaced_name,
     slicing_step_t invalidates_step
+);
+
+/*
+Intern a stable name in one typed runtime-id registry.
+
+Registering the same type and name repeatedly returns the existing id. A null
+or empty type/name, a null orchestrator, or an exhausted dynamic range returns
+ORCHESTRATOR_RUNTIME_ID_INVALID. The host may pre-register names in the static
+range; requesting such a name returns its reserved value.
+*/
+SLIC3R_HOST_API orchestrator_runtime_id orchestrator_register_runtime_id(
+    orchestrator_handle *orchestrator,
+    const char *id_type,
+    const char *namespaced_name
+);
+
+/*
+Resolve a runtime id inside one type.
+
+The returned string is borrowed from the orchestrator and remains valid until
+its destruction. Unknown types and ids return NULL.
+*/
+SLIC3R_HOST_API const char *orchestrator_runtime_id_name(
+    const orchestrator_handle *orchestrator,
+    const char *id_type,
+    orchestrator_runtime_id id
 );
 
 /*
