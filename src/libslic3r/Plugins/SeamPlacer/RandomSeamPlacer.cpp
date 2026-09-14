@@ -110,6 +110,7 @@ void collect_curves(const ExtrusionEntity &entity, std::vector<Curve> &curves);
 bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region, c_point shift);
 /* Reconstruct inherited tags before an atomic loop is recorded. */
 void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
+                   uint16_t object_instance_idx,
                    raw_extrusion_role role, uint16_t flags, const std::vector<PrintRegion> &regions,
                    std::vector<Loop> &loops);
 /* Align each internal loop against immutable external random seams. */
@@ -387,6 +388,7 @@ bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region,
 }
 
 void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
+                   const uint16_t object_instance_idx,
                    raw_extrusion_role role, uint16_t flags, const std::vector<PrintRegion> &regions,
                    std::vector<Loop> &loops)
 {
@@ -395,14 +397,15 @@ void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entit
     if (attributes!=nullptr) role=attributes->role;
     if (perimeter!=nullptr) flags=perimeter->perimeter_flags;
     if (!entity.is_loop()) {
-        for (uint32_t i=0;i<entity.child_count();++i) collect_loops(source,entity.child(i),role,flags,regions,loops);
+        for (uint32_t i=0;i<entity.child_count();++i)
+            collect_loops(source,entity.child(i),object_instance_idx,role,flags,regions,loops);
         return;
     }
     const LayerRegionIsland island=source.region_island();
     if (!island.valid() || island.region_count()==0) return;
     Loop loop;
     loop.entity=entity;
-    loop.instance=source.object_instance_idx();
+    loop.instance=object_instance_idx;
     loop.external=RAW_EXTRUSION_ROLE_IS_EXTERNAL_PERIMETER(role);
     loop.hole=(flags&C_EXTRUSION_PERIMETER_FLAG_HOLE)!=0;
     collect_curves(entity,loop.curves);
@@ -483,7 +486,11 @@ void RandomSession::initialize(const PrintingPlan &plan, const std::vector<Print
                 const PrintingToolGroup tool=layer.tool_group(t);
                 for (uint32_t e=0;e<tool.extrusion_count();++e) {
                     const PrintingExtrusion extrusion=tool.extrusion(e);
-                    collect_loops(extrusion,extrusion.root(),extrusion.role(),0,regions,loops);
+                    const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
+                    if (object_instance_idx == size_t(-1) || object_instance_idx > std::numeric_limits<uint16_t>::max())
+                        throw std::runtime_error("Random seam extrusion has no valid printing-plan instance.");
+                    collect_loops(extrusion,extrusion.root(),static_cast<uint16_t>(object_instance_idx),
+                                  extrusion.role(),0,regions,loops);
                 }
             }
         }

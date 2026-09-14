@@ -6,7 +6,7 @@
 #define slic3r_data_tree_h_
 
 #define SLIC3R_PLUGIN_API_DATA_TREE_MAJOR 2u
-#define SLIC3R_PLUGIN_API_DATA_TREE_MINOR 0u
+#define SLIC3R_PLUGIN_API_DATA_TREE_MINOR 1u
 
 /*
 Data-tree access for a sliced Print.
@@ -645,6 +645,11 @@ SLIC3R_HOST_API config_handle *object_get_config_mutable(object_handle *me);
 SLIC3R_HOST_API const config_handle *object_get_config(const object_handle *me);
 /* Borrow the Object's mutable metadata container, even from a const Object view. */
 SLIC3R_HOST_API plugin_property_container_handle *object_get_properties(const object_handle *me);
+
+/* Copy the UTF-8 ModelObject name. Print-level auxiliary Objects have no
+   ModelObject and therefore report an empty name. The return value excludes
+   the null terminator; out may be NULL for a sizing query. */
+SLIC3R_HOST_API uint32_t object_get_name(const object_handle *me, char *out, uint32_t capacity);
 
 /*
 Deprecated legacy object-local maximum Z in scaled coord_t units. Model-backed Objects use

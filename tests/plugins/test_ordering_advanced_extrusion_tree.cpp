@@ -41,8 +41,8 @@ The fixtures use small deterministic trees so each ordering decision remains
 visible without duplicating the ordering engine's own tests.
 
 PrintingExtrusion values move during the barrier. Tests identify them through
-a side table keyed by their stable extrusion-tree handles; object_instance_idx
-therefore remains valid production metadata throughout regional routing.
+a side table keyed by their stable extrusion-tree handles; printing_catalog_id
+is not used as test-only identity metadata.
 */
 
 namespace {
@@ -378,9 +378,6 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
     extrusion.region_island = source.get();
     extrusion.root = std::move(root);
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
-    // object_instance_idx is production metadata and must remain a valid index.
-    // Keep the test-only identity beside the stable extrusion root instead.
-    extrusion.object_instance_idx = 0;
     if (extrusion.root != nullptr)
         g_extrusion_identities.emplace(extrusion.root.get(), identity);
     tool.region_islands.push_back(source.get());

@@ -156,10 +156,13 @@ std::unique_ptr<ExtrusionPath> make_movement(const ExtrusionRole role,
 // Append one independently owned extrusion root in final execution order.
 ExtrusionEntity &append_movement(PrintingToolGroup &tool,
                                  const LayerRegionIsland &source,
-                                 std::unique_ptr<ExtrusionEntity> root)
+                                 std::unique_ptr<ExtrusionEntity> root,
+                                 const PrintingObjectInstanceId printing_catalog_id =
+                                     PRINTING_OBJECT_INSTANCE_ID_NONE)
 {
     PrintingExtrusion extrusion;
     extrusion.region_island = &source;
+    extrusion.printing_catalog_id = printing_catalog_id;
     extrusion.sregion_island_role = root->role();
     extrusion.root = std::move(root);
     ExtrusionEntity &result = *extrusion.root;
@@ -308,7 +311,10 @@ PrintingLayerGroup &prepare_regional_travel_plan(
 {
     REQUIRE(prepared.source_region_island != nullptr);
     PrintingPlan &plan = prepared.print.mutable_printing_plan();
+    const PrintingObjectInstanceId catalog_id =
+        plan.find_or_add_object_instance(prepared.print.object(0), 0);
     plan.groups.emplace_back();
+    plan.groups.back().printing_catalog_ids.push_back(catalog_id);
     plan.groups.back().layers.emplace_back();
     PrintingLayerGroup &layer = plan.groups.back().layers.back();
     layer.print_z = scale_i(0.2);
@@ -324,11 +330,12 @@ PrintingLayerGroup &prepare_regional_travel_plan(
         Point(plan_start.x() - scale_i(1.), plan_start.y()),
         plan_start,
         20.f,
-        500.f));
+        500.f), catalog_id);
     append_movement(tool, *prepared.source_region_island, make_movement(
-        ExtrusionRole::Travel, plan_start, plan_end, 100.f, 2000.f));
+        ExtrusionRole::Travel, plan_start, plan_end, 100.f, 2000.f), catalog_id);
     append_movement(tool, *prepared.source_region_island, make_movement(
-        ExtrusionRole::Perimeter, plan_end, plan_target_end, 20.f, target_acceleration));
+        ExtrusionRole::Perimeter, plan_end, plan_target_end, 20.f, target_acceleration),
+        catalog_id);
     return layer;
 }
 
@@ -339,7 +346,10 @@ PrintingLayerGroup &prepare_three_movement_plan(PreparedTravelDecelerationPrint 
 {
     REQUIRE(prepared.source_region_island != nullptr);
     PrintingPlan &plan = prepared.print.mutable_printing_plan();
+    const PrintingObjectInstanceId catalog_id =
+        plan.find_or_add_object_instance(prepared.print.object(0), 0);
     plan.groups.emplace_back();
+    plan.groups.back().printing_catalog_ids.push_back(catalog_id);
     plan.groups.back().layers.emplace_back();
     PrintingLayerGroup &layer = plan.groups.back().layers.back();
     layer.print_z = scale_i(0.2);
@@ -348,13 +358,15 @@ PrintingLayerGroup &prepare_three_movement_plan(PreparedTravelDecelerationPrint 
     tool.extruder_id = 0;
 
     append_movement(tool, *prepared.source_region_island,
-                    make_movement(ExtrusionRole::Perimeter, 0., 10., 20.f, 500.f));
+                    make_movement(ExtrusionRole::Perimeter, 0., 10., 20.f, 500.f),
+                    catalog_id);
     append_movement(
         tool, *prepared.source_region_island,
-        make_movement(ExtrusionRole::Travel, 10., 10. + travel_length_mm, 100.f, 2000.f));
+        make_movement(ExtrusionRole::Travel, 10., 10. + travel_length_mm, 100.f, 2000.f),
+        catalog_id);
     append_movement(tool, *prepared.source_region_island, make_movement(
         ExtrusionRole::Perimeter, 10. + travel_length_mm, 20. + travel_length_mm,
-        20.f, 500.f));
+        20.f, 500.f), catalog_id);
     return layer;
 }
 
@@ -366,7 +378,10 @@ PrintingLayerGroup &prepare_travel_run_plan(PreparedTravelDecelerationPrint &pre
     REQUIRE(prepared.source_region_island != nullptr);
     REQUIRE_FALSE(travel_specs.empty());
     PrintingPlan &plan = prepared.print.mutable_printing_plan();
+    const PrintingObjectInstanceId catalog_id =
+        plan.find_or_add_object_instance(prepared.print.object(0), 0);
     plan.groups.emplace_back();
+    plan.groups.back().printing_catalog_ids.push_back(catalog_id);
     plan.groups.back().layers.emplace_back();
     PrintingLayerGroup &layer = plan.groups.back().layers.back();
     layer.print_z = scale_i(0.2);
@@ -375,7 +390,8 @@ PrintingLayerGroup &prepare_travel_run_plan(PreparedTravelDecelerationPrint &pre
     tool.extruder_id = 0;
 
     append_movement(tool, *prepared.source_region_island,
-                    make_movement(ExtrusionRole::Perimeter, 0., 10., 20.f, 500.f));
+                    make_movement(ExtrusionRole::Perimeter, 0., 10., 20.f, 500.f),
+                    catalog_id);
     double current_x_mm = 10.0;
     for (const TravelSpec &spec : travel_specs) {
         append_movement(tool, *prepared.source_region_island,
@@ -383,7 +399,8 @@ PrintingLayerGroup &prepare_travel_run_plan(PreparedTravelDecelerationPrint &pre
                                       current_x_mm,
                                       current_x_mm + spec.length_mm,
                                       spec.speed,
-                                      spec.acceleration));
+                                      spec.acceleration),
+                        catalog_id);
         current_x_mm += spec.length_mm;
     }
     append_movement(tool, *prepared.source_region_island,
@@ -391,7 +408,8 @@ PrintingLayerGroup &prepare_travel_run_plan(PreparedTravelDecelerationPrint &pre
                                   current_x_mm,
                                   current_x_mm + 10.0,
                                   20.f,
-                                  500.f));
+                                  500.f),
+                    catalog_id);
     return layer;
 }
 
@@ -549,7 +567,10 @@ TEST_CASE("Travel deceleration resolves its switch at the Travel destination",
         REQUIRE(prepared.source_region_island != nullptr);
 
         PrintingPlan &plan = prepared.print.mutable_printing_plan();
+        const PrintingObjectInstanceId catalog_id =
+            plan.find_or_add_object_instance(prepared.print.object(0), 0);
         plan.groups.emplace_back();
+        plan.groups.back().printing_catalog_ids.push_back(catalog_id);
         plan.groups.back().layers.emplace_back();
         PrintingLayerGroup &layer = plan.groups.back().layers.back();
         layer.print_z = scale_i(0.2);
@@ -564,13 +585,13 @@ TEST_CASE("Travel deceleration resolves its switch at the Travel destination",
         append_movement(tool, *prepared.source_region_island, make_movement(
             ExtrusionRole::Perimeter,
             Point(disabled.x() - scale_i(1.), disabled.y()), disabled,
-            20.f, 500.f));
+            20.f, 500.f), catalog_id);
         append_movement(tool, *prepared.source_region_island, make_movement(
-            ExtrusionRole::Travel, disabled, boundary, 100.f, 2000.f));
+            ExtrusionRole::Travel, disabled, boundary, 100.f, 2000.f), catalog_id);
         append_movement(tool, *prepared.source_region_island, make_movement(
-            ExtrusionRole::Travel, boundary, enabled, 100.f, 2000.f));
+            ExtrusionRole::Travel, boundary, enabled, 100.f, 2000.f), catalog_id);
         append_movement(tool, *prepared.source_region_island, make_movement(
-            ExtrusionRole::Perimeter, enabled, target_end, 20.f, 500.f));
+            ExtrusionRole::Perimeter, enabled, target_end, 20.f, 500.f), catalog_id);
 
         run_travel_deceleration(prepared.print);
 
@@ -803,7 +824,10 @@ TEST_CASE("Travel deceleration overrides an inherited Travel acceleration locall
     REQUIRE(prepared.source_region_island != nullptr);
 
     PrintingPlan &plan = prepared.print.mutable_printing_plan();
+    const PrintingObjectInstanceId catalog_id =
+        plan.find_or_add_object_instance(prepared.print.object(0), 0);
     plan.groups.emplace_back();
+    plan.groups.back().printing_catalog_ids.push_back(catalog_id);
     plan.groups.back().layers.emplace_back();
     PrintingLayerGroup &layer = plan.groups.back().layers.back();
     layer.print_z = scale_i(0.2);
@@ -811,7 +835,8 @@ TEST_CASE("Travel deceleration overrides an inherited Travel acceleration locall
     PrintingToolGroup &tool = layer.tool_groups.back();
     tool.extruder_id = 0;
     append_movement(tool, *prepared.source_region_island,
-                    make_movement(ExtrusionRole::Perimeter, 0., 10., 20.f, 500.f));
+                    make_movement(ExtrusionRole::Perimeter, 0., 10., 20.f, 500.f),
+                    catalog_id);
 
     std::unique_ptr<ExtrusionEntityCollection> travel_root =
         std::make_unique<ExtrusionEntityCollection>(false, false);
@@ -819,9 +844,10 @@ TEST_CASE("Travel deceleration overrides an inherited Travel acceleration locall
     travel_root->append(make_movement(
         ExtrusionRole::Travel, 10., 11., -1.f, -1.f, false));
     ExtrusionEntity &stored_root = append_movement(
-        tool, *prepared.source_region_island, std::move(travel_root));
+        tool, *prepared.source_region_island, std::move(travel_root), catalog_id);
     append_movement(tool, *prepared.source_region_island,
-                    make_movement(ExtrusionRole::Perimeter, 11., 21., 20.f, 500.f));
+                    make_movement(ExtrusionRole::Perimeter, 11., 21., 20.f, 500.f),
+                    catalog_id);
 
     run_travel_deceleration(prepared.print);
 

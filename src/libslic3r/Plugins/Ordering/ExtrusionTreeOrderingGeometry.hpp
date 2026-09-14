@@ -55,6 +55,7 @@ preserve source-island order and remain borrowed after scratch data is freed.
 */
 std::vector<LayerRegion> resolve_source_layer_regions(
     storage_handle *scratch_storage,
+    const PrintingPlan &plan,
     const PrintingExtrusion &extrusion,
     const ExtrusionEntity &loop);
 

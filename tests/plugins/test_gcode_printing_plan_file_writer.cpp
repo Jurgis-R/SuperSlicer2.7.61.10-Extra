@@ -69,7 +69,7 @@ struct FirmwareRecorder
     std::vector<bool> roots;
     std::vector<bool> region_islands;
     std::vector<raw_extrusion_role> roles;
-    std::vector<uint16_t> object_instance_indices;
+    std::vector<uint32_t> printing_catalog_ids;
 };
 
 class RecordingFirmwareSession final : public slic3r_api::GCodeFirmwareSession
@@ -112,7 +112,7 @@ public:
         m_recorder.roots.push_back(extrusion.root().valid());
         m_recorder.region_islands.push_back(extrusion.region_island().valid());
         m_recorder.roles.push_back(extrusion.role());
-        m_recorder.object_instance_indices.push_back(extrusion.object_instance_idx());
+        m_recorder.printing_catalog_ids.push_back(extrusion.printing_catalog_id());
         return "write_extrusion\n";
     }
 
@@ -374,9 +374,9 @@ TEST_CASE("PrintingPlan file writer serializes every firmware boundary in order"
         REQUIRE(recorder.roles.size() == 2);
         CHECK(recorder.roles[0] == RAW_EXTRUSION_ROLE_PERIMETER);
         CHECK(recorder.roles[1] == RAW_EXTRUSION_ROLE_NONE);
-        REQUIRE(recorder.object_instance_indices.size() == 2);
-        CHECK(recorder.object_instance_indices[0] == 7);
-        CHECK(recorder.object_instance_indices[1] == 0);
+        REQUIRE(recorder.printing_catalog_ids.size() == 2);
+        CHECK(recorder.printing_catalog_ids[0] == 7);
+        CHECK(recorder.printing_catalog_ids[1] == 0);
         CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
     } catch (...) {
         remove_output_pair(output_path);

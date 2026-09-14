@@ -236,7 +236,7 @@ TravelEndpoint endpoint_from_leaf(const GeometricLeaf &leaf,
     TravelEndpoint endpoint;
     endpoint.position = from_begin ? leaf.first : leaf.last;
     endpoint.region_island = owner.region_island();
-    endpoint.object_instance_idx = owner.object_instance_idx();
+    endpoint.printing_catalog_id = owner.printing_catalog_id();
     const distf_t length = leaf.entity.length();
     const distf_t distance = std::min(distf_t(SCALED_EPSILON), length / 2.0);
     if (distance > 0.0) {

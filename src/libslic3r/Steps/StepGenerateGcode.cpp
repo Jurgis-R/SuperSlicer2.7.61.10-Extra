@@ -377,9 +377,25 @@ void append_plan_source_context(std::ostringstream &out,
             out << ", object=unavailable";
         }
     }
-    out << ", object_instance_idx=" << extrusion.object_instance_idx;
-    if (source_object != nullptr && extrusion.object_instance_idx >= source_object->instances().size())
-        out << " (invalid; object has " << source_object->instances().size() << " instances)";
+    out << ", printing_catalog_id=" << extrusion.printing_catalog_id;
+    const Printing::PrintingPlan *plan = print.printing_plan();
+    if (extrusion.printing_catalog_id != Printing::PRINTING_OBJECT_INSTANCE_ID_NONE) {
+        const Printing::PrintingObjectInstance *instance =
+            plan == nullptr ? nullptr : plan->object_instance(extrusion.printing_catalog_id);
+        if (instance == nullptr) {
+            out << ", catalog_instance=invalid";
+        } else if (instance->object != nullptr) {
+            out << ", catalog_instance_idx=" << instance->object_instance_idx;
+            if (source_object != nullptr && instance->object != source_object)
+                out << " (invalid; catalog object differs from source object)";
+            else if (source_object != nullptr &&
+                     instance->object_instance_idx >= source_object->instances().size())
+                out << " (invalid; object has " << source_object->instances().size()
+                    << " instances)";
+        } else {
+            out << ", catalog_instance=synthetic";
+        }
+    }
     out << "\n";
 }
 

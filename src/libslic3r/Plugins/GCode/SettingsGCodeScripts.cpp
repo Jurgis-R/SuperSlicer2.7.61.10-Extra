@@ -92,7 +92,9 @@ struct PlanSummary
 // Read global facts once before scripts are inserted, including values needed by plan-level events.
 PlanSummary summarize_plan(const PrintingPlan &plan);
 // Resolve a one-object group to the stable object index expected by PlaceholderParser.
-std::optional<uint32_t> group_object_index(const Print &print, const PrintingGroup &group);
+std::optional<uint32_t> group_object_index(const Print &print,
+                                           const PrintingPlan &plan,
+                                           const PrintingGroup &group);
 // Add one typed scalar to the temporary Config transported with a script.
 void set_int_argument(MutableConfig &config, const char *key, int32_t value);
 void set_float_argument(MutableConfig &config, const char *key, double value);
@@ -156,11 +158,17 @@ PlanSummary summarize_plan(const PrintingPlan &plan)
     return summary;
 }
 
-std::optional<uint32_t> group_object_index(const Print &print, const PrintingGroup &group)
+std::optional<uint32_t> group_object_index(const Print &print,
+                                           const PrintingPlan &plan,
+                                           const PrintingGroup &group)
 {
     if (group.object_instance_count() != 1)
         return std::nullopt;
-    const Object object = group.object_instance(0).object();
+    const uint32_t printing_catalog_id = group.printing_catalog_id(0);
+    if (printing_catalog_id == UINT32_MAX ||
+        printing_catalog_id >= plan.object_instance_count())
+        return std::nullopt;
+    const Object object = plan.object_instance(printing_catalog_id).object();
     for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx)
         if (print.object(object_idx).handle() == object.handle())
             return object_idx;
@@ -396,7 +404,8 @@ private:
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
             const PrintingGroup group = plan.group(group_idx);
             const PrintingScopeEvents group_events = group.events();
-            const std::optional<uint32_t> current_object = group_object_index(print, group);
+            const std::optional<uint32_t> current_object =
+                group_object_index(print, plan, group);
             if (current_object && previous_object && !between_objects.empty()) {
                 StoredConfig arguments(run_context->plugin_storage);
                 const LayerContext object_layer = previous_layer.value_or(LayerContext{});

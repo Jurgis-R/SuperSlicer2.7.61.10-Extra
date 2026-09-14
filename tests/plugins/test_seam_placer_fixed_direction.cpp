@@ -400,7 +400,6 @@ struct RegionalRouterFixture
         extrusion.region_island = source.get();
         extrusion.root = std::move(loop);
         extrusion.sregion_island_role = LayerRegionIsland::PERIMETERS;
-        extrusion.object_instance_idx = 0;
         tool.extrusions.push_back(std::move(extrusion));
     }
 
@@ -902,9 +901,11 @@ struct ConstraintFixture : DirectionRegionFixture
         if (plan.group_count()==0) {
             plan.append_group().append_layer_group(view().layer().print_z()).append_tool_group(0);
         }
+        const uint32_t instance_id = plan.find_or_add_object_instance(view().layer().object(), instance);
         slic3r_api::PrintingExtrusion extrusion=plan.group(0).layer_group(0).tool_group(0).append_extrusion_clone(
+            plan,
             slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&source)),
-            RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(loop),instance);
+            RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(loop),instance_id);
         const c_point shift=view().layer().object().instance_shift(instance);
         std::function<void(slic3r_api::MutableExtrusionEntity)> translate;
         translate=[&](slic3r_api::MutableExtrusionEntity entity) {
@@ -1127,14 +1128,18 @@ TEST_CASE("Seam constraints isolate source objects and layers in one plan", "[pl
     slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&first.prepared.print.mutable_printing_plan()));
     const slic3r_api::LayerRegion upper_view(reinterpret_cast<const layer_region_handle *>(&upper));
     const ExtrusionEntity square=square_loop();
+    const uint32_t high_id = plan.find_or_add_object_instance(upper_view.layer().object(), 0);
     const slic3r_api::PrintingExtrusion high=plan.group(0).append_layer_group(upper_view.layer().print_z()).append_tool_group(0).append_extrusion_clone(
+        plan,
         slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&upper_source)),
-        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),0);
+        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),high_id);
     REQUIRE(high.mutable_root().translate(upper_view.layer().object().instance_shift(0)));
     // A second independently sliced source object shares this synthetic plan.
+    const uint32_t other_id = plan.find_or_add_object_instance(second.view().layer().object(), 0);
     const slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
+        plan,
         slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&second.source)),
-        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),0);
+        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),other_id);
     REQUIRE(other.mutable_root().translate(second.view().layer().object().instance_shift(0)));
     slic3r_api::SeamPlacer session=create_fixed_session(first.prepared.print);
     CHECK(same_point(first.local(session.place_seam(low.root(),first.view(),{0,0})),mm_point(6,0)));
@@ -1662,9 +1667,11 @@ TEST_CASE("Random seams keep independent instance coordinates and object seeds",
     const slic3r_api::ExtrusionEntity b=first.add(square_loop(),1).root();
     slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&first.prepared.print.mutable_printing_plan()));
     const ExtrusionEntity square=square_loop();
+    const uint32_t other_id = plan.find_or_add_object_instance(second.view().layer().object(), 0);
     const slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
+        plan,
         slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&second.source)),
-        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),0);
+        RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),other_id);
     REQUIRE(other.mutable_root().translate(second.view().layer().object().instance_shift(0)));
     PluginStorage storage;
     const std::function<slic3r_api::SeamPlacer()> create=[&] {

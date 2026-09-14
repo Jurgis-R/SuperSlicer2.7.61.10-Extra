@@ -416,10 +416,9 @@ void SeamPlacementConstraints::initialize(const PrintingPlan &plan, storage_hand
                     if (!island.valid() || island.region_count()==0) continue;
                     const Layer layer=island.region(0).layer();
                     const Object object=layer.object();
-                    if (extrusion.object_instance_idx()>=object.instance_count())
-                        throw std::invalid_argument("Seam extrusion has invalid source instance.");
                     objects.emplace(object.handle(),true);
-                    register_tree(extrusion.root(),{layer.handle(),object.instance_shift(extrusion.object_instance_idx()),0,extrusion.role()});
+                    register_tree(extrusion.root(),
+                                  {layer.handle(), plan.object_instance_shift(extrusion), 0, extrusion.role()});
                 }
             }
         }

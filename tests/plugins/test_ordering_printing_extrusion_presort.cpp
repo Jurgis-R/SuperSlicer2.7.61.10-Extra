@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
 #include <initializer_list>
 #include <memory>
 #include <vector>
@@ -87,7 +88,7 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
     PrintingExtrusion extrusion;
     extrusion.root = std::move(root);
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
-    extrusion.object_instance_idx = identity;
+    extrusion.printing_catalog_id = identity;
     tool.extrusions.push_back(std::move(extrusion));
     return tool.extrusions.back();
 }
@@ -128,9 +129,41 @@ slic3r_api::MutableExtrusionEntity mutable_root(PrintingExtrusion &extrusion)
         reinterpret_cast<extrusion_entity_handle *>(extrusion.root.get()));
 }
 
+/* Register the synthetic IDs used by these hand-built ordering fixtures. */
+void attach_plan_identity(PrintingPlan &plan)
+{
+    const PrintingPlanIdentity *identity = plan.identity_token();
+    const coord_t side = scale_i(1.0);
+    const Polygon outline({Point(0, 0), Point(side, 0), Point(0, side)});
+    for (PrintingGroup &group : plan.groups) {
+        group.plan_identity = identity;
+        for (PrintingLayerGroup &layer : group.layers) {
+            layer.plan_identity = identity;
+            for (PrintingToolGroup &tool : layer.tool_groups) {
+                tool.plan_identity = identity;
+                for (PrintingExtrusion &extrusion : tool.extrusions) {
+                    const PrintingObjectInstanceId id = extrusion.printing_catalog_id;
+                    if (id == PRINTING_OBJECT_INSTANCE_ID_NONE)
+                        continue;
+                    while (plan.object_instances.size() <= size_t(id)) {
+                        REQUIRE(plan.add_synthetic_object_instance(
+                                    "ordering.test.synthetic", outline) !=
+                                PRINTING_OBJECT_INSTANCE_ID_NONE);
+                    }
+                    if (std::find(group.printing_catalog_ids.begin(),
+                                  group.printing_catalog_ids.end(), id) ==
+                        group.printing_catalog_ids.end())
+                        group.printing_catalog_ids.push_back(id);
+                }
+            }
+        }
+    }
+}
+
 /* Execute only the pre-sort provider on the plan already owned by print. */
 void run_pre_sort(Print &print)
 {
+    attach_plan_identity(print.mutable_printing_plan());
     ScopedActivePlugins active{PRE_SORT_PLUGIN};
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator.reset_plugin_cancel();
@@ -229,9 +262,9 @@ TEST_CASE("PrintingExtrusion pre-sort moves only non-empty roots in one tool vec
     run_pre_sort(print);
 
     REQUIRE(tool.extrusions.size() == 3);
-    CHECK(tool.extrusions[0].object_instance_idx == 30);
-    CHECK(tool.extrusions[1].object_instance_idx == 20);
-    CHECK(tool.extrusions[2].object_instance_idx == 10);
+    CHECK(tool.extrusions[0].printing_catalog_id == 30);
+    CHECK(tool.extrusions[1].printing_catalog_id == 20);
+    CHECK(tool.extrusions[2].printing_catalog_id == 10);
     CHECK(entry_points(tool.extrusions[1]) == nullptr);
     CHECK(tool.extrusions[2].root->can_sort() == first_can_sort);
     CHECK(tool.extrusions[2].root->can_reverse() == first_can_reverse);
@@ -261,7 +294,7 @@ TEST_CASE("PrintingExtrusion pre-sort carries its selected exit through the comp
             make_path(Point(scale_i(109.0), coord_t(0)), Point(scale_i(110.0), coord_t(0))), 3);
 
         run_pre_sort(print);
-        CHECK(plan.groups[0].layers[0].tool_groups[1].extrusions.front().object_instance_idx == 3);
+        CHECK(plan.groups[0].layers[0].tool_groups[1].extrusions.front().printing_catalog_id == 3);
     }
 
     SECTION("between layers") {
@@ -278,7 +311,7 @@ TEST_CASE("PrintingExtrusion pre-sort carries its selected exit through the comp
             make_path(Point(scale_i(109.0), coord_t(0)), Point(scale_i(110.0), coord_t(0))), 3);
 
         run_pre_sort(print);
-        CHECK(plan.groups[0].layers[1].tool_groups[0].extrusions.front().object_instance_idx == 3);
+        CHECK(plan.groups[0].layers[1].tool_groups[0].extrusions.front().printing_catalog_id == 3);
     }
 
     SECTION("between printing groups") {
@@ -296,7 +329,7 @@ TEST_CASE("PrintingExtrusion pre-sort carries its selected exit through the comp
             make_path(Point(scale_i(109.0), coord_t(0)), Point(scale_i(110.0), coord_t(0))), 3);
 
         run_pre_sort(print);
-        CHECK(plan.groups[1].layers[0].tool_groups[0].extrusions.front().object_instance_idx == 3);
+        CHECK(plan.groups[1].layers[0].tool_groups[0].extrusions.front().printing_catalog_id == 3);
     }
 }
 
@@ -319,7 +352,7 @@ TEST_CASE("PrintingExtrusion pre-sort falls back to the origin and handles spati
     run_pre_sort(print);
 
     REQUIRE(tool.extrusions.size() == 11);
-    CHECK(tool.extrusions.front().object_instance_idx == 10);
+    CHECK(tool.extrusions.front().printing_catalog_id == 10);
     for (PrintingExtrusion &extrusion : tool.extrusions)
         CHECK(entry_points(extrusion) != nullptr);
 }

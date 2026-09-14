@@ -5,7 +5,7 @@
 #ifndef slic3r_printing_plan_h_
 #define slic3r_printing_plan_h_
 
-#define SLIC3R_PLUGIN_API_PRINTING_PLAN_MAJOR 1u
+#define SLIC3R_PLUGIN_API_PRINTING_PLAN_MAJOR 5u
 #define SLIC3R_PLUGIN_API_PRINTING_PLAN_MINOR 0u
 
 /*
@@ -17,6 +17,8 @@ Extrusion guide:
 */
 
 #include <stdint.h>
+
+#define SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE UINT32_MAX
 
 #include "slic3r_data_tree.h"
 #include "slic3r_extrusions.h"
@@ -53,9 +55,11 @@ Handle lifetime:
   vectors may reallocate or reorder their elements.
 
 Null and range behavior:
-  Getters return null, zero, or an empty value when the input handle is null or
-  the index is out of range. Mutators ignore null handles unless they return an
-  int32_t status; status functions return 1 on success and 0 on failure.
+  Pointer getters return null and scalar index getters return zero or an empty
+  value when the input handle is null or the index is out of range. Object
+  instance ID getters instead return UINT32_MAX for the outside/invalid value.
+  Mutators ignore null handles unless they return an int32_t status; status
+  functions return 1 on success and 0 on failure.
 */
 typedef struct printing_plan_handle printing_plan_handle;
 typedef struct printing_group_handle printing_group_handle;
@@ -69,7 +73,19 @@ typedef struct c_printing_object_instance
     /* Non-owning source object pointer. Geometry in plan extrusions is already
        shifted for this instance when the builder duplicated it. */
     const object_handle *object;
-    uint64_t instance_idx;
+    uint64_t object_instance_idx;
+    /* Stable zero-based identity inside this PrintingPlan. It is assigned when
+       a builder first references the instance */
+    uint32_t id;
+    /* UTF-8 name owned by the plan. The pointer remains valid until the plan is
+       structurally changed or destroyed; callers must neither modify nor free
+       it. Copy the bytes before an append or clear when it must be retained. */
+    const char *name;
+    /* Simplified object projection in scaled platter coordinates. The center
+       is the polygon centroid. projected_outline is a borrowed plan-owned
+       Polygon and follows the same structural-invalidation rules as name. */
+    c_point projected_outline_center;
+    const polygon_handle *projected_outline;
 } c_printing_object_instance;
 
 /* ---- scope events -------------------------------------------------------
@@ -104,7 +120,10 @@ SLIC3R_HOST_API extrusion_entity_handle *printing_scope_events_append_after_move
 /* ---- plan ---------------------------------------------------------------
 
 The plan owns all groups and all cloned extrusion roots stored under them.
-Use clear() before rebuilding a plan. Construction is intentionally explicit:
+Use clear() before rebuilding its ordered work. The builder registers catalog
+entries while creating groups; a later catalog provider may complete their
+descriptive metadata without changing their IDs.
+Construction is intentionally explicit:
 plugins append groups, layer groups, tool groups, and cloned extrusion roots so
 the ordering strategy lives in the plugin that owns it.
 */
@@ -115,6 +134,30 @@ SLIC3R_HOST_API const printing_scope_events_handle *printing_plan_get_events(con
    even from a const plan handle and remains borrowed from the plan. */
 SLIC3R_HOST_API plugin_property_container_handle *printing_plan_get_properties(
     const printing_plan_handle *me);
+/* Register a printable source instance while building the plan. Repeated calls
+   with the same object and local index return the same zero-based ID. A new
+   instance is appended to the catalog in first-registration order. For a
+   synthetic entry, object must be null, object_instance_idx must be UINT64_MAX, and
+   synthetic_name and synthetic_outline must both be non-empty. Invalid mixed
+   forms return UINT32_MAX without changing the catalog. */
+SLIC3R_HOST_API uint32_t printing_plan_register_object_instance(
+    printing_plan_handle *me,
+    const object_handle *object,
+    uint64_t object_instance_idx,
+    const char *synthetic_name,
+    const polygon_handle *synthetic_outline);
+/* Replace the descriptive fields of an existing ID atomically. The source
+   object and local index, if any, are preserved. */
+SLIC3R_HOST_API int32_t printing_plan_set_object_instance_metadata(
+    printing_plan_handle *me, uint32_t id, const char *name,
+    const polygon_handle *outline);
+/* Enumerate and resolve the plan-level instance catalog. IDs are dense in the
+   range 0..count-1; UINT32_MAX means "outside" and is never a catalog entry. The
+   Metadata may be completed later without changing the IDs. */
+SLIC3R_HOST_API uint32_t printing_plan_count_object_instance(const printing_plan_handle *me);
+SLIC3R_HOST_API c_printing_object_instance printing_plan_get_object_instance_by_printing_catalog_id(
+    const printing_plan_handle *me,
+    uint32_t id);
 /* Count/read/append/reorder top-level groups. The move operation keeps the
    moved group and its cloned extrusion roots intact. */
 SLIC3R_HOST_API uint32_t printing_plan_count_group(const printing_plan_handle *me);
@@ -128,7 +171,8 @@ SLIC3R_HOST_API int32_t printing_plan_move_group(printing_plan_handle *me, uint3
 A group is an independent batch of printable work. A simple by-layer plan often
 has one group for the whole print. Complete-object style plans may use one group
 per object instance. The object-instance list is context only; it tells later
-code which source objects are represented by this batch.
+code which source objects are represented by this batch. It stores only IDs and
+does not duplicate names or projected geometry from the plan catalog.
 */
 SLIC3R_HOST_API void printing_group_clear(printing_group_handle *me);
 SLIC3R_HOST_API printing_scope_events_handle *printing_group_get_events_mutable(printing_group_handle *me);
@@ -137,11 +181,16 @@ SLIC3R_HOST_API const printing_scope_events_handle *printing_group_get_events(co
 SLIC3R_HOST_API plugin_property_container_handle *printing_group_get_properties(
     const printing_group_handle *me);
 SLIC3R_HOST_API uint32_t printing_group_count_object_instance(const printing_group_handle *me);
-SLIC3R_HOST_API c_printing_object_instance printing_group_get_object_instance(const printing_group_handle *me,
-                                                                              uint32_t idx);
-SLIC3R_HOST_API void printing_group_append_object_instance(printing_group_handle *me,
-                                                           const object_handle *object,
-                                                           uint64_t instance_idx);
+SLIC3R_HOST_API uint32_t printing_group_get_printing_catalog_id(
+    const printing_group_handle *me,
+    uint32_t idx);
+/* Append an existing catalog ID other than UINT32_MAX. The plan argument must
+   own both the group and the catalog entry; invalid cross-plan references are
+   rejected before the group is modified. */
+SLIC3R_HOST_API int32_t printing_group_append_printing_catalog_id(
+    const printing_plan_handle *plan,
+    printing_group_handle *me,
+    uint32_t id);
 /* Layer groups are expected to be visited in stored order. A builder usually
    appends them in increasing print_z, but ordering plugins may move them if
    they intentionally change the high-level schedule. */
@@ -226,28 +275,31 @@ SLIC3R_HOST_API const printing_extrusion_handle *printing_tool_group_get_extrusi
    selected or prepared a source tree and wants the plan to own an independent
    copy. A null root creates an empty root in the plan. */
 SLIC3R_HOST_API printing_extrusion_handle *printing_tool_group_append_extrusion_clone(
+    const printing_plan_handle *plan,
     printing_tool_group_handle *me,
     const layer_region_island_handle *source_region_island,
     raw_extrusion_role source_role,
     const extrusion_entity_handle *root,
-    uint16_t object_instance_idx);
+    uint32_t printing_catalog_id);
 /* Clone directly from a LayerRegionIsland role bucket. This is the common path
    for builders that copy generated perimeters, infill, support, etc. It fails
    when the source island does not have that role bucket. */
 SLIC3R_HOST_API printing_extrusion_handle *printing_tool_group_append_extrusion_clone_from_region_island(
+    const printing_plan_handle *plan,
     printing_tool_group_handle *me,
     const layer_region_island_handle *source_region_island,
     raw_extrusion_role source_role,
-    uint16_t object_instance_idx);
+    uint32_t printing_catalog_id);
 /* Move from a mutable extrusion root into the plan. The source handle remains
    owned by its original storage, but its content is moved away. Use this only
    for temporary roots created specifically to be handed to the plan. */
 SLIC3R_HOST_API printing_extrusion_handle *printing_tool_group_append_extrusion_move(
+    const printing_plan_handle *plan,
     printing_tool_group_handle *me,
     const layer_region_island_handle *source_region_island,
     raw_extrusion_role source_role,
     extrusion_entity_handle *root,
-    uint16_t object_instance_idx);
+    uint32_t printing_catalog_id);
 /* Reorder cloned roots inside this tool section without copying them. */
 SLIC3R_HOST_API int32_t printing_tool_group_move_extrusion(printing_tool_group_handle *me,
                                                            uint32_t from_idx,
@@ -263,16 +315,15 @@ SLIC3R_HOST_API int32_t printing_tool_group_transfer_extrusion(printing_tool_gro
 
 A printing extrusion is one printable cloned root plus the source information
 needed to interpret it. region_island and role identify where the clone came
-from. object_instance_idx is context only; plan geometry should already be in
-the coordinate system expected by later consumers.
+from. printing_catalog_id identifies its source through the surrounding plan's
+catalog; UINT32_MAX means no object instance is associated with the extrusion.
 */
 SLIC3R_HOST_API const layer_region_island_handle *printing_extrusion_get_region_island(
     const printing_extrusion_handle *me);
 SLIC3R_HOST_API raw_extrusion_role printing_extrusion_get_role(const printing_extrusion_handle *me);
 SLIC3R_HOST_API void printing_extrusion_set_role(printing_extrusion_handle *me, raw_extrusion_role role);
-SLIC3R_HOST_API uint16_t printing_extrusion_get_object_instance_idx(const printing_extrusion_handle *me);
-SLIC3R_HOST_API void printing_extrusion_set_object_instance_idx(printing_extrusion_handle *me,
-                                                               uint16_t object_instance_idx);
+/* Return the stable zero-based identity assigned by the surrounding plan. */
+SLIC3R_HOST_API uint32_t printing_extrusion_get_printing_catalog_id(const printing_extrusion_handle *me);
 /* Access the owned root. Mutating this root changes only the PrintingPlan copy,
    never the source LayerRegionIsland. */
 SLIC3R_HOST_API extrusion_entity_handle *printing_extrusion_get_root_mutable(printing_extrusion_handle *me);

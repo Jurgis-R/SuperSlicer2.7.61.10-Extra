@@ -6,11 +6,12 @@
 #define slic3r_volume_h_
 
 #define SLIC3R_PLUGIN_API_VOLUME_MAJOR 1u
-#define SLIC3R_PLUGIN_API_VOLUME_MINOR 0u
+#define SLIC3R_PLUGIN_API_VOLUME_MINOR 1u
 
 #include <stdint.h>
 
 #include "slic3r_data_tree.h"
+#include "slic3r_geometry.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -210,6 +211,12 @@ SLIC3R_HOST_API uint32_t triangle_mesh_vertex_count(const triangle_mesh_handle *
 SLIC3R_HOST_API uint32_t triangle_mesh_triangle_count(const triangle_mesh_handle *mesh);
 SLIC3R_HOST_API c_vec3f triangle_mesh_vertex_at(const triangle_mesh_handle *mesh, uint32_t idx);
 SLIC3R_HOST_API c_triangle_indices triangle_mesh_triangle_at(const triangle_mesh_handle *mesh, uint32_t idx);
+
+/* Project every transformed mesh triangle onto XY and store the raw polygons
+   in storage. The returned collection belongs to storage and may be empty.
+   NULL reports an invalid handle, storage, or non-finite transformation. */
+SLIC3R_HOST_API polygon_collection_handle *triangle_mesh_project_to_polygons(
+    storage_handle *storage, const triangle_mesh_handle *mesh, c_matrix4d transform);
 
 /*
 Slice a TriangleMesh into raw polygon loops at object-local Z positions.

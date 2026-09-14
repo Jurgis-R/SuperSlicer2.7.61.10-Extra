@@ -48,7 +48,7 @@ struct SourceInstance
     Object object;
     // Stable tie-breaks used by the plugin-side complete-object ordering.
     uint32_t object_idx = 0;
-    uint32_t instance_idx = 0;
+    uint32_t object_instance_idx = 0;
     // Platter-space translation applied to every cloned extrusion root.
     c_point shift = {};
     // Cached object height used by complete_objects_sort=lowz.
@@ -149,10 +149,11 @@ The source tree is object-local. The appended plan clone is translated by
 instance_shift immediately, so later ordering and G-code code can read plan
 coordinates directly.
 */
-void append_region_island_instance_extrusions(const PrintingLayerGroup &layer_group,
+void append_region_island_instance_extrusions(const PrintingPlan &plan,
+                                              const PrintingLayerGroup &layer_group,
                                               const LayerRegionIsland &region_island,
                                               c_point instance_shift,
-                                              uint32_t instance_idx);
+                                              uint32_t printing_catalog_id);
 
 /*
 Append every printable LayerRegionIsland found in one Layer.
@@ -161,10 +162,11 @@ Normal object layers and auxiliary layers share the same LayerIsland tree once
 their raw slices have been recomputed. Keeping this traversal shared prevents
 print-level helper layers from needing their own ordering model.
 */
-void append_layer_instance_extrusions(const PrintingLayerGroup &layer_group,
+void append_layer_instance_extrusions(const PrintingPlan &plan,
+                                      const PrintingLayerGroup &layer_group,
                                       const Layer &layer,
                                       c_point instance_shift,
-                                      uint32_t instance_idx);
+                                      uint32_t printing_catalog_id);
 
 /*
 Append the hidden print-level auxiliary object to an existing by-layer group.
@@ -174,6 +176,7 @@ are already in platter coordinates, so they must not be duplicated for real
 object instances.
 */
 void append_print_auxiliary_layers_to_group(const Print &print,
+                                            const PrintingPlan &plan,
                                             const PrintingGroup &group,
                                             std::map<coord_t, uint32_t> &layer_index_by_print_z);
 
@@ -231,12 +234,12 @@ std::vector<SourceInstance> source_instances(const Print &print)
         so the later clone step can duplicate the same layer extrusion tree with
         the correct instance shift.
         */
-        for (uint32_t instance_idx = 0; instance_idx < object.instance_count(); ++instance_idx) {
+        for (uint32_t object_instance_idx = 0; object_instance_idx < object.instance_count(); ++object_instance_idx) {
             SourceInstance source;
             source.object = object;
             source.object_idx = object_idx;
-            source.instance_idx = instance_idx;
-            source.shift = object.instance_shift(instance_idx);
+            source.object_instance_idx = object_instance_idx;
+            source.shift = object.instance_shift(object_instance_idx);
             source.max_z = object.max_z();
             out.push_back(source);
         }
@@ -261,7 +264,7 @@ std::vector<SourceInstance> ordered_source_instances_for_object_plan(const Print
                           return lhs.max_z < rhs.max_z;
                       if (lhs.object_idx != rhs.object_idx)
                           return lhs.object_idx < rhs.object_idx;
-                      return lhs.instance_idx < rhs.instance_idx;
+                      return lhs.object_instance_idx < rhs.object_instance_idx;
                   });
     } else if (sort_mode == "lowy") {
         /*
@@ -275,7 +278,7 @@ std::vector<SourceInstance> ordered_source_instances_for_object_plan(const Print
                           return lhs.shift.y < rhs.shift.y;
                       if (lhs.object_idx != rhs.object_idx)
                           return lhs.object_idx < rhs.object_idx;
-                      return lhs.instance_idx < rhs.instance_idx;
+                      return lhs.object_instance_idx < rhs.object_instance_idx;
                   });
     } else if (sort_mode == "nearest") {
         /*
@@ -400,10 +403,11 @@ bool region_island_has_printable_extrusions(const LayerRegionIsland &region_isla
     return false;
 }
 
-void append_region_island_instance_extrusions(const PrintingLayerGroup &layer_group,
+void append_region_island_instance_extrusions(const PrintingPlan &plan,
+                                              const PrintingLayerGroup &layer_group,
                                               const LayerRegionIsland &region_island,
                                               const c_point instance_shift,
-                                              const uint32_t instance_idx)
+                                              const uint32_t printing_catalog_id)
 {
     if (!region_island_has_printable_extrusions(region_island))
         return;
@@ -431,7 +435,8 @@ void append_region_island_instance_extrusions(const PrintingLayerGroup &layer_gr
         infill, support, ironing and other buckets without flattening the tree.
         */
         PrintingExtrusion extrusion =
-            tool_group.append_extrusion_clone_from_region_island(region_island, role, uint16_t(instance_idx));
+            tool_group.append_extrusion_clone_from_region_island(
+                plan, region_island, role, printing_catalog_id);
         if (!extrusion.valid())
             continue;
 
@@ -445,10 +450,11 @@ void append_region_island_instance_extrusions(const PrintingLayerGroup &layer_gr
     append_region_island_once(tool_group, region_island);
 }
 
-void append_layer_instance_extrusions(const PrintingLayerGroup &layer_group,
+void append_layer_instance_extrusions(const PrintingPlan &plan,
+                                      const PrintingLayerGroup &layer_group,
                                       const Layer &layer,
                                       const c_point instance_shift,
-                                      const uint32_t instance_idx)
+                                      const uint32_t printing_catalog_id)
 {
     for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
         const LayerIsland island = layer.island(island_idx);
@@ -459,15 +465,16 @@ void append_layer_instance_extrusions(const PrintingLayerGroup &layer_group,
             only clones the printable role buckets and applies the caller's
             instance shift when this layer belongs to a real object copy.
             */
-            append_region_island_instance_extrusions(layer_group,
+            append_region_island_instance_extrusions(plan, layer_group,
                                                      island.region_island(region_island_idx),
                                                      instance_shift,
-                                                     instance_idx);
+                                                     printing_catalog_id);
         }
     }
 }
 
 void append_print_auxiliary_layers_to_group(const Print &print,
+                                            const PrintingPlan &plan,
                                             const PrintingGroup &group,
                                             std::map<coord_t, uint32_t> &layer_index_by_print_z)
 {
@@ -476,17 +483,17 @@ void append_print_auxiliary_layers_to_group(const Print &print,
         return;
 
     /*
-    Print-level auxiliary layers are global work, not per-object work. Record a
-    single synthetic object instance as context, then clone each source root
-    once with a zero shift.
+    Print-level auxiliary layers are global work, not per-object work. They do
+    not receive an object-instance ID; clone each source root once with a zero
+    shift.
     */
-    group.append_object_instance(auxiliary_object, 0);
     for (uint32_t layer_idx = 0; layer_idx < auxiliary_object.auxiliary_layer_count(); ++layer_idx) {
         const Layer layer = auxiliary_object.auxiliary_layer(layer_idx);
         PrintingLayerGroup layer_group =
             layer_group_for_print_z(group, layer_index_by_print_z, layer.print_z());
         append_layer_once(layer_group, layer);
-        append_layer_instance_extrusions(layer_group, layer, c_point{}, 0);
+        append_layer_instance_extrusions(
+            plan, layer_group, layer, c_point{}, UINT32_MAX);
     }
 }
 
@@ -506,7 +513,7 @@ bool append_print_auxiliary_group(const Print &print, const PrintingPlan &plan)
         return false;
 
     std::map<coord_t, uint32_t> layer_index_by_print_z;
-    append_print_auxiliary_layers_to_group(print, group, layer_index_by_print_z);
+    append_print_auxiliary_layers_to_group(print, plan, group, layer_index_by_print_z);
     sort_layer_groups_by_print_z(group);
     return true;
 }
@@ -571,8 +578,11 @@ void build_plan_by_layer(const Print &print, const PrintingPlan &plan)
         the batch. Geometry is duplicated below; this list is only context for
         later ordering and debugging.
         */
-        for (uint32_t instance_idx = 0; instance_idx < object.instance_count(); ++instance_idx)
-            group.append_object_instance(object, instance_idx);
+        for (uint32_t object_instance_idx = 0; object_instance_idx < object.instance_count(); ++object_instance_idx) {
+            const uint32_t printing_catalog_id =
+                plan.find_or_add_object_instance(object, object_instance_idx);
+            group.append_printing_catalog_id(plan, printing_catalog_id);
+        }
 
         for (uint32_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx) {
             const Layer layer = object.layer(layer_idx);
@@ -588,11 +598,14 @@ void build_plan_by_layer(const Print &print, const PrintingPlan &plan)
             The source layer exists once per object, so clone it once per
             physical instance with that instance's bed shift applied.
             */
-            for (uint32_t instance_idx = 0; instance_idx < object.instance_count(); ++instance_idx)
-                append_layer_instance_extrusions(layer_group,
+            for (uint32_t object_instance_idx = 0; object_instance_idx < object.instance_count(); ++object_instance_idx) {
+                const uint32_t printing_catalog_id =
+                    plan.find_or_add_object_instance(object, object_instance_idx);
+                append_layer_instance_extrusions(plan, layer_group,
                                                  layer,
-                                                 object.instance_shift(instance_idx),
-                                                 instance_idx);
+                                                 object.instance_shift(object_instance_idx),
+                                                 printing_catalog_id);
+            }
         }
 
         /*
@@ -606,15 +619,18 @@ void build_plan_by_layer(const Print &print, const PrintingPlan &plan)
             PrintingLayerGroup layer_group =
                 layer_group_for_print_z(group, layer_index_by_print_z, layer.print_z());
             append_layer_once(layer_group, layer);
-            for (uint32_t instance_idx = 0; instance_idx < object.instance_count(); ++instance_idx)
-                append_layer_instance_extrusions(layer_group,
+            for (uint32_t object_instance_idx = 0; object_instance_idx < object.instance_count(); ++object_instance_idx) {
+                const uint32_t printing_catalog_id =
+                    plan.find_or_add_object_instance(object, object_instance_idx);
+                append_layer_instance_extrusions(plan, layer_group,
                                                  layer,
-                                                 object.instance_shift(instance_idx),
-                                                 instance_idx);
+                                                 object.instance_shift(object_instance_idx),
+                                                 printing_catalog_id);
+            }
         }
     }
 
-    append_print_auxiliary_layers_to_group(print, group, layer_index_by_print_z);
+    append_print_auxiliary_layers_to_group(print, plan, group, layer_index_by_print_z);
     sort_layer_groups_by_print_z(group);
 }
 
@@ -634,7 +650,9 @@ void build_plan_by_object(const Print &print, const PrintingPlan &plan)
         if (!group.valid())
             continue;
 
-        group.append_object_instance(source.object, source.instance_idx);
+        const uint32_t printing_catalog_id =
+            plan.find_or_add_object_instance(source.object, source.object_instance_idx);
+        group.append_printing_catalog_id(plan, printing_catalog_id);
         std::map<coord_t, uint32_t> layer_index_by_print_z;
 
         /*
@@ -651,7 +669,8 @@ void build_plan_by_object(const Print &print, const PrintingPlan &plan)
             Unlike by-layer mode, only the selected object instance is cloned
             into this group. That keeps each complete-object batch independent.
             */
-            append_layer_instance_extrusions(layer_group, layer, source.shift, source.instance_idx);
+            append_layer_instance_extrusions(
+                plan, layer_group, layer, source.shift, printing_catalog_id);
         }
 
         /*
@@ -664,7 +683,8 @@ void build_plan_by_object(const Print &print, const PrintingPlan &plan)
             PrintingLayerGroup layer_group =
                 layer_group_for_print_z(group, layer_index_by_print_z, layer.print_z());
             append_layer_once(layer_group, layer);
-            append_layer_instance_extrusions(layer_group, layer, source.shift, source.instance_idx);
+            append_layer_instance_extrusions(
+                plan, layer_group, layer, source.shift, printing_catalog_id);
         }
 
         sort_layer_groups_by_print_z(group);

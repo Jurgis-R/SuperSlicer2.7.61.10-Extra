@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "libslic3r/DataTreeFwd.hpp"
@@ -16,13 +17,23 @@
 #include "libslic3r/ExtrusionRole.hpp"
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Point.hpp"
+#include "libslic3r/Polygon.hpp"
 #include "libslic3r/PluginProperty.hpp"
 
-namespace Slic3r {
-class Print;
-}
-
 namespace Slic3r::Printing {
+
+using PrintingObjectInstanceId = uint32_t;
+constexpr PrintingObjectInstanceId PRINTING_OBJECT_INSTANCE_ID_NONE = uint32_t(-1);
+
+/*
+Identity token shared by one plan and all of its child containers.
+
+The token is owned by PrintingPlan and is never exposed through the C ABI.
+Children keep only its address, so moving or reallocating the vectors does not
+change the identity used to reject handles from another plan.
+*/
+struct PrintingPlanIdentity
+{};
 
 /*
 Ordered events executed around the contents of one PrintingPlan scope.
@@ -100,7 +111,15 @@ extrusion came from; the geometry itself should already be shifted.
 struct PrintingObjectInstance
 {
     const PrintObject *object = nullptr;
-    size_t instance_idx = size_t(-1);
+    size_t object_instance_idx = size_t(-1);
+    // Stable display/firmware name copied into the plan. It does not borrow
+    // ModelObject text and therefore survives later label lookups unchanged.
+    std::string name;
+    // Simplified platter-coordinate projection of the object instance. The
+    // polygon and its centroid are owned by the plan and remain independent of
+    // the source Model geometry.
+    Point projected_outline_center;
+    Polygon projected_outline;
 };
 
 /*
@@ -120,8 +139,9 @@ struct PrintingExtrusion
     ExtrusionRole sregion_island_role = ExtrusionRole::None;
     // Owned, mutable work copy of the extrusion tree.
     ExtrusionEntityUPtr root;
-    // Context only: the instance shift is already applied to root coordinates.
-    uint16_t object_instance_idx = 0;
+    // Plan-local ID of the source instance. UINT32_MAX means unresolved or
+    // print-level auxiliary work.
+    PrintingObjectInstanceId printing_catalog_id = PRINTING_OBJECT_INSTANCE_ID_NONE;
 
     PrintingExtrusion() = default;
     PrintingExtrusion(const LayerRegionIsland &source, ExtrusionRole extrusion_role, const ExtrusionEntity &source_root);
@@ -144,6 +164,8 @@ separate visits.
 */
 struct PrintingToolGroup
 {
+    // Non-owning identity of the plan that owns this group.
+    const PrintingPlanIdentity *plan_identity = nullptr;
     PrintingScopeEvents events;
     // Auxiliary metadata follows this complete tool visit when it is reordered.
     PluginPropertyContainer properties;
@@ -164,6 +186,8 @@ rule.
 */
 struct PrintingLayerGroup
 {
+    // Non-owning identity inherited from the enclosing PrintingPlan.
+    const PrintingPlanIdentity *plan_identity = nullptr;
     PrintingScopeEvents events;
     // Layer-wide metadata stays attached to the ordered print-Z scope.
     PluginPropertyContainer properties;
@@ -177,16 +201,20 @@ A large independent batch of printable work.
 
 The by-layer builder currently creates one PrintingGroup for the whole print.
 Other builders may create one group per object instance, or split an object
-instance across several groups. object_instances describes the source instances
+instance across several groups. printing_catalog_ids identifies the source instances
 represented by this batch; layers contains the ordered Z groups that will be
 printed for it.
 */
 struct PrintingGroup
 {
+    // Non-owning identity inherited from the enclosing PrintingPlan.
+    const PrintingPlanIdentity *plan_identity = nullptr;
     PrintingScopeEvents events;
     // Group metadata moves with the independent batch it describes.
     PluginPropertyContainer properties;
-    std::vector<PrintingObjectInstance> object_instances;
+    // Zero-based IDs into PrintingPlan::object_instances. The group does not
+    // duplicate names, source pointers or projected geometry from the catalog.
+    std::vector<PrintingObjectInstanceId> printing_catalog_ids;
     std::vector<PrintingLayerGroup> layers;
 };
 
@@ -200,10 +228,33 @@ context pointers.
 */
 struct PrintingPlan
 {
+    PrintingPlan() = default;
+    PrintingPlan(const PrintingPlan &) = delete;
+    PrintingPlan &operator=(const PrintingPlan &) = delete;
+    PrintingPlan(PrintingPlan &&) noexcept = default;
+    PrintingPlan &operator=(PrintingPlan &&) noexcept = default;
+
     PrintingScopeEvents events;
     // Plan-wide metadata is reset whenever the plan is rebuilt with clear().
     PluginPropertyContainer properties;
+    // Append-only catalog of printable and synthetic instances. The first
+    // registration assigns ID 0, and each ID directly indexes this vector.
+    std::vector<PrintingObjectInstance> object_instances;
     std::vector<PrintingGroup> groups;
+
+    PrintingObjectInstanceId find_or_add_object_instance(
+        const PrintObject &object, size_t object_instance_idx);
+    PrintingObjectInstanceId add_synthetic_object_instance(
+        const std::string &name, const Polygon &outline);
+    bool set_object_instance_metadata(
+        PrintingObjectInstanceId id, const std::string &name, const Polygon &outline);
+    const PrintingObjectInstance *object_instance(PrintingObjectInstanceId id) const noexcept;
+
+    const PrintingPlanIdentity *identity_token() const noexcept { return identity.get(); }
+
+private:
+    // The heap address remains stable when the plan or its vectors move.
+    std::unique_ptr<PrintingPlanIdentity> identity = std::make_unique<PrintingPlanIdentity>();
 };
 
 /*

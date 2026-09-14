@@ -7,11 +7,15 @@
 
 #include <cassert>
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
 #include "libslic3r/Api/plugin/c/slic3r_printing_plan.h"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 
 namespace slic3r_api {
 
@@ -60,13 +64,26 @@ Property guide: [Using Plugin Properties](/doc/plugins/properties.md)
 Extrusion guide: [Using Unified Extrusion Entities](/doc/plugins/extrusions.md)
 */
 
+/*
+Complete descriptor copied from the plan-level instance catalog.
+
+The numeric fields and name() are copied values. object() and
+projected_outline() remain borrowed from the plan; do not retain them after the
+source Print or plan is destroyed or structurally changed.
+*/
 class PrintingObjectInstance
 {
 public:
     explicit PrintingObjectInstance(c_printing_object_instance value) : m_value(value) {}
 
+    bool has_object() const { return m_value.object != nullptr; }
     Object object() const { return Object(m_value.object); }
-    uint64_t instance_idx() const { return m_value.instance_idx; }
+    uint64_t object_instance_idx() const { return m_value.object_instance_idx; }
+    uint32_t id() const { return m_value.id; }
+    std::string name() const { return m_value.name == nullptr ? std::string() : std::string(m_value.name); }
+    c_point projected_outline_center() const { return m_value.projected_outline_center; }
+    bool has_projected_outline() const { return m_value.projected_outline != nullptr; }
+    Polygon projected_outline() const { return Polygon(m_value.projected_outline); }
 
 private:
     c_printing_object_instance m_value;
@@ -140,10 +157,7 @@ public:
     raw_extrusion_role role() const { return printing_extrusion_get_role(handle()); }
     void set_role(raw_extrusion_role role) const { printing_extrusion_set_role(mutable_handle(), role); }
 
-    uint16_t object_instance_idx() const { return printing_extrusion_get_object_instance_idx(handle()); }
-    void set_object_instance_idx(uint16_t idx) const {
-        printing_extrusion_set_object_instance_idx(mutable_handle(), idx);
-    }
+    uint32_t printing_catalog_id() const { return printing_extrusion_get_printing_catalog_id(handle()); }
 
     ExtrusionEntity root() const {
         return ExtrusionEntity(printing_extrusion_get_root(handle()));
@@ -202,28 +216,21 @@ public:
         return PrintingExtrusion(printing_tool_group_get_extrusion_mutable(mutable_handle(), idx));
     }
 
-    PrintingExtrusion append_extrusion_clone(const LayerRegionIsland &source,
+    PrintingExtrusion append_extrusion_clone(const PrintingPlan &plan,
+                                             const LayerRegionIsland &source,
                                              raw_extrusion_role role,
                                              const ExtrusionEntity &root,
-                                             uint16_t object_instance_idx) const {
-        return PrintingExtrusion(printing_tool_group_append_extrusion_clone(
-            mutable_handle(), source.handle(), role, root.handle(), object_instance_idx));
-    }
+                                             uint32_t printing_catalog_id) const;
 
-    PrintingExtrusion append_extrusion_clone_from_region_island(const LayerRegionIsland &source,
-                                                                raw_extrusion_role role,
-                                                                uint16_t object_instance_idx) const {
-        return PrintingExtrusion(printing_tool_group_append_extrusion_clone_from_region_island(
-            mutable_handle(), source.handle(), role, object_instance_idx));
-    }
+    PrintingExtrusion append_extrusion_clone_from_region_island(
+        const PrintingPlan &plan, const LayerRegionIsland &source,
+        raw_extrusion_role role, uint32_t printing_catalog_id) const;
 
-    PrintingExtrusion append_extrusion_move(const LayerRegionIsland &source,
+    PrintingExtrusion append_extrusion_move(const PrintingPlan &plan,
+                                            const LayerRegionIsland &source,
                                             raw_extrusion_role role,
                                             MutableExtrusionEntity root,
-                                            uint16_t object_instance_idx) const {
-        return PrintingExtrusion(printing_tool_group_append_extrusion_move(
-            mutable_handle(), source.handle(), role, root.mutable_handle(), object_instance_idx));
-    }
+                                            uint32_t printing_catalog_id) const;
 
     bool move_extrusion(uint32_t from_idx, uint32_t to_idx) const {
         return printing_tool_group_move_extrusion(mutable_handle(), from_idx, to_idx) != 0;
@@ -306,12 +313,10 @@ public:
     void clear() const { printing_group_clear(mutable_handle()); }
 
     uint32_t object_instance_count() const { return printing_group_count_object_instance(handle()); }
-    PrintingObjectInstance object_instance(uint32_t idx) const {
-        return PrintingObjectInstance(printing_group_get_object_instance(handle(), idx));
+    uint32_t printing_catalog_id(uint32_t idx) const {
+        return printing_group_get_printing_catalog_id(handle(), idx);
     }
-    void append_object_instance(const Object &object, uint64_t instance_idx) const {
-        printing_group_append_object_instance(mutable_handle(), object.handle(), instance_idx);
-    }
+    void append_printing_catalog_id(const PrintingPlan &plan, uint32_t id) const;
 
     uint32_t layer_group_count() const { return printing_group_count_layer_group(handle()); }
     PrintingLayerGroup layer_group(uint32_t idx) const {
@@ -350,6 +355,37 @@ public:
 
     void clear() const { printing_plan_clear(mutable_handle()); }
 
+    uint32_t find_or_add_object_instance(const Object &object, uint64_t object_instance_idx) const {
+        const uint32_t id = printing_plan_register_object_instance(
+            mutable_handle(), object.handle(), object_instance_idx, nullptr, nullptr);
+        if (id == UINT32_MAX)
+            throw std::invalid_argument(
+                "The object instance is invalid or cannot be added to the PrintingPlan catalog.");
+        return id;
+    }
+    uint32_t add_synthetic_object_instance(const std::string &name,
+                                           const Polygon &outline) const {
+        const uint32_t id = printing_plan_register_object_instance(
+            mutable_handle(), nullptr, (std::numeric_limits<uint64_t>::max)(),
+            name.c_str(), outline.handle());
+        if (id == UINT32_MAX)
+            throw std::invalid_argument("The synthetic object instance is invalid.");
+        return id;
+    }
+    void set_object_instance_metadata(uint32_t id, const std::string &name,
+                                      const Polygon &outline) const {
+        if (!printing_plan_set_object_instance_metadata(
+                mutable_handle(), id, name.c_str(), outline.handle()))
+            throw std::invalid_argument("The object instance metadata is invalid.");
+    }
+    uint32_t object_instance_count() const {
+        return printing_plan_count_object_instance(handle());
+    }
+    PrintingObjectInstance object_instance(uint32_t id) const {
+        return PrintingObjectInstance(printing_plan_get_object_instance_by_printing_catalog_id(handle(), id));
+    }
+    c_point object_instance_shift(const PrintingExtrusion &extrusion) const;
+
     uint32_t group_count() const { return printing_plan_count_group(handle()); }
     PrintingGroup group(uint32_t idx) const {
         return PrintingGroup(printing_plan_get_group_mutable(mutable_handle(), idx));
@@ -364,6 +400,81 @@ public:
 private:
     printing_plan_handle *m_handle = nullptr;
 };
+
+inline PrintingExtrusion PrintingToolGroup::append_extrusion_clone(
+    const PrintingPlan &plan, const LayerRegionIsland &source,
+    raw_extrusion_role role, const ExtrusionEntity &root,
+    uint32_t printing_catalog_id) const
+{
+    return PrintingExtrusion(printing_tool_group_append_extrusion_clone(
+        plan.mutable_handle(), mutable_handle(), source.handle(), role,
+        root.handle(), printing_catalog_id));
+}
+
+inline PrintingExtrusion PrintingToolGroup::append_extrusion_clone_from_region_island(
+    const PrintingPlan &plan, const LayerRegionIsland &source,
+    raw_extrusion_role role, uint32_t printing_catalog_id) const
+{
+    return PrintingExtrusion(printing_tool_group_append_extrusion_clone_from_region_island(
+        plan.mutable_handle(), mutable_handle(), source.handle(), role,
+        printing_catalog_id));
+}
+
+inline PrintingExtrusion PrintingToolGroup::append_extrusion_move(
+    const PrintingPlan &plan, const LayerRegionIsland &source,
+    raw_extrusion_role role, MutableExtrusionEntity root,
+    uint32_t printing_catalog_id) const
+{
+    return PrintingExtrusion(printing_tool_group_append_extrusion_move(
+        plan.mutable_handle(), mutable_handle(), source.handle(), role,
+        root.mutable_handle(), printing_catalog_id));
+}
+
+/* Resolve the local Object instance index only when a consumer needs source
+   geometry or settings. PrintingExtrusion itself stores only the stable ID. */
+inline size_t printing_plan_object_instance_idx(const PrintingPlan &plan,
+                                           const PrintingExtrusion &extrusion)
+{
+    const uint32_t printing_catalog_id = extrusion.printing_catalog_id();
+    // none -> auxiliary -> only one instance per auxiliary object
+    if (printing_catalog_id == SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE)
+        return 0;
+    if (printing_catalog_id >= plan.object_instance_count())
+        return size_t(-1);
+    return static_cast<size_t>(plan.object_instance(printing_catalog_id).object_instance_idx());
+}
+
+inline c_point PrintingPlan::object_instance_shift(const PrintingExtrusion &extrusion) const
+{
+    const uint32_t printing_catalog_id = extrusion.printing_catalog_id();
+    // if the PrintingExtrusion doesn't have an object, it means it's already in the  platter coordinates.
+    if (printing_catalog_id == SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE)
+        return {0,0};
+    if (printing_catalog_id >= object_instance_count())
+        throw std::invalid_argument(
+            "The PrintingExtrusion references an unknown catalog entry.");
+
+    const PrintingObjectInstance instance = object_instance(printing_catalog_id);
+    if (!instance.has_object())
+        throw std::invalid_argument(
+            "A synthetic PrintingObjectInstance has no source-object shift.");
+
+    const uint64_t object_instance_idx = instance.object_instance_idx();
+    const Object object = instance.object();
+    if (object_instance_idx > UINT32_MAX ||
+        object_instance_idx >= object.instance_count())
+        throw std::invalid_argument(
+            "The PrintingObjectInstance references an invalid local instance.");
+
+    return object.instance_shift(static_cast<uint32_t>(object_instance_idx));
+}
+
+inline void PrintingGroup::append_printing_catalog_id(
+    const PrintingPlan &plan, uint32_t id) const
+{
+    if (printing_group_append_printing_catalog_id(plan.handle(), mutable_handle(), id) == 0)
+        throw std::invalid_argument("The object instance ID does not belong to the PrintingPlan.");
+}
 
 } // namespace slic3r_api
 

@@ -98,7 +98,7 @@ ExtrusionEntityUPtr make_parent(ExtrusionEntityUPtrs children,
 /* Append one independently owned extrusion tree to a final tool visit. */
 PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
                                     ExtrusionEntityUPtr root,
-                                    uint16_t object_instance_idx = 0);
+                                    uint32_t printing_catalog_id = PRINTING_OBJECT_INSTANCE_ID_NONE);
 
 /* Append one layer and tool visit to the selected PrintingGroup. */
 PrintingLayerGroup &append_layer(PrintingGroup &group,
@@ -164,11 +164,11 @@ ExtrusionEntityUPtr make_parent(ExtrusionEntityUPtrs children,
 
 PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
                                     ExtrusionEntityUPtr root,
-                                    const uint16_t object_instance_idx)
+                                    const uint32_t printing_catalog_id)
 {
     PrintingExtrusion extrusion;
     extrusion.root = std::move(root);
-    extrusion.object_instance_idx = object_instance_idx;
+    extrusion.printing_catalog_id = printing_catalog_id;
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
     tool.extrusions.push_back(std::move(extrusion));
     return tool.extrusions.back();

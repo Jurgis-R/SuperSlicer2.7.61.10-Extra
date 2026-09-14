@@ -84,7 +84,8 @@ Find the first tool that prints a normal object extrusion in one group. This is
 the initial state of the ToolChange timeline; support and auxiliary extrusions
 must not choose the object tool.
 */
-std::optional<uint16_t> first_object_tool(const PrintingGroup &group);
+std::optional<uint16_t> first_object_tool(const PrintingPlan &plan,
+                                          const PrintingGroup &group);
 
 /* Return the index of one tool visit, or uint32_t(-1) when it is absent. */
 uint32_t find_tool_group(const PrintingLayerGroup &layer, uint16_t extruder_id);
@@ -94,7 +95,8 @@ Move every normal object extrusion on a layer to the selected tool while
 leaving support and auxiliary roots untouched. The plan API updates source
 contexts during each transfer, then obsolete empty source visits are removed.
 */
-void move_object_extrusions_to_tool(const PrintingGroup &group,
+void move_object_extrusions_to_tool(const PrintingPlan &plan,
+                                    const PrintingGroup &group,
                                     const PrintingLayerGroup &layer,
                                     uint16_t extruder_id);
 
@@ -140,14 +142,16 @@ std::optional<uint16_t> color_event_tool(const CustomGCodeRow &row,
     return std::nullopt;
 }
 
-std::optional<uint16_t> first_object_tool(const PrintingGroup &group)
+std::optional<uint16_t> first_object_tool(const PrintingPlan &plan,
+                                          const PrintingGroup &group)
 {
     for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
         const PrintingLayerGroup layer = group.layer_group(layer_idx);
         for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
             const PrintingToolGroup tool = layer.tool_group(tool_idx);
             for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx)
-                if (printing_extrusion_is_object(group, tool.extrusion(extrusion_idx)))
+                if (printing_extrusion_is_object(
+                        plan, group, tool.extrusion(extrusion_idx)))
                     return tool.extruder_id();
         }
     }
@@ -162,7 +166,8 @@ uint32_t find_tool_group(const PrintingLayerGroup &layer, uint16_t extruder_id)
     return uint32_t(-1);
 }
 
-void move_object_extrusions_to_tool(const PrintingGroup &group,
+void move_object_extrusions_to_tool(const PrintingPlan &plan,
+                                    const PrintingGroup &group,
                                     const PrintingLayerGroup &layer,
                                     uint16_t extruder_id)
 {
@@ -181,7 +186,7 @@ void move_object_extrusions_to_tool(const PrintingGroup &group,
         uint32_t extrusion_idx = 0;
         while (extrusion_idx < layer.tool_group(source_idx).extrusion_count()) {
             const PrintingExtrusion extrusion = layer.tool_group(source_idx).extrusion(extrusion_idx);
-            if (!printing_extrusion_is_object(group, extrusion)) {
+            if (!printing_extrusion_is_object(plan, group, extrusion)) {
                 ++extrusion_idx;
                 continue;
             }
@@ -214,13 +219,14 @@ void apply_tool_overrides(const CustomGCodeTable &table,
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         const PrintingGroup group = plan.group(group_idx);
         const std::vector<std::vector<const CustomGCodeRow *>> layer_rows = rows_by_layer(table, group);
-        std::optional<uint16_t> selected_tool = first_object_tool(group);
+        std::optional<uint16_t> selected_tool = first_object_tool(plan, group);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             for (const CustomGCodeRow *row : layer_rows[layer_idx])
                 if (row->type == Slic3r::CustomGCode::ToolChange)
                     selected_tool = uint16_t(row->extruder - 1);
             if (selected_tool)
-                move_object_extrusions_to_tool(group, group.layer_group(layer_idx), *selected_tool);
+                move_object_extrusions_to_tool(
+                    plan, group, group.layer_group(layer_idx), *selected_tool);
         }
     }
 }

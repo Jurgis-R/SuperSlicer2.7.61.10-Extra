@@ -56,6 +56,7 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
 /* Resolve all atomic loops below entity; a loop remains one indivisible unit. */
 void build_entity_routes(
     storage_handle *scratch_storage,
+    const PrintingPlan &plan,
     const PrintingExtrusion &extrusion,
     const ExtrusionEntity &entity,
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions,
@@ -196,6 +197,7 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
 
 void build_entity_routes(
     storage_handle *scratch_storage,
+    const PrintingPlan &plan,
     const PrintingExtrusion &extrusion,
     const ExtrusionEntity &entity,
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions,
@@ -206,7 +208,7 @@ void build_entity_routes(
     if (entity.is_loop()) {
         const std::vector<LayerRegion> candidates =
             Ordering::TreeOrderingGeometry::resolve_source_layer_regions(
-                scratch_storage, extrusion, entity);
+                scratch_storage, plan, extrusion, entity);
         LayerRegion selected = candidates.front();
         const print_region_handle *selected_print_region = selected.print_region().handle();
         const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>>::const_iterator first =
@@ -244,7 +246,7 @@ void build_entity_routes(
 
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         build_entity_routes(
-            scratch_storage, extrusion, entity.child(child_idx), sessions, routes);
+            scratch_storage, plan, extrusion, entity.child(child_idx), sessions, routes);
 }
 
 std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
@@ -262,7 +264,7 @@ std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
                     const PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
                     build_entity_routes(
-                        scratch_storage, extrusion, extrusion.root(), sessions, result);
+                        scratch_storage, plan, extrusion, extrusion.root(), sessions, result);
                 }
             }
         }

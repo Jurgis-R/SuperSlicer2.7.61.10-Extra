@@ -46,6 +46,29 @@ class PrintingPlanHost:
     def printing_plan_get_properties(self, _plan):
         return 12
 
+    def printing_plan_count_object_instance(self, _plan):
+        return 2
+
+    def printing_plan_register_object_instance(
+        self, _plan, _object, object_instance_idx, _name, _outline
+    ):
+        return int(object_instance_idx)
+
+    def printing_plan_set_object_instance_metadata(
+        self, _plan, _instance_id, _name, _outline
+    ):
+        return 1
+
+    def printing_plan_get_object_instance_by_printing_catalog_id(self, _plan, printing_catalog_id):
+        return self.generated.CPrintingObjectInstance(
+            ctypes.c_void_p(89 + int(printing_catalog_id)),
+            6 + int(printing_catalog_id),
+            int(printing_catalog_id),
+            f"Instance {printing_catalog_id}".encode("utf-8"),
+            self.generated.CPoint(9 + int(printing_catalog_id), 19 + int(printing_catalog_id)),
+            ctypes.c_void_p(189 + int(printing_catalog_id)),
+        )
+
     def printing_plan_count_group(self, _plan):
         return 1
 
@@ -78,13 +101,14 @@ class PrintingPlanHost:
     def printing_group_count_object_instance(self, _group):
         return 1
 
-    def printing_group_get_object_instance(self, _group, _idx):
-        return self.generated.CPrintingObjectInstance(ctypes.c_void_p(90), 7)
+    def printing_group_get_printing_catalog_id(self, _group, _idx):
+        return 0
 
-    def printing_group_append_object_instance(self, group, obj, instance_idx):
+    def printing_group_append_printing_catalog_id(self, plan, group, printing_catalog_id):
         self.calls.append(
-            ("append_object", address(group), address(obj), int(instance_idx))
+            ("append_object_id", address(plan), address(group), int(printing_catalog_id))
         )
+        return 1
 
     def printing_group_count_layer_group(self, _group):
         return 1
@@ -195,36 +219,38 @@ class PrintingPlanHost:
         return 50 + int(idx)
 
     def printing_tool_group_append_extrusion_clone(
-        self, tool_group, island, role, root, instance_idx
+        self, plan, tool_group, island, role, root, printing_catalog_id
     ):
         self.calls.append(
             (
                 "clone_extrusion",
+                address(plan),
                 address(tool_group),
                 address(island),
                 int(role),
                 address(root),
-                int(instance_idx),
+                int(printing_catalog_id),
             )
         )
         return 51
 
     def printing_tool_group_append_extrusion_clone_from_region_island(
-        self, _tool_group, _island, _role, _instance_idx
+        self, _plan, _tool_group, _island, _role, _instance_id
     ):
         return 52
 
     def printing_tool_group_append_extrusion_move(
-        self, tool_group, island, role, root, instance_idx
+        self, plan, tool_group, island, role, root, printing_catalog_id
     ):
         self.calls.append(
             (
                 "move_extrusion_root",
+                address(plan),
                 address(tool_group),
                 address(island),
                 int(role),
                 address(root),
-                int(instance_idx),
+                int(printing_catalog_id),
             )
         )
         return 53
@@ -250,11 +276,8 @@ class PrintingPlanHost:
     def printing_extrusion_set_role(self, extrusion, role):
         self.calls.append(("set_role", address(extrusion), int(role)))
 
-    def printing_extrusion_get_object_instance_idx(self, _extrusion):
-        return 3
-
-    def printing_extrusion_set_object_instance_idx(self, extrusion, idx):
-        self.calls.append(("set_instance", address(extrusion), int(idx)))
+    def printing_extrusion_get_printing_catalog_id(self, _extrusion):
+        return 5
 
     def printing_extrusion_get_root(self, _extrusion):
         return 120
@@ -326,8 +349,8 @@ class PythonPrintingPlanViewTests(unittest.TestCase):
 
         self.assertEqual(len(plan), 1)
         group = next(plan.groups())
-        self.assertEqual(group.object_instance(0).object().address, 90)
-        self.assertEqual(group.object_instance(0).instance_idx(), 7)
+        self.assertEqual(group.printing_catalog_id(0), 0)
+        self.assertEqual(list(group.printing_catalog_ids()), [0])
         layer_group = group.layer_group(0)
         self.assertEqual(layer_group.print_z(), 42000)
         self.assertEqual(layer_group.layer(0).address, 100)
@@ -336,8 +359,15 @@ class PythonPrintingPlanViewTests(unittest.TestCase):
         self.assertEqual(tool_group.region_island(0).address, 110)
         extrusion = tool_group.extrusion(0)
         self.assertEqual(extrusion.role(), 8)
-        self.assertEqual(extrusion.object_instance_idx(), 3)
+        self.assertEqual(extrusion.printing_catalog_id(), 5)
         self.assertEqual(extrusion.root().address, 120)
+        self.assertEqual(plan.object_instance_count(), 2)
+        self.assertEqual([instance.id() for instance in plan.object_instances()], [0, 1])
+        self.assertEqual(plan.object_instance(1).name(), "Instance 1")
+        self.assertEqual(
+            plan.object_instance(1).projected_outline_center(), (10, 20)
+        )
+        self.assertEqual(plan.object_instance(1).projected_outline().address, 190)
         self.assertTrue(plan.events().has_before())
         self.assertFalse(plan.events().has_after())
         self.assertEqual(plan.events().before().address, 121)
@@ -352,23 +382,25 @@ class PythonPrintingPlanViewTests(unittest.TestCase):
         tool_group = layer_group.tool_group(0)
         extrusion = tool_group.extrusion(0)
 
-        group.append_object_instance(self.views.Object(api, 90), 7)
+        printing_catalog_id = plan.find_or_add_object_instance(self.views.Object(api, 90), 7)
+        self.assertEqual(printing_catalog_id, 7)
+        group.append_printing_catalog_id(plan, printing_catalog_id)
         self.assertEqual(group.append_layer_group(42000).address, 31)
         layer_group.append_layer(self.views.Layer(api, 100))
         self.assertEqual(layer_group.append_tool_group(2).address, 41)
         tool_group.append_region_island(self.views.LayerRegionIsland(api, 110))
         cloned = tool_group.append_extrusion_clone(
+            plan,
             self.views.LayerRegionIsland(api, 110),
             8,
             self.views.ExtrusionEntity(api, 120),
-            3,
+            printing_catalog_id,
         )
         moved = tool_group.append_extrusion_move(
-            None, 8, self.views.MutableExtrusionEntity(api, 130), 3
+            plan, None, 8, self.views.MutableExtrusionEntity(api, 130), printing_catalog_id
         )
         self.assertEqual((cloned.address, moved.address), (51, 53))
         extrusion.set_role(16)
-        extrusion.set_object_instance_idx(4)
         self.assertTrue(extrusion.set_root_clone(None))
         self.assertTrue(
             extrusion.set_root_move(self.views.MutableExtrusionEntity(api, 131))

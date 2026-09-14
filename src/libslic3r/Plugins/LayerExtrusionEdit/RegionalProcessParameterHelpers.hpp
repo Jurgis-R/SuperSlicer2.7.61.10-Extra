@@ -40,7 +40,7 @@ using ProcessParameterHelpers::EPropertySpeedFieldEditor;
 struct RegionalSourceKey
 {
     const layer_region_island_handle *region_island = nullptr;
-    uint16_t object_instance_idx = 0;
+    size_t printing_catalog_idx = size_t(-1);
 
     bool operator<(const RegionalSourceKey &rhs) const;
 };
@@ -85,8 +85,8 @@ using RegionalValuePredicate = std::function<bool(float)>;
 RegionalSettingsPartition build_regional_settings_partition(
     storage_handle *storage,
     const LayerRegionIsland &region_island,
-    uint16_t object_instance_idx,
-    const RegionSettings::OptionKeyGroup &option_keys);
+    const RegionSettings::OptionKeyGroup &option_keys,
+    const c_point instance_shift = {0,0});
 
 // Resolve every raw tuple and merge areas whose final stored float is equal.
 RegionalProcessPartition project_regional_process_values(

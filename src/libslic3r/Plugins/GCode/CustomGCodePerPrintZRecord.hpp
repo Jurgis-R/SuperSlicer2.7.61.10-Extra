@@ -61,7 +61,9 @@ Slic3r::CustomGCode::Mode effective_record_mode(const CustomGCodeTable &table);
 Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingPlan &plan);
 
 /* Return true only for extrusion roots sourced from a normal object layer. */
-bool printing_extrusion_is_object(const PrintingGroup &group, const PrintingExtrusion &extrusion);
+bool printing_extrusion_is_object(const PrintingPlan &plan,
+                                  const PrintingGroup &group,
+                                  const PrintingExtrusion &extrusion);
 
 /* Map every row to the first layer at or above its Z, preserving row order. */
 std::vector<std::vector<const CustomGCodeRow *>> rows_by_layer(

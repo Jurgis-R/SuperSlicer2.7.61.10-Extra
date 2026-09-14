@@ -247,12 +247,14 @@ TEST_CASE("Between-object scripts select the requested side of the group move",
 
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
-    plan.groups.back().object_instances.push_back(PrintingObjectInstance{&print.objects()[0], 0});
+    plan.groups.back().printing_catalog_ids.push_back(
+        plan.find_or_add_object_instance(print.objects()[0], 0));
     // Auxiliary groups do not participate in object-to-object script
     // selection, even when they sit between two real object groups.
     plan.groups.emplace_back();
     plan.groups.emplace_back();
-    plan.groups.back().object_instances.push_back(PrintingObjectInstance{&print.objects()[1], 0});
+    plan.groups.back().printing_catalog_ids.push_back(
+        plan.find_or_add_object_instance(print.objects()[1], 0));
 
     config.between_objects_gcode_before_move.value = false;
     Steps::StepExtrusionEdition::clean_and_prepare(print);

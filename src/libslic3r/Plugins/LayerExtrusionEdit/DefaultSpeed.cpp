@@ -186,6 +186,7 @@ double autospeed_target(const AutospeedTargets &targets,
 
 // Resolve and compact speed on one cloned extrusion root.
 void edit_extrusion(const Print &print,
+                    const PrintingPlan &plan,
                     const PrintingToolGroup &tool_group,
                     const PrintingExtrusion &extrusion,
                     uint32_t group_idx,
@@ -495,9 +496,10 @@ void prepare_plan(storage_handle *storage,
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, true);
                     const LayerRegionIsland region_island = extrusion.region_island();
-                    const RegionalSourceKey source{
-                        region_island.handle(), extrusion.object_instance_idx()
-                    };
+                    const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
+                    if (object_instance_idx < size_t(-1) && object_instance_idx > std::numeric_limits<uint16_t>::max())
+                        throw std::runtime_error("Speed source has no valid printing-plan instance.");
+                    const RegionalSourceKey source{region_island.handle(), object_instance_idx};
 
                     // Build raw RegionSettings geometry once per source and
                     // translated object instance. Both autospeed analysis and
@@ -505,8 +507,7 @@ void prepare_plan(storage_handle *storage,
                     RegionalSettingsPartitions::iterator settings_it = regional_settings.find(source);
                     if (settings_it == regional_settings.end()) {
                         RegionalSettingsPartition settings = build_regional_settings_partition(
-                            storage, region_island, extrusion.object_instance_idx(),
-                            k_region_speed_keys);
+                            storage, region_island, k_region_speed_keys, plan.object_instance_shift(extrusion));
                         settings_it = regional_settings.emplace(source, std::move(settings)).first;
                     }
                     if (maximum_volumetric <= 0.0)
@@ -568,9 +569,10 @@ void prepare_plan(storage_handle *storage,
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
-                    const RegionalSourceKey source{
-                        extrusion.region_island().handle(), extrusion.object_instance_idx()
-                    };
+                    const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
+                    if (object_instance_idx < size_t(-1) && object_instance_idx > std::numeric_limits<uint16_t>::max())
+                        throw std::runtime_error("Speed source has no valid printing-plan instance.");
+                    const RegionalSourceKey source{extrusion.region_island().handle(), object_instance_idx};
                     const RegionalSettingsPartitions::const_iterator settings_it =
                         regional_settings.find(source);
                     if (settings_it == regional_settings.end())
@@ -708,6 +710,7 @@ double autospeed_target(const AutospeedTargets &targets,
 }
 
 void edit_extrusion(const Print &print,
+                    const PrintingPlan &plan,
                     const PrintingToolGroup &tool_group,
                     const PrintingExtrusion &extrusion,
                     uint32_t group_idx,
@@ -717,9 +720,10 @@ void edit_extrusion(const Print &print,
     // Assign missing leaf speed, then remove redundant direct fields by moving
     // a uniform effective speed towards the root.
     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
-    const RegionalSourceKey source{
-        extrusion.region_island().handle(), extrusion.object_instance_idx()
-    };
+    const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
+    if (object_instance_idx < size_t(-1) && object_instance_idx > std::numeric_limits<uint16_t>::max())
+        throw std::runtime_error("Speed source has no valid printing-plan instance.");
+    const RegionalSourceKey source{extrusion.region_island().handle(), static_cast<uint16_t>(object_instance_idx)};
     MutableExtrusionEntity root = extrusion.mutable_root();
     EPropertySpeedFieldEditor editor(EPropertySpeedField::Speed);
     assign_speed_tree(root, EffectiveTreeState{}, context, group_idx, source, target,
@@ -825,19 +829,22 @@ void DefaultSpeed::run_impl(const plugin_run_context *run_ctx) const
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
-    assert(ctx != nullptr && ctx->print != nullptr && ctx->layer_group != nullptr);
-    if (ctx == nullptr || ctx->print == nullptr || ctx->layer_group == nullptr)
+    assert(ctx != nullptr && ctx->print != nullptr && ctx->plan != nullptr &&
+           ctx->layer_group != nullptr);
+    if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr ||
+        ctx->layer_group == nullptr)
         return;
 
     // Each run owns one layer group and reads immutable targets prepared before
     // the host launched parallel work.
     const Print print(ctx->print);
+    const PrintingPlan plan(ctx->plan);
     const PrintingLayerGroup layer_group(ctx->layer_group);
     for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
         const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
         const double target = autospeed_target(m_autospeed_targets, ctx->group_idx, tool_group.extruder_id());
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
-            edit_extrusion(print, tool_group, tool_group.extrusion(extrusion_idx),
+            edit_extrusion(print, plan, tool_group, tool_group.extrusion(extrusion_idx),
                            ctx->group_idx, target, m_speed_partitions);
             progress().increment();
         }

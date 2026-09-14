@@ -477,6 +477,16 @@ class Object : public ConstDataTreeHandleView<object_handle>
 public:
     using ConstDataTreeHandleView<object_handle>::ConstDataTreeHandleView;
 
+    std::string name() const {
+        const uint32_t required = object_get_name(handle(), nullptr, 0);
+        if (required == 0)
+            return {};
+        std::string out(required + 1, '\0');
+        object_get_name(handle(), &out[0], required + 1);
+        out.resize(required);
+        return out;
+    }
+
     Config config() const {
         return Config(object_get_config(handle()));
     }

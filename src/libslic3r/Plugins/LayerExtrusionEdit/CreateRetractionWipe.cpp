@@ -84,6 +84,7 @@ class WipeCrossingChecker
 {
 public:
     WipeCrossingChecker(const Config &print_config,
+                        const PrintingPlan &plan,
                         const plugin_run_context *run_ctx);
 
     /* Return whether the direct source-to-target movement crosses a perimeter. */
@@ -105,6 +106,7 @@ private:
     };
 
     Config m_print_config;
+    const PrintingPlan &m_plan;
     const plugin_run_context *m_run_ctx = nullptr;
     std::map<Key, std::unique_ptr<Slic3r::AvoidCrossingPerimeters>> m_routers;
 };
@@ -680,8 +682,10 @@ double wipe_speed(const Config &print_config, const uint16_t extruder_id)
 
 WipeCrossingChecker::WipeCrossingChecker(
     const Config &print_config,
+    const PrintingPlan &plan,
     const plugin_run_context *run_ctx) :
     m_print_config(print_config),
+    m_plan(plan),
     m_run_ctx(run_ctx)
 {}
 
@@ -697,11 +701,7 @@ bool WipeCrossingChecker::crosses(
         return false;
 
     const Layer layer_view = region_island.region(0).layer();
-    const Object object = layer_view.object();
-    const uint16_t instance_idx =
-        target_scope.printing_extrusion.object_instance_idx();
-    if (instance_idx >= object.instance_count())
-        return false;
+    const uint32_t printing_catalog_id = target_scope.printing_extrusion.printing_catalog_id();
     const Slic3r::Layer *layer =
         reinterpret_cast<const Slic3r::Layer *>(layer_view.handle());
     if (layer == nullptr)
@@ -726,14 +726,14 @@ bool WipeCrossingChecker::crosses(
     const Slic3r::AvoidCrossingPerimeters::PerimeterCrossingContext context{
         *layer,
         printed_layers,
-        instance_idx,
+        printing_catalog_id,
         extruder_id,
         nozzle_radius,
         [this]() { throw_if_cancelled(m_run_ctx); }
     };
     found->second->prepare_crossing_test(context);
 
-    const c_point shift = object.instance_shift(instance_idx);
+    const c_point shift = m_plan.object_instance_shift(target_scope.printing_extrusion);
     const c_extrusion_segment source_last =
         source.entity.segment(source.entity.segment_count() - 1);
     const c_extrusion_segment target_first = target.entity.segment(0);
@@ -1014,7 +1014,10 @@ void CreateRetractionWipe::run_impl(const plugin_run_context *run_ctx) const
 
     const PrintingLayerGroup layer(ctx->layer_group);
     const Config print_config = Print(ctx->print).config();
-    WipeCrossingChecker crossing_checker(print_config, run_ctx);
+    if (ctx->plan == nullptr)
+        return;
+    const PrintingPlan plan(ctx->plan);
+    WipeCrossingChecker crossing_checker(print_config, plan, run_ctx);
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         wipe_state_definition(),

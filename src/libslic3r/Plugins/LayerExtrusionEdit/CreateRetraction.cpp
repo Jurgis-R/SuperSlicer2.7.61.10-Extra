@@ -135,12 +135,14 @@ GeometricEndpoint scope_endpoint(const ScopeEntity &scope,
 
 /* Read the source-region override for the normal retraction target. */
 double normal_retract_target(const Config &print_config,
+                             const PrintingPlan &plan,
                              const ScopeEntity &source,
                              const GeometricEndpoint &endpoint);
 
 /* Convert a scope side into the scalar decision format. */
 BoundaryState boundary_state(const ScopeEntity &scope,
                              const Config &print_config,
+                             const PrintingPlan &plan,
                              const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
                              bool first,
                              bool resolve_normal_target);
@@ -363,6 +365,7 @@ GeometricEndpoint scope_endpoint(
 }
 
 double normal_retract_target(const Config &print_config,
+                             const PrintingPlan &plan,
                              const ScopeEntity &source,
                              const GeometricEndpoint &endpoint)
 {
@@ -373,12 +376,7 @@ double normal_retract_target(const Config &print_config,
     if (!region_island.valid() || region_island.region_count() == 0)
         return printer_target;
 
-    const Object object = region_island.region(0).layer().object();
-    const uint16_t instance_idx = source.printing_extrusion.object_instance_idx();
-    if (instance_idx >= object.instance_count())
-        throw std::runtime_error(
-            "A retraction source references an invalid object instance.");
-    const c_point shift = object.instance_shift(instance_idx);
+    const c_point shift = plan.object_instance_shift(source.printing_extrusion);
     c_point lookup_point{
         endpoint.position.x - shift.x,
         endpoint.position.y - shift.y
@@ -403,6 +401,7 @@ double normal_retract_target(const Config &print_config,
 BoundaryState boundary_state(
     const ScopeEntity &scope,
     const Config &print_config,
+    const PrintingPlan &plan,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
     const bool first,
     const bool resolve_normal_target)
@@ -415,7 +414,7 @@ BoundaryState boundary_state(
     state.extruder_id = scope.tool_group.extruder_id();
     if (resolve_normal_target)
         state.normal_retract_target = normal_retract_target(
-            print_config, scope, endpoint);
+            print_config, plan, scope, endpoint);
     return state;
 }
 
@@ -702,9 +701,11 @@ void CreateRetraction::setup_run_impl(const plugin_run_context *run_ctx) const
         return;
     const run_ctx_layer_extrusion_edition *ctx =
         plugin_ctx_as_layer_extrusion_edition(run_ctx);
-    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr)
+    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr ||
+        ctx->plan == nullptr)
         return;
 
+    const PrintingPlan plan(ctx->plan);
     const PrintingLayerGroup layer(ctx->layer_group);
     const Config print_config = Print(ctx->print).config();
     LayerBoundarySummary summary;
@@ -712,17 +713,17 @@ void CreateRetraction::setup_run_impl(const plugin_run_context *run_ctx) const
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         retraction_state_definition(),
-        [this, &summary, &print_config](ScopeEntity *previous, ScopeEntity *next) {
+        [this, &summary, &print_config, &plan](ScopeEntity *previous, ScopeEntity *next) {
             if (previous == nullptr && next != nullptr) {
                 summary.first = boundary_state(
-                    *next, print_config, m_scope_property, true, false);
+                    *next, print_config, plan, m_scope_property, true, false);
                 summary.first_incoming_toolchange = printing_extrusion_scope_has_flag(
                     *next->property,
                     PRINTING_EXTRUSION_SCOPE_INCOMING_TOOLCHANGE);
             }
             if (previous != nullptr && next == nullptr) {
                 summary.last = boundary_state(
-                    *previous, print_config, m_scope_property, false, true);
+                    *previous, print_config, plan, m_scope_property, false, true);
                 summary.last_outgoing_toolchange = printing_extrusion_scope_has_flag(
                     *previous->property,
                     PRINTING_EXTRUSION_SCOPE_OUTGOING_TOOLCHANGE);
@@ -740,7 +741,8 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
         return;
     const run_ctx_layer_extrusion_edition *ctx =
         plugin_ctx_as_layer_extrusion_edition(run_ctx);
-    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr)
+    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr ||
+        ctx->plan == nullptr)
         return;
 
     const size_t flat_idx = flat_layer_index(ctx->group_idx, ctx->layer_group_idx);
@@ -749,12 +751,13 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
     const LayerBoundarySummary *preceding = previous_nonempty_layer(flat_idx);
     const LayerBoundarySummary *following = next_nonempty_layer(flat_idx);
     const PrintingLayerGroup layer(ctx->layer_group);
+    const PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
 
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         retraction_state_definition(),
-        [this, &print_config, &progress = progress(), preceding, following]
+        [this, &print_config, &plan, &progress = progress(), preceding, following]
         (ScopeEntity *previous, ScopeEntity *next) {
             if (previous == nullptr && next != nullptr) {
                 if (preceding != nullptr) {
@@ -765,7 +768,7 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
                         throw std::runtime_error(
                             "Inter-layer scopes disagree about their tool-change transition.");
                     const BoundaryState target = boundary_state(
-                        *next, print_config, m_scope_property, true, false);
+                        *next, print_config, plan, m_scope_property, true, false);
                     const RetractionDecision decision = decide_boundary(
                         print_config, preceding->last, target, true,
                         incoming_toolchange);
@@ -787,9 +790,9 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
                         "Adjacent scopes disagree about their retraction transition.");
                 if (outgoing_transition) {
                     const BoundaryState source = boundary_state(
-                        *previous, print_config, m_scope_property, false, true);
+                        *previous, print_config, plan, m_scope_property, false, true);
                     const BoundaryState target = boundary_state(
-                        *next, print_config, m_scope_property, true, false);
+                        *next, print_config, plan, m_scope_property, true, false);
                     const RetractionDecision decision = decide_boundary(
                         print_config, source, target, false,
                         boundary_toolchange(*previous->property, *next->property));
@@ -808,7 +811,7 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
                     throw std::runtime_error(
                         "Inter-layer scopes disagree about their tool-change transition.");
                 const BoundaryState source = boundary_state(
-                    *previous, print_config, m_scope_property, false, true);
+                    *previous, print_config, plan, m_scope_property, false, true);
                 const RetractionDecision decision = decide_boundary(
                     print_config, source, following->first, true,
                     outgoing_toolchange);
@@ -918,7 +921,7 @@ void CreateTerminalRetraction::run_impl(
                             "The PrintingPlan contains several terminal extrusion scopes.");
                     found_terminal = true;
                     const BoundaryState source = boundary_state(
-                        *next, print_config, m_scope_property, false, true);
+                        *next, print_config, plan, m_scope_property, false, true);
                     if (source.modifier.disable_retraction == 0)
                         append_terminal_retraction(
                             run_ctx->plugin_storage, plan,

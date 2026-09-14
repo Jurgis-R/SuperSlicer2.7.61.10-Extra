@@ -1033,6 +1033,19 @@ class TriangleMesh(DataTreeView):
         """
         return self.triangle_count() == 0
 
+    def project_to_polygons(
+        self, storage_address: int, transform
+    ) -> StoredPolygonCollection:
+        """Project mesh triangles onto XY into a storage-owned collection."""
+        handle = self.api.host.triangle_mesh_project_to_polygons(
+            _void_p(storage_address), self.c_handle(), transform
+        )
+        if not handle:
+            raise ValueError("The mesh projection could not be created")
+        return StoredPolygonCollection.adopt_owned(
+            self.api, storage_address, handle
+        )
+
     def vertex_at(self, idx: int):
         return self.api.host.triangle_mesh_vertex_at(self.c_handle(), int(idx))
 
@@ -1569,6 +1582,15 @@ class MutableLayer(Layer):
 
 # Borrowed print object view.
 class Object(DataTreeView):
+    def name(self) -> str:
+        """Return the UTF-8 model-object name copied from the host."""
+        required = int(self.api.host.object_get_name(self.c_handle(), None, 0))
+        if required == 0:
+            return ""
+        output = ctypes.create_string_buffer(required + 1)
+        self.api.host.object_get_name(self.c_handle(), output, len(output))
+        return output.raw[:required].decode("utf-8", errors="replace")
+
     def properties(self) -> PluginProperties:
         return PluginProperties(self.api, self.api.host.object_get_properties(self.c_handle()))
 

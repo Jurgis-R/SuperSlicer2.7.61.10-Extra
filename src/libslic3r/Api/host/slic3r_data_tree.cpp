@@ -3,6 +3,7 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
@@ -734,6 +735,24 @@ const config_handle *object_get_config(const object_handle *me)
 plugin_property_container_handle *object_get_properties(const object_handle *me)
 {
     return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(static_cast<const Slic3r::PluginPropertyContainer *>(Slic3r::to_object(me)));
+}
+
+uint32_t object_get_name(const object_handle *me, char *out, uint32_t capacity)
+{
+    if (me == nullptr)
+        return 0;
+
+    const Slic3r::ModelObject *model_object = Slic3r::to_object(me)->model_object();
+    if (model_object == nullptr)
+        return 0;
+    const std::string &name = model_object->name;
+    const uint32_t required = uint32_t(name.size());
+    if (out != nullptr && capacity > 0) {
+        const size_t count = std::min<size_t>(required, capacity - 1);
+        std::memcpy(out, name.data(), count);
+        out[count] = '\0';
+    }
+    return required;
 }
 
 coord_t object_get_max_z(const object_handle *me)

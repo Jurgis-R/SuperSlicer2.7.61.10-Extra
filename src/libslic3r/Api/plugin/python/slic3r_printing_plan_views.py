@@ -34,14 +34,18 @@ from __future__ import annotations
 import ctypes
 from typing import Iterator
 
+PRINTING_OBJECT_INSTANCE_ID_NONE = 0xFFFFFFFF
+
 from slic3r_abi import abi_requires_headers
 from slic3r_datatree_views import (
+    CPoint,
     Layer,
     LayerRegionIsland,
     Object,
     PluginProperties,
 )
 from slic3r_extrusion_views import ExtrusionEntity, MutableExtrusionEntity
+from slic3r_geometry_views import Polygon
 
 
 def _address(handle) -> int:
@@ -137,24 +141,57 @@ class _PrintingPlanView:
 
 @abi_requires_headers("slic3r_printing_plan.h")
 class PrintingObjectInstance:
-    """Value snapshot identifying one source Object instance in a print group.
+    """Complete value copied from the plan-level instance catalog.
 
-    The small native structure is copied by value. ``object()`` is still a
-    borrowed view of the host-owned Object and must not be freed or retained
-    after the Print is destroyed. ``instance_idx()`` is context only: geometry
-    cloned into the plan has already been shifted for that instance.
+    Numeric fields and ``name()`` are copied into Python. ``object()`` and
+    ``projected_outline()`` are borrowed views and must not be freed or retained
+    after their Print or plan is destroyed. ``object_instance_idx()`` is context only:
+    geometry cloned into the plan has already been shifted for that instance.
     """
 
     def __init__(self, api, value) -> None:
         self.api = api
-        self._object_address = _require_handle(value.object, "object instance object")
-        self._instance_idx = int(value.instance_idx)
+        self._object_address = _address(value.object)
+        self._instance_idx = int(value.object_instance_idx)
+        self._id = int(value.id)
+        raw_name = value.name
+        self._name = "" if raw_name is None else (
+            raw_name.decode("utf-8") if isinstance(raw_name, bytes) else str(raw_name)
+        )
+        self._projected_outline_center = (
+            int(value.projected_outline_center.x),
+            int(value.projected_outline_center.y),
+        )
+        self._projected_outline_address = _address(value.projected_outline)
 
-    def object(self) -> Object:
-        return Object(self.api, self._object_address)
+    def has_object(self) -> bool:
+        return self._object_address != 0
 
-    def instance_idx(self) -> int:
+    def object(self) -> Object | None:
+        return None if not self._object_address else Object(self.api, self._object_address)
+
+    def object_instance_idx(self) -> int:
         return self._instance_idx
+
+    def id(self) -> int:
+        """Return the immutable zero-based identity; UINT32_MAX means no object."""
+        return self._id
+
+    def name(self) -> str:
+        """Return the copied unique instance name owned by this Python value."""
+        return self._name
+
+    def projected_outline_center(self) -> tuple[int, int]:
+        """Return the scaled centroid of the simplified object projection."""
+        return self._projected_outline_center
+
+    def has_projected_outline(self) -> bool:
+        return self._projected_outline_address != 0
+
+    def projected_outline(self) -> Polygon | None:
+        """Borrow the plan-owned simplified outline; never free or mutate it."""
+        return (None if not self._projected_outline_address else
+                Polygon(self.api, self._projected_outline_address))
 
 
 @abi_requires_headers("slic3r_printing_plan.h")
@@ -243,9 +280,10 @@ class PrintingExtrusion(_PrintingPlanView):
     def role(self) -> int:
         return int(self.api.host.printing_extrusion_get_role(self.c_handle()))
 
-    def object_instance_idx(self) -> int:
+    def printing_catalog_id(self) -> int:
+        """Return the stable plan-local instance ID cached on this extrusion."""
         return int(
-            self.api.host.printing_extrusion_get_object_instance_idx(self.c_handle())
+            self.api.host.printing_extrusion_get_printing_catalog_id(self.c_handle())
         )
 
     def root(self) -> ExtrusionEntity:
@@ -264,13 +302,6 @@ class MutablePrintingExtrusion(PrintingExtrusion):
 
     def set_role(self, role: int) -> None:
         self.api.host.printing_extrusion_set_role(self.mutable_c_handle(), int(role))
-
-    def set_object_instance_idx(self, idx: int) -> None:
-        if idx < 0 or idx > 0xFFFF:
-            raise ValueError("object instance index must fit in uint16")
-        self.api.host.printing_extrusion_set_object_instance_idx(
-            self.mutable_c_handle(), int(idx)
-        )
 
     def mutable_root(self) -> MutableExtrusionEntity:
         """Borrow the mutable plan clone; changes never alter the source island."""
@@ -410,70 +441,73 @@ class MutablePrintingToolGroup(PrintingToolGroup):
 
     def append_extrusion_clone(
         self,
+        plan: "MutablePrintingPlan",
         source: LayerRegionIsland | None,
         role: int,
         root: ExtrusionEntity | None,
-        object_instance_idx: int,
+        printing_catalog_id: int,
     ) -> MutablePrintingExtrusion:
         """Append a plan-owned copy of ``root``; None creates an empty root."""
+        _require_same_api(self, plan, "plan")
         if source is not None:
             _require_same_api(self, source, "source region island")
         if root is not None:
             _require_same_api(self, root, "root")
-        if object_instance_idx < 0 or object_instance_idx > 0xFFFF:
-            raise ValueError("object instance index must fit in uint16")
         return MutablePrintingExtrusion(
             self.api,
             self.api.host.printing_tool_group_append_extrusion_clone(
+                plan.c_handle(),
                 self.mutable_c_handle(),
                 _void_p(source),
                 int(role),
                 _void_p(root),
-                int(object_instance_idx),
+                int(printing_catalog_id),
             ),
         )
 
     def append_extrusion_clone_from_region_island(
         self,
+        plan: "MutablePrintingPlan",
         source: LayerRegionIsland,
         role: int,
-        object_instance_idx: int,
+        printing_catalog_id: int,
     ) -> MutablePrintingExtrusion:
         """Clone one existing role bucket from a source LayerRegionIsland."""
+        _require_same_api(self, plan, "plan")
         _require_same_api(self, source, "source region island")
-        if object_instance_idx < 0 or object_instance_idx > 0xFFFF:
-            raise ValueError("object instance index must fit in uint16")
         return MutablePrintingExtrusion(
             self.api,
             self.api.host.printing_tool_group_append_extrusion_clone_from_region_island(
+                plan.c_handle(),
                 self.mutable_c_handle(),
                 source.c_handle(),
                 int(role),
-                int(object_instance_idx),
+                int(printing_catalog_id),
             ),
         )
 
     def append_extrusion_move(
         self,
+        plan: "MutablePrintingPlan",
         source: LayerRegionIsland | None,
         role: int,
         root: MutableExtrusionEntity,
-        object_instance_idx: int,
+        printing_catalog_id: int,
     ) -> MutablePrintingExtrusion:
         """Move ``root`` content into the plan while leaving its handle empty."""
+        _require_same_api(self, plan, "plan")
         if source is not None:
             _require_same_api(self, source, "source region island")
         _require_same_api(self, root, "root")
-        if object_instance_idx < 0 or object_instance_idx > 0xFFFF:
-            raise ValueError("object instance index must fit in uint16")
         return MutablePrintingExtrusion(
             self.api,
             self.api.host.printing_tool_group_append_extrusion_move(
+                plan.c_handle(),
                 self.mutable_c_handle(),
                 _void_p(source),
                 int(role),
                 root.mutable_c_handle(),
-                int(object_instance_idx),
+                int(printing_catalog_id),
             ),
         )
 
@@ -725,16 +759,17 @@ class PrintingGroup(_PrintingPlanView):
             self.api.host.printing_group_count_object_instance(self.c_handle())
         )
 
-    def object_instance(self, idx: int) -> PrintingObjectInstance:
+    def printing_catalog_id(self, idx: int) -> int:
         index = _require_index(idx, self.object_instance_count(), "object instance")
-        return PrintingObjectInstance(
-            self.api,
-            self.api.host.printing_group_get_object_instance(self.c_handle(), index),
+        return int(
+            self.api.host.printing_group_get_printing_catalog_id(
+                self.c_handle(), index
+            )
         )
 
-    def object_instances(self) -> Iterator[PrintingObjectInstance]:
+    def printing_catalog_ids(self) -> Iterator[int]:
         for idx in range(self.object_instance_count()):
-            yield self.object_instance(idx)
+            yield self.printing_catalog_id(idx)
 
     def layer_group_count(self) -> int:
         return int(self.api.host.printing_group_count_layer_group(self.c_handle()))
@@ -780,14 +815,19 @@ class MutablePrintingGroup(PrintingGroup):
         """Remove all group content, events, context references and properties."""
         self.api.host.printing_group_clear(self.mutable_c_handle())
 
-    def append_object_instance(self, obj: Object, instance_idx: int) -> None:
-        """Append a borrowed source Object reference and its instance index."""
-        _require_same_api(self, obj, "object")
-        if instance_idx < 0 or instance_idx > 0xFFFFFFFFFFFFFFFF:
-            raise ValueError("instance index must fit in uint64")
-        self.api.host.printing_group_append_object_instance(
-            self.mutable_c_handle(), obj.c_handle(), int(instance_idx)
-        )
+    def append_printing_catalog_id(
+        self, plan: "MutablePrintingPlan", printing_catalog_id: int
+    ) -> None:
+        """Append a zero-based ID previously registered in the surrounding plan."""
+        _require_same_api(self, plan, "plan")
+        if printing_catalog_id < 0 or printing_catalog_id >= PRINTING_OBJECT_INSTANCE_ID_NONE:
+            raise ValueError(
+                "object instance ID must be below UINT32_MAX"
+            )
+        if not self.api.host.printing_group_append_printing_catalog_id(
+            plan.c_handle(), self.mutable_c_handle(), int(printing_catalog_id)
+        ):
+            raise ValueError("object instance ID could not be appended")
 
     def layer_group(self, idx: int) -> MutablePrintingLayerGroup:
         index = _require_index(idx, self.layer_group_count(), "layer group")
@@ -838,6 +878,45 @@ class PrintingPlan(_PrintingPlanView):
             self.api, self.api.host.printing_plan_get_properties(self.c_handle())
         )
 
+    def object_instance_count(self) -> int:
+        """Return the number of registered entries in the plan-local catalog."""
+        return int(self.api.host.printing_plan_count_object_instance(self.c_handle()))
+
+    def object_instance(self, printing_catalog_id: int) -> PrintingObjectInstance:
+        """Copy the catalog entry identified by a zero-based plan-local ID."""
+        if printing_catalog_id < 0 or printing_catalog_id >= self.object_instance_count():
+            raise IndexError("object instance ID is outside the plan catalog")
+        return PrintingObjectInstance(
+            self.api,
+            self.api.host.printing_plan_get_object_instance_by_printing_catalog_id(
+                self.c_handle(), int(printing_catalog_id)
+            ),
+        )
+
+    def object_instance_shift(self, extrusion: PrintingExtrusion) -> CPoint:
+        """Return the scaled XY shift for the extrusion's real source instance."""
+        _require_same_api(self, extrusion, "extrusion")
+        printing_catalog_id = extrusion.printing_catalog_id()
+        if printing_catalog_id == PRINTING_OBJECT_INSTANCE_ID_NONE:
+            raise ValueError("the extrusion is outside every object instance")
+
+        instance = self.object_instance(printing_catalog_id)
+        if instance.id() != printing_catalog_id:
+            raise ValueError("the extrusion references an unknown catalog entry")
+        obj = instance.object()
+        if obj is None:
+            raise ValueError("a synthetic object instance has no source-object shift")
+
+        object_instance_idx = instance.object_instance_idx()
+        if (object_instance_idx < 0 or object_instance_idx > 0xFFFFFFFF or
+                object_instance_idx >= obj.instance_count()):
+            raise ValueError("the catalog entry references an invalid local instance")
+        return obj.instance_shift(object_instance_idx)
+
+    def object_instances(self) -> Iterator[PrintingObjectInstance]:
+        for printing_catalog_id in range(self.object_instance_count()):
+            yield self.object_instance(printing_catalog_id)
+
     def group_count(self) -> int:
         return int(self.api.host.printing_plan_count_group(self.c_handle()))
 
@@ -878,8 +957,54 @@ class MutablePrintingPlan(PrintingPlan):
         )
 
     def clear(self) -> None:
-        """Remove all groups, events and properties before rebuilding the plan."""
+        """Remove ordered work, events, properties, and the instance catalog."""
         self.api.host.printing_plan_clear(self.mutable_c_handle())
+
+    def find_or_add_object_instance(self, obj: Object, object_instance_idx: int) -> int:
+        """Return the plan-local ID, registering the source instance if needed."""
+        _require_same_api(self, obj, "object")
+        if object_instance_idx < 0 or object_instance_idx > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("instance index must fit in uint64")
+        printing_catalog_id = int(
+            self.api.host.printing_plan_register_object_instance(
+                self.mutable_c_handle(), obj.c_handle(), int(object_instance_idx), None, None
+            )
+        )
+        if printing_catalog_id == PRINTING_OBJECT_INSTANCE_ID_NONE:
+            raise ValueError(
+                "object instance is invalid or cannot be added to the plan catalog"
+            )
+        return printing_catalog_id
+
+    def add_synthetic_object_instance(self, name: str, outline: Polygon) -> int:
+        """Register a copied entry that has no source Object or instance index."""
+        _require_same_api(self, outline, "outline")
+        if not name or not outline:
+            raise ValueError("synthetic object instance requires a name and outline")
+        printing_catalog_id = int(
+            self.api.host.printing_plan_register_object_instance(
+                self.mutable_c_handle(), None, 0xFFFFFFFFFFFFFFFF,
+                name.encode("utf-8"), outline.c_handle()
+            )
+        )
+        if printing_catalog_id == PRINTING_OBJECT_INSTANCE_ID_NONE:
+            raise ValueError("synthetic object instance could not be registered")
+        return printing_catalog_id
+
+    def set_object_instance_metadata(
+        self, printing_catalog_id: int, name: str, outline: Polygon
+    ) -> None:
+        """Replace metadata for an existing plan catalog entry."""
+        _require_same_api(self, outline, "outline")
+        if printing_catalog_id < 0 or printing_catalog_id >= PRINTING_OBJECT_INSTANCE_ID_NONE:
+            raise ValueError("object instance ID must be below UINT32_MAX")
+        if not name or not outline:
+            raise ValueError("object instance metadata requires a name and outline")
+        if not self.api.host.printing_plan_set_object_instance_metadata(
+            self.mutable_c_handle(), int(printing_catalog_id), name.encode("utf-8"),
+            outline.c_handle()
+        ):
+            raise ValueError("object instance metadata could not be set")
 
     def group(self, idx: int) -> MutablePrintingGroup:
         index = _require_index(idx, self.group_count(), "printing group")

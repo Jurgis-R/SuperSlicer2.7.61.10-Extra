@@ -191,12 +191,14 @@ std::optional<coord_t> last_geometric_z(MutableExtrusionEntity entity,
 
 /* Resolve the source-region lift override or the extruder fallback. */
 double source_lift(const ScopeEntity &source,
+                   const PrintingPlan &plan,
                    const SourceEndpoint &endpoint,
                    const Config &print_config);
 
 /* Describe one outgoing scope without retaining owner or entity handles. */
 SourceLiftState describe_source(
     const ScopeEntity &source,
+    const PrintingPlan &plan,
     const Config &print_config,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
 
@@ -397,6 +399,7 @@ std::optional<coord_t> last_geometric_z(
 }
 
 double source_lift(const ScopeEntity &source,
+                   const PrintingPlan &plan,
                    const SourceEndpoint &endpoint,
                    const Config &print_config)
 {
@@ -408,12 +411,7 @@ double source_lift(const ScopeEntity &source,
     if (!region_island.valid() || region_island.region_count() == 0)
         return printer_lift;
 
-    const Object object = region_island.region(0).layer().object();
-    const uint16_t instance_idx =
-        source.printing_extrusion.object_instance_idx();
-    if (instance_idx >= object.instance_count())
-        throw std::runtime_error("A lift source references an invalid object instance.");
-    const c_point shift = object.instance_shift(instance_idx);
+    const c_point shift = plan.object_instance_shift(source.printing_extrusion);
     c_point lookup_point{
         endpoint.point.x - shift.x,
         endpoint.point.y - shift.y
@@ -437,6 +435,7 @@ double source_lift(const ScopeEntity &source,
 
 SourceLiftState describe_source(
     const ScopeEntity &source,
+    const PrintingPlan &plan,
     const Config &print_config,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
 {
@@ -468,7 +467,7 @@ SourceLiftState describe_source(
     if (!result.retracted)
         return result;
 
-    result.requested_lift_mm = source_lift(source, endpoint, print_config);
+    result.requested_lift_mm = source_lift(source, plan, endpoint, print_config);
     if (!std::isfinite(result.requested_lift_mm) ||
         result.requested_lift_mm < 0.0)
         throw std::runtime_error("Lift settings produced an invalid Z request.");
@@ -926,9 +925,11 @@ void CreateRetractionLift::setup_run_impl(
         return;
     const run_ctx_layer_extrusion_edition *ctx =
         plugin_ctx_as_layer_extrusion_edition(run_ctx);
-    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr)
+    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr ||
+        ctx->plan == nullptr)
         return;
 
+    const PrintingPlan plan(ctx->plan);
     const PrintingLayerGroup layer(ctx->layer_group);
     const Config print_config = Print(ctx->print).config();
     LayerLiftSummary summary;
@@ -937,7 +938,7 @@ void CreateRetractionLift::setup_run_impl(
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         lift_state_definition(),
-        [this, &summary, &print_config]
+        [this, &summary, &print_config, &plan]
         (ScopeEntity *previous, ScopeEntity *next) {
             // Every matching scope appears exactly once as `next`. Prepare its
             // outgoing retracting wipe here so a following travel observes the
@@ -952,7 +953,7 @@ void CreateRetractionLift::setup_run_impl(
             // summary contains scalar state only; no scope handle escapes.
             if (previous != nullptr && next == nullptr)
                 summary.last = describe_source(
-                    *previous, print_config, m_scope_property);
+                    *previous, plan, print_config, m_scope_property);
         },
         MatchingEntityDescendants::Skip);
     traversal.process(layer);
@@ -966,7 +967,8 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
         return;
     const run_ctx_layer_extrusion_edition *ctx =
         plugin_ctx_as_layer_extrusion_edition(run_ctx);
-    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr)
+    if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr ||
+        ctx->plan == nullptr)
         return;
 
     const size_t flat_idx = flat_layer_index(
@@ -975,6 +977,7 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
         throw std::runtime_error("A lift layer has no prepared summary.");
     const SourceLiftState *preceding = previous_layer_source(flat_idx);
     const PrintingLayerGroup layer(ctx->layer_group);
+    const PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
 
     // For scopes A, B and C in this layer, traversal calls (nullptr, A),
@@ -983,7 +986,7 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         lift_state_definition(),
-        [this, preceding, &print_config, layer_group_idx = ctx->layer_group_idx]
+        [this, preceding, &print_config, &plan, layer_group_idx = ctx->layer_group_idx]
         (ScopeEntity *previous, ScopeEntity *next) {
             // The terminal callback has a source but no target travel to edit.
             if (next == nullptr)
@@ -994,7 +997,7 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
             // reserved travel phase which enters `next`.
             if (previous != nullptr) {
                 const SourceLiftState source = describe_source(
-                    *previous, print_config, m_scope_property);
+                    *previous, plan, print_config, m_scope_property);
                 apply_transition_lift(
                     source, *next, layer_group_idx, print_config,
                     m_scope_property);

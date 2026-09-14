@@ -111,11 +111,11 @@ std::unique_ptr<ExtrusionPath> make_closed_arc_path(const Point &seam)
 void append_extrusion(PrintingToolGroup &tool,
                       std::unique_ptr<ExtrusionEntity> root,
                       const LayerRegionIsland *region_island = nullptr,
-                      uint16_t object_instance_idx = 0)
+                      uint32_t printing_catalog_id = PRINTING_OBJECT_INSTANCE_ID_NONE)
 {
     PrintingExtrusion extrusion;
     extrusion.region_island = region_island;
-    extrusion.object_instance_idx = object_instance_idx;
+    extrusion.printing_catalog_id = printing_catalog_id;
     extrusion.root = std::move(root);
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
     tool.extrusions.push_back(std::move(extrusion));
@@ -377,7 +377,10 @@ TEST_CASE("Avoid-crossing travel routes around a hole between enabled endpoints"
     const Point target = Point(scale_i(25.), scale_i(15.)) + shift;
 
     PrintingPlan &plan = print.mutable_printing_plan();
+    const PrintingObjectInstanceId catalog_id =
+        plan.find_or_add_object_instance(print.object(0), 0);
     plan.groups.emplace_back();
+    plan.groups.back().printing_catalog_ids.push_back(catalog_id);
     plan.groups.back().layers.emplace_back();
     PrintingLayerGroup &plan_layer = plan.groups.back().layers.back();
     plan_layer.print_z = scale_i(0.2);
@@ -385,9 +388,9 @@ TEST_CASE("Avoid-crossing travel routes around a hole between enabled endpoints"
     PrintingToolGroup &tool = plan_layer.tool_groups.back();
     tool.extruder_id = 0;
     append_extrusion(tool, make_path(
-        Point(source.x() - scale_i(1.), source.y()), source), region_island);
+        Point(source.x() - scale_i(1.), source.y()), source), region_island, catalog_id);
     append_extrusion(tool, make_path(
-        target, Point(target.x() + scale_i(1.), target.y())), region_island);
+        target, Point(target.x() + scale_i(1.), target.y())), region_island, catalog_id);
 
     run_travel_plugins(print, AVOID_CROSSING_TRAVEL_PLUGIN);
 

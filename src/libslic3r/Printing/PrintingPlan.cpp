@@ -308,7 +308,7 @@ role, and stored under the tool group selected by region_island.extruder_id().
 void append_region_island_instance_extrusions(PrintingLayerGroup &layer_group,
                                               const LayerRegionIsland &region_island,
                                               const PrintInstance &instance,
-                                              size_t instance_idx,
+                                              PrintingObjectInstanceId printing_catalog_id,
                                               const std::vector<ExtrusionRole> &roles);
 
 /*
@@ -349,6 +349,76 @@ PrintingScopeEvents &PrintingScopeEvents::operator=(PrintingScopeEvents &&other)
         m_after = std::move(other.m_after);
     }
     return *this;
+}
+
+/*
+Return the stable zero-based ID assigned by this plan to a source instance.
+
+The first group that references a physical instance creates its lightweight
+catalog entry. Later groups reuse that entry, so moving or splitting groups
+ does not duplicate the instance identity. Registration remains valid throughout
+ plan construction; metadata may be completed later without changing the ID.
+*/
+PrintingObjectInstanceId PrintingPlan::find_or_add_object_instance(
+    const PrintObject &object, const size_t object_instance_idx)
+{
+    if (object_instance_idx >= object.instances().size() || object.print() == nullptr ||
+        object.print()->auxiliary_object() == &object)
+        return PRINTING_OBJECT_INSTANCE_ID_NONE;
+
+    for (size_t idx = 0; idx < object_instances.size(); ++idx) {
+        const PrintingObjectInstance &instance = object_instances[idx];
+        if (instance.object == &object && instance.object_instance_idx == object_instance_idx)
+            return PrintingObjectInstanceId(idx);
+    }
+
+    if (object_instances.size() >=
+        size_t((std::numeric_limits<PrintingObjectInstanceId>::max)()))
+        return PRINTING_OBJECT_INSTANCE_ID_NONE;
+    PrintingObjectInstance instance;
+    instance.object = &object;
+    instance.object_instance_idx = object_instance_idx;
+    object_instances.push_back(std::move(instance));
+    return PrintingObjectInstanceId(object_instances.size() - 1);
+}
+
+PrintingObjectInstanceId PrintingPlan::add_synthetic_object_instance(
+    const std::string &name, const Polygon &outline)
+{
+    if (name.empty() || outline.empty() || outline.area() == 0 ||
+        object_instances.size() >= size_t((std::numeric_limits<PrintingObjectInstanceId>::max)()))
+        return PRINTING_OBJECT_INSTANCE_ID_NONE;
+
+    PrintingObjectInstance instance;
+    instance.name = name;
+    instance.projected_outline = outline;
+    instance.projected_outline_center = outline.centroid();
+    object_instances.emplace_back(std::move(instance));
+    return PrintingObjectInstanceId(object_instances.size() - 1);
+}
+
+bool PrintingPlan::set_object_instance_metadata(
+    PrintingObjectInstanceId id, const std::string &name, const Polygon &outline)
+{
+    if (name.empty() || outline.empty() || outline.area() == 0 ||
+        id == PRINTING_OBJECT_INSTANCE_ID_NONE ||
+        size_t(id) >= object_instances.size())
+        return false;
+
+    PrintingObjectInstance replacement = object_instances[size_t(id)];
+    replacement.name = name;
+    replacement.projected_outline = outline;
+    replacement.projected_outline_center = outline.centroid();
+    object_instances[size_t(id)] = std::move(replacement);
+    return true;
+}
+
+/* Resolve a zero-based plan ID without exposing vector indexing to callers. */
+const PrintingObjectInstance *PrintingPlan::object_instance(
+    const PrintingObjectInstanceId id) const noexcept
+{
+    return id == PRINTING_OBJECT_INSTANCE_ID_NONE || id >= object_instances.size() ?
+        nullptr : &object_instances[id];
 }
 
 ExtrusionEntity &PrintingScopeEvents::append_before(const ExtrusionEntity &event)
@@ -487,8 +557,9 @@ PrintingPlan build_printing_plan_by_object(const Print &print)
             continue;
 
         const PrintObject &object = *instance->print_object;
-        const size_t instance_idx = print_instance_index(object, *instance);
+        const size_t object_instance_idx = print_instance_index(object, *instance);
         PrintingGroup group;
+        group.plan_identity = plan.identity_token();
         std::map<coord_t, size_t> layer_index_by_print_z;
 
         /*
@@ -496,10 +567,12 @@ PrintingPlan build_printing_plan_by_object(const Print &print)
         The groups are created in complete_objects_sort order, so later code can
         consume plan.groups directly when printing complete objects.
         */
-        PrintingObjectInstance object_instance;
-        object_instance.object = &object;
-        object_instance.instance_idx = instance_idx;
-        group.object_instances.push_back(object_instance);
+        const PrintingObjectInstanceId printing_catalog_id =
+            plan.find_or_add_object_instance(object, object_instance_idx);
+        if (printing_catalog_id == PRINTING_OBJECT_INSTANCE_ID_NONE)
+            throw std::invalid_argument(
+                "The plan builder could not register an object instance.");
+        group.printing_catalog_ids.push_back(printing_catalog_id);
 
         for (const Layer &layer : object.layers()) {
             /*
@@ -522,7 +595,7 @@ PrintingPlan build_printing_plan_by_object(const Print &print)
                     append_region_island_instance_extrusions(layer_group,
                                                              region_island,
                                                              *instance,
-                                                             instance_idx,
+                                                             printing_catalog_id,
                                                              roles);
         }
 
@@ -537,6 +610,7 @@ PrintingPlan build_printing_plan_by_layer(const Print &print)
 {
     PrintingPlan plan;
     PrintingGroup group;
+    group.plan_identity = plan.identity_token();
     std::map<coord_t, size_t> layer_index_by_print_z;
     const std::vector<ExtrusionRole> roles = layer_region_island_roles();
 
@@ -547,11 +621,13 @@ PrintingPlan build_printing_plan_by_layer(const Print &print)
         extrusion clones are created below; this list is only the high-level
         context for the group.
         */
-        for (size_t instance_idx = 0; instance_idx < object.instances().size(); ++instance_idx) {
-            PrintingObjectInstance object_instance;
-            object_instance.object = &object;
-            object_instance.instance_idx = instance_idx;
-            group.object_instances.push_back(object_instance);
+        for (size_t object_instance_idx = 0; object_instance_idx < object.instances().size(); ++object_instance_idx) {
+            const PrintingObjectInstanceId printing_catalog_id =
+                plan.find_or_add_object_instance(object, object_instance_idx);
+            if (printing_catalog_id == PRINTING_OBJECT_INSTANCE_ID_NONE)
+                throw std::invalid_argument(
+                    "The plan builder could not register an object instance.");
+            group.printing_catalog_ids.push_back(printing_catalog_id);
         }
 
         for (const Layer &layer : object.layers()) {
@@ -571,12 +647,13 @@ PrintingPlan build_printing_plan_by_layer(const Print &print)
             */
             for (const LayerSliceIsland &slice_island : layer.islands())
                 for (const LayerRegionIsland &region_island : slice_island.regions_islands())
-                    for (size_t instance_idx = 0; instance_idx < object.instances().size(); ++instance_idx)
-                        append_region_island_instance_extrusions(layer_group,
-                                                                 region_island,
-                                                                 object.instances()[instance_idx],
-                                                                 instance_idx,
-                                                                 roles);
+                    for (size_t object_instance_idx = 0; object_instance_idx < object.instances().size(); ++object_instance_idx)
+                        append_region_island_instance_extrusions(
+                            layer_group,
+                            region_island,
+                            object.instances()[object_instance_idx],
+                            plan.find_or_add_object_instance(object, object_instance_idx),
+                            roles);
         }
     }
 
@@ -1141,9 +1218,9 @@ std::vector<const PrintInstance *> ordered_print_instances_for_object_plan(const
 
 size_t print_instance_index(const PrintObject &object, const PrintInstance &instance)
 {
-    for (size_t instance_idx = 0; instance_idx < object.instances().size(); ++instance_idx)
-        if (&object.instances()[instance_idx] == &instance)
-            return instance_idx;
+    for (size_t object_instance_idx = 0; object_instance_idx < object.instances().size(); ++object_instance_idx)
+        if (&object.instances()[object_instance_idx] == &instance)
+            return object_instance_idx;
 
     assert(false);
     return size_t(-1);
@@ -1158,6 +1235,7 @@ PrintingLayerGroup &layer_group_for_print_z(PrintingGroup &group,
         return group.layers[existing->second];
 
     PrintingLayerGroup layer_group;
+    layer_group.plan_identity = group.plan_identity;
     layer_group.print_z = print_z;
     group.layers.push_back(std::move(layer_group));
     const size_t layer_idx = group.layers.size() - 1;
@@ -1180,6 +1258,7 @@ PrintingToolGroup &tool_group_for_extruder(PrintingLayerGroup &layer_group, cons
             return tool_group;
 
     PrintingToolGroup tool_group;
+    tool_group.plan_identity = layer_group.plan_identity;
     tool_group.extruder_id = extruder_id;
     layer_group.tool_groups.push_back(std::move(tool_group));
     return layer_group.tool_groups.back();
@@ -1196,7 +1275,7 @@ void append_region_island_once(PrintingToolGroup &tool_group, const LayerRegionI
 void append_region_island_instance_extrusions(PrintingLayerGroup &layer_group,
                                               const LayerRegionIsland &region_island,
                                               const PrintInstance &instance,
-                                              const size_t instance_idx,
+                                              const PrintingObjectInstanceId printing_catalog_id,
                                               const std::vector<ExtrusionRole> &roles)
 {
     /*
@@ -1231,7 +1310,7 @@ void append_region_island_instance_extrusions(PrintingLayerGroup &layer_group,
         assert(extrusion.root != nullptr);
         if (extrusion.root != nullptr)
             translate_extrusion_tree(*extrusion.root, instance.shift);
-        extrusion.object_instance_idx = uint16_t(instance_idx);
+        extrusion.printing_catalog_id = printing_catalog_id;
         tool_group.extrusions.push_back(std::move(extrusion));
     }
 

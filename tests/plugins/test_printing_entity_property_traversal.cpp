@@ -51,7 +51,7 @@ struct CallbackRecord
     const printing_extrusion_handle *extrusion = nullptr;
     const extrusion_entity_handle *entity = nullptr;
     uint16_t extruder_id = UINT16_MAX;
-    uint16_t object_instance_idx = UINT16_MAX;
+    uint16_t printing_catalog_idx = UINT16_MAX;
 };
 
 /* Resolve one process-local dynamic key for all traversal test plans. */
@@ -77,7 +77,7 @@ Slic3r::ExtrusionEntityUPtr scope_shaped_entity();
 /* Append one core extrusion root to the selected final tool group. */
 void append_extrusion(Slic3r::Printing::PrintingToolGroup &tool_group,
                       Slic3r::ExtrusionEntityUPtr root,
-                      uint16_t object_instance_idx);
+                      uint16_t printing_catalog_idx);
 
 /* Build one layer containing two tools and three independent extrusion roots. */
 Slic3r::Printing::PrintingLayerGroup &make_test_layer(Slic3r::Print &print);
@@ -137,11 +137,11 @@ Slic3r::ExtrusionEntityUPtr scope_shaped_entity()
 
 void append_extrusion(Slic3r::Printing::PrintingToolGroup &tool_group,
                       Slic3r::ExtrusionEntityUPtr root,
-                      const uint16_t object_instance_idx)
+                      const uint16_t printing_catalog_idx)
 {
     Slic3r::Printing::PrintingExtrusion extrusion;
     extrusion.root = std::move(root);
-    extrusion.object_instance_idx = object_instance_idx;
+    extrusion.printing_catalog_id = printing_catalog_idx;
     tool_group.extrusions.emplace_back(std::move(extrusion));
 }
 
@@ -217,8 +217,8 @@ TEST_CASE("Printing property traversal streams direct properties with their owne
                 record.extrusion = next->printing_extrusion.handle();
                 record.entity = next->entity.handle();
                 record.extruder_id = next->tool_group.extruder_id();
-                record.object_instance_idx =
-                    next->printing_extrusion.object_instance_idx();
+                record.printing_catalog_idx =
+                    next->printing_extrusion.printing_catalog_id();
             }
             records.emplace_back(record);
         });
@@ -252,13 +252,13 @@ TEST_CASE("Printing property traversal streams direct properties with their owne
     CHECK(records[3].entity == last_root.handle());
 
     CHECK(records[0].extruder_id == 2);
-    CHECK(records[0].object_instance_idx == 4);
+    CHECK(records[0].printing_catalog_idx == 4);
     CHECK(records[1].extruder_id == 2);
-    CHECK(records[1].object_instance_idx == 4);
+    CHECK(records[1].printing_catalog_idx == 4);
     CHECK(records[2].extruder_id == 2);
-    CHECK(records[2].object_instance_idx == 5);
+    CHECK(records[2].printing_catalog_idx == 5);
     CHECK(records[3].extruder_id == 7);
-    CHECK(records[3].object_instance_idx == 6);
+    CHECK(records[3].printing_catalog_idx == 6);
 
     CHECK(first_root.get(key)->visits == 2);
     CHECK(nested_child.get(key)->visits == 2);

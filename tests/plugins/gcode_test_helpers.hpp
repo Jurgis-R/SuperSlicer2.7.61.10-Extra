@@ -73,7 +73,7 @@ void remove_output_pair(const boost::filesystem::path &path);
 void append_empty_extrusion(
     Printing::PrintingToolGroup &tool_group,
     ExtrusionRole role = ExtrusionRole::None,
-    uint16_t object_instance_idx = 0,
+    uint32_t printing_catalog_id = 0,
     const LayerRegionIsland *region_island = nullptr);
 std::unique_ptr<ExtrusionPath> make_firmware_path(
     const ArcPolyline &polyline,

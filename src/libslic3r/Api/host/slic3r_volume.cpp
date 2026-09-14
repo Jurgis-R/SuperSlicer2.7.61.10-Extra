@@ -2,7 +2,9 @@
 ///|/
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+#include <cmath>
 #include <cstring>
+#include <utility>
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_volume.h"
@@ -412,6 +414,27 @@ c_triangle_indices triangle_mesh_triangle_at(const triangle_mesh_handle *mesh, u
     return out;
 }
 
+polygon_collection_handle *triangle_mesh_project_to_polygons(
+    storage_handle *storage, const triangle_mesh_handle *mesh, c_matrix4d transform)
+{
+    if (storage == nullptr || mesh == nullptr)
+        return nullptr;
+    for (const double value : transform.value)
+        if (!std::isfinite(value))
+            return nullptr;
+    try {
+        Polygons projected = project_mesh(
+            to_triangle_mesh(mesh)->its, to_transform3d(transform), [] {});
+        polygon_collection_handle *out = storage_new_polygons(storage);
+        if (out == nullptr)
+            return nullptr;
+        *to_polygons(out) = std::move(projected);
+        return out;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 } // namespace Slic3r
 
 extern "C" {
@@ -550,6 +573,12 @@ c_vec3f triangle_mesh_vertex_at(const triangle_mesh_handle *mesh, uint32_t idx)
 c_triangle_indices triangle_mesh_triangle_at(const triangle_mesh_handle *mesh, uint32_t idx)
 {
     return Slic3r::triangle_mesh_triangle_at(mesh, idx);
+}
+
+polygon_collection_handle *triangle_mesh_project_to_polygons(
+    storage_handle *storage, const triangle_mesh_handle *mesh, c_matrix4d transform)
+{
+    return Slic3r::triangle_mesh_project_to_polygons(storage, mesh, transform);
 }
 
 void triangle_mesh_slice_to_polygons(const triangle_mesh_handle *mesh,

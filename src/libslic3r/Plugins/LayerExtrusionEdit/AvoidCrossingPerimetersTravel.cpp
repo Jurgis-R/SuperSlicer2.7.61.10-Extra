@@ -71,7 +71,9 @@ AvoidCrossingPerimeters require no synchronization.
 class LayerTravelPlanner
 {
 public:
-    LayerTravelPlanner(const Print &print, const plugin_run_context *run_ctx);
+    LayerTravelPlanner(const Print &print,
+                       const PrintingPlan &plan,
+                       const plugin_run_context *run_ctx);
 
     std::vector<c_point> path(const TravelEndpoint &source,
                               const TravelEndpoint &target,
@@ -94,6 +96,7 @@ private:
                                   uint16_t extruder_id) const;
 
     Config m_print_config;
+    const PrintingPlan &m_plan;
     const plugin_run_context *m_run_ctx = nullptr;
     std::map<RouterKey, std::unique_ptr<Slic3r::AvoidCrossingPerimeters>> m_routers;
 };
@@ -124,8 +127,11 @@ private:
     mutable bool m_setup_valid = false;
 };
 
-LayerTravelPlanner::LayerTravelPlanner(const Print &print, const plugin_run_context *run_ctx) :
+LayerTravelPlanner::LayerTravelPlanner(const Print &print,
+                                       const PrintingPlan &plan,
+                                       const plugin_run_context *run_ctx) :
     m_print_config(print.config()),
+    m_plan(plan),
     m_run_ctx(run_ctx)
 {}
 
@@ -133,9 +139,13 @@ c_point LayerTravelPlanner::local_point(const c_point point, const TravelEndpoin
 {
     const Layer source_layer = endpoint.region_island.region(0).layer();
     const Object source_object = source_layer.object();
-    if (endpoint.object_instance_idx >= source_object.instance_count())
+    if (endpoint.printing_catalog_id == SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE ||
+        endpoint.printing_catalog_id >= m_plan.object_instance_count())
         throw std::runtime_error("A travel endpoint refers to an invalid object instance.");
-    const c_point shift = source_object.instance_shift(endpoint.object_instance_idx);
+    const uint64_t object_instance_idx = m_plan.object_instance(endpoint.printing_catalog_id).object_instance_idx();
+    if (object_instance_idx >= source_object.instance_count())
+        throw std::runtime_error("A travel endpoint refers to an invalid object instance.");
+    const c_point shift = source_object.instance_shift(static_cast<size_t>(object_instance_idx));
     return c_point{point.x - shift.x, point.y - shift.y};
 }
 
@@ -205,7 +215,11 @@ std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
     const Layer target_layer_view = target.region_island.region(0).layer();
     const Object source_object = source_layer_view.object();
     const Object target_object = target_layer_view.object();
-    if (target.object_instance_idx >= target_object.instance_count())
+    if (target.printing_catalog_id == SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE ||
+        target.printing_catalog_id >= m_plan.object_instance_count())
+        return straight(source, target, extruder_id);
+    const uint64_t target_instance_idx = m_plan.object_instance(target.printing_catalog_id).object_instance_idx();
+    if (target_instance_idx >= target_object.instance_count())
         return straight(source, target, extruder_id);
 
     const Slic3r::Layer *target_layer =
@@ -215,7 +229,7 @@ std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
     if (m_print_config.bool_or_default("avoid_crossing_not_first_layer", true) && target_layer->id() == 0)
         return straight(source, target, extruder_id);
 
-    const c_point target_shift = target_object.instance_shift(target.object_instance_idx);
+    const c_point target_shift = target_object.instance_shift(static_cast<size_t>(target_instance_idx));
     const Slic3r::Point local_source{
         source.position.x - target_shift.x,
         source.position.y - target_shift.y};
@@ -231,7 +245,7 @@ std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
     const Slic3r::AvoidCrossingPerimeters::PerimeterCrossingContext crossing_context{
         *target_layer,
         printed_layers,
-        target.object_instance_idx,
+        target.printing_catalog_id,
         extruder_id,
         nozzle_radius,
         [this]() { throw_if_cancelled(m_run_ctx); }
@@ -245,7 +259,7 @@ std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
 
     const bool same_object_and_instance =
         source_object.handle() == target_object.handle() &&
-        source.object_instance_idx == target.object_instance_idx;
+        source.printing_catalog_id == target.printing_catalog_id;
     router.use_external_mp(!same_object_and_instance);
 
     const c_float_or_percent max_detour = m_print_config.float_or_percent_or_default(
@@ -383,7 +397,10 @@ void AvoidCrossingPerimetersTravel::run_impl(const plugin_run_context *run_ctx) 
     if (ctx == nullptr || ctx->print == nullptr || ctx->layer_group == nullptr)
         return;
 
-    LayerTravelPlanner planner(Print(ctx->print), run_ctx);
+    if (ctx->plan == nullptr)
+        return;
+    const PrintingPlan plan(ctx->plan);
+    LayerTravelPlanner planner(Print(ctx->print), plan, run_ctx);
     const TravelPathPlanner route = [&planner](const TravelEndpoint &source,
                                                const TravelEndpoint &target,
                                                const uint16_t extruder_id) {

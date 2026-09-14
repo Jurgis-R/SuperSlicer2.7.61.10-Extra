@@ -7,14 +7,17 @@
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_entity.h"
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <type_traits>
 #include <utility>
 
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionRole.hpp"
+#include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 
 namespace Slic3r {
@@ -103,6 +106,58 @@ const Layer *to_layer(const layer_handle *me)
 const LayerRegionIsland *to_region_island(const layer_region_island_handle *me)
 {
     return reinterpret_cast<const LayerRegionIsland *>(me);
+}
+
+/* Recover the common source object through the island's LayerRegions.
+
+LayerRegionIsland intentionally has no parent pointer. Every member region of
+one island nevertheless belongs to the same Layer and PrintObject. Reject an
+empty or inconsistent source instead of assigning an ID from guessed context.
+*/
+const PrintObject *object_for_region_island(const LayerRegionIsland *island)
+{
+    if (island == nullptr || island->regions().empty())
+        return nullptr;
+    const PrintObject *object = nullptr;
+    for (const LayerRegion *region : island->regions()) {
+        const PrintObject *candidate = region == nullptr || region->layer() == nullptr ?
+            nullptr : region->layer()->object();
+        if (candidate == nullptr || (object != nullptr && object != candidate))
+            return nullptr;
+        object = candidate;
+    }
+    return object;
+}
+
+/*
+Print-level auxiliary layers use a real PrintObject as their data-tree owner,
+but they do not represent a physical PrintInstance. Keep that distinction in
+one place so every plan mutation maps them to the reserved outside ID
+UINT32_MAX.
+*/
+bool is_print_auxiliary_object(const PrintObject *object)
+{
+    return object != nullptr && object->print() != nullptr &&
+           object->print()->auxiliary_object() == object;
+}
+
+const Polygon *to_polygon(const polygon_handle *me)
+{
+    return reinterpret_cast<const Polygon *>(me);
+}
+
+bool plan_owns_group(const Printing::PrintingPlan *plan,
+                     const Printing::PrintingGroup *group)
+{
+    return plan != nullptr && group != nullptr &&
+           group->plan_identity == plan->identity_token();
+}
+
+bool plan_owns_tool_group(const Printing::PrintingPlan *plan,
+                          const Printing::PrintingToolGroup *tool_group)
+{
+    return plan != nullptr && tool_group != nullptr &&
+           tool_group->plan_identity == plan->identity_token();
 }
 
 ExtrusionEntity *to_extrusion(extrusion_entity_handle *me)
@@ -283,6 +338,7 @@ void printing_plan_clear(printing_plan_handle *me)
     if (me != nullptr) {
         Slic3r::to_plan(me)->events.clear();
         Slic3r::to_plan(me)->properties.clear_properties();
+        Slic3r::to_plan(me)->object_instances.clear();
         Slic3r::to_plan(me)->groups.clear();
     }
 }
@@ -305,6 +361,73 @@ plugin_property_container_handle *printing_plan_get_properties(const printing_pl
     Slic3r::Printing::PrintingPlan *plan =
         const_cast<Slic3r::Printing::PrintingPlan *>(Slic3r::to_plan(me));
     return reinterpret_cast<plugin_property_container_handle *>(&plan->properties);
+}
+
+uint32_t printing_plan_register_object_instance(
+    printing_plan_handle *me,
+    const object_handle *object,
+    uint64_t object_instance_idx,
+    const char *synthetic_name,
+    const polygon_handle *synthetic_outline)
+{
+    if (me == nullptr)
+        return Slic3r::Printing::PRINTING_OBJECT_INSTANCE_ID_NONE;
+    try {
+        if (object != nullptr && synthetic_name == nullptr && synthetic_outline == nullptr &&
+            object_instance_idx <= uint64_t((std::numeric_limits<size_t>::max)()))
+            return Slic3r::to_plan(me)->find_or_add_object_instance(
+                *Slic3r::to_object(object), static_cast<size_t>(object_instance_idx));
+
+        if (object == nullptr && object_instance_idx == (std::numeric_limits<uint64_t>::max)() &&
+            synthetic_name != nullptr && synthetic_name[0] != '\0' &&
+            synthetic_outline != nullptr && !Slic3r::to_polygon(synthetic_outline)->empty())
+            return Slic3r::to_plan(me)->add_synthetic_object_instance(
+                synthetic_name, *Slic3r::to_polygon(synthetic_outline));
+    } catch (...) {
+    }
+    return Slic3r::Printing::PRINTING_OBJECT_INSTANCE_ID_NONE;
+}
+
+int32_t printing_plan_set_object_instance_metadata(
+    printing_plan_handle *me, uint32_t id, const char *name,
+    const polygon_handle *outline)
+{
+    if (me == nullptr || name == nullptr || name[0] == '\0' || outline == nullptr)
+        return 0;
+    try {
+        const Slic3r::Polygon *polygon = Slic3r::to_polygon(outline);
+        return polygon != nullptr && !polygon->empty() &&
+            Slic3r::to_plan(me)->set_object_instance_metadata(id, name, *polygon);
+    } catch (...) {
+        return 0;
+    }
+}
+
+uint32_t printing_plan_count_object_instance(const printing_plan_handle *me)
+{
+    return me == nullptr ? 0u : uint32_t(Slic3r::to_plan(me)->object_instances.size());
+}
+
+c_printing_object_instance printing_plan_get_object_instance_by_printing_catalog_id(
+    const printing_plan_handle *me, uint32_t id)
+{
+    c_printing_object_instance out = {};
+    out.id = Slic3r::Printing::PRINTING_OBJECT_INSTANCE_ID_NONE;
+    if (me == nullptr)
+        return out;
+    const Slic3r::Printing::PrintingObjectInstance *instance =
+        Slic3r::to_plan(me)->object_instance(id);
+    if (instance == nullptr)
+        return out;
+    out.object = reinterpret_cast<const object_handle *>(instance->object);
+    out.object_instance_idx = static_cast<uint64_t>(instance->object_instance_idx);
+    out.id = id;
+    out.name = instance->name.empty() ? nullptr : instance->name.c_str();
+    out.projected_outline_center = {
+        instance->projected_outline_center.x(), instance->projected_outline_center.y()};
+    out.projected_outline = instance->projected_outline.empty() ? nullptr :
+        reinterpret_cast<const polygon_handle *>(&instance->projected_outline);
+    return out;
 }
 
 uint32_t printing_plan_count_group(const printing_plan_handle *me)
@@ -330,7 +453,9 @@ printing_group_handle *printing_plan_append_group(printing_plan_handle *me)
 {
     if (me == nullptr)
         return nullptr;
-    return reinterpret_cast<printing_group_handle *>(&Slic3r::to_plan(me)->groups.emplace_back());
+    Slic3r::Printing::PrintingGroup &group = Slic3r::to_plan(me)->groups.emplace_back();
+    group.plan_identity = Slic3r::to_plan(me)->identity_token();
+    return reinterpret_cast<printing_group_handle *>(&group);
 }
 
 int32_t printing_plan_move_group(printing_plan_handle *me, uint32_t from_idx, uint32_t to_idx)
@@ -340,8 +465,12 @@ int32_t printing_plan_move_group(printing_plan_handle *me, uint32_t from_idx, ui
 
 void printing_group_clear(printing_group_handle *me)
 {
-    if (me != nullptr)
-        *Slic3r::to_group(me) = Slic3r::Printing::PrintingGroup();
+    if (me != nullptr) {
+        Slic3r::Printing::PrintingGroup *group = Slic3r::to_group(me);
+        const Slic3r::Printing::PrintingPlanIdentity *identity = group->plan_identity;
+        *group = Slic3r::Printing::PrintingGroup();
+        group->plan_identity = identity;
+    }
 }
 
 printing_scope_events_handle *printing_group_get_events_mutable(printing_group_handle *me)
@@ -366,32 +495,25 @@ plugin_property_container_handle *printing_group_get_properties(const printing_g
 
 uint32_t printing_group_count_object_instance(const printing_group_handle *me)
 {
-    return me == nullptr ? 0u : uint32_t(Slic3r::to_group(me)->object_instances.size());
+    return me == nullptr ? 0u : uint32_t(Slic3r::to_group(me)->printing_catalog_ids.size());
 }
 
-c_printing_object_instance printing_group_get_object_instance(const printing_group_handle *me, uint32_t idx)
+uint32_t printing_group_get_printing_catalog_id(
+    const printing_group_handle *me, uint32_t idx)
 {
-    c_printing_object_instance out = {};
-    if (me == nullptr || idx >= Slic3r::to_group(me)->object_instances.size())
-        return out;
-
-    const Slic3r::Printing::PrintingObjectInstance &instance = Slic3r::to_group(me)->object_instances[idx];
-    out.object = reinterpret_cast<const object_handle *>(instance.object);
-    out.instance_idx = static_cast<uint64_t>(instance.instance_idx);
-    return out;
+    return me == nullptr || idx >= Slic3r::to_group(me)->printing_catalog_ids.size() ?
+        Slic3r::Printing::PRINTING_OBJECT_INSTANCE_ID_NONE :
+        Slic3r::to_group(me)->printing_catalog_ids[idx];
 }
 
-void printing_group_append_object_instance(printing_group_handle *me,
-                                           const object_handle *object,
-                                           uint64_t instance_idx)
+int32_t printing_group_append_printing_catalog_id(
+    const printing_plan_handle *plan, printing_group_handle *me, uint32_t id)
 {
-    if (me == nullptr)
-        return;
-
-    Slic3r::Printing::PrintingObjectInstance instance;
-    instance.object = Slic3r::to_object(object);
-    instance.instance_idx = static_cast<size_t>(instance_idx);
-    Slic3r::to_group(me)->object_instances.push_back(instance);
+    if (!Slic3r::plan_owns_group(Slic3r::to_plan(plan), Slic3r::to_group(me)) ||
+        Slic3r::to_plan(plan)->object_instance(id) == nullptr)
+        return 0;
+    Slic3r::to_group(me)->printing_catalog_ids.push_back(id);
+    return 1;
 }
 
 uint32_t printing_group_count_layer_group(const printing_group_handle *me)
@@ -418,6 +540,7 @@ printing_layer_group_handle *printing_group_append_layer_group(printing_group_ha
     if (me == nullptr)
         return nullptr;
     Slic3r::Printing::PrintingLayerGroup &layer_group = Slic3r::to_group(me)->layers.emplace_back();
+    layer_group.plan_identity = Slic3r::to_group(me)->plan_identity;
     layer_group.print_z = print_z;
     return reinterpret_cast<printing_layer_group_handle *>(&layer_group);
 }
@@ -504,6 +627,7 @@ printing_tool_group_handle *printing_layer_group_append_tool_group(printing_laye
     if (me == nullptr)
         return nullptr;
     Slic3r::Printing::PrintingToolGroup &tool_group = Slic3r::to_layer_group(me)->tool_groups.emplace_back();
+    tool_group.plan_identity = Slic3r::to_layer_group(me)->plan_identity;
     tool_group.extruder_id = extruder_id;
     return reinterpret_cast<printing_tool_group_handle *>(&tool_group);
 }
@@ -601,29 +725,37 @@ const printing_extrusion_handle *printing_tool_group_get_extrusion(const printin
 }
 
 printing_extrusion_handle *printing_tool_group_append_extrusion_clone(
+    const printing_plan_handle *plan,
     printing_tool_group_handle *me,
     const layer_region_island_handle *source_region_island,
     raw_extrusion_role source_role,
     const extrusion_entity_handle *root,
-    uint16_t object_instance_idx)
+    uint32_t printing_catalog_id)
 {
-    if (me == nullptr)
+    const Slic3r::Printing::PrintingPlan *printing_plan = Slic3r::to_plan(plan);
+    const Slic3r::Printing::PrintingToolGroup *tool_group = Slic3r::to_tool_group(me);
+    const Slic3r::LayerRegionIsland *region_island = Slic3r::to_region_island(source_region_island);
+    const Slic3r::ExtrusionRole role = Slic3r::to_extrusion_role(source_role);
+    if (!Slic3r::plan_owns_tool_group(printing_plan, tool_group) ||
+        (printing_catalog_id != Slic3r::Printing::PRINTING_OBJECT_INSTANCE_ID_NONE &&
+         printing_plan->object_instance(printing_catalog_id) == nullptr))
         return nullptr;
 
     Slic3r::Printing::PrintingExtrusion extrusion;
-    extrusion.region_island = Slic3r::to_region_island(source_region_island);
+    extrusion.region_island = region_island;
     extrusion.sregion_island_role = Slic3r::to_extrusion_role(source_role);
     extrusion.root = Slic3r::clone_or_empty(root);
-    extrusion.object_instance_idx = object_instance_idx;
+    extrusion.printing_catalog_id = printing_catalog_id;
     Slic3r::to_tool_group(me)->extrusions.push_back(std::move(extrusion));
     return reinterpret_cast<printing_extrusion_handle *>(&Slic3r::to_tool_group(me)->extrusions.back());
 }
 
 printing_extrusion_handle *printing_tool_group_append_extrusion_clone_from_region_island(
+    const printing_plan_handle *plan,
     printing_tool_group_handle *me,
     const layer_region_island_handle *source_region_island,
     raw_extrusion_role source_role,
-    uint16_t object_instance_idx)
+    uint32_t printing_catalog_id)
 {
     const Slic3r::LayerRegionIsland *region_island = Slic3r::to_region_island(source_region_island);
     const Slic3r::ExtrusionRole role = Slic3r::to_extrusion_role(source_role);
@@ -631,28 +763,35 @@ printing_extrusion_handle *printing_tool_group_append_extrusion_clone_from_regio
         return nullptr;
 
     return printing_tool_group_append_extrusion_clone(
-        me,
+        plan, me,
         source_region_island,
         source_role,
         reinterpret_cast<const extrusion_entity_handle *>(&region_island->extrusion(role)),
-        object_instance_idx);
+        printing_catalog_id);
 }
 
 printing_extrusion_handle *printing_tool_group_append_extrusion_move(
+    const printing_plan_handle *plan,
     printing_tool_group_handle *me,
     const layer_region_island_handle *source_region_island,
     raw_extrusion_role source_role,
     extrusion_entity_handle *root,
-    uint16_t object_instance_idx)
+    uint32_t printing_catalog_id)
 {
-    if (me == nullptr)
+    const Slic3r::Printing::PrintingPlan *printing_plan = Slic3r::to_plan(plan);
+    const Slic3r::Printing::PrintingToolGroup *tool_group = Slic3r::to_tool_group(me);
+    const Slic3r::LayerRegionIsland *region_island = Slic3r::to_region_island(source_region_island);
+    const Slic3r::ExtrusionRole role = Slic3r::to_extrusion_role(source_role);
+    if (!Slic3r::plan_owns_tool_group(printing_plan, tool_group) ||
+        (printing_catalog_id != Slic3r::Printing::PRINTING_OBJECT_INSTANCE_ID_NONE &&
+         printing_plan->object_instance(printing_catalog_id) == nullptr))
         return nullptr;
 
     Slic3r::Printing::PrintingExtrusion extrusion;
-    extrusion.region_island = Slic3r::to_region_island(source_region_island);
+    extrusion.region_island = region_island;
     extrusion.sregion_island_role = Slic3r::to_extrusion_role(source_role);
     extrusion.root = Slic3r::move_or_empty(root);
-    extrusion.object_instance_idx = object_instance_idx;
+    extrusion.printing_catalog_id = printing_catalog_id;
     Slic3r::to_tool_group(me)->extrusions.push_back(std::move(extrusion));
     return reinterpret_cast<printing_extrusion_handle *>(&Slic3r::to_tool_group(me)->extrusions.back());
 }
@@ -713,15 +852,11 @@ void printing_extrusion_set_role(printing_extrusion_handle *me, raw_extrusion_ro
         Slic3r::to_printing_extrusion(me)->sregion_island_role = Slic3r::to_extrusion_role(role);
 }
 
-uint16_t printing_extrusion_get_object_instance_idx(const printing_extrusion_handle *me)
+uint32_t printing_extrusion_get_printing_catalog_id(const printing_extrusion_handle *me)
 {
-    return me == nullptr ? 0u : Slic3r::to_printing_extrusion(me)->object_instance_idx;
-}
-
-void printing_extrusion_set_object_instance_idx(printing_extrusion_handle *me, uint16_t object_instance_idx)
-{
-    if (me != nullptr)
-        Slic3r::to_printing_extrusion(me)->object_instance_idx = object_instance_idx;
+    return me == nullptr ?
+        Slic3r::Printing::PRINTING_OBJECT_INSTANCE_ID_NONE :
+        Slic3r::to_printing_extrusion(me)->printing_catalog_id;
 }
 
 extrusion_entity_handle *printing_extrusion_get_root_mutable(printing_extrusion_handle *me)

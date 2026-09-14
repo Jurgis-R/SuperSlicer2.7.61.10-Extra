@@ -343,6 +343,7 @@ LayerRegion resolve_source_layer_region(storage_handle *scratch_storage,
 
 std::vector<LayerRegion> resolve_source_layer_regions(
     storage_handle *scratch_storage,
+    const PrintingPlan &plan,
     const PrintingExtrusion &extrusion,
     const ExtrusionEntity &loop)
 {
@@ -360,10 +361,10 @@ std::vector<LayerRegion> resolve_source_layer_regions(
         throw std::runtime_error(
             "A PrintingExtrusion loop has an invalid first source LayerRegion.");
     const Object object = first_region.layer().object();
-    if (!object.valid() || extrusion.object_instance_idx() >= object.instance_count())
+    if (!object.valid())
         throw std::runtime_error(
             "A PrintingExtrusion loop has an invalid source object instance.");
-    const c_point shift = object.instance_shift(extrusion.object_instance_idx());
+    const c_point shift = plan.object_instance_shift(extrusion);
 
     std::vector<LayerRegion> result;
     result.reserve(source_island.region_count());

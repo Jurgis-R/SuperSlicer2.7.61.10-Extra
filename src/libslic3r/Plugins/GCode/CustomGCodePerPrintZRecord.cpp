@@ -209,7 +209,7 @@ Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingP
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 const PrintingToolGroup tool = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx)
-                    if (printing_extrusion_is_object(group, tool.extrusion(extrusion_idx)))
+                    if (printing_extrusion_is_object(plan, group, tool.extrusion(extrusion_idx)))
                         object_tools.insert(tool.extruder_id());
             }
         }
@@ -218,14 +218,20 @@ Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingP
         Slic3r::CustomGCode::MultiAsSingle : Slic3r::CustomGCode::MultiExtruder;
 }
 
-bool printing_extrusion_is_object(const PrintingGroup &group, const PrintingExtrusion &extrusion)
+bool printing_extrusion_is_object(const PrintingPlan &plan,
+                                  const PrintingGroup &group,
+                                  const PrintingExtrusion &extrusion)
 {
     const LayerRegionIsland region_island = extrusion.region_island();
     if (region_island.region_count() == 0)
         return false;
     const Layer source_layer = region_island.region(0).layer();
-    for (uint32_t instance_idx = 0; instance_idx < group.object_instance_count(); ++instance_idx) {
-        const Object object = group.object_instance(instance_idx).object();
+    for (uint32_t object_instance_idx = 0; object_instance_idx < group.object_instance_count(); ++object_instance_idx) {
+        const uint32_t printing_catalog_id = group.printing_catalog_id(object_instance_idx);
+        if (printing_catalog_id == UINT32_MAX ||
+            printing_catalog_id >= plan.object_instance_count())
+            continue;
+        const Object object = plan.object_instance(printing_catalog_id).object();
         for (uint32_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx)
             if (object.layer(layer_idx).same_handle(source_layer))
                 return true;

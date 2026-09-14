@@ -204,13 +204,13 @@ PrintingExtrusion &append_speed_validation_extrusion(
     PrintingToolGroup &tool_group,
     std::unique_ptr<ExtrusionEntity> root,
     const LayerRegionIsland *region_island = nullptr,
-    uint16_t object_instance_idx = 0)
+    uint32_t printing_catalog_id = 0)
 {
     PrintingExtrusion extrusion;
     extrusion.region_island = region_island;
     extrusion.sregion_island_role = ExtrusionRole::Perimeter;
     extrusion.root = std::move(root);
-    extrusion.object_instance_idx = object_instance_idx;
+    extrusion.printing_catalog_id = printing_catalog_id;
     tool_group.extrusions.push_back(std::move(extrusion));
     return tool_group.extrusions.back();
 }
@@ -331,7 +331,7 @@ TEST_CASE("STEP_GCODE pre-validation reports missing and malformed speeds",
         CHECK(error.find("extruder_id=3") != std::string::npos);
         CHECK(error.find("source_role=IPeri") != std::string::npos);
         CHECK(error.find("region_island=unavailable") != std::string::npos);
-        CHECK(error.find("object_instance_idx=0") != std::string::npos);
+        CHECK(error.find("printing_catalog_id=0") != std::string::npos);
         CHECK(error.find("type=path") != std::string::npos);
         CHECK(error.find("points=2, segments=1") != std::string::npos);
         CHECK(error.find("length=2.5 mm") != std::string::npos);
@@ -710,7 +710,7 @@ TEST_CASE("STEP_GCODE speed diagnostics retain source object context",
     CHECK(error.find("layer_id=0") != std::string::npos);
     CHECK(error.find("print_object_index=0") != std::string::npos);
     CHECK(error.find("object_name=\"speed_validation_cube.stl\"") != std::string::npos);
-    CHECK(error.find("object_instance_idx=0") != std::string::npos);
+    CHECK(error.find("printing_catalog_id=0") != std::string::npos);
 }
 
 TEST_CASE("STEP_GCODE speed diagnostics are bounded without hiding the total",

@@ -83,13 +83,13 @@ void remove_output_pair(const boost::filesystem::path &path)
 
 void append_empty_extrusion(Printing::PrintingToolGroup &tool_group,
                             ExtrusionRole role,
-                            uint16_t object_instance_idx,
+                            uint32_t printing_catalog_id,
                             const LayerRegionIsland *region_island)
 {
     Printing::PrintingExtrusion extrusion;
     extrusion.root = std::make_unique<ExtrusionEntity>(true);
     extrusion.sregion_island_role = role;
-    extrusion.object_instance_idx = object_instance_idx;
+    extrusion.printing_catalog_id = printing_catalog_id;
     extrusion.region_island = region_island;
     tool_group.extrusions.push_back(std::move(extrusion));
 }

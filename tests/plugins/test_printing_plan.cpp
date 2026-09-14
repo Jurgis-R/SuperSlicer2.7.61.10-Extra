@@ -15,19 +15,24 @@
 #include "libslic3r/Api/plugin/c/slic3r_data_tree.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/slic3r_printing_plan.h"
+#include "libslic3r/Api/plugin/c/slic3r_volume.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/AuxiliaryLayerHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
+#include "libslic3r/Api/plugin/cpp/VolumeViews.hpp"
 #include "libslic3r/Config/ConfigOption.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/Layer.hpp"
+#include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Steps/StepExtrusionEdition.hpp"
 #include "libslic3r/Steps/StepExtrusionOrdering.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "test_data.hpp"
 
 namespace {
 using namespace Slic3r;
@@ -54,12 +59,12 @@ PrintingToolGroup test_tool_group(const uint16_t extruder_id, const uint16_t mar
 
     /*
     PrintingToolGroup has no standalone debug id. Store a default
-    PrintingExtrusion with a marker in object_instance_idx so the tests can
+    PrintingExtrusion with a marker in printing_catalog_id so the tests can
     verify that groups with the same extruder keep their relative order after
     being moved.
     */
     PrintingExtrusion extrusion;
-    extrusion.object_instance_idx = marker;
+    extrusion.printing_catalog_id = marker;
     group.extrusions.push_back(std::move(extrusion));
     return group;
 }
@@ -88,7 +93,7 @@ std::vector<uint16_t> marker_order(const PrintingLayerGroup &layer)
     out.reserve(layer.tool_groups.size());
     for (const PrintingToolGroup &tool_group : layer.tool_groups) {
         REQUIRE_FALSE(tool_group.extrusions.empty());
-        out.push_back(tool_group.extrusions.front().object_instance_idx);
+        out.push_back(tool_group.extrusions.front().printing_catalog_id);
     }
     return out;
 }
@@ -750,17 +755,32 @@ TEST_CASE("PrintingPlan group extrusion ordering passes source context to loop p
 
 TEST_CASE("PrintingPlan C API builds and mutates plan objects", "[printing][plan][api]")
 {
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     // Ordering plugins see only opaque C handles. This test exercises that ABI
     // directly on a local PrintingPlan so a future external plugin can rely on
     // the same append/read/move primitives without including native plan types.
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     DynamicPrintConfig::full_print_config(), false, 3);
     PrintingPlan plan;
     printing_plan_handle *plan_handle = reinterpret_cast<printing_plan_handle *>(&plan);
     printing_group_handle *group_handle = printing_plan_append_group(plan_handle);
     REQUIRE(group_handle != nullptr);
 
-    printing_group_append_object_instance(group_handle, reinterpret_cast<const object_handle *>(uintptr_t(0x1234)), 2);
+    const uint32_t printing_catalog_id = printing_plan_register_object_instance(
+        plan_handle, reinterpret_cast<const object_handle *>(&print.object(0)), 2, nullptr, nullptr);
+    REQUIRE(printing_catalog_id == 0);
+    CHECK(printing_plan_register_object_instance(
+              plan_handle, reinterpret_cast<const object_handle *>(&print.object(0)), 2, nullptr, nullptr) == printing_catalog_id);
+    REQUIRE(printing_group_append_printing_catalog_id(plan_handle, group_handle, printing_catalog_id) == 1);
     CHECK(printing_group_count_object_instance(group_handle) == 1);
-    CHECK(printing_group_get_object_instance(group_handle, 0).instance_idx == 2);
+    CHECK(printing_group_get_printing_catalog_id(group_handle, 0) == printing_catalog_id);
+    CHECK(printing_group_get_printing_catalog_id(group_handle, 0) == printing_catalog_id);
+    CHECK(printing_plan_register_object_instance(
+              plan_handle, reinterpret_cast<const object_handle *>(&print.object(0)), 2, nullptr, nullptr) == printing_catalog_id);
+    CHECK(printing_plan_register_object_instance(
+              plan_handle, reinterpret_cast<const object_handle *>(&print.object(0)), 1, nullptr, nullptr) == 1);
 
     printing_layer_group_handle *layer_handle = printing_group_append_layer_group(group_handle, 42);
     REQUIRE(layer_handle != nullptr);
@@ -779,23 +799,102 @@ TEST_CASE("PrintingPlan C API builds and mutates plan objects", "[printing][plan
     source.append_child(test_path({Point(0, 0), Point(10, 0)}));
     const extrusion_entity_handle *source_handle = reinterpret_cast<const extrusion_entity_handle *>(&source);
     printing_extrusion_handle *extrusion_handle = printing_tool_group_append_extrusion_clone(
-        tool_handle,
-        fake_region_island,
+        plan_handle, tool_handle,
+        nullptr,
         RAW_EXTRUSION_ROLE_PERIMETER,
         source_handle,
-        7);
+        PRINTING_OBJECT_INSTANCE_ID_NONE);
     REQUIRE(extrusion_handle != nullptr);
 
     CHECK(printing_tool_group_count_extrusion(tool_handle) == 1);
-    CHECK(printing_extrusion_get_region_island(extrusion_handle) == fake_region_island);
+    CHECK(printing_extrusion_get_region_island(extrusion_handle) == nullptr);
     CHECK(printing_extrusion_get_role(extrusion_handle) == RAW_EXTRUSION_ROLE_PERIMETER);
-    CHECK(printing_extrusion_get_object_instance_idx(extrusion_handle) == 7);
+    CHECK(printing_extrusion_get_printing_catalog_id(extrusion_handle) ==
+          PRINTING_OBJECT_INSTANCE_ID_NONE);
 
     extrusion_entity_handle *clone_root = printing_extrusion_get_root_mutable(extrusion_handle);
     REQUIRE(clone_root != nullptr);
     CHECK(clone_root != source_handle);
     CHECK(extrusion_child_count(clone_root) == 1);
     CHECK(source.child_count() == 1);
+}
+
+TEST_CASE("Plugin object names and mesh projections distinguish empty results from errors",
+          "[printing][plan][api][object-instance]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model);
+
+    // The print-level auxiliary Object is a valid API view but has no
+    // ModelObject from which a user-facing name could be copied.
+    PrintObject &auxiliary = print.mutable_auxiliary_object();
+    const object_handle *auxiliary_handle =
+        reinterpret_cast<const object_handle *>(&auxiliary);
+    CHECK(object_get_name(auxiliary_handle, nullptr, 0) == 0);
+    CHECK(slic3r_api::Object(auxiliary_handle).name().empty());
+
+    PluginStorage storage;
+    storage_handle *storage_handle_value = reinterpret_cast<storage_handle *>(&storage);
+    const Slic3r::TriangleMesh &native_mesh =
+        print.object(0).model_object()->volumes.front()->mesh();
+    const triangle_mesh_handle *mesh_handle =
+        reinterpret_cast<const triangle_mesh_handle *>(&native_mesh);
+    c_matrix4d invalid_transform = {};
+    invalid_transform.value[0] = std::numeric_limits<double>::quiet_NaN();
+
+    CHECK(triangle_mesh_project_to_polygons(
+              storage_handle_value, mesh_handle, invalid_transform) == nullptr);
+    const slic3r_api::TriangleMesh mesh(mesh_handle);
+    CHECK_THROWS_AS(
+        mesh.project_to_polygons(storage_handle_value, invalid_transform),
+        std::invalid_argument);
+}
+
+TEST_CASE("PrintingPlan object instance ids remain stable after plan reordering",
+          "[printing][plan][object-instance]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20,
+                      Test::TestMesh::cube_20x20x20},
+                     print, model, DynamicPrintConfig::full_print_config(), false, 2);
+
+    PrintingPlan plan = build_printing_plan_by_object(print);
+    REQUIRE(plan.object_instances.size() == 4);
+    REQUIRE(plan.object_instances.size() == 4);
+    REQUIRE(plan.groups.size() == 4);
+    for (size_t index = 0; index < plan.object_instances.size(); ++index) {
+        REQUIRE(plan.groups[index].printing_catalog_ids.size() == 1);
+        CHECK(plan.groups[index].printing_catalog_ids.front() == index);
+    }
+
+    std::reverse(plan.groups.begin(), plan.groups.end());
+    CHECK(plan.groups[0].printing_catalog_ids.front() == 3);
+    CHECK(plan.groups[1].printing_catalog_ids.front() == 2);
+    CHECK(plan.groups[2].printing_catalog_ids.front() == 1);
+    CHECK(plan.groups[3].printing_catalog_ids.front() == 0);
+
+    const printing_plan_handle *handle =
+        reinterpret_cast<const printing_plan_handle *>(&plan);
+    CHECK(printing_plan_count_object_instance(handle) == 4);
+    const c_printing_object_instance second =
+        printing_plan_get_object_instance_by_printing_catalog_id(handle, 2);
+    CHECK(second.id == 2);
+    CHECK(second.object != nullptr);
+    CHECK(second.name == nullptr);
+    CHECK(second.projected_outline == nullptr);
+
+    printing_plan_clear(const_cast<printing_plan_handle *>(handle));
+    CHECK(printing_plan_count_group(handle) == 0);
+    CHECK(printing_plan_count_object_instance(handle) == 0);
+
+    Steps::StepExtrusionOrdering::clean_and_prepare(print);
+    Steps::StepExtrusionOrdering::run_step(Orchestrator::instance(), print);
+    REQUIRE(print.printing_plan() != nullptr);
+    REQUIRE(print.printing_plan()->object_instances.size() == 4);
 }
 
 TEST_CASE("PrintingPlan C API moves extrusion content into the plan", "[printing][plan][api]")
@@ -814,11 +913,11 @@ TEST_CASE("PrintingPlan C API moves extrusion content into the plan", "[printing
     extrusion_entity_handle *source_handle = reinterpret_cast<extrusion_entity_handle *>(&source);
 
     printing_extrusion_handle *extrusion_handle = printing_tool_group_append_extrusion_move(
-        tool_handle,
+        plan_handle, tool_handle,
         nullptr,
         RAW_EXTRUSION_ROLE_INFILL,
         source_handle,
-        0);
+        PRINTING_OBJECT_INSTANCE_ID_NONE);
     REQUIRE(extrusion_handle != nullptr);
 
     CHECK(source.empty());
@@ -845,11 +944,16 @@ TEST_CASE("PrintingPlan C API transfers extrusions between tool groups",
     const layer_region_island_handle *region_island =
         reinterpret_cast<const layer_region_island_handle *>(uintptr_t(0x3456));
 
-    ExtrusionEntity root(true);
-    root.append_child(test_path({Point(0, 0), Point(10, 0)}));
-    REQUIRE(printing_tool_group_append_extrusion_clone(
-                source, region_island, RAW_EXTRUSION_ROLE_PERIMETER,
-                reinterpret_cast<const extrusion_entity_handle *>(&root), 0) != nullptr);
+    PrintingToolGroup *native_source =
+        reinterpret_cast<PrintingToolGroup *>(source);
+    PrintingExtrusion extrusion;
+    extrusion.region_island =
+        reinterpret_cast<const LayerRegionIsland *>(region_island);
+    extrusion.sregion_island_role = ExtrusionRole::Perimeter;
+    extrusion.root = test_root();
+    extrusion.root->append_child(test_path({Point(0, 0), Point(10, 0)}));
+    native_source->region_islands.push_back(extrusion.region_island);
+    native_source->extrusions.push_back(std::move(extrusion));
     REQUIRE(printing_tool_group_transfer_extrusion(source, 0, destination) == 1);
 
     CHECK(printing_tool_group_count_extrusion(source) == 0);
@@ -1062,10 +1166,10 @@ TEST_CASE("STEP_ORDERING includes print-level auxiliary layers", "[printing][pla
     REQUIRE(print.printing_plan() != nullptr);
     REQUIRE(print.printing_plan()->groups.size() == 1);
     const PrintingGroup &group = print.printing_plan()->groups.front();
-    REQUIRE(group.object_instances.size() == 1);
-    CHECK(group.object_instances.front().object == print.auxiliary_object());
+    CHECK(group.printing_catalog_ids.empty());
     REQUIRE(group.layers.size() == 1);
     REQUIRE(group.layers.front().tool_groups.size() == 1);
     REQUIRE(group.layers.front().tool_groups.front().extrusions.size() == 1);
-    CHECK(group.layers.front().tool_groups.front().extrusions.front().object_instance_idx == 0);
+    CHECK(group.layers.front().tool_groups.front().extrusions.front().printing_catalog_id ==
+          PRINTING_OBJECT_INSTANCE_ID_NONE);
 }

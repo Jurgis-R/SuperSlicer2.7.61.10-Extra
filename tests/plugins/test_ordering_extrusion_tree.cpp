@@ -116,9 +116,24 @@ slic3r_api::MutableExtrusionEntity mutable_root(PrintingExtrusion &extrusion)
         reinterpret_cast<extrusion_entity_handle *>(extrusion.root.get()));
 }
 
+/* Give hand-built groups the same ownership identity as the plan under test. */
+void attach_plan_identity(PrintingPlan &plan)
+{
+    const PrintingPlanIdentity *identity = plan.identity_token();
+    for (PrintingGroup &group : plan.groups) {
+        group.plan_identity = identity;
+        for (PrintingLayerGroup &layer : group.layers) {
+            layer.plan_identity = identity;
+            for (PrintingToolGroup &tool : layer.tool_groups)
+                tool.plan_identity = identity;
+        }
+    }
+}
+
 /* Execute only the fallback tree-ordering provider through the real host. */
 void run_tree_ordering(Print &print)
 {
+    attach_plan_identity(print.mutable_printing_plan());
     ScopedActivePlugins active{TREE_ORDERING_PLUGIN};
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator.reset_plugin_cancel();

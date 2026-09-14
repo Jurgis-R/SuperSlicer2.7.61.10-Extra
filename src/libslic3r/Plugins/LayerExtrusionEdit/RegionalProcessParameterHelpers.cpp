@@ -96,7 +96,7 @@ bool RegionalSourceKey::operator<(const RegionalSourceKey &rhs) const
     const std::less<const layer_region_island_handle *> less_handle;
     if (region_island != rhs.region_island)
         return less_handle(region_island, rhs.region_island);
-    return object_instance_idx < rhs.object_instance_idx;
+    return printing_catalog_idx < rhs.printing_catalog_idx;
 }
 
 RegionalSettingsArea::RegionalSettingsArea(const Config &config_value,
@@ -107,8 +107,8 @@ RegionalSettingsArea::RegionalSettingsArea(const Config &config_value,
 RegionalSettingsPartition build_regional_settings_partition(
     storage_handle *storage,
     const LayerRegionIsland &region_island,
-    uint16_t object_instance_idx,
-    const RegionSettings::OptionKeyGroup &option_keys)
+    const RegionSettings::OptionKeyGroup &option_keys,
+    const c_point instance_shift /* = {0,0}*/)
 {
     if (storage == nullptr || !region_island.valid() || region_island.region_count() == 0 ||
         option_keys.empty())
@@ -139,11 +139,6 @@ RegionalSettingsPartition build_regional_settings_partition(
         partition.uniform_config = regions.front().print_region().config();
         return partition;
     }
-
-    const Object object = region_island.region(0).layer().object();
-    if (object_instance_idx >= object.instance_count())
-        throw std::runtime_error("Regional process partition references an invalid object instance.");
-    const c_point instance_shift = object.instance_shift(object_instance_idx);
 
     // Materialize every raw zone in the same coordinates as its PrintingPlan
     // extrusion. The representative config is valid for the whole tuple group.

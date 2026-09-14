@@ -58,7 +58,7 @@ struct TravelEndpoint
 {
     PlannedPosition position;
     LayerRegionIsland region_island;
-    uint16_t object_instance_idx = uint16_t(-1);
+    uint32_t printing_catalog_id = SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE;
     c_point interior_point{};
     bool has_interior_point = false;
 };

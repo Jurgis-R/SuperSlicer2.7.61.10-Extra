@@ -121,12 +121,13 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
                               const EffectiveTreeState &parent_state,
                               const ExtrusionSettingsContext &context,
                               const LayerRegionIsland &region_island,
-                              uint16_t object_instance_idx,
+                              size_t printing_catalog_idx,
                               const AccelerationPartitions &partitions,
                               EPropertySpeedFieldEditor &editor);
 
 // Resolve and compact acceleration on one cloned extrusion root.
 void edit_extrusion(const Print &print,
+                    const PrintingPlan &plan,
                     const PrintingToolGroup &tool_group,
                     const PrintingExtrusion &extrusion,
                     const AccelerationPartitions &partitions);
@@ -290,12 +291,13 @@ void prepare_plan(storage_handle *storage,
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, false);
                     const LayerRegionIsland region_island = extrusion.region_island();
+                    const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
 
                     std::set<raw_extrusion_role> roles;
                     collect_unresolved_roles(extrusion.mutable_root(), EffectiveTreeState{}, roles);
                     for (const raw_extrusion_role role : roles) {
                         const RegionalSourceKey source{
-                            region_island.handle(), extrusion.object_instance_idx()
+                            region_island.handle(), static_cast<uint16_t>(object_instance_idx)
                         };
                         const AccelerationPartitionKey key{
                             source, tool_group.extruder_id(), role
@@ -309,8 +311,7 @@ void prepare_plan(storage_handle *storage,
                         RegionalSettingsPartitions::iterator settings_it = regional_settings.find(source);
                         if (settings_it == regional_settings.end()) {
                             RegionalSettingsPartition settings = build_regional_settings_partition(
-                                storage, region_island, extrusion.object_instance_idx(),
-                                k_region_acceleration_keys);
+                                storage, region_island, k_region_acceleration_keys, plan.object_instance_shift(extrusion));
                             settings_it = regional_settings.emplace(source, std::move(settings)).first;
                         }
 
@@ -334,7 +335,7 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
                               const EffectiveTreeState &parent_state,
                               const ExtrusionSettingsContext &context,
                               const LayerRegionIsland &region_island,
-                              uint16_t object_instance_idx,
+                              size_t printing_catalog_idx,
                               const AccelerationPartitions &partitions,
                               EPropertySpeedFieldEditor &editor)
 {
@@ -344,7 +345,7 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
     if (entity.child_count() > 0) {
         for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
             assign_acceleration_tree(entity.child_mutable(child_idx), state, context,
-                                     region_island, object_instance_idx, partitions, editor);
+                                     region_island, printing_catalog_idx, partitions, editor);
         return;
     }
 
@@ -362,7 +363,7 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
     if (disposition != LeafDisposition::Editable)
         return;
 
-    const RegionalSourceKey source{ region_island.handle(), object_instance_idx };
+    const RegionalSourceKey source{ region_island.handle(), printing_catalog_idx };
     const AccelerationPartitionKey key{
         source, context.extruder_id, role
     };
@@ -378,16 +379,18 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
 }
 
 void edit_extrusion(const Print &print,
+                    const PrintingPlan &plan,
                     const PrintingToolGroup &tool_group,
                     const PrintingExtrusion &extrusion,
                     const AccelerationPartitions &partitions)
 {
     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
     const LayerRegionIsland region_island = extrusion.region_island();
+    const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
     MutableExtrusionEntity root = extrusion.mutable_root();
     EPropertySpeedFieldEditor editor(EPropertySpeedField::Acceleration);
     assign_acceleration_tree(root, EffectiveTreeState{}, context, region_island,
-                             extrusion.object_instance_idx(), partitions, editor);
+                             static_cast<uint16_t>(object_instance_idx), partitions, editor);
     editor.hoist(root);
 }
 
@@ -484,16 +487,19 @@ void DefaultAcceleration::run_impl(const plugin_run_context *run_ctx) const
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
-    assert(ctx != nullptr && ctx->print != nullptr && ctx->layer_group != nullptr);
-    if (ctx == nullptr || ctx->print == nullptr || ctx->layer_group == nullptr)
+    assert(ctx != nullptr && ctx->print != nullptr && ctx->plan != nullptr &&
+           ctx->layer_group != nullptr);
+    if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr ||
+        ctx->layer_group == nullptr)
         return;
 
     const Print print(ctx->print);
+    const PrintingPlan plan(ctx->plan);
     const PrintingLayerGroup layer_group(ctx->layer_group);
     for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
         const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
-            edit_extrusion(print, tool_group, tool_group.extrusion(extrusion_idx), m_partitions);
+            edit_extrusion(print, plan, tool_group, tool_group.extrusion(extrusion_idx), m_partitions);
             progress().increment();
         }
     }

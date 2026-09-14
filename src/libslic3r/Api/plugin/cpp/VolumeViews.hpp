@@ -6,6 +6,7 @@
 #define slic3r_Api_plugin_cpp_VolumeViews_hpp_
 
 #include <cassert>
+#include <stdexcept>
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_volume.h"
@@ -38,6 +39,16 @@ public:
     uint32_t vertex_count() const { return triangle_mesh_vertex_count(handle()); }
     uint32_t triangle_count() const { return triangle_mesh_triangle_count(handle()); }
     bool empty() const { return triangle_count() == 0; }
+
+    /* Return a storage-owned projection. A native validation failure is an
+       error; only a successful projection may represent empty geometry. */
+    StoredPolygonCollection project_to_polygons(storage_handle *storage, c_matrix4d transform) const
+    {
+        polygon_collection_handle *projected = triangle_mesh_project_to_polygons(storage, handle(), transform);
+        if (projected == nullptr)
+            throw std::invalid_argument("The TriangleMesh projection could not be created.");
+        return StoredPolygonCollection::adopt(storage, projected);
+    }
 
     c_vec3f vertex(uint32_t idx) const
     {
