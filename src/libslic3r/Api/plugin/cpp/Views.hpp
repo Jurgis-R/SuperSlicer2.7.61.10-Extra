@@ -57,6 +57,7 @@ mutation, storage, and invalidation contract of each type.
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderService.hpp"
+#include "libslic3r/Api/plugin/cpp/gcode/GCodeWriterViews.hpp"
 #include "libslic3r/Api/plugin/cpp/LineDistancer.hpp"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"

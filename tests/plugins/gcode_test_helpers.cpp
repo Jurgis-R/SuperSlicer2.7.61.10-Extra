@@ -356,6 +356,14 @@ void run_file_writer_with_firmware(Print &print,
     // Keep path storage alive while the plugin consumes the borrowed C string.
     const std::string output_path_string = output_path.string();
     payload.output_path = output_path_string.c_str();
+    std::string published_reader_source;
+    payload.reader_source_context = &published_reader_source;
+    payload.publish_reader_source_path = [](void *context, const char *path) -> int32_t {
+        if (context == nullptr || path == nullptr || path[0] == '\0')
+            return 0;
+        *static_cast<std::string *>(context) = path;
+        return 1;
+    };
     plugin_host_context host_context =
         orchestrator.prepare_plugin_host_context(STEP_GCODE, writer, &print);
     plugin_run_context run_context =
@@ -370,6 +378,7 @@ void run_file_writer_with_firmware(Print &print,
         orchestrator.reset_plugin_cancel();
         throw RuntimeError("Direct PrintingPlan writer test failed.");
     }
+    REQUIRE(published_reader_source == output_path_string);
 }
 
 } // namespace Slic3r::Test::GCode

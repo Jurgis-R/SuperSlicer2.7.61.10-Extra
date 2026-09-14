@@ -310,6 +310,11 @@ public:
     const Printing::PrintingPlan *printing_plan() const { return m_printing_plan.get(); }
     Printing::PrintingPlan &mutable_printing_plan();
     void reset_printing_plan();
+    // Path of the finished text stream used by GCodeReader and GCodeViewer.
+    // The producer owns the file; Print owns only this copied UTF-8 path.
+    const std::string &gcode_reader_source_path() const { return m_gcode_reader_source_path; }
+    void set_gcode_reader_source_path(std::string path);
+    void reset_gcode_reader_source_path();
     const PrintObject *auxiliary_object() const { return m_auxiliary_object.get(); }
     PrintObject &mutable_auxiliary_object();
     void reset_auxiliary_object();
@@ -436,6 +441,7 @@ private:
     // Following section will be consumed by the GCodeGenerator.
     std::vector<ToolOrdering>               m_tool_orderings;
     std::unique_ptr<Printing::PrintingPlan> m_printing_plan;
+    std::string                             m_gcode_reader_source_path;
     mutable std::mutex                      m_wipe_tower_data_mutex;
     WipeTowerData                           m_wipe_tower_data {this};
     std::unique_ptr<WipeTower2>             m_wipe_tower2;

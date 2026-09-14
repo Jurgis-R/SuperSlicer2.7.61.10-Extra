@@ -250,6 +250,27 @@ private:
     raw_gcode_firmware_instance m_instance = {};
 };
 
+/*
+Receive the writer's text source path through the C payload.
+
+The receiver lives on the STEP_GCODE stack, so the callback cannot outlive the
+Print it updates. It accepts one publication and copies the borrowed UTF-8
+text immediately; opening and parsing the file belongs to the following host
+phase.
+*/
+class ReaderSourcePathReceiver
+{
+public:
+    explicit ReaderSourcePathReceiver(Print &print);
+    static int32_t publish_callback(void *context, const char *path) noexcept;
+
+private:
+    int32_t publish(const char *path) noexcept;
+
+    Print &m_print;
+    bool m_published = false;
+};
+
 // Select the GCODE_FIRMWARE provider from the print configuration and ask it
 // to create a session for this export.
 // Supply the Print, script processor and thumbnail renderer as borrowed inputs.
@@ -260,6 +281,27 @@ void create_firmware_session(Orchestrator &orchestrator,
                              const raw_gcode_script_processor *script_processor,
                              const raw_gcode_thumbnail_renderer *renderer,
                              FirmwareInstanceOwner &owner);
+
+ReaderSourcePathReceiver::ReaderSourcePathReceiver(Print &print) : m_print(print) {}
+
+int32_t ReaderSourcePathReceiver::publish_callback(void *context, const char *path) noexcept
+{
+    ReaderSourcePathReceiver *receiver = static_cast<ReaderSourcePathReceiver *>(context);
+    return receiver == nullptr ? 0 : receiver->publish(path);
+}
+
+int32_t ReaderSourcePathReceiver::publish(const char *path) noexcept
+{
+    if (m_published || path == nullptr || path[0] == '\0')
+        return 0;
+    try {
+        m_print.set_gcode_reader_source_path(path);
+        m_published = true;
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
 
 std::string speed_value_text(const float value)
 {
@@ -709,7 +751,12 @@ void create_firmware_session(Orchestrator &orchestrator,
 
 } // namespace
 
-void clean_and_prepare(Print &) {}
+void clean_and_prepare(Print &print)
+{
+    // A failed or skipped writer must not leave the next preview phase pointing
+    // at text produced by an earlier export.
+    print.reset_gcode_reader_source_path();
+}
 
 bool validate_pre(const Print &print, std::string *error)
 {
@@ -816,8 +863,12 @@ bool validate_post(const Print &, std::string *)
 }
 
 std::string run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
-              const raw_gcode_thumbnail_renderer *thumbnail_renderer)
+                     const raw_gcode_thumbnail_renderer *thumbnail_renderer)
 {
+    // Direct callers do not necessarily pass through clean_and_prepare(). Clear
+    // the previous publication before the writer can fail or publish a new one.
+    print.reset_gcode_reader_source_path();
+
     if (path.empty())
         throw RuntimeError("G-code generation plugin needs a non-empty output path.");
 
@@ -847,11 +898,14 @@ std::string run_step(Orchestrator &orchestrator, Print &print, const std::string
     const slic3r_api::GCodeFirmwareView firmware_view(firmware.instance());
     const std::string reader_plugin_id = readers.validated_reader_id(
         firmware_view.reader_plugin_id());
+    ReaderSourcePathReceiver reader_source(print);
     run_ctx_generate_gcode payload = {};
     payload.print = reinterpret_cast<const print_handle *>(&print);
     payload.plan = reinterpret_cast<printing_plan_handle *>(&plan);
     payload.firmware = firmware.instance();
     payload.output_path = path.c_str();
+    payload.reader_source_context = &reader_source;
+    payload.publish_reader_source_path = &ReaderSourcePathReceiver::publish_callback;
 
     plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_GCODE, plugin, &print);
     plugin_run_context run_context = orchestrator.prepare_plugin_run_context(STEP_GCODE, plugin, &host_context);

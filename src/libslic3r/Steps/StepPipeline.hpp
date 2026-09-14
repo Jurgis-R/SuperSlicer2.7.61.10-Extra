@@ -19,6 +19,7 @@
 namespace Slic3r {
 
 class ConfigBase;
+struct GCodeProcessorResult;
 class Orchestrator;
 class Plugin;
 class Print;
@@ -113,9 +114,10 @@ public:
 
     // Finish the export-side pipeline. This starts at STEP_ORDERING because the
     // G-code writer consumes the ordered PrintingPlan, then runs every
-    // post-ordering step and finally STEP_GCODE with the destination path.
+    // post-ordering step, STEP_GCODE, and the host-only preview reader phase.
     static std::string run_gcode(Orchestrator &orchestrator, Print &print, const std::string &path,
-        const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr);
+        const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr,
+        GCodeProcessorResult *result = nullptr);
 
     // Compatibility wrapper for code that still wants the whole migrated
     // pipeline in one call. Normal GUI/CLI flow uses run_slice() and run_gcode()

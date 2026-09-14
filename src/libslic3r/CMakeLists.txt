@@ -179,6 +179,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp
 	Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp
 	Api/plugin/cpp/gcode/GCodeReaderService.hpp
+	Api/plugin/cpp/gcode/GCodeWriterViews.hpp
 	Api/plugin/cpp/gcode/GCodeStateTracker.hpp
 	Api/plugin/cpp/gcode/GCodeFormatter.cpp
 	Api/plugin/cpp/gcode/GCodeFormatter.hpp
@@ -460,6 +461,8 @@ set(SLIC3R_SOURCES
 	Steps/StepPrepareGcode.hpp
 	Steps/StepPrepareInfill.cpp
 	Steps/StepPrepareInfill.hpp
+	Steps/StepReadGeneratedGcode.cpp
+	Steps/StepReadGeneratedGcode.hpp
 	Steps/StepSlicing.cpp
 	Steps/StepSlicing.hpp
 	Steps/StepRunner.hpp

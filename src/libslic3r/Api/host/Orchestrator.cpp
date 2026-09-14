@@ -2038,11 +2038,9 @@ std::string Orchestrator::export_gcode(Print &print,
     print.mark_step_and_dependents_for_execution(STEP_ORDERING);
     GCodeThumbnailRenderer thumbnail_renderer(print, std::move(thumbnail_cb));
     const std::string reader_plugin_id = Steps::StepPipeline::run_gcode(
-        *this, print, path, thumbnail_renderer.c_renderer());
+        *this, print, path, thumbnail_renderer.c_renderer(), result);
 
     if (result != nullptr) {
-        result->reset();
-        result->filename = path;
         result->reader_plugin_id = reader_plugin_id;
         if (print.conflict_result())
             result->conflict_result = *print.conflict_result();

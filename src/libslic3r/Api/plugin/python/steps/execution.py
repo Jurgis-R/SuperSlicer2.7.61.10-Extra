@@ -390,7 +390,13 @@ class GCodeContext(_PrintingPlanContext):
 
     @classmethod
     def from_gcode_run_context(cls, api, address: int):
-        return cls._from_run_context(api, address, STEP_GCODE, RunCtxGenerateGcode, ("print", "plan", "output_path"))
+        return cls._from_run_context(
+            api,
+            address,
+            STEP_GCODE,
+            RunCtxGenerateGcode,
+            ("print", "plan", "output_path", "publish_reader_source_path"),
+        )
 
     def gcode_print(self) -> Print:
         return self._print()
@@ -418,6 +424,21 @@ class GCodeContext(_PrintingPlanContext):
     def gcode_output_path(self) -> str:
         """Copy the borrowed UTF-8 output path into an independently owned Python string."""
         return self.payload.output_path.decode("utf-8")
+
+    def publish_gcode_reader_source_path(self, path: str) -> None:
+        """Publish the completed text file that the host Reader may consume.
+
+        The host copies ``path`` during this call but does not own the file.
+        The writer must keep it available while the resulting preview is used,
+        and may publish at most one path during the current run.
+        """
+        if not isinstance(path, str) or not path:
+            raise ValueError("the G-code Reader source path must be a non-empty string")
+        encoded = path.encode("utf-8")
+        if not self.payload.publish_reader_source_path(
+            self.payload.reader_source_context, encoded
+        ):
+            raise RuntimeError("the host rejected the G-code Reader source path")
 
 
 @abi_requires_headers("steps/slic3r_step_infill.h")

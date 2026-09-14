@@ -16,6 +16,7 @@
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode.h"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp"
+#include "libslic3r/Api/plugin/cpp/gcode/GCodeWriterViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 #include "libslic3r/FilesystemTransaction.hpp"
@@ -229,6 +230,9 @@ void write_plan_file(const run_ctx_generate_gcode &context, PluginProgress &prog
             throw Slic3r::RuntimeError("Failed while closing the temporary G-code output file.");
 
         publish_output_file(temporary_path, final_path);
+        // The final text is now closed and atomically visible. Publish it only
+        // after that point so the host Reader never observes partial output.
+        slic3r_api::publish_gcode_reader_source_path(context, final_path.string());
     } catch (...) {
         try {
             stream.close();

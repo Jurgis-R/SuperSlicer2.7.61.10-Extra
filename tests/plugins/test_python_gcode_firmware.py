@@ -709,6 +709,12 @@ class PythonGCodeFirmwareTests(unittest.TestCase):
         payload.plan = ctypes.c_void_p(2)
         payload.firmware = ctypes.pointer(instance)
         payload.output_path = b"out.gcode"
+
+        @self.generated.GCODE_PUBLISH_READER_SOURCE_PATH
+        def publish_reader_source(_context, _path):
+            return 1
+
+        payload.publish_reader_source_path = publish_reader_source
         common = self.generated.PluginRunContext()
         common.step = self.generated.STEP_GCODE
         common.data = ctypes.addressof(payload)

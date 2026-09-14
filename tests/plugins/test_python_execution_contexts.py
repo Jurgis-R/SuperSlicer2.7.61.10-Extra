@@ -96,8 +96,16 @@ class PythonExecutionContextTests(unittest.TestCase):
 
     def test_plan_and_gcode_contexts_copy_only_the_output_path(self):
         firmware = self.generated.RawGcodeFirmwareInstance()
+        published = []
+
+        @self.generated.GCODE_PUBLISH_READER_SOURCE_PATH
+        def publish(_context, path):
+            published.append(path.decode("utf-8"))
+            return 1
+
         payload = self.generated.RunCtxGenerateGcode(
-            ctypes.c_void_p(21), ctypes.c_void_p(22), ctypes.pointer(firmware), b"out/test.gcode"
+            ctypes.c_void_p(21), ctypes.c_void_p(22), ctypes.pointer(firmware),
+            b"out/test.gcode", ctypes.c_void_p(23), publish,
         )
         common, keepalive = self.make_common(self.generated.STEP_GCODE, payload)
         api = types.SimpleNamespace(host=types.SimpleNamespace())
@@ -110,6 +118,8 @@ class PythonExecutionContextTests(unittest.TestCase):
             context.gcode_firmware_handle(), ctypes.addressof(firmware)
         )
         self.assertEqual(context.gcode_output_path(), "out/test.gcode")
+        context.publish_gcode_reader_source_path("viewer/temp.gcode")
+        self.assertEqual(published, ["viewer/temp.gcode"])
         self.assertTrue(keepalive)
 
     def test_infill_pattern_params_are_copied_but_output_is_borrowed(self):

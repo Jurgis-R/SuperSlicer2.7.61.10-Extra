@@ -10,6 +10,7 @@
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/internal/PrintObjectAccess.hpp"
 #include "libslic3r/Config/ConfigDef.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
@@ -19,6 +20,7 @@
 #include "libslic3r/Steps/StepExtrusionOrdering.hpp"
 #include "libslic3r/Steps/StepExtrusionSimplification.hpp"
 #include "libslic3r/Steps/StepGenerateGcode.hpp"
+#include "libslic3r/Steps/StepReadGeneratedGcode.hpp"
 #include "libslic3r/Steps/StepGenerateInfill.hpp"
 #include "libslic3r/Steps/StepGeneratePerimeter.hpp"
 #include "libslic3r/Steps/StepGenerateSupport.hpp"
@@ -40,6 +42,8 @@
 #include "libslic3r/Steps/StepSurfaceGeneration.hpp"
 #include "libslic3r/SurfaceCollection.hpp"
 #include "libslic3r/Thread.hpp"
+
+#include <boost/log/trivial.hpp>
 
 #ifdef _DEBUG
 #include "libslic3r/Steps/DebugPrintProcessComparator.hpp"
@@ -793,7 +797,8 @@ void run_post_slicing(Orchestrator &orchestrator, Print &print, const std::strin
 void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::string &path,
                          slicing_step_t until = STEP_GCODE,
                          const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr,
-                         std::string *reader_plugin_id = nullptr)
+                         std::string *reader_plugin_id = nullptr,
+                         GCodeProcessorResult *gcode_result = nullptr)
 {
     // This helper is shared by slice preparation and export. Print::process()
     // stops it at STEP_PRE_GCODE, while Orchestrator::export_gcode() calls it
@@ -950,12 +955,45 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
 
     run_step_if_requested(print, STEP_GCODE, [&] {
         begin_step(print, STEP_GCODE, L("Generating G-code"));
+        {
+            Print::StatusMonitor status(print);
+            status.set_started(psGCodeExport);
+        }
         StepGenerateGcode::clean_and_prepare(print);
         const std::string selected_reader = StepGenerateGcode::run_step(
             orchestrator, print, path, thumbnail_renderer);
         if (reader_plugin_id != nullptr)
             *reader_plugin_id = selected_reader;
-        mark_legacy_step_done(print, psGCodeExport);
+
+        if (gcode_result != nullptr) {
+            try {
+                StepReadGeneratedGcode::run(
+                    orchestrator, print, selected_reader, *gcode_result);
+            } catch (const std::exception &error) {
+                gcode_result->reset();
+                gcode_result->reader_plugin_id = selected_reader;
+                const std::string message =
+                    "G-code preview is unavailable because the generated text could not be read: " +
+                    std::string(error.what());
+                BOOST_LOG_TRIVIAL(warning) << message;
+                Print::StatusMonitor status(print);
+                status.active_step_add_warning(
+                    PrintStateBase::WarningLevel::NON_CRITICAL, message);
+            } catch (...) {
+                gcode_result->reset();
+                gcode_result->reader_plugin_id = selected_reader;
+                const std::string message =
+                    "G-code preview is unavailable because the generated text reader failed unexpectedly.";
+                BOOST_LOG_TRIVIAL(warning) << message;
+                Print::StatusMonitor status(print);
+                status.active_step_add_warning(
+                    PrintStateBase::WarningLevel::NON_CRITICAL, message);
+            }
+        }
+        // Keep psGCodeExport active through the host Reader phase so parsing
+        // diagnostics are attached to the same export operation as writing.
+        Print::StatusMonitor status(print);
+        status.set_done(psGCodeExport);
     });
     if (stop_after(STEP_GCODE, until)) return;
 }
@@ -1059,7 +1097,8 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
 
 std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
                              const std::string &path,
-                             const raw_gcode_thumbnail_renderer *thumbnail_renderer)
+                             const raw_gcode_thumbnail_renderer *thumbnail_renderer,
+                             GCodeProcessorResult *result)
 {
 #ifdef _DEBUG
     assert(validate_execution_order_against_dependencies());
@@ -1068,7 +1107,7 @@ std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
     orchestrator.reset_plugin_cancel();
     std::string reader_plugin_id;
     run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnail_renderer,
-                        &reader_plugin_id);
+                        &reader_plugin_id, result);
     return reader_plugin_id;
 }
 

@@ -204,6 +204,16 @@ void Print::reset_printing_plan()
     m_printing_plan.reset();
 }
 
+void Print::set_gcode_reader_source_path(std::string path)
+{
+    m_gcode_reader_source_path = std::move(path);
+}
+
+void Print::reset_gcode_reader_source_path()
+{
+    m_gcode_reader_source_path.clear();
+}
+
 // Own complete immutable snapshots until clear(). The mutex serializes only
 // registry lookup/insertion; apply/clear and changes to defaults require idle workers.
 const PrintRegion &Print::register_print_region(const PrintRegionConfig &config)
@@ -383,6 +393,7 @@ void Print::clear() {
     this->invalidate_all_steps();
     // Plans borrow islands and layers; release them before their owners.
     this->reset_printing_plan();
+    this->reset_gcode_reader_source_path();
     this->reset_step_execution_plan_all();
     m_objects.clear();
     this->reset_auxiliary_object();
