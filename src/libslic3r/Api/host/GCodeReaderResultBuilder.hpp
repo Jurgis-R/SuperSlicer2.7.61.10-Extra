@@ -42,13 +42,16 @@ one input stream and must be consumed in stream order.
 namespace Slic3r {
 
 class Print;
+namespace Printing { struct PrintingPlan; }
 
 class GCodeReaderResultBuilder
 {
 public:
-    // Seed the timeline from a host-owned initial state. print may be null for
-    // imported files; deterministic single-extruder defaults are then used.
+    // Seed the timeline from a host-owned initial state. Print and plan are
+    // either both present for a local export or both null for a standalone
+    // viewer. The builder borrows them only during construction.
     GCodeReaderResultBuilder(const Print *print,
+                             const Printing::PrintingPlan *plan,
                              std::string reader_plugin_id,
                              const slic3r_api::GCodeStateTracker &initial_state);
 
@@ -66,8 +69,11 @@ public:
     GCodeProcessorResult finish(const slic3r_api::GCodeStateTracker &final_state);
 
 private:
-    // Fill metadata and material properties from Print settings or defaults.
-    void initialize_result(const Print *print, const std::string &reader_plugin_id);
+    // Fill metadata and the plan-local instance legend from the local plan, or
+    // use deterministic standalone-viewer defaults when no plan exists.
+    void initialize_result(const Print *print,
+                           const Printing::PrintingPlan *plan,
+                           const std::string &reader_plugin_id);
     // Dispatch semantic events; each listener handles one viewer concern.
     void process_state_update(const raw_gcode_reader_event &event,
                               const slic3r_api::GCodeStateTracker &state);
@@ -75,6 +81,11 @@ private:
     void process_tool_change(const raw_gcode_reader_event &event,
                              const slic3r_api::GCodeStateTracker &state,
                              uint32_t new_tool);
+    // Validate one zero-based Reader instance ID and prepare its viewer legend
+    // entry. UINT32_MAX is outside every object and is represented in a
+    // MoveVertex by GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE. Reader
+    // results therefore do not contain an artificial outside entry.
+    void process_object_change(uint32_t object_instance_id);
     void process_linear_move(const raw_gcode_reader_event &event,
                              const slic3r_api::GCodeStateTracker &state);
     void process_arc_move(const raw_gcode_reader_event &event,
@@ -121,6 +132,7 @@ private:
     uint64_t m_source_size = 0;
     float m_total_time = 0.0f;
     uint32_t m_current_color = 0;
+    bool m_has_object_instance_catalog = false;
     bool m_source_ends_with_newline = true;
     bool m_finished = false;
 };

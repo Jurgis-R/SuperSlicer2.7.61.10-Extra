@@ -85,6 +85,16 @@ public:
     std::string end_print() override;
 
 protected:
+    struct ObjectLabel
+    {
+        // This is the zero-based PrintingPlan catalog ID. The all-bits-one
+        // value is reserved for work outside a physical object instance.
+        uint32_t id = uint32_t(-1);
+        std::string name;
+        c_point projected_outline_center{};
+        std::vector<c_point> projected_outline;
+    };
+
     // Called once per export; derived firmwares may mix providers and placements.
     virtual std::vector<GCodeThumbnailRequest> thumbnail_requests(const Print &, const PrintingPlan &);
     // Startup policy hooks. Encoders retain dialect-specific command syntax.
@@ -219,6 +229,12 @@ protected:
     virtual std::string encode_extruder_current(uint16_t tool_id, double current) const;
     /* Encode one native firmware retract or unretract request, normally G10/G11. */
     virtual std::string encode_firmware_retraction(bool retract) const;
+    // Encode dialect-specific object declarations and boundaries. The common
+    // session adds Octoprint comments according to gcode_label_objects, while
+    // derived firmware classes provide only their native protocol.
+    virtual std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const;
+    virtual std::string encode_object_start(const ObjectLabel &object) const;
+    virtual std::string encode_object_end(const ObjectLabel &object) const;
 
 private:
     orchestrator_handle *m_thumbnail_orchestrator = nullptr;
@@ -249,6 +265,8 @@ private:
     // data; this session never takes ownership of it.
     std::string write_custom_gcode(const ExtrusionEntity &entity,
                                    const EPropertyCustomGcode &custom_gcode);
+    std::string transition_object(uint32_t printing_catalog_id);
+    const ObjectLabel &object_label(uint32_t printing_catalog_id) const;
 
     // Read already-emitted custom G-code from the current firmware state, then
     // replace each cached value with the reader's final known value. Unknown
@@ -282,6 +300,13 @@ private:
     // semantic retraction target may advance through several plan events.
     std::vector<uint8_t> m_native_retraction_active;
     bool m_wipe_tag_open = false;
+    enum class ObjectLabelStyle { Disabled, Octoprint, Firmware, Both };
+    ObjectLabelStyle m_object_label_style = ObjectLabelStyle::Disabled;
+    std::vector<ObjectLabel> m_object_labels;
+    // Plan-local object ID currently selected; UINT32_MAX means outside any
+    // physical object instance. The generated marker uses this same ID and
+    // writes -1 for the outside sentinel.
+    uint32_t m_current_printing_catalog_id = uint32_t(-1);
     bool m_is_setup = false;
     orchestrator_runtime_id m_reader_state_id = GCODE_READER_STATE_ID_PORTABLE;
     GCodeScriptProcessorView m_scripts;

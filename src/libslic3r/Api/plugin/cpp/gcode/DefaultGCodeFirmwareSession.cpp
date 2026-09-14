@@ -324,6 +324,16 @@ void DefaultGCodeFirmwareSession::setup(const Config &config)
     m_seen_object_group = false;
     m_use_firmware_retraction = config.bool_or_default("use_firmware_retraction", false);
     m_wipe_tag_open = false;
+    const int32_t object_label_style = config.enum_or_default(
+        "gcode_label_objects", int32_t(ObjectLabelStyle::Disabled));
+    m_object_label_style = object_label_style == int32_t(ObjectLabelStyle::Octoprint) ?
+        ObjectLabelStyle::Octoprint :
+        object_label_style == int32_t(ObjectLabelStyle::Firmware) ?
+        ObjectLabelStyle::Firmware :
+        object_label_style == int32_t(ObjectLabelStyle::Both) ?
+        ObjectLabelStyle::Both : ObjectLabelStyle::Disabled;
+    m_object_labels.clear();
+    m_current_printing_catalog_id = uint32_t(-1);
     setup_firmware(config);
     m_is_setup = true;
 }
@@ -358,6 +368,30 @@ std::vector<GCodeThumbnailRequest> DefaultGCodeFirmwareSession::thumbnail_reques
 std::string DefaultGCodeFirmwareSession::begin_print(const Print &print, const PrintingPlan &plan)
 {
     setup(print.config());
+    m_object_labels.clear();
+    m_current_printing_catalog_id = uint32_t(-1);
+    m_seen_object_group = false;
+    m_object_labels.reserve(plan.object_instance_count());
+    for (uint32_t id = 0; id < plan.object_instance_count(); ++id) {
+        const PrintingObjectInstance instance = plan.object_instance(id);
+        if (instance.id() != id || instance.name().empty() ||
+            !instance.has_projected_outline())
+            throw std::invalid_argument("The PrintingPlan contains an invalid canonical object instance.");
+        if (instance.has_object()) {
+            const Object object = instance.object();
+            if (!object.valid() || instance.object_instance_idx() >= object.instance_count())
+                throw std::invalid_argument("The PrintingPlan contains an invalid source object instance.");
+        }
+        const Polygon outline = instance.projected_outline();
+        ObjectLabel label;
+        label.id = id;
+        label.name = instance.name();
+        label.projected_outline_center = instance.projected_outline_center();
+        label.projected_outline.reserve(outline.size());
+        for (uint32_t point_idx = 0; point_idx < outline.size(); ++point_idx)
+            label.projected_outline.push_back(outline[point_idx]);
+        m_object_labels.push_back(std::move(label));
+    }
     const std::vector<GCodeThumbnailRequest> requests = thumbnail_requests(print, plan);
     std::array<std::string, 3> blocks;
     if (!requests.empty()) {
@@ -366,7 +400,10 @@ std::string DefaultGCodeFirmwareSession::begin_print(const Print &print, const P
         blocks = encode_gcode_thumbnails(OrchestratorView(m_thumbnail_orchestrator), print,
                                          m_thumbnail_renderer, requests);
     }
-    return m_preamble->begin(print, plan, blocks);
+    const bool firmware_labels = m_object_label_style == ObjectLabelStyle::Firmware ||
+        m_object_label_style == ObjectLabelStyle::Both;
+    return (firmware_labels ? encode_object_definitions(m_object_labels) : std::string()) +
+        m_preamble->begin(print, plan, blocks);
 }
 
 std::string DefaultGCodeFirmwareSession::begin_group(const PrintingGroup &group)
@@ -416,14 +453,17 @@ std::string DefaultGCodeFirmwareSession::write_extrusion(const PrintingExtrusion
     if (root_handle == nullptr)
         throw std::invalid_argument("The PrintingExtrusion has no extrusion root.");
 
-    return write_extrusion_tree(ExtrusionEntity(root_handle));
+    const uint32_t object_id = extrusion.printing_catalog_id();
+    // UINT32_MAX is deliberate for print-level auxiliary work and for any
+    // extrusion that is outside a physical object-instance boundary.
+    return transition_object(object_id) + write_extrusion_tree(ExtrusionEntity(root_handle));
 }
 
 std::string DefaultGCodeFirmwareSession::write_event(const ExtrusionEntity &event_root)
 {
     if (!m_is_setup)
         throw std::logic_error("The firmware session was not initialized by begin_print().");
-    return write_extrusion_tree(event_root);
+    return transition_object(uint32_t(-1)) + write_extrusion_tree(event_root);
 }
 
 std::string DefaultGCodeFirmwareSession::write_extrusion_tree(const ExtrusionEntity &root)
@@ -447,14 +487,75 @@ std::string DefaultGCodeFirmwareSession::end_layer()
 
 std::string DefaultGCodeFirmwareSession::end_group()
 {
-    return {};
+    return transition_object(uint32_t(-1));
 }
 
 std::string DefaultGCodeFirmwareSession::end_print()
 {
-    std::string output = m_wipe_tag_open ? ";WIPE_END\n" : "";
+    std::string output = transition_object(uint32_t(-1));
+    output += m_wipe_tag_open ? ";WIPE_END\n" : "";
     m_wipe_tag_open = false;
     return output + m_preamble->finish();
+}
+
+const DefaultGCodeFirmwareSession::ObjectLabel &DefaultGCodeFirmwareSession::object_label(
+    const uint32_t printing_catalog_id) const
+{
+    if (printing_catalog_id == uint32_t(-1) ||
+        printing_catalog_id >= m_object_labels.size())
+        throw std::out_of_range("A firmware object marker references an unknown PrintInstance.");
+    return m_object_labels[printing_catalog_id];
+}
+
+std::string DefaultGCodeFirmwareSession::transition_object(const uint32_t printing_catalog_id)
+{
+    if (m_object_label_style == ObjectLabelStyle::Disabled ||
+        printing_catalog_id == m_current_printing_catalog_id)
+        return {};
+
+    std::string output;
+    const bool octoprint = m_object_label_style == ObjectLabelStyle::Octoprint ||
+        m_object_label_style == ObjectLabelStyle::Both;
+    const bool firmware = m_object_label_style == ObjectLabelStyle::Firmware ||
+        m_object_label_style == ObjectLabelStyle::Both;
+    if (m_current_printing_catalog_id != uint32_t(-1)) {
+        const ObjectLabel &previous = object_label(m_current_printing_catalog_id);
+        if (octoprint)
+            output += "; stop printing object " + previous.name + "\n";
+        if (firmware)
+            output += encode_object_end(previous);
+    }
+    m_current_printing_catalog_id = printing_catalog_id;
+    if (printing_catalog_id != uint32_t(-1)) {
+        const ObjectLabel &next = object_label(printing_catalog_id);
+        if (octoprint)
+            output += "; printing object " + next.name + "\n";
+        if (firmware)
+            output += encode_object_start(next);
+    }
+    // Keep the marker aligned with the plan: object IDs are zero-based and -1
+    // is the explicit outside-object sentinel in the generated G-code.
+    const int64_t marker_object_id = printing_catalog_id == uint32_t(-1) ?
+        -1 : int64_t(printing_catalog_id);
+    output += "; SLIC3R_OBJECT_INSTANCE_ID=" +
+        std::to_string(marker_object_id) + "\n";
+    return output;
+}
+
+std::string DefaultGCodeFirmwareSession::encode_object_definitions(
+    const std::vector<ObjectLabel> &) const
+{
+    return {};
+}
+
+std::string DefaultGCodeFirmwareSession::encode_object_start(const ObjectLabel &) const
+{
+    return {};
+}
+
+std::string DefaultGCodeFirmwareSession::encode_object_end(const ObjectLabel &) const
+{
+    return {};
 }
 
 std::string DefaultGCodeFirmwareSession::enter_extrusion_node(const ExtrusionEntity &)

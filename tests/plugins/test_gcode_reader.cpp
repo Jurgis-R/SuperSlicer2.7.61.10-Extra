@@ -18,10 +18,14 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode_reader.h"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
+#include "libslic3r/Plugins/Ordering/ObjectInstanceCatalog.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeStateTracker.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
+#include "libslic3r/I18N.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
+#include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Plugins/GCode/Reader/BuiltinGCodeReaderBase.hpp"
 #include "libslic3r/Plugins/GCode/Reader/KlipperGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/Reader/Marlin2GCodeReader.hpp"
@@ -827,6 +831,7 @@ TEST_CASE("Host G-code reader builds viewer movements and derived statistics",
     const GCodeProcessorResult result = service.read_for_viewer(
         "gcode.reader.default", gcode);
 
+    REQUIRE(result.object_names.empty());
     REQUIRE(result.lines_ends.size() == 1);
     REQUIRE(result.lines_ends.front().size() == 4);
     CHECK(result.lines_ends.front().back() == gcode.size());
@@ -866,6 +871,13 @@ TEST_CASE("Host G-code reader seeds tools and viewer metadata from Print setting
     config.extruder_colour.set(std::vector<std::string>{"#112233", "#445566"});
     config.filament_colour.set(std::vector<std::string>{"#778899", "#aabbcc"});
 
+    Printing::PrintingPlan &plan = print.mutable_printing_plan();
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
+
     GCodeReaderService service(Orchestrator::instance(), &print);
     const slic3r_api::GCodeStateTracker initial =
         service.initial_state("gcode.reader.marlin2");
@@ -890,6 +902,133 @@ TEST_CASE("Host G-code reader seeds tools and viewer metadata from Print setting
     CHECK(result.moves[1].position.x() == Approx(12.0));
     CHECK(result.moves[1].position.y() == Approx(3.0));
     CHECK(result.moves[1].fan_speed == Approx(128.0 / 255.0 * 100.0));
+}
+
+TEST_CASE("Host G-code reader keeps object ids aligned with viewer names",
+          "[plugins][gcode][reader][viewer]")
+{
+    ensure_plugin_test_runtime_initialized();
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20,
+                      Test::TestMesh::cube_20x20x20},
+                     print, model);
+    REQUIRE(print.objects().size() == 2);
+    print.object(0).model_object()->name = "First object";
+    print.object(1).model_object()->name = "Second object";
+
+    Printing::PrintingPlan &plan = print.mutable_printing_plan();
+    REQUIRE(plan.find_or_add_object_instance(print.objects()[0], 0) == 0);
+    REQUIRE(plan.find_or_add_object_instance(print.objects()[1], 0) == 1);
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
+    REQUIRE(plan.object_instances.size() == 2);
+    plan.object_instances[1].name = "Name copied from PrintingPlan";
+
+    GCodeReaderService service(Orchestrator::instance(), &print);
+    slic3r_api::GCodeStateTracker state =
+        service.initial_state("gcode.reader.default");
+    GCodeReaderResultBuilder builder(
+        &print, &plan, "gcode.reader.default", state);
+    consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        {{RAW_GCODE_READER_ITEM_OBJECT, 0, 1.0},
+         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+    consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+        {{RAW_GCODE_READER_ITEM_X, 0, 1.0},
+         {RAW_GCODE_READER_ITEM_FEEDRATE, 0, 60.0},
+         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+
+    const GCodeProcessorResult result = builder.finish(state);
+    REQUIRE(result.object_names.size() == 2);
+    CHECK(result.object_names[0] == "First_object id:0 copy 0");
+    CHECK(result.object_names[1] == "Name copied from PrintingPlan");
+    REQUIRE(result.moves.size() == 1);
+    CHECK(result.moves[0].object_id == 1u);
+}
+
+TEST_CASE("Built-in Readers recover plan object instance transitions",
+          "[plugins][gcode][reader][viewer][object-instance]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+
+    SECTION("M486 uses zero-based firmware ids and minus one closes the object") {
+        const GCodeProcessorResult result = service.read_for_viewer(
+            "gcode.reader.marlin2",
+            "M486 S0\nG1 X1 F60\nM486 S-1\nG1 X2\n");
+        REQUIRE(result.moves.size() == 2);
+        CHECK(result.moves[0].object_id == 0);
+        CHECK(result.moves[1].object_id == GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE);
+        REQUIRE(result.object_names.size() == 1);
+        CHECK(result.object_names[0] == "Object 0");
+    }
+
+    SECTION("the generic object comment also identifies plan instances") {
+        const GCodeProcessorResult result = service.read_for_viewer(
+            "gcode.reader.default",
+            "; SLIC3R_OBJECT_INSTANCE_ID=3\nG1 X1 F60\n"
+            "; SLIC3R_OBJECT_INSTANCE_ID=-1\nG1 X2\n");
+        REQUIRE(result.moves.size() == 2);
+        CHECK(result.moves[0].object_id == 3);
+        CHECK(result.moves[1].object_id == GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE);
+        REQUIRE(result.object_names.size() == 4);
+        CHECK(result.object_names[3] == "Object 3");
+    }
+
+    SECTION("an invalid M486 marker discards the previous object identity") {
+        const GCodeProcessorResult result = service.read_for_viewer(
+            "gcode.reader.marlin2",
+            "M486 S0\nG1 X1 F60\nM486 Sinvalid\nG1 X2\n");
+        REQUIRE(result.moves.size() == 2);
+        CHECK(result.moves[0].object_id == 0);
+        CHECK(result.moves[1].object_id == GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE);
+        REQUIRE(result.reader_diagnostics.size() == 1);
+        CHECK(result.reader_diagnostics.front().type ==
+              RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+    }
+
+    SECTION("an invalid generic marker discards the previous object identity") {
+        const GCodeProcessorResult result = service.read_for_viewer(
+            "gcode.reader.default",
+            "; SLIC3R_OBJECT_INSTANCE_ID=0\nG1 X1 F60\n"
+            "; SLIC3R_OBJECT_INSTANCE_ID=invalid\nG1 X2\n");
+        REQUIRE(result.moves.size() == 2);
+        CHECK(result.moves[0].object_id == 0);
+        CHECK(result.moves[1].object_id == GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE);
+        REQUIRE(result.reader_diagnostics.size() == 1);
+        CHECK(result.reader_diagnostics.front().type ==
+              RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+    }
+
+    SECTION("Klipper definitions fix ids before named starts") {
+        const GCodeProcessorResult result = service.read_for_viewer(
+            "gcode.reader.klipper",
+            "EXCLUDE_OBJECT_DEFINE NAME='second'\n"
+            "EXCLUDE_OBJECT_DEFINE NAME='first'\n"
+            "EXCLUDE_OBJECT_START NAME='first'\n"
+            "G1 X1 F60\n"
+            "EXCLUDE_OBJECT_END NAME='first'\n"
+            "G1 X2\n");
+        REQUIRE(result.moves.size() == 2);
+        CHECK(result.moves[0].object_id == 1);
+        CHECK(result.moves[1].object_id == GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE);
+        REQUIRE(result.object_names.size() == 2);
+        CHECK(result.object_names[1] == "Object 1");
+    }
+
+    SECTION("Klipper starts allocate ids by first appearance without definitions") {
+        const GCodeProcessorResult result = service.read_for_viewer(
+            "gcode.reader.klipper",
+            "EXCLUDE_OBJECT_START NAME='alpha'\nG1 X1 F60\n"
+            "EXCLUDE_OBJECT_END NAME='alpha'\n"
+            "EXCLUDE_OBJECT_START NAME='beta'\nG1 X2\n");
+        REQUIRE(result.moves.size() == 2);
+        CHECK(result.moves[0].object_id == 0);
+        CHECK(result.moves[1].object_id == 1);
+    }
 }
 
 TEST_CASE("Host G-code reader excludes retraction recovery from material usage",
@@ -925,7 +1064,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("unknown E clears the corresponding tool debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -949,7 +1088,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("unknown active tool alone preserves every tool debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -971,7 +1110,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("state update changing E with unknown active tool clears every debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -998,7 +1137,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("set position changing E with unknown active tool clears every debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -1025,7 +1164,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("E movement with unknown active tool clears debt without assigning new debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -1052,7 +1191,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("unchanged E with unknown active tool preserves every debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -1075,7 +1214,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("targeted E invalidation preserves another tool debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -1098,7 +1237,7 @@ TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
 
     SECTION("known tool changes preserve per-tool debt") {
         slic3r_api::GCodeStateTracker state(initial);
-        GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+        GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
         consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
             {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
              {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
@@ -1143,7 +1282,7 @@ TEST_CASE("Host G-code reader creates typed marker vertices",
     std::vector<raw_gcode_reader_event_item> initial_items;
     const raw_gcode_reader_state initial = initial_state(initial_items);
     slic3r_api::GCodeStateTracker state(initial);
-    GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+    GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
 
     const uint32_t markers[] = {
         RAW_GCODE_READER_MARKER_SEAM,
@@ -1180,7 +1319,7 @@ TEST_CASE("Host G-code reader owns typed diagnostics in stream order",
     std::vector<raw_gcode_reader_event_item> initial_items;
     const raw_gcode_reader_state initial = initial_state(initial_items);
     slic3r_api::GCodeStateTracker state(initial);
-    GCodeReaderResultBuilder builder(nullptr, "test.reader", state);
+    GCodeReaderResultBuilder builder(nullptr, nullptr, "test.reader", state);
 
     const std::vector<raw_gcode_reader_diagnostic_type> types = {
         RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND,
@@ -1225,6 +1364,13 @@ TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
         DynamicPrintConfig::full_print_config());
     Print::StatusMonitor status(print);
     REQUIRE(status.set_started(psGCodeExport));
+
+    Printing::PrintingPlan &plan = print.mutable_printing_plan();
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
 
     GCodeReaderService service(Orchestrator::instance(), &print);
     const GCodeProcessorResult result = service.read_for_viewer(
@@ -1799,6 +1945,23 @@ TEST_CASE("G-code readers preserve opaque state only while commands stay underst
         orchestrator, nullptr, "gcode.reader.default", initial, "M9999\n");
     CHECK_FALSE(invalidated.known(private_type, 12u));
     CHECK(invalidated.reader_id() == 0u);
+
+    // Klipper keeps its textual object registry outside the tracker. Object
+    // identities use the same zero-based convention as the plan; UINT32_MAX
+    // remains reserved for outside work.
+    std::vector<raw_gcode_reader_event_item> klipper_items;
+    raw_gcode_reader_state klipper_initial = initial_state(klipper_items);
+    klipper_items.push_back(
+        {RAW_GCODE_READER_ITEM_CUSTOM_BEGIN, 1u, 42.0});
+    klipper_initial.items = klipper_items.data();
+    klipper_initial.item_count =
+        static_cast<uint32_t>(klipper_items.size());
+    const slic3r_api::GCodeStateTracker klipper = read_gcode(
+        orchestrator, nullptr, "gcode.reader.klipper", klipper_initial,
+        "EXCLUDE_OBJECT_DEFINE NAME='alpha'\n"
+        "EXCLUDE_OBJECT_START NAME='alpha'\n");
+    CHECK(klipper.value(RAW_GCODE_READER_ITEM_CUSTOM_BEGIN, 1u) == 42.0);
+    CHECK(klipper.value(RAW_GCODE_READER_ITEM_OBJECT) == 0.0);
 }
 
 TEST_CASE("G-code reader tracker copies own their raw state view",

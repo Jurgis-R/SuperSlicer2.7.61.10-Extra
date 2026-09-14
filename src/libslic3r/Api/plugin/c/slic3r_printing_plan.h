@@ -153,7 +153,7 @@ SLIC3R_HOST_API int32_t printing_plan_set_object_instance_metadata(
     const polygon_handle *outline);
 /* Enumerate and resolve the plan-level instance catalog. IDs are dense in the
    range 0..count-1; UINT32_MAX means "outside" and is never a catalog entry. The
-   Metadata may be completed later without changing the IDs. */
+   catalog provider completes missing metadata without changing the IDs. */
 SLIC3R_HOST_API uint32_t printing_plan_count_object_instance(const printing_plan_handle *me);
 SLIC3R_HOST_API c_printing_object_instance printing_plan_get_object_instance_by_printing_catalog_id(
     const printing_plan_handle *me,

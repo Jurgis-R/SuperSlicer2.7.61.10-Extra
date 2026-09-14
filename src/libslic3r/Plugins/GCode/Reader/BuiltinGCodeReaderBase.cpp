@@ -335,6 +335,20 @@ void BuiltinGCodeReaderBase::publish_diagnostic(
                   {{RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE, 0, double(type)}});
 }
 
+void BuiltinGCodeReaderBase::publish_invalid_object_marker(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state) const
+{
+    publish_diagnostic(run_context, context, state,
+                       RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+    const std::optional<double> object = state.value(RAW_GCODE_READER_ITEM_OBJECT);
+    if (object)
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_INVALIDATE,
+                      {{RAW_GCODE_READER_ITEM_OBJECT, 0, *object}});
+}
+
 void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_context,
                                              const run_ctx_gcode_reader &context,
                                              GCodeStateTracker &state,
@@ -370,8 +384,31 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
                       [this, &run_context, &context, &state](
                           GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
         const std::string_view command = line.command();
-        if (command.empty())
+        if (command.empty()) {
+            constexpr std::string_view marker = "SLIC3R_OBJECT_INSTANCE_ID=";
+            const std::string_view comment = line.comment();
+            const size_t marker_pos = comment.find(marker);
+            if (marker_pos != std::string_view::npos) {
+                const std::string_view value = comment.substr(marker_pos + marker.size());
+                int64_t marker_id = 0;
+                const std::from_chars_result parsed = std::from_chars(
+                    value.data(), value.data() + value.size(), marker_id);
+                if (parsed.ec == std::errc() && parsed.ptr == value.data() + value.size() &&
+                    marker_id >= -1 && marker_id <= int64_t(UINT32_MAX)) {
+                    const uint32_t object_id = marker_id < 0 ? UINT32_MAX :
+                        uint32_t(marker_id);
+                    const std::optional<double> current = state.value(
+                        RAW_GCODE_READER_ITEM_OBJECT);
+                    if (!current || static_cast<uint32_t>(*current) != object_id)
+                        publish_items(run_context, context, state,
+                                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                                      {{RAW_GCODE_READER_ITEM_OBJECT, 0, double(object_id)}});
+                }
+                else
+                    publish_invalid_object_marker(run_context, context, state);
+            }
             return;
+        }
         if (consume_text_command(run_context, context, state, line))
             return;
 
@@ -443,9 +480,34 @@ bool BuiltinGCodeReaderBase::consume_numeric_command(
         process_M221(run_context, context, state, line);
     else if (letter == 'M' && number == 117)
         process_M117(run_context, context, state);
+    else if (letter == 'M' && number == 486)
+        process_M486(run_context, context, state, line);
     else
         return false;
     return true;
+}
+
+void BuiltinGCodeReaderBase::process_M486(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line) const
+{
+    int32_t firmware_id = 0;
+    if (!line.has_parameter('S')) {
+        publish_state_update(run_context, context, state);
+        return;
+    }
+    if (!line.parameter_value('S', firmware_id) || firmware_id < -1) {
+        publish_invalid_object_marker(run_context, context, state);
+        return;
+    }
+    const uint32_t object_id = firmware_id < 0 ? UINT32_MAX : uint32_t(firmware_id);
+    const std::optional<double> current = state.value(RAW_GCODE_READER_ITEM_OBJECT);
+    if (current && static_cast<uint32_t>(*current) == object_id)
+        return;
+    publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  {{RAW_GCODE_READER_ITEM_OBJECT, 0, double(object_id)}});
 }
 
 void BuiltinGCodeReaderBase::process_G0_G1(

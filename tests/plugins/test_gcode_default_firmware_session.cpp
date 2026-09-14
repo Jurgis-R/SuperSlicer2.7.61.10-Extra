@@ -36,6 +36,7 @@
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionEntityVisitors.hpp"
 #include "libslic3r/GCode.hpp"
+#include "libslic3r/Plugins/Ordering/ObjectInstanceCatalog.hpp"
 #include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Geometry/ArcWelder.hpp"
@@ -953,6 +954,128 @@ TEST_CASE("Default firmware interprets scope events with its extrusion visitor",
         throw;
     }
     remove_output_pair(output_path);
+}
+
+TEST_CASE("Firmware object boundaries keep exit work with the source instance",
+          "[plugins][gcode][firmware][printing][plan][object-instance]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20,
+                      Test::TestMesh::cube_20x20x20}, print, model);
+    configure_standard_firmware(print);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.gcode_label_objects.value = LabelObjectsStyle::Both;
+    PrintingPlan plan = build_printing_plan_by_object(print);
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
+    REQUIRE(plan.object_instances.size() == 2);
+
+    const auto event_tree = [](std::initializer_list<const char *> commands) {
+        std::unique_ptr<ExtrusionEntity> root(new ExtrusionEntity(true));
+        for (const char *command : commands) {
+            std::unique_ptr<ExtrusionNop> event(new ExtrusionNop());
+            event->add_property(ExtrusionPropertyCustomGcodeText(command));
+            root->append_child(std::move(event));
+        }
+        return root;
+    };
+
+    PrintingExtrusion first;
+    first.printing_catalog_id = 0;
+    first.root = event_tree({";A content", ";A retract", ";A wipe"});
+    PrintingExtrusion second;
+    second.printing_catalog_id = 1;
+    second.root = event_tree({";B travel", ";B unretract", ";B content"});
+
+    slic3r_api::GCodeGeneration::Firmware::Marlin2GCodeFirmwareSession session;
+    std::string output = session.begin_print(
+        slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)),
+        slic3r_api::PrintingPlan(
+            reinterpret_cast<const printing_plan_handle *>(&plan)));
+    output += session.write_extrusion(slic3r_api::PrintingExtrusion(
+        reinterpret_cast<const printing_extrusion_handle *>(&first)));
+    ExtrusionNop scope_event;
+    scope_event.add_property(ExtrusionPropertyCustomGcodeText(";outside event"));
+    output += session.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(&scope_event)));
+    output += session.write_extrusion(slic3r_api::PrintingExtrusion(
+        reinterpret_cast<const printing_extrusion_handle *>(&second)));
+    output += session.end_print();
+
+    const size_t a_content = output.find("; A content");
+    const size_t a_retract = output.find("; A retract");
+    const size_t a_wipe = output.find("; A wipe");
+    const size_t octoprint_close_a = output.find("; stop printing object", a_wipe);
+    const size_t close_a = output.find("M486 S-1", a_wipe);
+    const size_t outside_event = output.find("; outside event", close_a);
+    const size_t octoprint_open_b = output.find("; printing object", outside_event);
+    const size_t open_b = output.find("M486 S1", outside_event);
+    const size_t b_travel = output.find("; B travel", open_b);
+    const size_t b_unretract = output.find("; B unretract", b_travel);
+    const size_t b_content = output.find("; B content", b_unretract);
+    REQUIRE(a_content != std::string::npos);
+    REQUIRE(a_retract != std::string::npos);
+    REQUIRE(a_wipe != std::string::npos);
+    REQUIRE(octoprint_close_a != std::string::npos);
+    REQUIRE(close_a != std::string::npos);
+    REQUIRE(outside_event != std::string::npos);
+    REQUIRE(octoprint_open_b != std::string::npos);
+    REQUIRE(open_b != std::string::npos);
+    REQUIRE(b_travel != std::string::npos);
+    REQUIRE(b_unretract != std::string::npos);
+    REQUIRE(b_content != std::string::npos);
+    CHECK(a_content < a_retract);
+    CHECK(a_retract < a_wipe);
+    CHECK(a_wipe < octoprint_close_a);
+    CHECK(octoprint_close_a < close_a);
+    CHECK(a_wipe < close_a);
+    CHECK(close_a < outside_event);
+    CHECK(outside_event < octoprint_open_b);
+    CHECK(octoprint_open_b < open_b);
+    CHECK(outside_event < open_b);
+    CHECK(open_b < b_travel);
+    CHECK(b_travel < b_unretract);
+    CHECK(b_unretract < b_content);
+}
+
+TEST_CASE("Klipper object declarations use the PrintingPlan instance catalog",
+          "[plugins][gcode][firmware][printing][plan][object-instance][klipper]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model);
+    ModelObject *model_object = const_cast<ModelObject *>(print.object(0).model_object());
+    REQUIRE(model_object != nullptr);
+    model_object->name = "Single object";
+    configure_standard_firmware(print);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.gcode_label_objects.value = LabelObjectsStyle::Firmware;
+    config.gcode_flavor.value = gcfKlipper;
+    PrintingPlan plan = build_printing_plan_by_object(print);
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
+    REQUIRE(plan.object_instances.size() == 1);
+    CHECK(plan.object_instances.front().name == "Single_object");
+
+    slic3r_api::GCodeGeneration::Firmware::KlipperGCodeFirmwareSession session;
+    const std::string output = session.begin_print(
+        slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)),
+        slic3r_api::PrintingPlan(
+            reinterpret_cast<const printing_plan_handle *>(&plan)));
+    CHECK(output.find("EXCLUDE_OBJECT_DEFINE NAME='" +
+                      plan.object_instances.front().name + "'") != std::string::npos);
+    CHECK(output.find(" CENTER=") != std::string::npos);
+    CHECK(output.find(" POLYGON=[[") != std::string::npos);
 }
 TEST_CASE("Default firmware emits inherited process state and ordered linear moves",
           "[plugins][gcode][firmware]")

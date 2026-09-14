@@ -6,19 +6,21 @@
 #include "DefaultOrdering.hpp"
 #include "AdvancedExtrusionTreeOrdering.hpp"
 #include "DefaultExtrusionTreeOrdering.hpp"
+#include "ObjectInstanceCatalog.hpp"
 #include "PrintingExtrusionPreSort.hpp"
 #include "XYSerpentineExtrusionTreeOrdering.hpp"
 
 namespace slic3r_api { namespace Ordering { namespace DefaultOrderingPlugin {
 
 /*
-Default ordering registers four phases and three alternative tree providers.
+Default ordering registers five phases and three alternative tree providers.
 
 This file intentionally contains only the aggregate registration entry point
 used by the built-in plugin loader. Each phase lives in its own source file so
 an external developer can read or replace one phase without wading through the
 others:
   - DefaultPlanBuilder.cpp creates the PrintingPlan;
+  - ObjectInstanceCatalog.cpp completes registered instance metadata;
   - DefaultToolGroupOrdering.cpp orders extruder/tool visits;
   - PrintingExtrusionPreSort.cpp coarsely orders each visit's extrusions and
     publishes their estimated entry and exit points;
@@ -30,6 +32,7 @@ others:
 void register_default_ordering_plugins(orchestrator_handle *orch)
 {
     register_default_plan_builder_plugin(orch);
+    ObjectInstanceCatalogPlugin::register_object_instance_catalog_plugin(orch);
     register_default_tool_group_ordering_plugin(orch);
     register_printing_extrusion_pre_sort_plugin(orch);
     register_advanced_extrusion_tree_ordering_plugin(orch);

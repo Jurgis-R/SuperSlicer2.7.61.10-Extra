@@ -8,7 +8,10 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,6 +25,11 @@ Text commands are handled before the base attempts to parse a G/M number.
 ACTIVATE_EXTRUDER maps Klipper section names to the portable numeric tool. A
 slicing Print makes configured tool_name values authoritative; an external file
 without a Print accepts only the conventional extruder/extruderN spelling.
+
+EXCLUDE_OBJECT commands name objects with strings. The Reader assigns their
+portable numeric IDs in a per-run registry instead of storing parser bookkeeping
+inside the caller's custom state. This preserves opaque custom items exactly and
+compares complete names rather than collision-prone numeric hashes.
 */
 
 namespace slic3r_api { namespace GCodeGeneration { namespace Reader {
@@ -37,6 +45,8 @@ struct KlipperToolResolution
 };
 KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
                                       std::string_view name);
+std::optional<std::string_view> klipper_object_name(
+    const GCodeLineParser::GCodeLine &line);
 
 KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
                                       std::string_view name)
@@ -70,11 +80,89 @@ KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
     return {KlipperToolResolution::Status::Unknown, 0};
 }
 
+std::optional<std::string_view> klipper_object_name(
+    const GCodeLineParser::GCodeLine &line)
+{
+    const std::string_view raw = line.raw();
+    const size_t marker = raw.find("NAME=");
+    if (marker == std::string_view::npos)
+        return std::nullopt;
+    const size_t value_begin = marker + 5;
+    if (value_begin >= raw.size())
+        return std::nullopt;
+
+    const char quote = raw[value_begin];
+    std::string_view name;
+    if (quote == '\'' || quote == '"') {
+        const size_t value_end = raw.find(quote, value_begin + 1);
+        if (value_end == std::string_view::npos)
+            return std::nullopt;
+        name = raw.substr(value_begin + 1, value_end - value_begin - 1);
+    } else {
+        const size_t value_end = raw.find_first_of(" \t;", value_begin);
+        name = raw.substr(value_begin, value_end == std::string_view::npos ?
+            raw.size() - value_begin : value_end - value_begin);
+    }
+    return name.empty() ? std::nullopt : std::optional<std::string_view>(name);
+}
+
 } // namespace
 
 KlipperGCodeReader::KlipperGCodeReader(orchestrator_handle *orchestrator) :
     BuiltinGCodeReaderBase(orchestrator)
 {}
+
+void KlipperGCodeReader::read_impl(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state) const
+{
+    {
+        std::lock_guard<std::mutex> lock(m_object_registries_mutex);
+        const std::pair<decltype(m_object_registries)::iterator, bool> inserted =
+            m_object_registries.emplace(&state, ObjectRegistry{});
+        if (!inserted.second)
+            throw std::logic_error("A Klipper Reader state is already being parsed.");
+    }
+
+    try {
+        BuiltinGCodeReaderBase::read_impl(run_context, context, state);
+    } catch (...) {
+        erase_object_registry(state);
+        throw;
+    }
+    erase_object_registry(state);
+}
+
+uint32_t KlipperGCodeReader::find_or_add_object_id(
+    const GCodeStateTracker &state, const std::string_view name) const
+{
+    std::lock_guard<std::mutex> lock(m_object_registries_mutex);
+    const decltype(m_object_registries)::iterator run =
+        m_object_registries.find(&state);
+    if (run == m_object_registries.end())
+        throw std::logic_error("Klipper object lookup occurred outside a Reader run.");
+
+    ObjectRegistry &registry = run->second;
+    const std::string owned_name(name);
+    const std::unordered_map<std::string, uint32_t>::const_iterator existing =
+        registry.ids.find(owned_name);
+    if (existing != registry.ids.end())
+        return existing->second;
+    if (registry.next_id == std::numeric_limits<uint32_t>::max())
+        throw std::overflow_error("Klipper object count exceeds uint32_t.");
+
+    const uint32_t id = registry.next_id++;
+    registry.ids.emplace(owned_name, id);
+    return id;
+}
+
+void KlipperGCodeReader::erase_object_registry(
+    const GCodeStateTracker &state) const noexcept
+{
+    std::lock_guard<std::mutex> lock(m_object_registries_mutex);
+    m_object_registries.erase(&state);
+}
 
 const char *KlipperGCodeReader::id_impl() const noexcept
 {
@@ -116,6 +204,18 @@ bool KlipperGCodeReader::consume_text_command(
     }
     if (command == "PAUSE") {
         process_PAUSE(run_context, context, state);
+        return true;
+    }
+    if (command == "EXCLUDE_OBJECT_DEFINE") {
+        process_EXCLUDE_OBJECT_DEFINE(run_context, context, state, line);
+        return true;
+    }
+    if (command == "EXCLUDE_OBJECT_START") {
+        process_EXCLUDE_OBJECT_START(run_context, context, state, line);
+        return true;
+    }
+    if (command == "EXCLUDE_OBJECT_END") {
+        process_EXCLUDE_OBJECT_END(run_context, context, state, line);
         return true;
     }
     return false;
@@ -216,6 +316,56 @@ void KlipperGCodeReader::process_PAUSE(
                   RAW_GCODE_READER_EVENT_MARKER,
                   {{RAW_GCODE_READER_ITEM_MARKER, 0,
                     double(RAW_GCODE_READER_MARKER_PAUSE_PRINT)}});
+}
+
+void KlipperGCodeReader::process_EXCLUDE_OBJECT_DEFINE(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line) const
+{
+    const std::optional<std::string_view> name = klipper_object_name(line);
+    if (!name) {
+        publish_unknown(run_context, context, state);
+        return;
+    }
+    find_or_add_object_id(state, *name);
+    publish_items(run_context, context, state,
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE, {});
+}
+
+void KlipperGCodeReader::process_EXCLUDE_OBJECT_START(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line) const
+{
+    const std::optional<std::string_view> name = klipper_object_name(line);
+    if (!name) {
+        publish_unknown(run_context, context, state);
+        return;
+    }
+    const uint32_t id = find_or_add_object_id(state, *name);
+    const std::optional<double> current = state.value(RAW_GCODE_READER_ITEM_OBJECT);
+    if (current && static_cast<uint32_t>(*current) == id)
+        return;
+    publish_items(run_context, context, state,
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  {{RAW_GCODE_READER_ITEM_OBJECT, 0, double(id)}});
+}
+
+void KlipperGCodeReader::process_EXCLUDE_OBJECT_END(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &) const
+{
+    const std::optional<double> current = state.value(RAW_GCODE_READER_ITEM_OBJECT);
+    if (current && static_cast<uint32_t>(*current) == UINT32_MAX)
+        return;
+    publish_items(run_context, context, state,
+                  RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                  {{RAW_GCODE_READER_ITEM_OBJECT, 0, double(UINT32_MAX)}});
 }
 
 void KlipperGCodeReader::process_M204(

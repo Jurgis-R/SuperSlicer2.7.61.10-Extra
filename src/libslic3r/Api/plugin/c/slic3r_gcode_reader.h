@@ -152,6 +152,12 @@ typedef enum raw_gcode_reader_item_type {
     RAW_GCODE_READER_ITEM_WIDTH,
     RAW_GCODE_READER_ITEM_HEIGHT,
     RAW_GCODE_READER_ITEM_LAYER,
+    /* Zero-based logical object associated with subsequent movements.
+       UINT32_MAX means that the movement is outside every printable object.
+       A Reader created with a Print uses the same plan-local IDs as its
+       PrintingPlan. A Reader for an external file may allocate IDs in
+       first-seen order, but object display names require separate metadata
+       that this numeric contract does not currently transport. */
     RAW_GCODE_READER_ITEM_OBJECT,
     /* Event-local raw_gcode_reader_marker_type. A MARKER event contains
        exactly one such item with target zero; no other event or complete

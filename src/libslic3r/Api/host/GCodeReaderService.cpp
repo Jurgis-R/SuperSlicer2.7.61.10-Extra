@@ -524,7 +524,12 @@ GCodeProcessorResult GCodeReaderService::read_for_viewer(
     const std::lock_guard<std::mutex> lock(m_viewer_mutex);
     const std::string id = validated_reader_id(reader_plugin_id);
     const slic3r_api::GCodeStateTracker initial = initial_state(id);
-    GCodeReaderResultBuilder builder(m_print, id, initial);
+    const Printing::PrintingPlan *plan =
+        m_print == nullptr ? nullptr : m_print->printing_plan();
+    if (m_print != nullptr && plan == nullptr)
+        throw std::runtime_error(
+            "G-code viewer parsing for a Print requires its completed PrintingPlan.");
+    GCodeReaderResultBuilder builder(m_print, plan, id, initial);
     ViewerReaderInvocation invocation(
         std::move(source), m_print, initial.state(), builder);
     run_ctx_gcode_reader context = invocation.context();

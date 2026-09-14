@@ -15,9 +15,8 @@
 #include "libslic3r/Api/plugin/c/slic3r_extrusions.h"
 #include "libslic3r/ExtrusionRole.hpp"
 #include "libslic3r/I18N.hpp"
-#include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
-#include "libslic3r/PrintObject.hpp"
+#include "libslic3r/Printing/PrintingPlan.hpp"
 
 /*
 Host Reader timeline implementation
@@ -70,6 +69,22 @@ double state_value_or(const slic3r_api::GCodeStateTracker &state,
 {
     const std::optional<double> value = state.value(type, target);
     return value ? *value : fallback;
+}
+
+// Reader results use the same zero-based object identity as PrintingPlan. The
+// compact viewer field cannot carry UINT32_MAX, so it uses its own all-bits-one
+// value for movements outside every object. The legacy GCodeProcessor now uses
+// the same viewer convention, so both input paths produce interchangeable IDs.
+uint16_t viewer_object_id(const slic3r_api::GCodeStateTracker &state)
+{
+    const std::optional<double> raw = state.value(RAW_GCODE_READER_ITEM_OBJECT);
+    if (!raw || static_cast<uint32_t>(*raw) == UINT32_MAX)
+        return GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE;
+    const uint32_t object_id = static_cast<uint32_t>(*raw);
+    if (object_id >= GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE)
+        throw std::out_of_range(
+            "A Reader object instance id cannot be represented by MoveVertex.");
+    return static_cast<uint16_t>(object_id);
 }
 
 // Convert the public extrusion-role bit mask to the compact viewer category.
@@ -131,23 +146,32 @@ Value vector_value_or(const std::vector<Value> &values, size_t index, Value fall
 
 GCodeReaderResultBuilder::GCodeReaderResultBuilder(
     const Print *print,
+    const Printing::PrintingPlan *plan,
     std::string reader_plugin_id,
     const slic3r_api::GCodeStateTracker &initial_state)
     : m_previous_state(initial_state)
 {
-    initialize_result(print, reader_plugin_id);
+    initialize_result(print, plan, reader_plugin_id);
+    if (const std::optional<double> object =
+            m_previous_state.value(RAW_GCODE_READER_ITEM_OBJECT))
+        process_object_change(static_cast<uint32_t>(*object));
 }
 
 void GCodeReaderResultBuilder::initialize_result(
-    const Print *print, const std::string &reader_plugin_id)
+    const Print *print,
+    const Printing::PrintingPlan *plan,
+    const std::string &reader_plugin_id)
 {
+    if ((print == nullptr) != (plan == nullptr))
+        throw std::invalid_argument(
+            "G-code viewer metadata requires both a Print and its PrintingPlan.");
     m_result.reset();
     m_result.id = ++s_reader_result_id;
     m_result.reader_plugin_id = reader_plugin_id;
     m_result.filament_diameters.assign(1, DEFAULT_VIEWER_FILAMENT_DIAMETER);
     m_result.filament_densities.assign(1, DEFAULT_VIEWER_FILAMENT_DENSITY);
     m_result.filament_cost.assign(1, DEFAULT_VIEWER_FILAMENT_COST);
-    if (print == nullptr) {
+    if (plan == nullptr) {
         m_result.extruders_count = 1;
         // TODO: external-file metadata needs Reader events for producer,
         // extruder/filament RGB colors, object names, profile ids, filament
@@ -196,8 +220,18 @@ void GCodeReaderResultBuilder::initialize_result(
     if (printer_id != nullptr)
         m_result.settings_ids.printer = printer_id->value;
 
-    for (const PrintObject &object : print->objects())
-        m_result.object_names.push_back(object.model_object()->name);
+    for (size_t index = 0; index < plan->object_instances.size(); ++index) {
+        const Printing::PrintingObjectInstance &instance =
+            plan->object_instances[index];
+        // The vector position is the zero-based Reader identity. Movements
+        // outside objects use MoveVertex::OBJECT_INSTANCE_ID_NONE instead of
+        // occupying an artificial entry in this vector.
+        if (instance.name.empty())
+            throw std::invalid_argument(
+                "The PrintingPlan contains an incomplete object-instance catalog.");
+        m_result.object_names.push_back(instance.name);
+    }
+    m_has_object_instance_catalog = true;
 }
 
 void GCodeReaderResultBuilder::consume_chunk(std::string_view chunk)
@@ -223,6 +257,18 @@ void GCodeReaderResultBuilder::consume_event(
     if (m_finished)
         throw std::logic_error("Cannot append a Reader event after finalizing viewer data.");
     invalidate_derived_state(event, post_state);
+    const std::optional<double> previous_object_value = m_previous_state.value(
+        RAW_GCODE_READER_ITEM_OBJECT);
+    const std::optional<double> current_object_value = post_state.value(
+        RAW_GCODE_READER_ITEM_OBJECT);
+    const std::optional<uint32_t> previous_object = previous_object_value ?
+        std::optional<uint32_t>(static_cast<uint32_t>(*previous_object_value)) :
+        std::optional<uint32_t>();
+    const std::optional<uint32_t> current_object = current_object_value ?
+        std::optional<uint32_t>(static_cast<uint32_t>(*current_object_value)) :
+        std::optional<uint32_t>();
+    if (current_object && current_object != previous_object)
+        process_object_change(*current_object);
     switch (event.kind) {
     case RAW_GCODE_READER_EVENT_STATE_UPDATE:
         process_state_update(event, post_state);
@@ -291,7 +337,8 @@ void GCodeReaderResultBuilder::process_tool_change(
     m_result.moves.emplace_back(
         line + 1u, EMoveType::Tool_change, viewer_role(state),
         static_cast<uint8_t>(std::min<uint32_t>(new_tool, UINT8_MAX)),
-        static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)), 0,
+        static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
+        viewer_object_id(state),
         Vec3f(static_cast<float>(position.x() + offset_x),
               static_cast<float>(position.y() + offset_y),
               static_cast<float>(position.z() + offset_z - m_result.z_offset)),
@@ -301,6 +348,30 @@ void GCodeReaderResultBuilder::process_tool_change(
         static_cast<float>(state.value(
             RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, new_tool).value_or(0.0)),
         m_total_time, 0, false);
+}
+
+void GCodeReaderResultBuilder::process_object_change(
+    const uint32_t object_instance_id)
+{
+    if (object_instance_id != UINT32_MAX && object_instance_id >= UINT16_MAX)
+        throw std::out_of_range(
+            "A Reader object instance id cannot be represented by MoveVertex.");
+    if (object_instance_id == UINT32_MAX)
+        return;
+
+    const uint32_t viewer_object_id = object_instance_id;
+
+    if (m_has_object_instance_catalog) {
+        if (viewer_object_id >= m_result.object_names.size())
+            throw std::out_of_range(
+                "A Reader object instance id is absent from the Print catalog.");
+        return;
+    }
+
+    while (m_result.object_names.size() <= viewer_object_id) {
+        const size_t id = m_result.object_names.size();
+        m_result.object_names.push_back("Object " + std::to_string(id));
+    }
 }
 
 void GCodeReaderResultBuilder::process_linear_move(
@@ -456,9 +527,7 @@ void GCodeReaderResultBuilder::process_marker(
         gcode_id, type, viewer_role(state),
         static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)),
         static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
-        static_cast<uint16_t>(std::min<uint32_t>(
-            static_cast<uint32_t>(state.value(
-                RAW_GCODE_READER_ITEM_OBJECT).value_or(0.0)), UINT16_MAX)),
+        viewer_object_id(state),
         Vec3f(static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_X, 0.0) + offset_x),
               static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_Y, 0.0) + offset_y),
               static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_Z, 0.0) + offset_z - m_result.z_offset)),
@@ -641,8 +710,6 @@ void GCodeReaderResultBuilder::append_move(
         event_value(event, RAW_GCODE_READER_ITEM_LINE_NUMBER).value_or(0.0));
     const uint32_t layer = std::min<uint32_t>(static_cast<uint32_t>(
         state.value(RAW_GCODE_READER_ITEM_LAYER).value_or(0.0)), UINT16_MAX);
-    const uint32_t object = static_cast<uint32_t>(
-        state.value(RAW_GCODE_READER_ITEM_OBJECT).value_or(0.0));
     const uint32_t fan_id = static_cast<uint32_t>(
         state.value(RAW_GCODE_READER_ITEM_TOOL_FAN, tool).value_or(0.0));
     const double fan = state.value(RAW_GCODE_READER_ITEM_FAN_SPEED, fan_id).value_or(0.0);
@@ -653,7 +720,7 @@ void GCodeReaderResultBuilder::append_move(
         line + 1u, type, role,
         static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)),
         static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
-        static_cast<uint16_t>(std::min<uint32_t>(object, UINT16_MAX)),
+        viewer_object_id(state),
         Vec3f(static_cast<float>(end.x() + offset_x),
               static_cast<float>(end.y() + offset_y),
               static_cast<float>(end.z() + offset_z - m_result.z_offset)),
@@ -672,7 +739,9 @@ void GCodeReaderResultBuilder::append_move(
 
     if (volume > 0.0) {
         m_result.print_statistics.volumes_per_extruder[tool] += volume;
-        m_result.print_statistics.volumes_per_role_per_extruder_per_object[object][tool][role] += volume;
+        const uint16_t object = viewer_object_id(state);
+        if (object != GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE)
+            m_result.print_statistics.volumes_per_role_per_extruder_per_object[object][tool][role] += volume;
         const double length_m = filament_area > 0.0 ? volume / filament_area * 0.001 : 0.0;
         const double density = vector_value_or(
             m_result.filament_densities, tool, DEFAULT_VIEWER_FILAMENT_DENSITY);
@@ -726,6 +795,11 @@ void GCodeReaderResultBuilder::finalize_statistics()
             normal.roles_times.emplace_back(
                 static_cast<GCodeExtrusionRole>(index), m_role_times[index]);
     m_result.print_statistics.volumes_per_color_change = m_color_volumes;
+
+    // Keep the viewer's per-object statistics shape aligned with the Reader
+    // catalog even when an object has no extrusion volume.
+    for (size_t object_id = 0; object_id < m_result.object_names.size(); ++object_id)
+        (void)m_result.print_statistics.volumes_per_role_per_extruder_per_object[object_id];
 
     // TODO: exact planner time needs portable machine-limit, jerk and command
     // delay events. Until then the host reports nominal path time and leaves

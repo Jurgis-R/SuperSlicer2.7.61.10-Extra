@@ -89,7 +89,6 @@ protected:
     // generic base has no private schema; dialects use this hook to reject an
     // incomplete snapshot even when the input stream contains no command.
     virtual void validate_private_state(const GCodeStateTracker &state) const;
-
     // Common command handlers are virtual so a dialect can replace one
     // command family without reimplementing line parsing or dispatch. An
     // override owns the complete command and must synchronously publish every
@@ -175,6 +174,12 @@ protected:
     virtual void process_M117(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
                               GCodeStateTracker &state) const;
+    // Convert Marlin/RepRap's zero-based M486 S value to the canonical Reader
+    // identity. S-1 becomes UINT32_MAX and closes the current object.
+    virtual void process_M486(const plugin_run_context &run_context,
+                              const run_ctx_gcode_reader &context,
+                              GCodeStateTracker &state,
+                              const GCodeLineParser::GCodeLine &line) const;
 
     // Publish a caller-owned delta. The event and its temporary item storage
     // need only remain alive for this synchronous call.
@@ -189,6 +194,13 @@ protected:
                             const run_ctx_gcode_reader &context,
                             GCodeStateTracker &state,
                             raw_gcode_reader_diagnostic_type type) const;
+    // Report a malformed object marker and discard only the current object
+    // identity. Positions and other machine state remain trustworthy because
+    // the marker cannot affect them.
+    void publish_invalid_object_marker(
+        const plugin_run_context &run_context,
+        const run_ctx_gcode_reader &context,
+        GCodeStateTracker &state) const;
     // Publish a recognized command which changes no portable state.
     void publish_state_update(const plugin_run_context &run_context,
                               const run_ctx_gcode_reader &context,
@@ -208,14 +220,17 @@ protected:
                                                            std::string_view name);
     static uint32_t active_tool(const GCodeStateTracker &state);
 
-private:
-    const char *const *dependencies_impl() const noexcept override;
-    int32_t priority_impl() const noexcept override;
     // Reassemble physical lines from arbitrary chunks and dispatch each
-    // complete line in source order. All parser state remains local to this run.
+    // complete line in source order. It is protected so a dialect may bracket
+    // the common parser with strictly run-local setup and cleanup. Overrides
+    // must delegate exactly once and must not retain the borrowed arguments.
     void read_impl(const plugin_run_context &run_context,
                    const run_ctx_gcode_reader &context,
                    GCodeStateTracker &state) const override;
+
+private:
+    const char *const *dependencies_impl() const noexcept override;
+    int32_t priority_impl() const noexcept override;
     // Parse one physical line and publish events carrying the tracker's current
     // zero-based line number. The text excludes CR/LF terminators.
     void consume_line(const plugin_run_context &run_context,

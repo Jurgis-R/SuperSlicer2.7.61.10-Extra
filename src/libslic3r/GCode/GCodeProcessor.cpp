@@ -11,6 +11,7 @@
 
 #include <cassert>
 #include <cfloat>
+#include <cmath>
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -49,6 +50,7 @@ static const float DEFAULT_FILAMENT_DIAMETER = 1.75f;
 static const float DEFAULT_FILAMENT_DENSITY = 1.245f;
 static const float DEFAULT_FILAMENT_COST = 0.0f;
 static const Slic3r::Vec3f DEFAULT_EXTRUDER_OFFSET = Slic3r::Vec3f::Zero();
+static constexpr size_t OBJECT_INSTANCE_ID_NONE = (std::numeric_limits<size_t>::max)();
 // taken from PrusaResearch.ini - [printer:Original Prusa i3 MK2.5 MMU2]
 static const std::vector<std::string> DEFAULT_EXTRUDER_COLORS = { "#FF8000", "#DB5182", "#3EC0FF", "#FF4F4F", "#FBEB7D" };
 
@@ -443,14 +445,16 @@ void GCodeProcessor::UsedFilaments::process_extruder_cache(uint16_t extruder_id,
     if (this->tool_change_cache != 0.0) {
         this->volumes_per_extruder[extruder_id] += this->tool_change_cache;
         this->tool_change_cache = 0.0;
-        this->volumes_per_role_per_extruder_per_object[object_id][extruder_id][role] += this->object_change_cache;
+        if (object_id != OBJECT_INSTANCE_ID_NONE)
+            this->volumes_per_role_per_extruder_per_object[object_id][extruder_id][role] += this->object_change_cache;
         this->object_change_cache = 0;
      }
     this->recent_toolchange = true;
 }
 
 void GCodeProcessor::UsedFilaments::process_object_cache(uint16_t extruder_id, size_t object_id, GCodeExtrusionRole role) {
-    this->volumes_per_role_per_extruder_per_object[object_id][extruder_id][role] += this->object_change_cache;
+    if (object_id != OBJECT_INSTANCE_ID_NONE)
+        this->volumes_per_role_per_extruder_per_object[object_id][extruder_id][role] += this->object_change_cache;
     this->object_change_cache = 0;
 }
 
@@ -473,7 +477,8 @@ void GCodeProcessor::UsedFilaments::process_role_cache(const GCodeProcessor* pro
         this->role_cache = 0.0;
     }
     if (this->object_change_cache > 0) {
-        this->volumes_per_role_per_extruder_per_object[processor->m_current_object_id][processor->m_extruder_id][processor->m_extrusion_role] += this->object_change_cache;
+        if (processor->m_current_object_id != OBJECT_INSTANCE_ID_NONE)
+            this->volumes_per_role_per_extruder_per_object[processor->m_current_object_id][processor->m_extruder_id][processor->m_extrusion_role] += this->object_change_cache;
         this->object_change_cache = 0;
     }
 }
@@ -500,6 +505,7 @@ void GCodeProcessorResult::reset() {
     filament_diameters = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DIAMETER);
     filament_densities = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DENSITY);
     filament_cost = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_COST);
+    object_names.clear();
     custom_gcode_per_print_z = std::vector<CustomGCode::Item>();
     spiral_vase_layers = std::vector<std::pair<float, std::pair<size_t, size_t>>>();
     conflict_result = std::nullopt;
@@ -524,6 +530,7 @@ void GCodeProcessorResult::reset() {
     filament_diameters = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DIAMETER);
     filament_densities = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DENSITY);
     filament_cost = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_COST);
+    object_names.clear();
     custom_gcode_per_print_z = std::vector<CustomGCode::Item>();
     spiral_vase_layers = std::vector<std::pair<float, std::pair<size_t, size_t>>>();
     conflict_result = std::nullopt;
@@ -1096,9 +1103,8 @@ void GCodeProcessor::reset()
 
     m_extrusion_role = GCodeExtrusionRole::None;
     m_extruder_id = 0;
-    m_current_object_id = 0;
+    m_current_object_id = OBJECT_INSTANCE_ID_NONE;
     m_all_objects.clear();
-    m_all_objects[_u8L("Outside of any object")] = 0;
     m_extruder_colors.resize(MIN_EXTRUDERS_COUNT);
     for (size_t i = 0; i < MIN_EXTRUDERS_COUNT; ++i) {
         m_extruder_colors[i] = static_cast<unsigned char>(i);
@@ -2268,10 +2274,13 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
     if (boost::starts_with(comment, reserved_tag(ETags::Object_Start_Octoprint))) {
         std::string object_id = std::string(comment.substr(reserved_tag(ETags::Object_Start_Octoprint).size() + 1));
         //check if this is the first tag used to open an 'object session'.
-        if (m_current_object_id == 0) {
+        if (m_current_object_id == OBJECT_INSTANCE_ID_NONE) {
             //use this name
             if (m_all_objects.find(object_id) == m_all_objects.end()) {
-                m_all_objects[object_id] = m_all_objects.size();
+                size_t next_id = 0;
+                for (const auto &entry : m_all_objects)
+                    next_id = std::max(next_id, entry.second + 1);
+                m_all_objects[object_id] = next_id;
             }
             m_used_filaments.process_object_cache(this->m_extruder_id, this->m_current_object_id, this->m_extrusion_role);
             m_current_object_id = m_all_objects[object_id];
@@ -2280,7 +2289,7 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
     }
     if (boost::starts_with(comment, reserved_tag(ETags::Object_End_Octoprint))) {
         m_used_filaments.process_object_cache(this->m_extruder_id, this->m_current_object_id, this->m_extrusion_role);
-        this->m_current_object_id = 0;
+        this->m_current_object_id = OBJECT_INSTANCE_ID_NONE;
         return;
     }
 
@@ -3953,21 +3962,22 @@ void GCodeProcessor::process_M486(const GCodeReader::GCodeLine& line)
     if ( m_flavor != gcfMarlinLegacy && m_flavor != gcfMarlinFirmware && m_flavor != gcfRepRap)
         return;
 
-    //get object idx
+    // Marlin and RepRap use S-1 for outside and zero-based S values for
+    // object instances. Keep the same representation as the viewer result.
     float f_idx;
-    if (line.has_value('S', f_idx)) {
-        size_t idx = size_t(f_idx + 1.001);
-        if (idx < 32000) {
-            if (idx > 0 && this->m_current_object_id == 0) {
-                std::string object_id = format(_u8L("Object %1%"), std::to_string(idx - 1));
-                if (m_all_objects.find(object_id) == m_all_objects.end()) {
-                    m_all_objects[object_id] = m_all_objects.size();
+    if (line.has_value('S', f_idx) && std::isfinite(f_idx)) {
+        const long long object_id = std::llround(f_idx);
+        if (object_id >= -1 && object_id < 32000) {
+            if (object_id >= 0 && this->m_current_object_id == OBJECT_INSTANCE_ID_NONE) {
+                std::string object_name = format(_u8L("Object %1%"), std::to_string(object_id));
+                if (m_all_objects.find(object_name) == m_all_objects.end()) {
+                    m_all_objects[object_name] = static_cast<size_t>(object_id);
                 }
                 m_used_filaments.process_object_cache(this->m_extruder_id, this->m_current_object_id, this->m_extrusion_role);
-                m_current_object_id = m_all_objects[object_id];
-            } else if (idx == 0 && this->m_current_object_id > 0) {
+                m_current_object_id = m_all_objects[object_name];
+            } else if (object_id == -1 && this->m_current_object_id != OBJECT_INSTANCE_ID_NONE) {
                 m_used_filaments.process_object_cache(this->m_extruder_id, this->m_current_object_id, this->m_extrusion_role);
-                this->m_current_object_id = 0;
+                this->m_current_object_id = OBJECT_INSTANCE_ID_NONE;
             }
             return;
         }
@@ -4882,7 +4892,9 @@ void GCodeProcessor::store_move_vertex(EMoveType type, bool internal_only)
         m_extrusion_role,
         uint8_t(m_extruder_id),
         uint8_t(m_cp_color.current),
-        uint16_t(m_current_object_id),
+        m_current_object_id == OBJECT_INSTANCE_ID_NONE ?
+            GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE :
+            static_cast<uint16_t>(m_current_object_id),
         Vec3f(m_end_position[X], m_end_position[Y], m_end_position[Z] - m_z_offset) + m_extruder_offsets[m_extruder_id],
         float(m_end_position[E] - m_start_position[E]), // delta_extruder
         m_feedrate,
@@ -5100,11 +5112,17 @@ void GCodeProcessor::update_estimated_statistics()
     m_result.print_statistics.used_filaments_per_role   = m_used_filaments.filaments_per_role;
 
     m_result.object_names.clear();
-    m_result.object_names.resize(m_all_objects.size());
+    size_t object_count = 0;
+    for (const auto &[name, idx] : m_all_objects)
+        object_count = std::max(object_count, idx + 1);
+    m_result.object_names.resize(object_count);
     for (auto [name, idx] : m_all_objects) {
         assert(idx < m_result.object_names.size());
         m_result.object_names[idx] = name;
     }
+    for (size_t idx = 0; idx < m_result.object_names.size(); ++idx)
+        if (m_result.object_names[idx].empty())
+            m_result.object_names[idx] = format(_u8L("Object %1%"), std::to_string(idx));
 }
 
 double GCodeProcessor::extract_absolute_position_on_axis(Axis axis, const GCodeReader::GCodeLine& line, double area_filament_cross_section)

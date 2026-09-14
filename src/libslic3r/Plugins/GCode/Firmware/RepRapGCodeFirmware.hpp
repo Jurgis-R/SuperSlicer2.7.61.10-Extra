@@ -41,6 +41,9 @@ protected:
                                         double pressure_advance) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;
     std::string encode_firmware_retraction(bool retract) const override;
+    std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const override;
+    std::string encode_object_start(const ObjectLabel &object) const override;
+    std::string encode_object_end(const ObjectLabel &object) const override;
 
 private:
     // Encoder methods are logically const because they do not alter the

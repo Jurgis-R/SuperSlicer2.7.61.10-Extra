@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <ctime>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -104,6 +105,12 @@ namespace Slic3r {
 
     struct GCodeProcessorResult
     {
+        // All viewer results use zero-based object IDs. This value identifies
+        // moves outside every physical object; no artificial outside entry is
+        // stored in object_names.
+        static constexpr uint16_t OBJECT_INSTANCE_ID_NONE =
+            (std::numeric_limits<uint16_t>::max)();
+
         struct SettingsIds
         {
             std::string print;
@@ -149,7 +156,7 @@ namespace Slic3r {
             GCodeExtrusionRole extrusion_role{ GCodeExtrusionRole::None };
             uint8_t extruder_id{ 0 };
             uint8_t cp_color_id{ 0 };
-            uint16_t object_id{ 0 };
+            uint16_t object_id{ OBJECT_INSTANCE_ID_NONE };
             Vec3f position{ Vec3f::Zero() }; // mm
             float delta_extruder{ 0.0f }; // mm
             float feedrate{ 0.0f }; // mm/s

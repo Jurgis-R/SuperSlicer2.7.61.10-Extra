@@ -34,6 +34,9 @@ protected:
     std::string encode_tool_temperature(uint16_t tool_id,
                                         int16_t temperature,
                                         bool wait) const override;
+    std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const override;
+    std::string encode_object_start(const ObjectLabel &object) const override;
+    std::string encode_object_end(const ObjectLabel &object) const override;
 };
 
 }}} // namespace slic3r_api::GCodeGeneration::Firmware

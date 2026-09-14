@@ -28,6 +28,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
+#include "libslic3r/Plugins/Ordering/ObjectInstanceCatalog.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Steps/StepExtrusionEdition.hpp"
 #include "libslic3r/Steps/StepExtrusionOrdering.hpp"
@@ -763,6 +764,8 @@ TEST_CASE("PrintingPlan C API builds and mutates plan objects", "[printing][plan
     Print print;
     Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
                      DynamicPrintConfig::full_print_config(), false, 3);
+    PluginStorage storage;
+    storage_handle *storage_handle_value = reinterpret_cast<storage_handle *>(&storage);
     PrintingPlan plan;
     printing_plan_handle *plan_handle = reinterpret_cast<printing_plan_handle *>(&plan);
     printing_group_handle *group_handle = printing_plan_append_group(plan_handle);
@@ -776,6 +779,9 @@ TEST_CASE("PrintingPlan C API builds and mutates plan objects", "[printing][plan
     REQUIRE(printing_group_append_printing_catalog_id(plan_handle, group_handle, printing_catalog_id) == 1);
     CHECK(printing_group_count_object_instance(group_handle) == 1);
     CHECK(printing_group_get_printing_catalog_id(group_handle, 0) == printing_catalog_id);
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::
+        populate_object_instance_catalog(
+            reinterpret_cast<const print_handle *>(&print), plan_handle, storage_handle_value);
     CHECK(printing_group_get_printing_catalog_id(group_handle, 0) == printing_catalog_id);
     CHECK(printing_plan_register_object_instance(
               plan_handle, reinterpret_cast<const object_handle *>(&print.object(0)), 2, nullptr, nullptr) == printing_catalog_id);
@@ -852,6 +858,36 @@ TEST_CASE("Plugin object names and mesh projections distinguish empty results fr
         std::invalid_argument);
 }
 
+TEST_CASE("Object instance catalog falls back to positive geometry when subtraction is empty",
+          "[printing][plan][object-instance][geometry]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model);
+
+    // A negative volume with the same XY projection may remove the complete
+    // projected material even when printable geometry exists at other Zs. The
+    // catalog therefore uses the positive model-part hull as its stable label
+    // outline, matching the existing LabelObjects policy.
+    ModelObject *model_object = const_cast<ModelObject *>(print.object(0).model_object());
+    REQUIRE(model_object != nullptr);
+    REQUIRE_FALSE(model_object->volumes.empty());
+    model_object->add_volume(
+        model_object->volumes.front()->mesh(), ModelVolumeType::NEGATIVE_VOLUME, false);
+
+    PrintingPlan plan;
+    REQUIRE(plan.find_or_add_object_instance(print.objects().front(), 0) == 0);
+    PluginStorage storage;
+    CHECK_NOTHROW(
+        slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+            reinterpret_cast<const print_handle *>(&print),
+            reinterpret_cast<printing_plan_handle *>(&plan),
+            reinterpret_cast<storage_handle *>(&storage)));
+    REQUIRE(plan.object_instances.size() == 1);
+    CHECK_FALSE(plan.object_instances.front().projected_outline.empty());
+}
+
 TEST_CASE("PrintingPlan object instance ids remain stable after plan reordering",
           "[printing][plan][object-instance]")
 {
@@ -864,9 +900,21 @@ TEST_CASE("PrintingPlan object instance ids remain stable after plan reordering"
 
     PrintingPlan plan = build_printing_plan_by_object(print);
     REQUIRE(plan.object_instances.size() == 4);
+    for (const PrintingObjectInstance &instance : plan.object_instances) {
+        CHECK(instance.name.empty());
+        CHECK(instance.projected_outline.empty());
+    }
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
     REQUIRE(plan.object_instances.size() == 4);
     REQUIRE(plan.groups.size() == 4);
     for (size_t index = 0; index < plan.object_instances.size(); ++index) {
+        const PrintingObjectInstance &instance = plan.object_instances[index];
+        CHECK_FALSE(instance.name.empty());
+        CHECK_FALSE(instance.projected_outline.empty());
         REQUIRE(plan.groups[index].printing_catalog_ids.size() == 1);
         CHECK(plan.groups[index].printing_catalog_ids.front() == index);
     }
@@ -883,9 +931,8 @@ TEST_CASE("PrintingPlan object instance ids remain stable after plan reordering"
     const c_printing_object_instance second =
         printing_plan_get_object_instance_by_printing_catalog_id(handle, 2);
     CHECK(second.id == 2);
-    CHECK(second.object != nullptr);
-    CHECK(second.name == nullptr);
-    CHECK(second.projected_outline == nullptr);
+    CHECK(second.name != nullptr);
+    CHECK(second.projected_outline != nullptr);
 
     printing_plan_clear(const_cast<printing_plan_handle *>(handle));
     CHECK(printing_plan_count_group(handle) == 0);
@@ -1099,13 +1146,14 @@ TEST_CASE("STEP_ORDERING runs default plugin chain on a shared PrintingPlan", "[
 
     const std::vector<Plugin *> plugins =
         Steps::selected_or_active_plugins_for_step(orchestrator, STEP_ORDERING, &print.full_print_config());
-    REQUIRE(plugins.size() >= 6);
+    REQUIRE(plugins.size() >= 7);
     CHECK(plugins[0]->get_id() == "ordering.plan_builder.default");
-    CHECK(plugins[1]->get_id() == "ordering.custom_gcode_tool_overrides");
-    CHECK(plugins[2]->get_id() == "ordering.tool_groups.default");
-    CHECK(plugins[3]->get_id() == "ordering.custom_gcode_event_tools");
-    CHECK(plugins[4]->get_id() == "ordering.printing_extrusion.presort.default");
-    CHECK(plugins[5]->get_id() == "ordering.extrusion_tree.default");
+    CHECK(plugins[1]->get_id() == "ordering.object_instance_catalog");
+    CHECK(plugins[2]->get_id() == "ordering.custom_gcode_tool_overrides");
+    CHECK(plugins[3]->get_id() == "ordering.tool_groups.default");
+    CHECK(plugins[4]->get_id() == "ordering.custom_gcode_event_tools");
+    CHECK(plugins[5]->get_id() == "ordering.printing_extrusion.presort.default");
+    CHECK(plugins[6]->get_id() == "ordering.extrusion_tree.default");
     CHECK(Steps::get_exclusive_steps().find(STEP_ORDERING) == Steps::get_exclusive_steps().end());
 
     Steps::StepExtrusionOrdering::run_step(orchestrator, print);

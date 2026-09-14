@@ -286,4 +286,20 @@ std::string RepRapGCodeFirmwareSession::encode_firmware_retraction(bool retract)
     return DefaultGCodeFirmwareSession::encode_firmware_retraction(retract);
 }
 
+std::string RepRapGCodeFirmwareSession::encode_object_definitions(
+    const std::vector<ObjectLabel> &objects) const
+{
+    return "M486 T" + std::to_string(objects.size()) + "\n";
+}
+
+std::string RepRapGCodeFirmwareSession::encode_object_start(const ObjectLabel &object) const
+{
+    return "M486 S" + std::to_string(object.id) + " A\"" + object.name + "\"\n";
+}
+
+std::string RepRapGCodeFirmwareSession::encode_object_end(const ObjectLabel &) const
+{
+    return "M486 S-1\n";
+}
+
 }}} // namespace slic3r_api::GCodeGeneration::Firmware

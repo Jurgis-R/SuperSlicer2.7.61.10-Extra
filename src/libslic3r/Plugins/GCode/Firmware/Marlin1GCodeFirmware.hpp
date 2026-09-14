@@ -36,6 +36,9 @@ protected:
                                         int16_t temperature,
                                         bool wait) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;
+    std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const override;
+    std::string encode_object_start(const ObjectLabel &object) const override;
+    std::string encode_object_end(const ObjectLabel &object) const override;
 };
 
 }}} // namespace slic3r_api::GCodeGeneration::Firmware

@@ -15,10 +15,10 @@ Register the built-in STEP_ORDERING plugins one by one.
 Each function registers one phase of the ordering chain. Tests or experiments
 may call a single registration helper when they want to replace only one phase
 with another plugin. The aggregate helper is what the normal plugin loader uses:
-it registers the default plan builder, the tool-group sorter, the coarse
-PrintingExtrusion pre-sort and both internal tree-ordering alternatives. The
-pre-sort and final tree phase remain independently replaceable through their
-own exclusive groups.
+it registers the default plan builder, the instance-catalog completion phase,
+the tool-group sorter, the coarse PrintingExtrusion pre-sort and both internal
+tree-ordering alternatives. The pre-sort and final tree phase remain
+independently replaceable through their own exclusive groups.
 */
 void register_default_plan_builder_plugin(orchestrator_handle *orch);
 void register_default_tool_group_ordering_plugin(orchestrator_handle *orch);

@@ -5,6 +5,9 @@
 
 #include "KlipperGCodeFirmware.hpp"
 
+#include <iomanip>
+#include <sstream>
+
 #include <stdexcept>
 #include <utility>
 
@@ -183,6 +186,38 @@ std::string KlipperGCodeFirmwareSession::encode_move(const PreparedMove &move,
 std::string KlipperGCodeFirmwareSession::encode_extruder_current(uint16_t, double) const
 {
     return encode_unsupported_operation("extruder current");
+}
+
+std::string KlipperGCodeFirmwareSession::encode_object_definitions(
+    const std::vector<ObjectLabel> &objects) const
+{
+    std::string output;
+    for (const ObjectLabel &object : objects) {
+        std::ostringstream line;
+        line << std::fixed << std::setprecision(3)
+             << "EXCLUDE_OBJECT_DEFINE NAME='" << object.name << "'"
+             << " CENTER=" << unscaled(object.projected_outline_center.x) << ','
+             << unscaled(object.projected_outline_center.y) << " POLYGON=[";
+        for (size_t idx = 0; idx < object.projected_outline.size(); ++idx) {
+            if (idx != 0)
+                line << ',';
+            line << '[' << unscaled(object.projected_outline[idx].x) << ','
+                 << unscaled(object.projected_outline[idx].y) << ']';
+        }
+        line << "]\n";
+        output += line.str();
+    }
+    return output;
+}
+
+std::string KlipperGCodeFirmwareSession::encode_object_start(const ObjectLabel &object) const
+{
+    return "EXCLUDE_OBJECT_START NAME='" + object.name + "'\n";
+}
+
+std::string KlipperGCodeFirmwareSession::encode_object_end(const ObjectLabel &object) const
+{
+    return "EXCLUDE_OBJECT_END NAME='" + object.name + "'\n";
 }
 
 }}} // namespace slic3r_api::GCodeGeneration::Firmware

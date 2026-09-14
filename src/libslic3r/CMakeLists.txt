@@ -324,6 +324,8 @@ set(SLIC3R_SOURCES
 	Plugins/Ordering/NearestNeighborOrderingEngine.cpp
 	Plugins/Ordering/NearestNeighborOrderingEngine.hpp
 	Plugins/Ordering/DefaultPlanBuilder.cpp
+	Plugins/Ordering/ObjectInstanceCatalog.hpp
+	Plugins/Ordering/ObjectInstanceCatalog.cpp
 	Plugins/Ordering/DefaultToolGroupOrdering.cpp
 	Plugins/Ordering/PrintingExtrusionPreSort.cpp
 	Plugins/Ordering/PrintingExtrusionPreSort.hpp

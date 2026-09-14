@@ -46,6 +46,9 @@ protected:
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;
     std::string encode_move(const PreparedMove &move, bool include_speed) const override;
     std::string encode_extruder_current(uint16_t tool_id, double current) const override;
+    std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const override;
+    std::string encode_object_start(const ObjectLabel &object) const override;
+    std::string encode_object_end(const ObjectLabel &object) const override;
 
 private:
     const std::string &tool_name(uint16_t tool_id) const;

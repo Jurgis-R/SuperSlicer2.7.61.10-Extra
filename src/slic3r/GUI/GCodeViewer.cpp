@@ -3139,7 +3139,11 @@ void GCodeViewer::refresh_render_paths(bool keep_sequential_current_first, bool 
         case EViewType::VolumetricFlow: { color = m_extrusions.ranges.volumetric_flow.get_color_at(path.volumetric_flow); break; }
         case EViewType::Tool:           { color = m_tool_colors[path.extruder_id]; break; }
         case EViewType::Filament:       { color = m_filament_colors[path.extruder_id]; break; }
-        case EViewType::Object:         { color = path.object_id == 0 ? ColorRGBA::DARK_GRAY() : get_a_color(path.object_id); break; }
+        case EViewType::Object: {
+            color = path.object_id == GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE ?
+                        ColorRGBA::DARK_GRAY() : get_a_color(path.object_id);
+            break;
+        }
         case EViewType::ColorPrint:     {
             if (path.cp_color_id >= static_cast<unsigned char>(m_tool_colors.size()))
                 color = ColorRGBA::GRAY();
@@ -4625,7 +4629,7 @@ void GCodeViewer::render_legend(float& legend_height)
                     // shows only Object actually used
                     if (used_filaments_m[object_id] > 0) {
                         append_item(EItemType::Rect,
-                                    (object_id == 0 ? ColorRGBA::DARK_GRAY() : get_a_color(object_id)),
+                                    get_a_color(object_id),
                                     m_objects_ids[object_id], true, "", 0.0f, 0.0f, offsets,
                                     used_filaments_m[object_id], used_filaments_g[object_id]);
                     }
