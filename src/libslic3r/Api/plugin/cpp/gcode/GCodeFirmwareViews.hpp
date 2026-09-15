@@ -18,7 +18,6 @@
 #include "libslic3r/Api/plugin/c/slic3r_gcode_firmware.h"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
-#include "libslic3r/Point.hpp"
 
 /*
 G-code firmware C++ adapter
