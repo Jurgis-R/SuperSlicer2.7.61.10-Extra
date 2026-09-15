@@ -658,6 +658,17 @@ void GCodeReaderResultBuilder::append_move(
     // consumes and calculates with these normalized values when supplied, but
     // otherwise keeps the documented neutral/default viewer values below.
 
+    // Positive E first restores any preceding retraction. Only the remainder
+    // deposits material and may classify an XY move as an extrusion. Compute
+    // it without changing the debt yet: a sub-precision no-op must not alter
+    // the accounting state when no viewer movement is emitted.
+    double restored_filament = 0.0;
+    double consumed_filament = 0.0;
+    if (e_delta > 0.0) {
+        restored_filament = std::min(e_delta, m_retracted_filament[tool]);
+        consumed_filament = e_delta - restored_filament;
+    }
+
     EMoveType type = EMoveType::Noop;
     if ((raw_role & RAW_EXTRUSION_ROLE_WIPE) != 0)
         type = EMoveType::Wipe;
@@ -668,20 +679,19 @@ void GCodeReaderResultBuilder::append_move(
     else if (e_delta < -EPSILON)
         type = xyz_changed ? EMoveType::Travel : EMoveType::Retract;
     else if (e_delta > EPSILON)
-        type = xyz_changed && (std::abs(delta.x()) > EPSILON || std::abs(delta.y()) > EPSILON) ?
-            EMoveType::Extrude : (xyz_changed ? EMoveType::Travel : EMoveType::Unretract);
+        if (consumed_filament > 0.0)
+            type = xyz_changed ? EMoveType::Extrude : EMoveType::Unretract;
+        else
+            type = xyz_changed ? EMoveType::Travel : EMoveType::Unretract;
     else if (xyz_changed)
         type = EMoveType::Travel;
     if (type == EMoveType::Noop)
         return;
 
-    double consumed_filament = 0.0;
     if (e_delta < 0.0)
         m_retracted_filament[tool] += -e_delta;
     else if (e_delta > 0.0) {
-        const double restored = std::min(e_delta, m_retracted_filament[tool]);
-        m_retracted_filament[tool] -= restored;
-        consumed_filament = e_delta - restored;
+        m_retracted_filament[tool] -= restored_filament;
     }
     const double volume = consumed_filament * filament_area * extrusion_factor;
 

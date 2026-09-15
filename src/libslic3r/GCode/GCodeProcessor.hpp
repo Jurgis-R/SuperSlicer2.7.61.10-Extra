@@ -10,6 +10,7 @@
 #define slic3r_GCodeProcessor_hpp_
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <ctime>
 #include <limits>
@@ -149,6 +150,10 @@ namespace Slic3r {
                 width(width), height(height), mm3_per_mm(mm3_per_mm), fan_speed(fan_speed), 
                 temperature(temperature), move_time(time), layer_id(layer_id),
                 internal_only(internal_only) {
+                // Extrusion vertices represent deposited material. A zero
+                // volume per path length would make their geometry and
+                // volumetric-rate data internally inconsistent.
+                assert(type != EMoveType::Extrude || mm3_per_mm != 0.0f);
             }
 
             uint32_t gcode_id{ 0 };

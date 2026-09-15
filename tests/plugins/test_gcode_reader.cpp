@@ -1052,6 +1052,30 @@ TEST_CASE("Host G-code reader excludes retraction recovery from material usage",
           Approx(filament_area));
 }
 
+TEST_CASE("Host G-code reader does not display retraction recovery as extrusion",
+          "[plugins][gcode][reader][viewer]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.default",
+        "G1 E-2 F120\n"
+        "G1 X10 E-1 F600\n"
+        "G1 X20 E1\n");
+
+    REQUIRE(result.moves.size() == 3);
+    CHECK(result.moves[0].type == EMoveType::Retract);
+    CHECK(result.moves[1].type == EMoveType::Travel);
+    CHECK(result.moves[1].mm3_per_mm == 0.0f);
+    CHECK(result.moves[2].type == EMoveType::Extrude);
+    CHECK(result.moves[2].mm3_per_mm > 0.0f);
+
+    const double filament_area = PI * std::pow(1.75 * 0.5, 2.0);
+    REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
+    CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
+          Approx(filament_area));
+}
+
 TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",
           "[plugins][gcode][reader][viewer]")
 {
