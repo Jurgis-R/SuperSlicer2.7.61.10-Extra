@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -165,6 +166,232 @@ protected:
 private:
     std::vector<std::string> &m_calls;
 };
+
+/* Build a short printable leaf with explicit semantic marker properties. */
+std::unique_ptr<ExtrusionPath> marker_test_path(double start_x,
+                                                double end_x,
+                                                ExtrusionRole role,
+                                                float width,
+                                                float height)
+{
+    ArcPolyline polyline(Points{
+        Point(scale_i(start_x), scale_i(0.0)),
+        Point(scale_i(end_x), scale_i(0.0))
+    });
+    std::unique_ptr<ExtrusionPath> path(new ExtrusionPath(
+        polyline,
+        ExtrusionAttributes(role, ExtrusionFlow(0.08, width, height)),
+        nullptr,
+        true));
+    path->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+    return path;
+}
+
+/* Append one manually ordered layer and its first tool group to a test plan. */
+PrintingLayerGroup &append_marker_test_layer(Print &print, coord_t print_z)
+{
+    PrintingPlan &plan = print.mutable_printing_plan();
+    if (plan.groups.empty())
+        plan.groups.emplace_back();
+    plan.groups.front().layers.emplace_back();
+    PrintingLayerGroup &layer = plan.groups.front().layers.back();
+    layer.print_z = print_z;
+    layer.tool_groups.emplace_back();
+    layer.tool_groups.back().extruder_id = 0;
+    return layer;
+}
+
+/* Keep assertions focused on the five semantic marker families in this milestone. */
+std::vector<std::string> semantic_marker_lines(const std::string &gcode)
+{
+    std::vector<std::string> markers;
+    std::istringstream stream(gcode);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line == ";LAYER_CHANGE" || line.rfind(";Z:", 0) == 0 ||
+            line.rfind(";HEIGHT:", 0) == 0 || line.rfind(";TYPE:", 0) == 0 ||
+            line.rfind(";WIDTH:", 0) == 0)
+            markers.push_back(line);
+    }
+    return markers;
+}
+
+/* Return the first generated printable move, excluding approach and travel moves. */
+size_t first_printable_move_offset(const std::string &gcode)
+{
+    size_t begin = 0;
+    while (begin < gcode.size()) {
+        const size_t end = gcode.find('\n', begin);
+        const size_t length = end == std::string::npos ? gcode.size() - begin : end - begin;
+        const std::string line = gcode.substr(begin, length);
+        if (line.rfind("G1 ", 0) == 0 && line.find(" E") != std::string::npos)
+            return begin;
+        if (end == std::string::npos)
+            break;
+        begin = end + 1;
+    }
+    return std::string::npos;
+}
+
+/* Build one E-only retraction transition without introducing wipe markers. */
+std::unique_ptr<ExtrusionEntity> marker_test_retraction(bool retract)
+{
+    std::unique_ptr<ExtrusionNop> event(new ExtrusionNop());
+    slic3r_api::MutableExtrusionEntity view(
+        reinterpret_cast<extrusion_entity_handle *>(event.get()));
+    view.get_or_add(slic3r_api::EPropertyAttributes::key)
+        .extrusion_role(retract ? RAW_EXTRUSION_ROLE_RETRACT : RAW_EXTRUSION_ROLE_UNRETRACT)
+        .mm3_per_mm(0.0);
+    if (retract)
+        view.get_or_add(slic3r_api::EPropertyExtrusionAxis::key).retract_to(0.2);
+    else
+        view.get_or_add(slic3r_api::EPropertyExtrusionAxis::key).unretract(0.0);
+    return std::unique_ptr<ExtrusionEntity>(std::move(event));
+}
+
+/* Export the same semantic fixture under both human-comment settings. */
+std::string export_marker_comment_fixture(bool gcode_comments)
+{
+    Print print;
+    configure_standard_firmware(print);
+    const_cast<PrintConfig &>(print.config()).gcode_comments.value = gcode_comments;
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    append_path_extrusion(
+        layer.tool_groups.front(),
+        marker_test_path(0.0, 1.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+    return export_with_firmware(print, "gcode.firmware.marlin2");
+}
+
+std::unique_ptr<ExtrusionPath> marker_test_wipe(double start_x, double end_x)
+{
+    std::unique_ptr<ExtrusionPath> wipe = make_firmware_travel(
+        ArcPolyline(Points{
+            Point(scale_i(start_x), scale_i(0.0)),
+            Point(scale_i(end_x), scale_i(0.0))
+        }),
+        40.f,
+        800.f);
+    slic3r_api::MutableExtrusionEntity view(
+        reinterpret_cast<extrusion_entity_handle *>(wipe.get()));
+    view.get_mutable(slic3r_api::EPropertyAttributes::key)->extrusion_role(
+        RAW_EXTRUSION_ROLE_TRAVEL | RAW_EXTRUSION_ROLE_WIPE);
+    return wipe;
+}
+
+std::vector<std::string> wipe_marker_lines(const std::string &gcode)
+{
+    std::vector<std::string> markers;
+    std::istringstream stream(gcode);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line == ";WIPE_START" || line == ";WIPE_END")
+            markers.push_back(line);
+    }
+    return markers;
+}
+
+std::vector<std::string> machine_command_lines(const std::string &gcode)
+{
+    std::vector<std::string> commands;
+    std::istringstream stream(gcode);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.front() != ';')
+            commands.push_back(line);
+    }
+    return commands;
+}
+
+std::vector<std::string> object_protocol_lines(const std::string &gcode)
+{
+    std::vector<std::string> lines;
+    std::istringstream stream(gcode);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.rfind("M486 ", 0) == 0 ||
+            line.rfind("; printing object ", 0) == 0 ||
+            line.rfind("; stop printing object ", 0) == 0 ||
+            line.rfind("; SLIC3R_OBJECT_INSTANCE_ID=", 0) == 0)
+            lines.push_back(line);
+    }
+    return lines;
+}
+
+std::string export_wipe_marker_fixture(bool gcode_comments, bool trailing_printable)
+{
+    Print print;
+    configure_standard_firmware(print);
+    const_cast<PrintConfig &>(print.config()).gcode_comments.value = gcode_comments;
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    PrintingToolGroup &tool_group = layer.tool_groups.front();
+    append_path_extrusion(tool_group, marker_test_wipe(0.0, 1.0));
+    append_path_extrusion(tool_group, marker_test_wipe(1.0, 2.0));
+    if (trailing_printable) {
+        append_path_extrusion(
+            tool_group,
+            marker_test_path(2.0, 3.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+    }
+    return export_with_firmware(print, "gcode.firmware.marlin2");
+}
+
+std::unique_ptr<ExtrusionEntity> marker_test_composed_arc_loop()
+{
+    const Point start = Point::new_scale(1.2346, 2.3456);
+    const Point arc_start = Point::new_scale(6.0, 2.3456);
+    const Point arc_end = Point::new_scale(6.0, 6.3456);
+    ExtrusionEntity::Children children;
+    children.push_back(make_firmware_path(
+        ArcPolyline(Points{start, arc_start}),
+        20.f, 500.f, -1.f, -1.f, -1.f, ExtrusionRole::ExternalPerimeter));
+
+    Geometry::ArcWelder::Path arc;
+    arc.emplace_back(arc_start);
+    arc.emplace_back(
+        arc_end, float(scale_i(2.0)), Geometry::ArcWelder::Orientation::CCW);
+    children.push_back(make_firmware_path(
+        ArcPolyline(arc),
+        20.f, 500.f, -1.f, -1.f, -1.f, ExtrusionRole::ExternalPerimeter));
+    children.push_back(make_firmware_path(
+        ArcPolyline(Points{arc_end, start}),
+        20.f, 500.f, -1.f, -1.f, -1.f, ExtrusionRole::ExternalPerimeter));
+    return std::unique_ptr<ExtrusionEntity>(
+        new ExtrusionEntity(std::move(children), false, false, true));
+}
+
+std::vector<std::string> seam_marker_lines(const std::string &gcode)
+{
+    std::vector<std::string> markers;
+    std::istringstream stream(gcode);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.rfind(";SEAM:", 0) == 0)
+            markers.push_back(line);
+    }
+    return markers;
+}
+
+std::string export_composed_seam_fixture(bool gcode_comments,
+                                         bool trailing_printable)
+{
+    Print print;
+    configure_standard_firmware(print);
+    const_cast<PrintConfig &>(print.config()).gcode_comments.value = gcode_comments;
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    PrintingToolGroup &tool_group = layer.tool_groups.front();
+    append_path_extrusion(tool_group, marker_test_composed_arc_loop());
+    if (trailing_printable) {
+        append_path_extrusion(
+            tool_group,
+            make_firmware_path(
+                ArcPolyline(Points{
+                    Point::new_scale(1.2346, 2.3456),
+                    Point::new_scale(2.2346, 2.3456)
+                }),
+                20.f, 500.f, -1.f, -1.f, -1.f,
+                ExtrusionRole::ExternalPerimeter));
+    }
+    return export_with_firmware(print, "gcode.firmware.marlin2");
+}
 
 /* Add the minimum plan hierarchy needed by STEP_GCODE validation tests. */
 PrintingToolGroup &append_speed_validation_tool_group(Print &print,
@@ -398,6 +625,31 @@ TEST_CASE("STEP_GCODE pre-validation reports missing and malformed speeds",
         CHECK(error.find("Speed declarations: unavailable") != std::string::npos);
         CHECK(error.find("has no root extrusion tree") != std::string::npos);
     }
+}
+
+TEST_CASE("STEP_GCODE pre-validation rejects unsupported printable marker roles",
+          "[plugins][gcode][validation][role][markers][m4-r1]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingToolGroup &tool_group = append_speed_validation_tool_group(print);
+    std::unique_ptr<ExtrusionEntity> path = speed_validation_path(22.f);
+    const raw_extrusion_role unsupported_role =
+        RAW_EXTRUSION_ROLE_PERIMETER | RAW_EXTRUSION_ROLE_INFILL;
+    slic3r_api::MutableExtrusionEntity path_view(
+        reinterpret_cast<extrusion_entity_handle *>(path.get()));
+    path_view.get_mutable(slic3r_api::EPropertyAttributes::key)
+        ->extrusion_role(unsupported_role);
+    append_speed_validation_extrusion(tool_group, std::move(path));
+
+    std::string error;
+    CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+    CHECK(error.find("unsupported effective extrusion role raw=3") !=
+          std::string::npos);
+    CHECK(error.find(
+        "groups[0].layers[0].tool_groups[0].extrusions[0].root") !=
+        std::string::npos);
 }
 
 TEST_CASE("STEP_GCODE pre-validation covers every before and after event scope",
@@ -1042,6 +1294,23 @@ TEST_CASE("Firmware object boundaries keep exit work with the source instance",
     CHECK(open_b < b_travel);
     CHECK(b_travel < b_unretract);
     CHECK(b_unretract < b_content);
+    const std::string &first_name = plan.object_instances[0].name;
+    const std::string &second_name = plan.object_instances[1].name;
+    CHECK(object_protocol_lines(output) == std::vector<std::string>{
+        "M486 T2",
+        "; printing object " + first_name,
+        "M486 S0",
+        "; SLIC3R_OBJECT_INSTANCE_ID=0",
+        "; stop printing object " + first_name,
+        "M486 S-1",
+        "; SLIC3R_OBJECT_INSTANCE_ID=-1",
+        "; printing object " + second_name,
+        "M486 S1",
+        "; SLIC3R_OBJECT_INSTANCE_ID=1",
+        "; stop printing object " + second_name,
+        "M486 S-1",
+        "; SLIC3R_OBJECT_INSTANCE_ID=-1"
+    });
 }
 
 TEST_CASE("Klipper object declarations use the PrintingPlan instance catalog",
@@ -1147,6 +1416,395 @@ TEST_CASE("Default firmware emits inherited process state and ordered linear mov
     }
     remove_output_pair(output_path);
 }
+
+TEST_CASE("Default firmware emits ordered semantic marker triplets for layers",
+          "[plugins][gcode][firmware][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    configure_standard_firmware(print);
+    PrintingLayerGroup &first_layer = append_marker_test_layer(print, scale_i(0.2));
+    append_path_extrusion(
+        first_layer.tool_groups.front(),
+        marker_test_path(0.0, 1.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+    PrintingLayerGroup &second_layer = append_marker_test_layer(print, scale_i(0.4));
+    append_path_extrusion(
+        second_layer.tool_groups.front(),
+        marker_test_path(1.0, 2.0, ExtrusionRole::Perimeter, 0.4f, 0.25f));
+
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+    INFO(output);
+    const std::vector<std::string> expected{
+        ";LAYER_CHANGE", ";Z:0.2", ";HEIGHT:0.2",
+        ";TYPE:Perimeter", ";WIDTH:0.4",
+        ";LAYER_CHANGE", ";Z:0.4", ";HEIGHT:0.25"
+    };
+    CHECK(semantic_marker_lines(output) == expected);
+}
+
+TEST_CASE("Default firmware emits TYPE WIDTH and HEIGHT before printable geometry",
+          "[plugins][gcode][firmware][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    configure_standard_firmware(print);
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    append_path_extrusion(
+        layer.tool_groups.front(),
+        marker_test_path(0.0, 1.0, ExtrusionRole::Perimeter, 0.45f, 0.2f));
+
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+    INFO(output);
+    const std::vector<std::string> expected{
+        ";LAYER_CHANGE", ";Z:0.2", ";HEIGHT:0.2",
+        ";TYPE:Perimeter", ";WIDTH:0.45"
+    };
+    CHECK(semantic_marker_lines(output) == expected);
+
+    const size_t first_move = first_printable_move_offset(output);
+    REQUIRE(first_move != std::string::npos);
+    size_t previous_marker = 0;
+    for (const std::string &marker : expected) {
+        const size_t marker_position = output.find(marker + "\n", previous_marker);
+        REQUIRE(marker_position != std::string::npos);
+        CHECK(marker_position < first_move);
+        previous_marker = marker_position + marker.size() + 1;
+    }
+}
+
+TEST_CASE("Default firmware deduplicates identical consecutive printable markers",
+          "[plugins][gcode][firmware][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    configure_standard_firmware(print);
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    PrintingToolGroup &tool_group = layer.tool_groups.front();
+    append_path_extrusion(
+        tool_group,
+        marker_test_path(0.0, 1.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+    append_path_extrusion(
+        tool_group,
+        marker_test_path(1.0, 2.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+    INFO(output);
+    const std::vector<std::string> expected{
+        ";LAYER_CHANGE", ";Z:0.2", ";HEIGHT:0.2",
+        ";TYPE:Perimeter", ";WIDTH:0.4"
+    };
+    CHECK(semantic_marker_lines(output) == expected);
+    CHECK(count_occurrences(output, ";TYPE:Perimeter\n") == 1);
+    CHECK(count_occurrences(output, ";WIDTH:0.4\n") == 1);
+    CHECK(count_occurrences(output, ";HEIGHT:0.2\n") == 1);
+}
+
+TEST_CASE("Default firmware emits only required intra-layer marker transitions",
+          "[plugins][gcode][firmware][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    configure_standard_firmware(print);
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    PrintingToolGroup &tool_group = layer.tool_groups.front();
+    // Initial printable state.
+    append_path_extrusion(
+        tool_group,
+        marker_test_path(0.0, 1.0, ExtrusionRole::ExternalPerimeter, 0.4f, 0.2f));
+    // Width changes while role and height stay unchanged.
+    append_path_extrusion(
+        tool_group,
+        marker_test_path(1.0, 2.0, ExtrusionRole::ExternalPerimeter, 0.45f, 0.2f));
+    // Role changes while width and height stay unchanged.
+    append_path_extrusion(
+        tool_group,
+        marker_test_path(2.0, 3.0, ExtrusionRole::InternalInfill, 0.45f, 0.2f));
+    // Height changes while role and width stay unchanged.
+    append_path_extrusion(
+        tool_group,
+        marker_test_path(3.0, 4.0, ExtrusionRole::InternalInfill, 0.45f, 0.25f));
+
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+    INFO(output);
+    const std::vector<std::string> expected{
+        ";LAYER_CHANGE", ";Z:0.2", ";HEIGHT:0.2",
+        ";TYPE:External perimeter", ";WIDTH:0.4", ";WIDTH:0.45",
+        ";TYPE:Internal infill", ";HEIGHT:0.25"
+    };
+    CHECK(semantic_marker_lines(output) == expected);
+    CHECK(count_occurrences(output, ";TYPE:External perimeter\n") == 1);
+    CHECK(count_occurrences(output, ";TYPE:Internal infill\n") == 1);
+    CHECK(count_occurrences(output, ";WIDTH:0.4\n") == 1);
+    CHECK(count_occurrences(output, ";WIDTH:0.45\n") == 1);
+    CHECK(count_occurrences(output, ";HEIGHT:0.2\n") == 1);
+    CHECK(count_occurrences(output, ";HEIGHT:0.25\n") == 1);
+}
+
+TEST_CASE("Default firmware retains printable markers across travel and E transitions",
+          "[plugins][gcode][firmware][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    configure_standard_firmware(print);
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    PrintingToolGroup &tool_group = layer.tool_groups.front();
+
+    ExtrusionEntity::Children children;
+    children.push_back(
+        marker_test_path(0.0, 1.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+    children.push_back(make_firmware_travel(
+        ArcPolyline(Points{
+            Point(scale_i(1.0), scale_i(0.0)),
+            Point(scale_i(2.0), scale_i(0.0))
+        }),
+        40.f,
+        800.f));
+    children.push_back(marker_test_retraction(true));
+    children.push_back(marker_test_retraction(false));
+    children.push_back(
+        marker_test_path(2.0, 3.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+    append_path_extrusion(tool_group, std::unique_ptr<ExtrusionEntity>(
+        new ExtrusionEntity(std::move(children), false, true, true)));
+
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+    INFO(output);
+    const std::vector<std::string> expected{
+        ";LAYER_CHANGE", ";Z:0.2", ";HEIGHT:0.2",
+        ";TYPE:Perimeter", ";WIDTH:0.4"
+    };
+    CHECK(semantic_marker_lines(output) == expected);
+    CHECK(count_occurrences(output, ";TYPE:Perimeter\n") == 1);
+    CHECK(count_occurrences(output, ";WIDTH:0.4\n") == 1);
+    CHECK(count_occurrences(output, ";HEIGHT:0.2\n") == 1);
+}
+
+TEST_CASE("Default firmware semantic markers ignore gcode_comments",
+          "[plugins][gcode][firmware][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const std::vector<std::string> expected{
+        ";LAYER_CHANGE", ";Z:0.2", ";HEIGHT:0.2",
+        ";TYPE:Perimeter", ";WIDTH:0.4"
+    };
+    const std::string comments_disabled = export_marker_comment_fixture(false);
+    const std::string comments_enabled = export_marker_comment_fixture(true);
+    INFO(comments_disabled);
+    INFO(comments_enabled);
+
+    const std::vector<std::string> disabled_markers =
+        semantic_marker_lines(comments_disabled);
+    const std::vector<std::string> enabled_markers =
+        semantic_marker_lines(comments_enabled);
+    CHECK(disabled_markers == expected);
+    CHECK(enabled_markers == expected);
+    CHECK(disabled_markers == enabled_markers);
+}
+
+TEST_CASE("Default firmware wipe_pair_is_balanced across multiple wipe leaves",
+          "[plugins][gcode][firmware][markers][wipe]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const std::string output = export_wipe_marker_fixture(false, true);
+    INFO(output);
+    CHECK(wipe_marker_lines(output) ==
+          std::vector<std::string>{";WIPE_START", ";WIPE_END"});
+
+    const size_t approach = output.find("G0 X0 Y0 Z.2");
+    const size_t wipe_start = output.find(";WIPE_START\n");
+    const size_t first_wipe_move = output.find("G1 X1");
+    const size_t second_wipe_move = output.find("G1 X2");
+    const size_t wipe_end = output.find(";WIPE_END\n");
+    const size_t printable_move = first_printable_move_offset(output);
+    REQUIRE(approach != std::string::npos);
+    REQUIRE(wipe_start != std::string::npos);
+    REQUIRE(first_wipe_move != std::string::npos);
+    REQUIRE(second_wipe_move != std::string::npos);
+    REQUIRE(wipe_end != std::string::npos);
+    REQUIRE(printable_move != std::string::npos);
+    CHECK(approach < wipe_start);
+    CHECK(wipe_start < first_wipe_move);
+    CHECK(first_wipe_move < second_wipe_move);
+    CHECK(second_wipe_move < wipe_end);
+    CHECK(wipe_end < printable_move);
+}
+
+TEST_CASE("Default firmware wipe_at_end_is_closed",
+          "[plugins][gcode][firmware][markers][wipe]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const std::string output = export_wipe_marker_fixture(false, false);
+    INFO(output);
+    CHECK(wipe_marker_lines(output) ==
+          std::vector<std::string>{";WIPE_START", ";WIPE_END"});
+
+    const size_t last_wipe_move = output.find("G1 X2");
+    const size_t wipe_end = output.find(";WIPE_END\n");
+    REQUIRE(last_wipe_move != std::string::npos);
+    REQUIRE(wipe_end != std::string::npos);
+    CHECK(last_wipe_move < wipe_end);
+}
+
+TEST_CASE("Default firmware wipe markers ignore gcode_comments and preserve commands",
+          "[plugins][gcode][firmware][markers][wipe]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const std::string comments_disabled = export_wipe_marker_fixture(false, true);
+    const std::string comments_enabled = export_wipe_marker_fixture(true, true);
+    INFO(comments_disabled);
+    INFO(comments_enabled);
+    const std::vector<std::string> expected{";WIPE_START", ";WIPE_END"};
+    CHECK(wipe_marker_lines(comments_disabled) == expected);
+    CHECK(wipe_marker_lines(comments_enabled) == expected);
+    CHECK(machine_command_lines(comments_disabled) ==
+          machine_command_lines(comments_enabled));
+}
+
+TEST_CASE("Default firmware seam_marks_loop_start using serialized coordinates",
+          "[plugins][gcode][firmware][markers][seam]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    configure_standard_firmware(print);
+    PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+    append_path_extrusion(
+        layer.tool_groups.front(),
+        make_firmware_path(
+            ArcPolyline(Points{
+                Point::new_scale(4.3216, 5.4321),
+                Point::new_scale(6.0, 5.4321),
+                Point::new_scale(6.0, 7.0),
+                Point::new_scale(4.3216, 5.4321)
+            }),
+            20.f, 500.f, -1.f, -1.f, -1.f,
+            ExtrusionRole::ExternalPerimeter));
+
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+    INFO(output);
+    CHECK(seam_marker_lines(output) ==
+          std::vector<std::string>{";SEAM:4.322:5.432"});
+    const size_t closing_move = output.find("G1 X4.322 Y5.432 E");
+    const size_t seam = output.find(";SEAM:4.322:5.432\n");
+    REQUIRE(closing_move != std::string::npos);
+    REQUIRE(seam != std::string::npos);
+    CHECK(closing_move < seam);
+}
+
+TEST_CASE("Default firmware emits one seam after a complete composed arc loop",
+          "[plugins][gcode][firmware][markers][seam]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const std::string output = export_composed_seam_fixture(false, true);
+    INFO(output);
+    CHECK(seam_marker_lines(output) ==
+          std::vector<std::string>{";SEAM:1.235:2.346"});
+    CHECK(count_occurrences(output, ";SEAM:") == 1);
+    CHECK(output.find("G3 Y6.346 R2 E") != std::string::npos);
+    CHECK(output.find(";SEAM:6:") == std::string::npos);
+
+    const size_t closing_move = output.find("G1 X1.235 Y2.346 E");
+    const size_t seam = output.find(";SEAM:1.235:2.346\n");
+    const size_t following_move = output.find("G1 X2.235 E", seam);
+    REQUIRE(closing_move != std::string::npos);
+    REQUIRE(seam != std::string::npos);
+    REQUIRE(following_move != std::string::npos);
+    CHECK(closing_move < seam);
+    CHECK(seam < following_move);
+    CHECK(count_occurrences(output, ";TYPE:External perimeter\n") == 1);
+    CHECK(count_occurrences(output, ";WIDTH:0.4\n") == 1);
+    CHECK(count_occurrences(output, ";HEIGHT:0.2\n") == 1);
+}
+
+TEST_CASE("Default firmware omits seam markers for ineligible roots",
+          "[plugins][gcode][firmware][markers][seam]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("open path") {
+        Print print;
+        configure_standard_firmware(print);
+        PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+        append_path_extrusion(
+            layer.tool_groups.front(),
+            marker_test_path(0.0, 1.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+        CHECK(seam_marker_lines(export_with_firmware(
+                  print, "gcode.firmware.marlin2")).empty());
+    }
+
+    SECTION("empty root") {
+        Print print;
+        configure_standard_firmware(print);
+        PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+        append_path_extrusion(
+            layer.tool_groups.front(),
+            std::unique_ptr<ExtrusionEntity>(new ExtrusionEntity(true)));
+        CHECK(seam_marker_lines(export_with_firmware(
+                  print, "gcode.firmware.marlin2")).empty());
+    }
+
+    SECTION("closed point without a segment") {
+        Print print;
+        configure_standard_firmware(print);
+        PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+        append_path_extrusion(
+            layer.tool_groups.front(),
+            make_firmware_path(
+                ArcPolyline(Points{Point::new_scale(1.0, 2.0)}),
+                20.f, 500.f));
+        CHECK(seam_marker_lines(export_with_firmware(
+                  print, "gcode.firmware.marlin2")).empty());
+    }
+
+    SECTION("sortable non-loop collection") {
+        Print print;
+        configure_standard_firmware(print);
+        PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
+        ExtrusionEntity::Children children;
+        children.push_back(
+            marker_test_path(0.0, 1.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+        children.push_back(
+            marker_test_path(2.0, 3.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+        append_path_extrusion(
+            layer.tool_groups.front(),
+            std::unique_ptr<ExtrusionEntity>(
+                new ExtrusionEntity(std::move(children), true, true, false)));
+        CHECK(seam_marker_lines(export_with_firmware(
+                  print, "gcode.firmware.marlin2")).empty());
+    }
+}
+
+TEST_CASE("Default firmware seam markers ignore gcode_comments and preserve commands",
+          "[plugins][gcode][firmware][markers][seam]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const std::string comments_disabled = export_composed_seam_fixture(false, false);
+    const std::string comments_enabled = export_composed_seam_fixture(true, false);
+    INFO(comments_disabled);
+    INFO(comments_enabled);
+    const std::vector<std::string> expected{";SEAM:1.235:2.346"};
+    CHECK(seam_marker_lines(comments_disabled) == expected);
+    CHECK(seam_marker_lines(comments_enabled) == expected);
+    CHECK(machine_command_lines(comments_disabled) ==
+          machine_command_lines(comments_enabled));
+}
+
 TEST_CASE("Default firmware preserves arcs and computes their extrusion length",
           "[plugins][gcode][firmware]")
 {

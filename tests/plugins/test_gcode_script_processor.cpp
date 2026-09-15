@@ -498,7 +498,7 @@ TEST_CASE("Toolchange scripts use the structural Config stored at insertion",
 
     firmware.setup(print_view.config());
     REQUIRE(firmware.begin_group(group_view).empty());
-    REQUIRE(firmware.begin_layer(layer_view).empty());
+    REQUIRE(firmware.begin_layer(layer_view) == ";LAYER_CHANGE\n;Z:0.2\n");
     CHECK(firmware.begin_tool_group(first_tool) == "T1\n");
     REQUIRE(firmware.end_tool_group().empty());
     REQUIRE(firmware.begin_tool_group(second_tool).empty());

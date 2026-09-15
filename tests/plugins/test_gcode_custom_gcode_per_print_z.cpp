@@ -284,3 +284,49 @@ TEST_CASE("Built-in firmwares resolve empty height-marker scripts",
     CHECK(sprinter.fallback(GCODE_SCRIPT_TYPE_PAUSE_PRINT_GCODE).find("Unsupported") !=
           std::string::npos);
 }
+
+TEST_CASE("Custom height semantic tags precede exactly one script payload",
+          "[plugins][gcode][custom-per-print-z][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    configure_standard_firmware(print);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.color_change_gcode.value = "M600\n";
+    config.pause_print_gcode.value = "M601\n";
+    config.start_filament_gcode.set(std::vector<std::string>{""});
+
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    PrintingLayerGroup &layer = plan.groups.back().layers.emplace_back();
+    layer.print_z = scale_i(0.2);
+    layer.tool_groups.emplace_back();
+    layer.tool_groups.back().extruder_id = 0;
+
+    publish_record(print, CustomGCode::MultiAsSingle, {
+        {scale_to_layer_coord(0.2), CustomGCode::ColorChange, 1, "#112233", ""},
+        {scale_to_layer_coord(0.2), CustomGCode::PausePrint, 1, "", "Inspect"},
+        {scale_to_layer_coord(0.2), CustomGCode::Custom, 1, "", "M117 custom action"}
+    });
+
+    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
+
+    const ExtrusionEntity &events = layer.tool_groups.front().events.before();
+    REQUIRE(events.child_count() == 3);
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+
+    const std::string color = ";COLOR_CHANGE,T0,#112233\n";
+    const std::string pause = ";PAUSE_PRINT\n";
+    const std::string custom = ";CUSTOM_GCODE\n";
+    REQUIRE(output.find(color + "M600\n") != std::string::npos);
+    REQUIRE(output.find(pause + "M601\n") != std::string::npos);
+    REQUIRE(output.find(custom + "M117 custom action\n") != std::string::npos);
+    CHECK(count_occurrences(output, color) == 1);
+    CHECK(count_occurrences(output, pause) == 1);
+    CHECK(count_occurrences(output, custom) == 1);
+    CHECK(count_occurrences(output, "M600\n") == 1);
+    CHECK(count_occurrences(output, "M601\n") == 1);
+    CHECK(count_occurrences(output, "M117 custom action\n") == 1);
+}

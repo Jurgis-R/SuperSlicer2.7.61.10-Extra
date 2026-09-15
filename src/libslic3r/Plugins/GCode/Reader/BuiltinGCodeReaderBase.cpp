@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -17,7 +18,11 @@
 #include <utility>
 #include <vector>
 
+#include <fast_float/fast_float.h>
+
+#include "libslic3r/Api/plugin/c/slic3r_extrusions.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode_reader.h"
+#include "libslic3r/ExtrusionRole.hpp"
 
 /*
 Built-in G-code reader base
@@ -66,6 +71,20 @@ const char *const k_no_dependencies[] = {nullptr};
 // letter is decimal. Rejecting signs and suffixes prevents partial parses such
 // as "G1foo" from being mistaken for a supported command.
 std::optional<uint32_t> command_number(std::string_view command);
+// Remove presentation whitespace around a historical comment payload.
+std::string_view trim_presentation(std::string_view text);
+// Parse one complete finite decimal payload without accepting a suffix.
+bool parse_finite_comment_number(std::string_view text, double &value);
+// Parse exactly two finite coordinates separated by one colon.
+std::optional<std::pair<double, double>> parse_seam_coordinates(
+    std::string_view text);
+// Validate the optional historical color-change payload without accepting
+// partial tool, RGB, or trailing-component parses.
+bool valid_color_change_payload(std::string_view payload);
+// Convert one legacy viewer role enum to the raw extrusion-role bitmask.
+uint32_t raw_extrusion_role(Slic3r::GCodeExtrusionRole role);
+// Resolve a TYPE name through the existing legacy role-name table.
+std::optional<uint32_t> raw_extrusion_role_from_name(std::string_view name);
 // Convert values expressed in the current input units to the millimetres used
 // by the normalized Reader state.
 double unit_scale(const GCodeStateTracker &state);
@@ -105,6 +124,151 @@ std::optional<uint32_t> command_number(std::string_view command)
     if (result.ec != std::errc() || result.ptr != command.data() + command.size())
         return std::nullopt;
     return number;
+}
+
+std::string_view trim_presentation(std::string_view text)
+{
+    size_t begin = 0;
+    while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t'))
+        ++begin;
+    size_t end = text.size();
+    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t'))
+        --end;
+    return text.substr(begin, end - begin);
+}
+
+bool parse_finite_comment_number(std::string_view text, double &value)
+{
+    const std::string_view trimmed = trim_presentation(text);
+    if (trimmed.empty())
+        return false;
+    double parsed_value = 0.0;
+    const fast_float::from_chars_result parsed = fast_float::from_chars(
+        trimmed.data(), trimmed.data() + trimmed.size(), parsed_value);
+    if (parsed.ec != std::errc() ||
+        parsed.ptr != trimmed.data() + trimmed.size() ||
+        !std::isfinite(parsed_value))
+        return false;
+    value = parsed_value;
+    return true;
+}
+
+std::optional<std::pair<double, double>> parse_seam_coordinates(
+    std::string_view text)
+{
+    const std::string_view trimmed = trim_presentation(text);
+    const size_t separator = trimmed.find(':');
+    if (separator == std::string_view::npos ||
+        trimmed.find(':', separator + 1) != std::string_view::npos)
+        return std::nullopt;
+
+    double x = 0.0;
+    double y = 0.0;
+    if (!parse_finite_comment_number(trimmed.substr(0, separator), x) ||
+        !parse_finite_comment_number(trimmed.substr(separator + 1), y))
+        return std::nullopt;
+    return std::pair<double, double>{x, y};
+}
+
+bool valid_color_change_payload(std::string_view payload)
+{
+    const size_t separator = payload.find(',');
+    if (separator == std::string_view::npos || separator == 0 ||
+        payload.find(',', separator + 1) != std::string_view::npos)
+        return false;
+
+    const std::string_view tool = payload.substr(0, separator);
+    if (tool.size() < 2 || tool.front() != 'T')
+        return false;
+    for (size_t index = 1; index < tool.size(); ++index) {
+        if (tool[index] < '0' || tool[index] > '9')
+            return false;
+    }
+
+    uint32_t tool_number = 0;
+    const std::from_chars_result parsed_tool = std::from_chars(
+        tool.data() + 1, tool.data() + tool.size(), tool_number);
+    if (parsed_tool.ec != std::errc() ||
+        parsed_tool.ptr != tool.data() + tool.size() ||
+        tool_number > UINT8_MAX)
+        return false;
+
+    const std::string_view rgb = payload.substr(separator + 1);
+    if (rgb.size() != 7 || rgb.front() != '#')
+        return false;
+    for (size_t index = 1; index < rgb.size(); ++index) {
+        const char value = rgb[index];
+        const bool decimal = value >= '0' && value <= '9';
+        const bool lower_hex = value >= 'a' && value <= 'f';
+        const bool upper_hex = value >= 'A' && value <= 'F';
+        if (!decimal && !lower_hex && !upper_hex)
+            return false;
+    }
+    return true;
+}
+
+uint32_t raw_extrusion_role(Slic3r::GCodeExtrusionRole role)
+{
+    switch (role) {
+    case Slic3r::GCodeExtrusionRole::None:
+        return RAW_EXTRUSION_ROLE_NONE;
+    case Slic3r::GCodeExtrusionRole::Perimeter:
+        return RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER;
+    case Slic3r::GCodeExtrusionRole::ExternalPerimeter:
+        return RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER;
+    case Slic3r::GCodeExtrusionRole::OverhangPerimeter:
+        return RAW_EXTRUSION_ROLE_OVERHANG_PERIMETER;
+    case Slic3r::GCodeExtrusionRole::InternalInfill:
+        return RAW_EXTRUSION_ROLE_INTERNAL_INFILL;
+    case Slic3r::GCodeExtrusionRole::InternalBridgeInfill:
+        return RAW_EXTRUSION_ROLE_INTERNAL_BRIDGE_INFILL;
+    case Slic3r::GCodeExtrusionRole::SolidInfill:
+        return RAW_EXTRUSION_ROLE_SOLID_INFILL;
+    case Slic3r::GCodeExtrusionRole::TopSolidInfill:
+        return RAW_EXTRUSION_ROLE_TOP_SOLID_INFILL;
+    case Slic3r::GCodeExtrusionRole::Ironing:
+        return RAW_EXTRUSION_ROLE_IRONING_INFILL;
+    case Slic3r::GCodeExtrusionRole::BridgeInfill:
+        return RAW_EXTRUSION_ROLE_BRIDGE_INFILL;
+    case Slic3r::GCodeExtrusionRole::ThinWall:
+        return RAW_EXTRUSION_ROLE_THIN_WALL;
+    case Slic3r::GCodeExtrusionRole::GapFill:
+        return RAW_EXTRUSION_ROLE_GAP_FILL;
+    case Slic3r::GCodeExtrusionRole::Skirt:
+        return RAW_EXTRUSION_ROLE_SKIRT;
+    case Slic3r::GCodeExtrusionRole::SupportMaterial:
+        return RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL;
+    case Slic3r::GCodeExtrusionRole::SupportMaterialInterface:
+        return RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL_INTERFACE;
+    case Slic3r::GCodeExtrusionRole::WipeTower:
+        return RAW_EXTRUSION_ROLE_WIPE_TOWER_DEFAULT;
+    case Slic3r::GCodeExtrusionRole::Milling:
+        return RAW_EXTRUSION_ROLE_MILLING;
+    case Slic3r::GCodeExtrusionRole::Custom:
+        return RAW_EXTRUSION_ROLE_NONE;
+    case Slic3r::GCodeExtrusionRole::Travel:
+        return RAW_EXTRUSION_ROLE_TRAVEL;
+    case Slic3r::GCodeExtrusionRole::Count:
+        break;
+    }
+    return RAW_EXTRUSION_ROLE_NONE;
+}
+
+std::optional<uint32_t> raw_extrusion_role_from_name(std::string_view name)
+{
+    const uint32_t role_count =
+        static_cast<uint32_t>(Slic3r::GCodeExtrusionRole::Count);
+    for (uint32_t index = 0; index < role_count; ++index) {
+        const Slic3r::GCodeExtrusionRole role =
+            static_cast<Slic3r::GCodeExtrusionRole>(index);
+        if (Slic3r::gcode_extrusion_role_to_string(role) == name)
+            return raw_extrusion_role(role);
+    }
+    // The legacy decoder also accepts this pre-2.3 spelling, so keep it
+    // compatible while canonical writer output continues to use Skirt/Brim.
+    if (name == "Skirt")
+        return raw_extrusion_role(Slic3r::GCodeExtrusionRole::Skirt);
+    return std::nullopt;
 }
 
 // Normalize textual coordinates to millimetres. Unknown units use the usual
@@ -262,6 +426,7 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
     // Chunks may split anywhere, including in CRLF and numeric parameters.
     // Retain only bytes after the last complete newline between pulls.
     std::string pending;
+    std::optional<raw_gcode_reader_marker_type> pending_action;
     std::string_view chunk;
     while (next_chunk(run_context, context, chunk)) {
         pending.append(chunk.data(), chunk.size());
@@ -272,7 +437,8 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
             const size_t text_size = line_end > 0 && pending[line_end - 1] == '\r' ? line_end - 1 : line_end;
             const size_t line_size = text_size - line_begin;
             consume_line(run_context, context, state,
-                         std::string_view(pending.data() + line_begin, line_size));
+                         std::string_view(pending.data() + line_begin, line_size),
+                         pending_action);
             consumed = line_end + 1;
             state.advance_line_number();
         }
@@ -285,7 +451,7 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
         }
     }
     if (!pending.empty())
-        consume_line(run_context, context, state, pending);
+        consume_line(run_context, context, state, pending, pending_action);
     validate_private_state(state);
 }
 
@@ -371,20 +537,185 @@ void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_conte
     publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, items);
 }
 
+bool BuiltinGCodeReaderBase::consume_common_comment(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line,
+    std::optional<raw_gcode_reader_marker_type> &pending_action) const
+{
+    const std::string_view comment = trim_presentation(line.comment());
+    if (comment.empty())
+        return false;
+
+    const auto has_prefix = [](std::string_view text, std::string_view prefix) {
+        return text.size() >= prefix.size() &&
+               text.compare(0, prefix.size(), prefix) == 0;
+    };
+    const auto publish_marker = [&](raw_gcode_reader_marker_type marker) {
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_MARKER,
+                      {{RAW_GCODE_READER_ITEM_MARKER, 0, double(marker)}});
+    };
+
+    if (comment == "LAYER_CHANGE") {
+        const std::optional<double> current =
+            state.value(RAW_GCODE_READER_ITEM_LAYER);
+        if (current && *current >= double(UINT32_MAX)) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+            return true;
+        }
+        const uint32_t next_layer = current ?
+            static_cast<uint32_t>(*current) + 1u : 0u;
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                      {{RAW_GCODE_READER_ITEM_LAYER, 0, double(next_layer)}});
+        return true;
+    }
+
+    if (comment == "TYPE" || has_prefix(comment, "TYPE:")) {
+        const std::string_view name = comment.size() > 5 ?
+            trim_presentation(comment.substr(5)) : std::string_view();
+        const std::optional<uint32_t> role = raw_extrusion_role_from_name(name);
+        if (!role) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+            return true;
+        }
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                      {{RAW_GCODE_READER_ITEM_EXTRUSION_ROLE, 0,
+                        double(*role)}});
+        return true;
+    }
+
+    if (comment == "WIDTH" || has_prefix(comment, "WIDTH:")) {
+        double width = 0.0;
+        if (comment.size() <= 6 ||
+            !parse_finite_comment_number(comment.substr(6), width) ||
+            width <= 0.0) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+            return true;
+        }
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                      {{RAW_GCODE_READER_ITEM_WIDTH, 0, width}});
+        return true;
+    }
+
+    if (comment == "HEIGHT" || has_prefix(comment, "HEIGHT:")) {
+        double height = 0.0;
+        if (comment.size() <= 7 ||
+            !parse_finite_comment_number(comment.substr(7), height) ||
+            height <= 0.0) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+            return true;
+        }
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                      {{RAW_GCODE_READER_ITEM_HEIGHT, 0, height}});
+        return true;
+    }
+
+    if (comment == "Z" || has_prefix(comment, "Z:")) {
+        double z = 0.0;
+        if (comment.size() <= 2 ||
+            !parse_finite_comment_number(comment.substr(2), z)) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+            return true;
+        }
+        // Z is layer metadata. The following movement, rather than this
+        // comment, remains authoritative for the machine position.
+        publish_state_update(run_context, context, state);
+        return true;
+    }
+
+    if (comment == "WIPE_START" || comment == "WIPE_END") {
+        const std::optional<double> current = state.value(
+            RAW_GCODE_READER_ITEM_EXTRUSION_ROLE);
+        const uint32_t current_role = current ?
+            static_cast<uint32_t>(*current) : 0u;
+        const uint32_t role = comment == "WIPE_START" ?
+            current_role | uint32_t(RAW_EXTRUSION_ROLE_WIPE) :
+            current_role & ~uint32_t(RAW_EXTRUSION_ROLE_WIPE);
+        publish_items(run_context, context, state,
+                      RAW_GCODE_READER_EVENT_STATE_UPDATE,
+                      {{RAW_GCODE_READER_ITEM_EXTRUSION_ROLE, 0,
+                        double(role)}});
+        return true;
+    }
+
+    if (comment == "SEAM" || has_prefix(comment, "SEAM:")) {
+        const std::optional<std::pair<double, double>> coordinates =
+            comment.size() > 5 ? parse_seam_coordinates(comment.substr(5)) :
+                                 std::nullopt;
+        if (!coordinates) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+            return true;
+        }
+        publish_marker(RAW_GCODE_READER_MARKER_SEAM);
+        return true;
+    }
+
+    if (comment == "COLOR_CHANGE") {
+        publish_marker(RAW_GCODE_READER_MARKER_COLOR_CHANGE);
+        pending_action = RAW_GCODE_READER_MARKER_COLOR_CHANGE;
+        return true;
+    }
+    constexpr std::string_view color_change_prefix = "COLOR_CHANGE,";
+    if (has_prefix(comment, color_change_prefix)) {
+        if (!valid_color_change_payload(comment.substr(color_change_prefix.size()))) {
+            publish_diagnostic(
+                run_context, context, state,
+                RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+            return true;
+        }
+        publish_marker(RAW_GCODE_READER_MARKER_COLOR_CHANGE);
+        pending_action = RAW_GCODE_READER_MARKER_COLOR_CHANGE;
+        return true;
+    }
+    if (comment == "PAUSE_PRINT") {
+        publish_marker(RAW_GCODE_READER_MARKER_PAUSE_PRINT);
+        pending_action = RAW_GCODE_READER_MARKER_PAUSE_PRINT;
+        return true;
+    }
+    if (comment == "CUSTOM_GCODE") {
+        publish_marker(RAW_GCODE_READER_MARKER_CUSTOM_GCODE);
+        pending_action = RAW_GCODE_READER_MARKER_CUSTOM_GCODE;
+        return true;
+    }
+    return false;
+}
+
 void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
                                          const run_ctx_gcode_reader &context,
                                          GCodeStateTracker &state,
-                                         std::string_view text) const
+                                         std::string_view text,
+                                         std::optional<raw_gcode_reader_marker_type> &pending_action) const
 {
     // Convert one parsed command into the shared event vocabulary. Commands
     // outside the common subset and the derived dialect hooks invalidate
     // portable state so later output never relies on guessed machine values.
     GCodeLineParser parser;
     parser.parse_line(text,
-                      [this, &run_context, &context, &state](
+                      [this, &run_context, &context, &state, &pending_action](
                           GCodeLineParser &, const GCodeLineParser::GCodeLine &line) {
         const std::string_view command = line.command();
         if (command.empty()) {
+            if (consume_common_comment(
+                    run_context, context, state, line, pending_action))
+                return;
             constexpr std::string_view marker = "SLIC3R_OBJECT_INSTANCE_ID=";
             const std::string_view comment = line.comment();
             const size_t marker_pos = comment.find(marker);
@@ -406,14 +737,27 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
                 }
                 else
                     publish_invalid_object_marker(run_context, context, state);
+                pending_action.reset();
             }
             return;
+        }
+
+        const char letter = command.front();
+        const std::optional<uint32_t> number = command_number(command);
+        std::optional<raw_gcode_reader_marker_type> command_action;
+        if (command == "PAUSE")
+            command_action = RAW_GCODE_READER_MARKER_PAUSE_PRINT;
+        else if (number)
+            command_action = marker_type(letter, *number);
+        if (pending_action) {
+            const bool duplicate = command_action == pending_action;
+            pending_action.reset();
+            if (duplicate)
+                return;
         }
         if (consume_text_command(run_context, context, state, line))
             return;
 
-        const char letter = command.front();
-        const std::optional<uint32_t> number = command_number(command);
         if (!number)
             return publish_unknown(run_context, context, state,
                                    RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_COMMAND);
@@ -429,11 +773,10 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
         } else if (is_neutral_command(letter, *number)) {
             // A neutral command is known not to change any modeled machine
             // state. Keep an event for its source line without warning.
-        } else if (const std::optional<raw_gcode_reader_marker_type> marker =
-                       marker_type(letter, *number)) {
+        } else if (command_action) {
             publish_items(run_context, context, state,
                           RAW_GCODE_READER_EVENT_MARKER,
-                          {{RAW_GCODE_READER_ITEM_MARKER, 0, double(*marker)}});
+                          {{RAW_GCODE_READER_ITEM_MARKER, 0, double(*command_action)}});
             return;
         } else {
             publish_unknown(run_context, context, state,

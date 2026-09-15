@@ -151,6 +151,21 @@ private:
     FirmwareRecorder &m_recorder;
 };
 
+/* Build printable integration geometry with explicit viewer marker attributes. */
+std::unique_ptr<ExtrusionPath> make_integration_path(const ArcPolyline &polyline,
+                                                     ExtrusionRole role,
+                                                     float width,
+                                                     float height)
+{
+    std::unique_ptr<ExtrusionPath> path(new ExtrusionPath(
+        polyline,
+        ExtrusionAttributes(role, ExtrusionFlow(0.08, width, height)),
+        nullptr,
+        true));
+    path->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+    return path;
+}
+
 } // namespace
 
 TEST_CASE("STEP_GCODE legacy selector is the default and owns the printer UI slot", "[plugins][gcode]")
@@ -477,6 +492,149 @@ TEST_CASE("Generated G-code is streamed into the viewer result",
     }
     remove_output_pair(source_path);
     orchestrator.reset_plugin_cancel();
+}
+
+TEST_CASE("PrintingPlan markers survive generated file Reader integration",
+          "[plugins][gcode][reader][viewer][writer][integration][markers]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    orchestrator.reset_plugin_cancel();
+
+    Print print;
+    configure_standard_firmware(print);
+    select_printing_plan_writer(print, "gcode.firmware.marlin2");
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+
+    plan.groups.front().layers.emplace_back();
+    PrintingLayerGroup &first_layer = plan.groups.front().layers.back();
+    first_layer.print_z = scale_i(0.2);
+    first_layer.tool_groups.emplace_back();
+    PrintingToolGroup &first_tool = first_layer.tool_groups.back();
+    first_tool.extruder_id = 0;
+    append_path_extrusion(first_tool, make_integration_path(
+        ArcPolyline(Points{
+            Point::new_scale(0.0, 0.0),
+            Point::new_scale(10.0, 0.0),
+            Point::new_scale(10.0, 10.0),
+            Point::new_scale(0.0, 0.0)
+        }),
+        ExtrusionRole::ExternalPerimeter, 0.45f, 0.2f));
+
+    std::unique_ptr<ExtrusionPath> wipe = make_firmware_travel(
+        ArcPolyline(Points{
+            Point::new_scale(0.0, 0.0),
+            Point::new_scale(1.0, 0.0)
+        }),
+        40.f, 800.f);
+    slic3r_api::MutableExtrusionEntity wipe_view(
+        reinterpret_cast<extrusion_entity_handle *>(wipe.get()));
+    wipe_view.get_mutable(slic3r_api::EPropertyAttributes::key)->extrusion_role(
+        RAW_EXTRUSION_ROLE_TRAVEL | RAW_EXTRUSION_ROLE_WIPE);
+    append_path_extrusion(first_tool, std::move(wipe));
+
+    append_path_extrusion(first_tool, make_integration_path(
+        ArcPolyline(Points{
+            Point::new_scale(1.0, 0.0),
+            Point::new_scale(6.0, 0.0)
+        }),
+        ExtrusionRole::InternalInfill, 0.50f, 0.25f));
+
+    plan.groups.front().layers.emplace_back();
+    PrintingLayerGroup &second_layer = plan.groups.front().layers.back();
+    second_layer.print_z = scale_i(0.4);
+    second_layer.tool_groups.emplace_back();
+    PrintingToolGroup &second_tool = second_layer.tool_groups.back();
+    second_tool.extruder_id = 0;
+    append_path_extrusion(second_tool, make_integration_path(
+        ArcPolyline(Points{
+            Point::new_scale(6.0, 0.0),
+            Point::new_scale(12.0, 0.0),
+            Point::new_scale(12.0, 6.0),
+            Point::new_scale(6.0, 0.0)
+        }),
+        ExtrusionRole::ExternalPerimeter, 0.42f, 0.2f));
+
+    const boost::filesystem::path output_path = temporary_gcode_path();
+    remove_output_pair(output_path);
+    GCodeProcessorResult result;
+    try {
+        Steps::StepGenerateGcode::clean_and_prepare(print);
+        const std::string reader_plugin_id = Steps::StepGenerateGcode::run_step(
+            orchestrator, print, output_path.string());
+        REQUIRE(reader_plugin_id == "gcode.reader.marlin2");
+        REQUIRE(print.gcode_reader_source_path() == output_path.string());
+
+        const std::string generated = read_text_file(output_path);
+        INFO(generated);
+        CHECK(count_occurrences(generated, ";LAYER_CHANGE\n") == 2);
+        CHECK(count_occurrences(generated, ";Z:") == 2);
+        CHECK(count_occurrences(generated, ";HEIGHT:") == 3);
+        CHECK(count_occurrences(generated, ";TYPE:") == 3);
+        CHECK(count_occurrences(generated, ";WIDTH:") == 3);
+        CHECK(count_occurrences(generated, ";WIPE_START\n") == 1);
+        CHECK(count_occurrences(generated, ";WIPE_END\n") == 1);
+        CHECK(count_occurrences(generated, ";SEAM:") == 2);
+
+        Steps::StepReadGeneratedGcode::run(
+            orchestrator, print, reader_plugin_id, result);
+    } catch (...) {
+        remove_output_pair(output_path);
+        orchestrator.reset_plugin_cancel();
+        throw;
+    }
+    remove_output_pair(output_path);
+    orchestrator.reset_plugin_cancel();
+
+    CHECK(result.filename == output_path.string());
+    CHECK(result.reader_plugin_id == "gcode.reader.marlin2");
+
+    const GCodeProcessorResult::MoveVertex *external_first = nullptr;
+    const GCodeProcessorResult::MoveVertex *infill_first = nullptr;
+    const GCodeProcessorResult::MoveVertex *external_second = nullptr;
+    size_t visible_extrusions = 0;
+    size_t wipes = 0;
+    size_t seams = 0;
+    for (const GCodeProcessorResult::MoveVertex &move : result.moves) {
+        if (move.type == EMoveType::Wipe)
+            ++wipes;
+        else if (move.type == EMoveType::Seam)
+            ++seams;
+        if (move.type != EMoveType::Extrude || move.internal_only)
+            continue;
+        CHECK(std::isfinite(move.mm3_per_mm));
+        CHECK(move.mm3_per_mm > 0.0f);
+        ++visible_extrusions;
+        if (move.layer_id == 0 &&
+            move.extrusion_role == GCodeExtrusionRole::ExternalPerimeter)
+            external_first = &move;
+        else if (move.layer_id == 0 &&
+                 move.extrusion_role == GCodeExtrusionRole::InternalInfill)
+            infill_first = &move;
+        else if (move.layer_id == 1 &&
+                 move.extrusion_role == GCodeExtrusionRole::ExternalPerimeter)
+            external_second = &move;
+    }
+
+    CHECK(visible_extrusions >= 7);
+    CHECK(wipes == 1);
+    CHECK(seams == 2);
+    REQUIRE(external_first != nullptr);
+    REQUIRE(infill_first != nullptr);
+    REQUIRE(external_second != nullptr);
+    CHECK(external_first->width == Approx(0.45f));
+    CHECK(external_first->height == Approx(0.2f));
+    CHECK(infill_first->width == Approx(0.50f));
+    CHECK(infill_first->height == Approx(0.25f));
+    CHECK(external_second->width == Approx(0.42f));
+    CHECK(external_second->height == Approx(0.2f));
+
+    const std::vector<float> &layer_times =
+        result.print_statistics.modes[0].layers_times;
+    REQUIRE(layer_times.size() >= 2);
+    CHECK(layer_times[0] > 0.0f);
+    CHECK(layer_times[1] > 0.0f);
 }
 TEST_CASE("PrintingPlan firmware executes host-owned scripts",
           "[plugins][gcode][firmware][custom-gcode]")

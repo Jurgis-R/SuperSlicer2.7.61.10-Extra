@@ -16,6 +16,7 @@
 #include "libslic3r/Api/host/GCodeReaderService.hpp"
 #include "libslic3r/Api/host/GCodeReaderResultBuilder.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_extrusions.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode_reader.h"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeReaderPlugin.hpp"
 #include "libslic3r/Plugins/Ordering/ObjectInstanceCatalog.hpp"
@@ -291,6 +292,7 @@ struct ObservedEvent
 {
     uint32_t kind = 0;
     uint32_t line_number = UINT32_MAX;
+    std::vector<raw_gcode_reader_event_item> items;
     std::optional<uint32_t> marker;
     std::optional<uint32_t> diagnostic;
 };
@@ -355,8 +357,11 @@ void collect_event(void *context,
     uint32_t line_number = UINT32_MAX;
     std::optional<uint32_t> marker;
     std::optional<uint32_t> diagnostic;
+    std::vector<raw_gcode_reader_event_item> items;
+    items.reserve(event->item_count);
     for (uint32_t index = 0; index < event->item_count; ++index) {
         const raw_gcode_reader_event_item &item = event->items[index];
+        items.push_back(item);
         if (item.type == RAW_GCODE_READER_ITEM_LINE_NUMBER)
             line_number = static_cast<uint32_t>(item.value);
         else if (item.type == RAW_GCODE_READER_ITEM_MARKER)
@@ -364,7 +369,7 @@ void collect_event(void *context,
         else if (item.type == RAW_GCODE_READER_ITEM_DIAGNOSTIC_TYPE)
             diagnostic = static_cast<uint32_t>(item.value);
     }
-    probe->observed.push_back({event->kind, line_number, marker, diagnostic});
+    probe->observed.push_back({event->kind, line_number, std::move(items), marker, diagnostic});
     result->status = RAW_GCODE_READER_STATUS_SUCCESS;
 }
 
@@ -453,6 +458,25 @@ void consume_builder_event(
     builder.consume_event(event, state);
 }
 
+// Return one copied event value without exposing the borrowed ABI event after
+// the callback has returned.
+std::optional<double> observed_item_value(const ObservedEvent &event, uint32_t type)
+{
+    for (const raw_gcode_reader_event_item &item : event.items)
+        if (item.type == type)
+            return item.value;
+    return std::nullopt;
+}
+
+size_t observed_event_count(const ReaderProbe &probe, uint32_t kind)
+{
+    size_t count = 0;
+    for (const ObservedEvent &event : probe.observed)
+        if (event.kind == kind)
+            ++count;
+    return count;
+}
+
 TEST_CASE("G-code reader publishes semantic actions and an owned final state",
           "[plugins][gcode][reader]")
 {
@@ -489,6 +513,604 @@ TEST_CASE("G-code reader publishes semantic actions and an owned final state",
     REQUIRE(state.fan_speed(2));
     CHECK(*state.fan_speed(2) == Approx(128.0 * 100.0 / 255.0));
     CHECK(state.line_number() == 8u);
+}
+
+TEST_CASE("Common G-code reader parses historical state comments",
+          "[plugins][gcode][reader][markers]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {
+        ";LAYER_CHANGE\n"
+        "; Z:0.400\n"
+        ";HEIGHT:0.200\n"
+        ";TYPE:External perimeter\n"
+        ";WIDTH:0.450\n"
+        "G1 X10 Y10 E1\n"
+        ";LAYER_CHANGE\n"
+        ";Z:0.600\n"
+        ";HEIGHT:0.250\n"
+        ";TYPE:Internal infill\n"
+        ";WIDTH:0.500\n"
+        "G1 X20 Y10 E2\n"
+    };
+
+    REQUIRE(execute_default_reader(probe, initial) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 12);
+
+    const uint32_t expected_kinds[] = {
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+    };
+    for (size_t index = 0; index < probe.observed.size(); ++index)
+        CHECK(probe.observed[index].kind == expected_kinds[index]);
+
+    REQUIRE(observed_item_value(
+        probe.observed[0], RAW_GCODE_READER_ITEM_LAYER));
+    CHECK(*observed_item_value(
+        probe.observed[0], RAW_GCODE_READER_ITEM_LAYER) == Approx(0.0));
+    CHECK_FALSE(observed_item_value(probe.observed[1], RAW_GCODE_READER_ITEM_Z));
+    REQUIRE(observed_item_value(
+        probe.observed[2], RAW_GCODE_READER_ITEM_HEIGHT));
+    CHECK(*observed_item_value(
+        probe.observed[2], RAW_GCODE_READER_ITEM_HEIGHT) == Approx(0.2));
+    REQUIRE(observed_item_value(
+        probe.observed[3], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*observed_item_value(
+        probe.observed[3], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER)));
+    REQUIRE(observed_item_value(
+        probe.observed[4], RAW_GCODE_READER_ITEM_WIDTH));
+    CHECK(*observed_item_value(
+        probe.observed[4], RAW_GCODE_READER_ITEM_WIDTH) == Approx(0.45));
+
+    REQUIRE(observed_item_value(
+        probe.observed[6], RAW_GCODE_READER_ITEM_LAYER));
+    CHECK(*observed_item_value(
+        probe.observed[6], RAW_GCODE_READER_ITEM_LAYER) == Approx(1.0));
+    CHECK_FALSE(observed_item_value(probe.observed[7], RAW_GCODE_READER_ITEM_Z));
+    REQUIRE(observed_item_value(
+        probe.observed[8], RAW_GCODE_READER_ITEM_HEIGHT));
+    CHECK(*observed_item_value(
+        probe.observed[8], RAW_GCODE_READER_ITEM_HEIGHT) == Approx(0.25));
+    REQUIRE(observed_item_value(
+        probe.observed[9], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*observed_item_value(
+        probe.observed[9], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_INTERNAL_INFILL)));
+    REQUIRE(observed_item_value(
+        probe.observed[10], RAW_GCODE_READER_ITEM_WIDTH));
+    CHECK(*observed_item_value(
+        probe.observed[10], RAW_GCODE_READER_ITEM_WIDTH) == Approx(0.5));
+
+    const slic3r_api::GCodeStateTracker &state = *probe.final_state;
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_LAYER));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_LAYER) == Approx(1.0));
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_INTERNAL_INFILL)));
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_WIDTH));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_WIDTH) == Approx(0.5));
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_HEIGHT));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_HEIGHT) == Approx(0.25));
+    REQUIRE(state.z());
+    CHECK(*state.z() == Approx(3.0));
+    REQUIRE(state.x());
+    CHECK(*state.x() == Approx(20.0));
+    CHECK(state.line_number() == 12u);
+}
+
+TEST_CASE("Common G-code reader matches LAYER_CHANGE exactly",
+          "[plugins][gcode][reader][markers]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {
+        ";LAYER_CHANGE\n"
+        ";LAYER_CHANGE_TRAVEL\n"
+        ";LAYER_CHANGE_RETRACTION_START\n"
+        ";LAYER_CHANGE_RETRACTION_END\n"
+    };
+
+    REQUIRE(execute_default_reader(probe, initial) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 1);
+    CHECK(probe.observed.front().kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    REQUIRE(observed_item_value(
+        probe.observed.front(), RAW_GCODE_READER_ITEM_LAYER));
+    CHECK(*observed_item_value(
+        probe.observed.front(), RAW_GCODE_READER_ITEM_LAYER) == Approx(0.0));
+
+    REQUIRE(probe.final_state->value(RAW_GCODE_READER_ITEM_LAYER));
+    CHECK(*probe.final_state->value(RAW_GCODE_READER_ITEM_LAYER) == Approx(0.0));
+}
+
+TEST_CASE("Common G-code reader maps legacy TYPE names and matches them exactly",
+          "[plugins][gcode][reader][markers]")
+{
+    ensure_plugin_test_runtime_initialized();
+    struct TypeMarker
+    {
+        const char *name;
+        raw_extrusion_role role;
+    };
+    const TypeMarker markers[] = {
+        {"Unknown", RAW_EXTRUSION_ROLE_NONE},
+        {"Perimeter", RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER},
+        {"External perimeter", RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER},
+        {"Overhang perimeter", RAW_EXTRUSION_ROLE_OVERHANG_PERIMETER},
+        {"Internal infill", RAW_EXTRUSION_ROLE_INTERNAL_INFILL},
+        {"Solid infill", RAW_EXTRUSION_ROLE_SOLID_INFILL},
+        {"Top solid infill", RAW_EXTRUSION_ROLE_TOP_SOLID_INFILL},
+        {"Ironing", RAW_EXTRUSION_ROLE_IRONING_INFILL},
+        {"Bridge infill", RAW_EXTRUSION_ROLE_BRIDGE_INFILL},
+        {"Internal bridge infill", RAW_EXTRUSION_ROLE_INTERNAL_BRIDGE_INFILL},
+        {"Thin wall", RAW_EXTRUSION_ROLE_THIN_WALL},
+        {"Gap fill", RAW_EXTRUSION_ROLE_GAP_FILL},
+        {"Skirt/Brim", RAW_EXTRUSION_ROLE_SKIRT},
+        {"Support material", RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL},
+        {"Support material interface", RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL_INTERFACE},
+        {"Wipe tower", RAW_EXTRUSION_ROLE_WIPE_TOWER_DEFAULT},
+        {"Milling", RAW_EXTRUSION_ROLE_MILLING},
+        {"Custom", RAW_EXTRUSION_ROLE_NONE},
+        {"Travel", RAW_EXTRUSION_ROLE_TRAVEL},
+    };
+
+    for (const TypeMarker &marker : markers) {
+        DYNAMIC_SECTION("legacy TYPE marker: " << marker.name)
+        {
+            std::vector<raw_gcode_reader_event_item> initial_items;
+            const raw_gcode_reader_state initial = initial_state(initial_items);
+            ReaderProbe probe;
+            const std::string source = std::string(";TYPE:") + marker.name + "\n";
+            probe.chunks = {source};
+
+            REQUIRE(execute_default_reader(probe, initial) == RAW_PLUGIN_EXECUTION_SUCCESS);
+            REQUIRE(probe.final_state);
+            REQUIRE(probe.observed.size() == 1);
+            CHECK(probe.observed.front().kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+            REQUIRE(probe.final_state->value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+            CHECK(*probe.final_state->value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+                  Approx(double(marker.role)));
+        }
+    }
+
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe suffix_probe;
+    suffix_probe.chunks = {
+        ";TYPE:External perimeter\n"
+        ";TYPE_SUFFIX:Internal infill\n"
+    };
+    REQUIRE(execute_default_reader(suffix_probe, initial) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(suffix_probe.final_state);
+    REQUIRE(suffix_probe.observed.size() == 1);
+    REQUIRE(suffix_probe.final_state->value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*suffix_probe.final_state->value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER)));
+}
+
+TEST_CASE("Common G-code reader publishes historical comment markers",
+          "[plugins][gcode][reader][markers]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {
+        ";TYPE:External perimeter\n"
+        ";WIPE_START\n"
+        "G1 X4 Y5 E1\n"
+        ";WIPE_END\n"
+        ";SEAM:4.000:5.000\n"
+        ";COLOR_CHANGE,T0,#112233\n"
+        ";PAUSE_PRINT\n"
+        ";CUSTOM_GCODE\n"
+        ";Z:0.400\n"
+    };
+
+    REQUIRE(execute_default_reader(probe, initial) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 9);
+
+    CHECK(probe.observed[0].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    REQUIRE(observed_item_value(
+        probe.observed[0], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*observed_item_value(
+        probe.observed[0], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER)));
+
+    CHECK(probe.observed[1].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    REQUIRE(observed_item_value(
+        probe.observed[1], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*observed_item_value(
+        probe.observed[1], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER |
+                       RAW_EXTRUSION_ROLE_WIPE)));
+    CHECK(probe.observed[2].kind == RAW_GCODE_READER_EVENT_LINEAR_MOVE);
+
+    CHECK(probe.observed[3].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    REQUIRE(observed_item_value(
+        probe.observed[3], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*observed_item_value(
+        probe.observed[3], RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER)));
+
+    const uint32_t expected_markers[] = {
+        RAW_GCODE_READER_MARKER_SEAM,
+        RAW_GCODE_READER_MARKER_COLOR_CHANGE,
+        RAW_GCODE_READER_MARKER_PAUSE_PRINT,
+        RAW_GCODE_READER_MARKER_CUSTOM_GCODE,
+    };
+    for (size_t index = 0; index < 4; ++index) {
+        const ObservedEvent &event = probe.observed[index + 4];
+        CHECK(event.kind == RAW_GCODE_READER_EVENT_MARKER);
+        REQUIRE(event.marker);
+        CHECK(*event.marker == expected_markers[index]);
+        REQUIRE(observed_item_value(event, RAW_GCODE_READER_ITEM_MARKER));
+        CHECK(*observed_item_value(event, RAW_GCODE_READER_ITEM_MARKER) ==
+              Approx(double(expected_markers[index])));
+    }
+    CHECK(probe.observed[8].kind == RAW_GCODE_READER_EVENT_STATE_UPDATE);
+    CHECK_FALSE(observed_item_value(probe.observed[8], RAW_GCODE_READER_ITEM_Z));
+
+    const slic3r_api::GCodeStateTracker &state = *probe.final_state;
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER)));
+    CHECK_FALSE(state.known(RAW_GCODE_READER_ITEM_MARKER));
+    REQUIRE(state.x());
+    REQUIRE(state.y());
+    REQUIRE(state.z());
+    CHECK(*state.x() == Approx(4.0));
+    CHECK(*state.y() == Approx(5.0));
+    CHECK(*state.z() == Approx(3.0));
+}
+
+TEST_CASE("Common G-code reader accepts bare COLOR_CHANGE markers",
+          "[plugins][gcode][reader][markers][color-change]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {";COLOR_CHANGE\n"};
+
+    REQUIRE(execute_default_reader(probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 1);
+    const ObservedEvent &event = probe.observed.front();
+    CHECK(event.kind == RAW_GCODE_READER_EVENT_MARKER);
+    REQUIRE(event.marker);
+    CHECK(*event.marker == RAW_GCODE_READER_MARKER_COLOR_CHANGE);
+    CHECK_FALSE(event.diagnostic);
+    CHECK_FALSE(probe.final_state->known(RAW_GCODE_READER_ITEM_MARKER));
+}
+
+TEST_CASE("Common G-code reader accepts canonical COLOR_CHANGE markers",
+          "[plugins][gcode][reader][markers][color-change]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {";COLOR_CHANGE,T0,#112233\n"};
+
+    REQUIRE(execute_default_reader(probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 1);
+    const ObservedEvent &event = probe.observed.front();
+    CHECK(event.kind == RAW_GCODE_READER_EVENT_MARKER);
+    REQUIRE(event.marker);
+    CHECK(*event.marker == RAW_GCODE_READER_MARKER_COLOR_CHANGE);
+    CHECK_FALSE(event.diagnostic);
+    CHECK_FALSE(probe.final_state->known(RAW_GCODE_READER_ITEM_MARKER));
+}
+
+TEST_CASE("Common G-code reader rejects COLOR_CHANGE with malformed tool",
+          "[plugins][gcode][reader][markers][color-change]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {";COLOR_CHANGE,Tbad,#112233\n"};
+
+    REQUIRE(execute_default_reader(probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 1);
+    const ObservedEvent &event = probe.observed.front();
+    CHECK(event.kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+    REQUIRE(event.diagnostic);
+    CHECK(*event.diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+    CHECK_FALSE(event.marker);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_MARKER) == 0);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_INVALIDATE) == 0);
+    CHECK_FALSE(probe.final_state->known(RAW_GCODE_READER_ITEM_MARKER));
+    REQUIRE(probe.final_state->x());
+    REQUIRE(probe.final_state->y());
+    REQUIRE(probe.final_state->z());
+    CHECK(*probe.final_state->x() == Approx(1.0));
+    CHECK(*probe.final_state->y() == Approx(2.0));
+    CHECK(*probe.final_state->z() == Approx(3.0));
+}
+
+TEST_CASE("Common G-code reader rejects COLOR_CHANGE with malformed RGB",
+          "[plugins][gcode][reader][markers][color-change]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {";COLOR_CHANGE,T0,#12zz33\n"};
+
+    REQUIRE(execute_default_reader(probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 1);
+    const ObservedEvent &event = probe.observed.front();
+    CHECK(event.kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+    REQUIRE(event.diagnostic);
+    CHECK(*event.diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+    CHECK_FALSE(event.marker);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_MARKER) == 0);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_INVALIDATE) == 0);
+    CHECK_FALSE(probe.final_state->known(RAW_GCODE_READER_ITEM_MARKER));
+    REQUIRE(probe.final_state->x());
+    REQUIRE(probe.final_state->y());
+    REQUIRE(probe.final_state->z());
+    CHECK(*probe.final_state->x() == Approx(1.0));
+    CHECK(*probe.final_state->y() == Approx(2.0));
+    CHECK(*probe.final_state->z() == Approx(3.0));
+}
+
+TEST_CASE("Common G-code reader rejects COLOR_CHANGE with a trailing token",
+          "[plugins][gcode][reader][markers][color-change]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {";COLOR_CHANGE,T0,#112233,extra\n"};
+
+    REQUIRE(execute_default_reader(probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 1);
+    const ObservedEvent &event = probe.observed.front();
+    CHECK(event.kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+    REQUIRE(event.diagnostic);
+    CHECK(*event.diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+    CHECK_FALSE(event.marker);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_MARKER) == 0);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_INVALIDATE) == 0);
+    CHECK_FALSE(probe.final_state->known(RAW_GCODE_READER_ITEM_MARKER));
+    REQUIRE(probe.final_state->x());
+    REQUIRE(probe.final_state->y());
+    REQUIRE(probe.final_state->z());
+    CHECK(*probe.final_state->x() == Approx(1.0));
+    CHECK(*probe.final_state->y() == Approx(2.0));
+    CHECK(*probe.final_state->z() == Approx(3.0));
+}
+
+TEST_CASE("Common G-code reader keeps valid state after malformed comments",
+          "[plugins][gcode][reader][markers]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {
+        ";WIDTH:0.400\n"
+        ";HEIGHT:0.200\n"
+        ";TYPE:External perimeter\n"
+        ";WIDTH:nan\n"
+        ";WIDTH:inf\n"
+        ";WIDTH:0\n"
+        ";HEIGHT:-1\n"
+        ";HEIGHT:0\n"
+        ";HEIGHT:0.2mm\n"
+        ";TYPE:Unknown role\n"
+        ";Z:nan\n"
+        ";SEAM:1.0:inf\n"
+        "G1 X4 Y5 E1\n"
+    };
+
+    REQUIRE(execute_default_reader(probe, initial) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.final_state);
+    REQUIRE(probe.observed.size() == 13);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_DIAGNOSTIC) == 9);
+    CHECK(observed_event_count(probe, RAW_GCODE_READER_EVENT_INVALIDATE) == 0);
+
+    for (size_t index = 3; index < 12; ++index) {
+        CHECK(probe.observed[index].kind == RAW_GCODE_READER_EVENT_DIAGNOSTIC);
+        REQUIRE(probe.observed[index].diagnostic);
+        CHECK(*probe.observed[index].diagnostic ==
+              RAW_GCODE_READER_DIAGNOSTIC_INVALID_COMMAND_PARAMETERS);
+    }
+    CHECK(probe.observed.back().kind == RAW_GCODE_READER_EVENT_LINEAR_MOVE);
+
+    const slic3r_api::GCodeStateTracker &state = *probe.final_state;
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_WIDTH));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_WIDTH) == Approx(0.4));
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_HEIGHT));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_HEIGHT) == Approx(0.2));
+    REQUIRE(state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE));
+    CHECK(*state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE) ==
+          Approx(double(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER)));
+    REQUIRE(state.z());
+    CHECK(*state.z() == Approx(3.0));
+    REQUIRE(state.x());
+    REQUIRE(state.y());
+    CHECK(*state.x() == Approx(4.0));
+    CHECK(*state.y() == Approx(5.0));
+}
+
+TEST_CASE("All built-in G-code readers publish identical common marker items",
+          "[plugins][gcode][reader][markers][parity]")
+{
+    ensure_plugin_test_runtime_initialized();
+    const char *const reader_ids[] = {
+        "gcode.reader.default", "gcode.reader.marlin1",
+        "gcode.reader.marlin2", "gcode.reader.prusa",
+        "gcode.reader.sprinter", "gcode.reader.reprap",
+        "gcode.reader.klipper"
+    };
+    const std::string source =
+        ";LAYER_CHANGE\n"
+        ";Z:0.400\n"
+        ";HEIGHT:0.200\n"
+        ";TYPE:External perimeter\n"
+        ";WIDTH:0.450\n"
+        ";WIPE_START\n"
+        "G1 X4 Y5 E1\n"
+        ";WIPE_END\n"
+        ";SEAM:4.000:5.000\n"
+        ";COLOR_CHANGE,T0,#112233\n"
+        ";PAUSE_PRINT\n"
+        ";CUSTOM_GCODE\n";
+    const uint32_t reprap_state_id = reprap_reader_state_id();
+    std::vector<raw_gcode_reader_event_item> default_initial_items;
+    const raw_gcode_reader_state default_initial = initial_state(
+        default_initial_items);
+    ReaderProbe default_probe;
+    default_probe.chunks = {source};
+    REQUIRE(execute_default_reader(default_probe, default_initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(default_probe.final_state);
+    const std::vector<ObservedEvent> expected_events = default_probe.observed;
+
+    // Catch2 re-enters the test case for each dynamic section, so keep this
+    // count across those invocations and verify that all six comparisons ran.
+    static size_t comparison_count = 0;
+    constexpr size_t reader_count = sizeof(reader_ids) / sizeof(reader_ids[0]);
+    for (size_t reader_index = 1; reader_index < reader_count; ++reader_index) {
+        const char *reader_id = reader_ids[reader_index];
+        DYNAMIC_SECTION("common marker parity: " << reader_id)
+        {
+            if (reader_index == 1)
+                comparison_count = 0;
+
+            std::vector<raw_gcode_reader_event_item> initial_items;
+            const uint32_t state_id = std::string_view(reader_id) ==
+                "gcode.reader.reprap" ? reprap_state_id :
+                GCODE_READER_STATE_ID_PORTABLE;
+            const raw_gcode_reader_state initial = initial_state(
+                initial_items, state_id);
+            ReaderProbe probe;
+            probe.chunks = {source};
+
+            REQUIRE(execute_reader(reader_id, probe, initial) ==
+                    RAW_PLUGIN_EXECUTION_SUCCESS);
+            REQUIRE(probe.final_state);
+            ++comparison_count;
+
+            REQUIRE(probe.observed.size() == expected_events.size());
+            for (size_t event_index = 0;
+                 event_index < expected_events.size(); ++event_index) {
+                const ObservedEvent &expected = expected_events[event_index];
+                const ObservedEvent &actual = probe.observed[event_index];
+                CHECK(actual.kind == expected.kind);
+                CHECK(actual.line_number == expected.line_number);
+                REQUIRE(actual.items.size() == expected.items.size());
+                for (size_t item_index = 0;
+                     item_index < expected.items.size(); ++item_index) {
+                    CHECK(actual.items[item_index].type ==
+                          expected.items[item_index].type);
+                    CHECK(actual.items[item_index].target ==
+                          expected.items[item_index].target);
+                    CHECK(actual.items[item_index].value ==
+                          Approx(expected.items[item_index].value));
+                }
+            }
+
+            if (reader_index + 1 == reader_count) {
+                CHECK(comparison_count == 6);
+            }
+        }
+    }
+}
+
+TEST_CASE("Legacy custom markers and matching commands produce one semantic action",
+          "[plugins][gcode][reader][markers][custom-gcode]")
+{
+    ensure_plugin_test_runtime_initialized();
+    const std::string source =
+        ";COLOR_CHANGE,T0,#112233\n"
+        "M600\n"
+        ";PAUSE_PRINT\n"
+        "M601\n"
+        ";CUSTOM_GCODE\n"
+        "M117 custom action\n";
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {source};
+
+    REQUIRE(execute_reader("gcode.reader.prusa", probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(observed_event_count(probe, RAW_GCODE_READER_EVENT_MARKER) == 3);
+    std::vector<uint32_t> markers;
+    std::vector<uint32_t> marker_lines;
+    for (const ObservedEvent &event : probe.observed) {
+        if (event.kind != RAW_GCODE_READER_EVENT_MARKER)
+            continue;
+        REQUIRE(event.marker);
+        markers.push_back(*event.marker);
+        marker_lines.push_back(event.line_number);
+    }
+    CHECK(markers == std::vector<uint32_t>{
+        RAW_GCODE_READER_MARKER_COLOR_CHANGE,
+        RAW_GCODE_READER_MARKER_PAUSE_PRINT,
+        RAW_GCODE_READER_MARKER_CUSTOM_GCODE
+    });
+    CHECK(marker_lines == std::vector<uint32_t>{0, 2, 4});
+
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.prusa", source);
+    size_t color_changes = 0;
+    size_t pauses = 0;
+    size_t custom_codes = 0;
+    for (const GCodeProcessorResult::MoveVertex &move : result.moves) {
+        color_changes += move.type == EMoveType::Color_change ? 1 : 0;
+        pauses += move.type == EMoveType::Pause_Print ? 1 : 0;
+        custom_codes += move.type == EMoveType::Custom_GCode ? 1 : 0;
+    }
+    CHECK(color_changes == 1);
+    CHECK(pauses == 1);
+    CHECK(custom_codes == 1);
+
+    ReaderProbe klipper_probe;
+    klipper_probe.chunks = {";PAUSE_PRINT\n", "PAUSE\n"};
+    REQUIRE(execute_reader("gcode.reader.klipper", klipper_probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(observed_event_count(
+                klipper_probe, RAW_GCODE_READER_EVENT_MARKER) == 1);
+    CHECK(klipper_probe.observed.front().marker ==
+          RAW_GCODE_READER_MARKER_PAUSE_PRINT);
+    CHECK(klipper_probe.observed.front().line_number == 0);
 }
 
 TEST_CASE("G-code reader invalidates stale state after an unknown command",
@@ -1029,6 +1651,50 @@ TEST_CASE("Built-in Readers recover plan object instance transitions",
         CHECK(result.moves[0].object_id == 0);
         CHECK(result.moves[1].object_id == 1);
     }
+}
+
+TEST_CASE("Firmware and legacy object labels do not duplicate transitions",
+          "[plugins][gcode][reader][viewer][object-instance][markers]")
+{
+    ensure_plugin_test_runtime_initialized();
+    const std::string source =
+        "M486 S0\n"
+        "; SLIC3R_OBJECT_INSTANCE_ID=0\n"
+        "G1 X1 F60\n"
+        "M486 S-1\n"
+        "; SLIC3R_OBJECT_INSTANCE_ID=-1\n"
+        "M486 S1\n"
+        "; SLIC3R_OBJECT_INSTANCE_ID=1\n"
+        "G1 X2\n"
+        "M486 S-1\n"
+        "; SLIC3R_OBJECT_INSTANCE_ID=-1\n";
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    ReaderProbe probe;
+    probe.chunks = {source};
+
+    REQUIRE(execute_reader("gcode.reader.marlin2", probe, initial) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    std::vector<uint32_t> transitions;
+    for (const ObservedEvent &event : probe.observed) {
+        const std::optional<double> object = observed_item_value(
+            event, RAW_GCODE_READER_ITEM_OBJECT);
+        if (object)
+            transitions.push_back(static_cast<uint32_t>(*object));
+    }
+    CHECK(transitions == std::vector<uint32_t>{
+        0, UINT32_MAX, 1, UINT32_MAX
+    });
+
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const GCodeProcessorResult result = service.read_for_viewer(
+        "gcode.reader.marlin2", source);
+    REQUIRE(result.moves.size() == 2);
+    CHECK(result.moves[0].object_id == 0);
+    CHECK(result.moves[1].object_id == 1);
+    REQUIRE(result.object_names.size() == 2);
+    CHECK(result.object_names[0] == "Object 0");
+    CHECK(result.object_names[1] == "Object 1");
 }
 
 TEST_CASE("Host G-code reader excludes retraction recovery from material usage",

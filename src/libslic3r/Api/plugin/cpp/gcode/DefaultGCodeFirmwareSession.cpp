@@ -19,6 +19,7 @@
 #include "libslic3r/Api/plugin/cpp/ExtrusionTreeVisitors.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeLineParser.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeStateTracker.hpp"
+#include "libslic3r/ExtrusionRole.hpp"
 
 /*
 Standard PrintingPlan firmware implementation
@@ -86,6 +87,57 @@ bool coordinates_differ(const c_vec3d &lhs, const c_vec3d &rhs)
 {
     return lhs.x != rhs.x || lhs.y != rhs.y || lhs.z != rhs.z;
 }
+
+bool is_printable_role(raw_extrusion_role role)
+{
+    return !RAW_EXTRUSION_ROLE_IS_TRAVEL(role) &&
+           !RAW_EXTRUSION_ROLE_IS_WIPE(role) &&
+           !RAW_EXTRUSION_ROLE_IS_RETRACT(role) &&
+           !RAW_EXTRUSION_ROLE_IS_UNRETRACT(role);
+}
+
+bool extrusion_tree_has_segments(const ExtrusionEntity &root)
+{
+    // A closed entity may contain only one stored point. Seam markers require
+    // at least one serialized segment, including when geometry is nested.
+    std::vector<ExtrusionEntity> pending{root};
+    while (!pending.empty()) {
+        const ExtrusionEntity entity = pending.back();
+        pending.pop_back();
+        if (entity.segment_count() > 0)
+            return true;
+        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+            pending.push_back(entity.child(child_idx));
+    }
+    return false;
+}
+
+class FirstPrintableHeightVisitor final : public ExtrusionTreeConstVisitor<>
+{
+public:
+    std::optional<float> find(const ExtrusionEntity &root)
+    {
+        m_height.reset();
+        traverse(root);
+        return m_height;
+    }
+
+protected:
+    void visit_leaf(ExtrusionEntity entity) override
+    {
+        if (m_height || entity.segment_count() == 0)
+            return;
+        const EPropertyAttributes *attributes = current_property(EPropertyAttributes::key);
+        if (attributes == nullptr || !is_printable_role(attributes->extrusion_role()))
+            return;
+        const float height = attributes->c_extrusion_property_attributes::height;
+        if (std::isfinite(height) && height > 0.f)
+            m_height = height;
+    }
+
+private:
+    std::optional<float> m_height;
+};
 
 // Convert an optional process acceleration into the integer unit accepted by
 // firmware commands. Absence is meaningful: it leaves the printer's current
@@ -209,6 +261,7 @@ public:
         m_output.clear();
         m_state = RequestedState{};
         m_parent_states.clear();
+        m_loop_depth = 0;
         traverse(root);
         return m_output;
     }
@@ -216,6 +269,9 @@ public:
 protected:
     void enter_node(ExtrusionEntity entity) override
     {
+        if (entity.is_loop())
+            ++m_loop_depth;
+
         // Save the inherited request before applying direct properties. The
         // matching leave_node() restores this exact value for the next sibling.
         m_parent_states.push_back(m_state);
@@ -270,10 +326,17 @@ protected:
 
     void leave_node(ExtrusionEntity entity) override
     {
+        // Only the outer boundary of one composed loop owns its seam. Loop
+        // children remain implementation details of that complete path.
+        const bool closes_loop = entity.is_loop() && m_loop_depth == 1;
+        if (closes_loop)
+            m_output += m_session.write_seam_marker(entity);
         // Requested values are lexical tree state. Machine position, E and
         // already encoded values live in the session objects and are therefore
         // intentionally not restored here.
         m_output += m_session.leave_extrusion_node(entity);
+        if (entity.is_loop())
+            --m_loop_depth;
         m_state = m_parent_states.back();
         m_parent_states.pop_back();
         m_session.apply_requested_state(m_state);
@@ -283,6 +346,7 @@ private:
     DefaultGCodeFirmwareSession &m_session;
     RequestedState m_state;
     std::vector<RequestedState> m_parent_states;
+    uint32_t m_loop_depth = 0;
     std::string m_output;
 };
 
@@ -315,6 +379,9 @@ void DefaultGCodeFirmwareSession::setup(const Config &config)
     m_formatter.reset(new GCodeFormatter(uint16_t(xyz_precision), uint16_t(e_precision)));
     m_current_extruder_idx.reset();
     m_layer_print_z = 0;
+    m_marker_role.reset();
+    m_marker_width.reset();
+    m_marker_height.reset();
     m_last_layer_used_filament.assign(m_extruders.size(), 0.0);
     m_script_processing_tool.reset();
     m_xyz_relative_mode = false;
@@ -426,12 +493,108 @@ std::string DefaultGCodeFirmwareSession::begin_layer(const PrintingLayerGroup &l
 {
     if (!m_is_setup)
         throw std::logic_error("The firmware session was not initialized by begin_print().");
+    const std::optional<float> height = reliable_layer_height(layer);
+    std::string output = ";LAYER_CHANGE\n;Z:" +
+        format_number(unscaled(layer.print_z())) + "\n";
+    if (height)
+        output += ";HEIGHT:" + format_number(*height) + "\n";
+
     m_layer_print_z = layer.print_z();
+    if (height)
+        m_marker_height = *height;
     // A layer boundary is structural, not a machine movement. Explicit travel
     // geometry may first finish a wipe at the preceding Z and then apply a
     // ramped lift. When no such geometry exists, write_leaf_geometry() still
     // provides the legacy straight fallback to the first point at this Z.
-    return {};
+    return output;
+}
+
+std::optional<float> DefaultGCodeFirmwareSession::reliable_layer_height(
+    const PrintingLayerGroup &layer) const
+{
+    if (layer.layer_count() > 0) {
+        const Layer first_layer = layer.layer(0);
+        if (!first_layer.valid() || first_layer.height() <= 0)
+            throw std::invalid_argument("A source layer needs a positive height.");
+        const coord_t height = first_layer.height();
+        for (uint32_t layer_idx = 1; layer_idx < layer.layer_count(); ++layer_idx) {
+            const Layer source_layer = layer.layer(layer_idx);
+            if (!source_layer.valid() || source_layer.height() != height)
+                throw std::invalid_argument(
+                    "Layers grouped at one print Z must have the same height.");
+        }
+        return float(unscaled(height));
+    }
+
+    FirstPrintableHeightVisitor visitor;
+    for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+        const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+        for (uint32_t extrusion_idx = 0;
+             extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+            const ExtrusionEntity root = tool_group.extrusion(extrusion_idx).root();
+            if (root.empty())
+                continue;
+            const std::optional<float> height = visitor.find(root);
+            if (height)
+                return height;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string DefaultGCodeFirmwareSession::write_printable_markers(
+    const EPropertyAttributes &attributes)
+{
+    const float width = attributes.c_extrusion_property_attributes::width;
+    const float height = attributes.c_extrusion_property_attributes::height;
+    if (!std::isfinite(width) || width <= 0.f ||
+        !std::isfinite(height) || height <= 0.f)
+        throw std::invalid_argument(
+            "A printable extrusion needs positive finite width and height attributes.");
+
+    const Slic3r::ExtrusionRole role(
+        Slic3r::ExtrusionRoleModifier(uint16_t(attributes.extrusion_role())));
+    const Slic3r::GCodeExtrusionRole legacy_role =
+        Slic3r::extrusion_role_to_gcode_extrusion_role(role);
+    const uint8_t encoded_role = uint8_t(legacy_role);
+    const bool role_changed = !m_marker_role || *m_marker_role != encoded_role;
+    const bool width_changed = !m_marker_width || *m_marker_width != width;
+    const bool height_changed = !m_marker_height || *m_marker_height != height;
+
+    std::string output;
+    if (role_changed)
+        output += ";TYPE:" + Slic3r::gcode_extrusion_role_to_string(legacy_role) + "\n";
+    if (width_changed)
+        output += ";WIDTH:" + format_number(width) + "\n";
+    if (height_changed)
+        output += ";HEIGHT:" + format_number(height) + "\n";
+
+    if (role_changed)
+        m_marker_role = encoded_role;
+    if (width_changed)
+        m_marker_width = width;
+    if (height_changed)
+        m_marker_height = height;
+    return output;
+}
+
+std::string DefaultGCodeFirmwareSession::write_seam_marker(
+    const ExtrusionEntity &loop) const
+{
+    if (!loop.is_loop() || !extrusion_tree_has_segments(loop))
+        return {};
+    if (!m_current_extruder_idx || !m_gantry.position())
+        return {};
+
+    const c_vec3d serialized_start = m_formatter->quantize(machine_position(loop.front(), 0));
+    const c_vec3d current_position = *m_gantry.position();
+    if (serialized_start.x != current_position.x ||
+        serialized_start.y != current_position.y)
+        return {};
+
+    const uint16_t precision = m_formatter->m_gcode_precision_xyz;
+    return ";SEAM:" + format_number(current_position.x, precision) + ":" +
+           format_number(current_position.y, precision) + "\n";
 }
 
 std::string DefaultGCodeFirmwareSession::begin_tool_group(const PrintingToolGroup &tool_group)
@@ -493,8 +656,7 @@ std::string DefaultGCodeFirmwareSession::end_group()
 std::string DefaultGCodeFirmwareSession::end_print()
 {
     std::string output = transition_object(uint32_t(-1));
-    output += m_wipe_tag_open ? ";WIPE_END\n" : "";
-    m_wipe_tag_open = false;
+    output += transition_wipe_marker(false);
     return output + m_preamble->finish();
 }
 
@@ -692,13 +854,23 @@ std::string DefaultGCodeFirmwareSession::move_to_group_start(const PrintingGroup
                 PreparedMove move;
                 move.kind = PreparedMove::Kind::Travel;
                 move.destination = destination;
-                const std::string output = write_lines(move);
+                const std::string output = transition_wipe_marker(false) + write_lines(move);
                 m_gantry.request_speed(inherited_speed);
                 return output;
             }
         }
     }
     return {};
+}
+
+std::string DefaultGCodeFirmwareSession::transition_wipe_marker(const bool wipe)
+{
+    if (wipe == m_wipe_tag_open)
+        return {};
+
+    const std::string output = wipe ? ";WIPE_START\n" : ";WIPE_END\n";
+    m_wipe_tag_open = wipe;
+    return output;
 }
 
 void DefaultGCodeFirmwareSession::apply_requested_state(const RequestedState &state)
@@ -823,14 +995,9 @@ std::string DefaultGCodeFirmwareSession::write_leaf_geometry(const ExtrusionEnti
             m_gantry.request_print_acceleration(acceleration);
     }
     apply_requested_state(state);
-    std::string output;
-    if (is_wipe && !m_wipe_tag_open) {
-        output += ";WIPE_START\n";
-        m_wipe_tag_open = true;
-    } else if (!is_wipe && m_wipe_tag_open) {
-        output += ";WIPE_END\n";
-        m_wipe_tag_open = false;
-    }
+    std::string output = is_wipe ? std::string() : transition_wipe_marker(false);
+    if (is_printable_role(state.attributes->extrusion_role()))
+        output += write_printable_markers(*state.attributes);
     const c_extrusion_segment first_segment = leaf.segment(0);
     const c_vec3d first_position = machine_position(
         first_segment.point_a, state.z_offset + first_segment.z_offset_a);
@@ -845,9 +1012,13 @@ std::string DefaultGCodeFirmwareSession::write_leaf_geometry(const ExtrusionEnti
         PreparedMove travel;
         travel.kind = PreparedMove::Kind::Travel;
         travel.destination = first_position;
+        output += transition_wipe_marker(false);
         output += write_lines(travel);
         m_gantry.request_speed(print_speed);
     }
+
+    if (is_wipe)
+        output += transition_wipe_marker(true);
 
     // A semantic geometric request is resolved from the live E state once for
     // the complete leaf. The axis state returns one already-quantized value per
@@ -916,14 +1087,9 @@ std::string DefaultGCodeFirmwareSession::write_leaf_geometry(const ExtrusionEnti
     if (planned_axis)
         current_extruder().extrusion_axis() = *planned_axis;
     if (native_unretract_pending) {
-        if (m_wipe_tag_open) {
-            output += ";WIPE_END\n";
-            m_wipe_tag_open = false;
-        }
-        output += write_native_unretract();
-    } else if (is_unretract && m_wipe_tag_open) {
-        output += ";WIPE_END\n";
-        m_wipe_tag_open = false;
+        const std::string command = write_native_unretract();
+        if (!command.empty())
+            output += transition_wipe_marker(false) + command;
     }
     return output;
 }
@@ -936,10 +1102,6 @@ std::string DefaultGCodeFirmwareSession::write_extrusion_axis_event(
         throw std::invalid_argument("An extrusion-axis event has no active tool.");
 
     std::string output;
-    if (m_wipe_tag_open) {
-        output += ";WIPE_END\n";
-        m_wipe_tag_open = false;
-    }
     apply_requested_state(state);
     DefaultExtruder &tool = current_extruder();
     const std::optional<double> inherited_speed = m_gantry.requested_speed();
@@ -958,13 +1120,16 @@ std::string DefaultGCodeFirmwareSession::write_extrusion_axis_event(
             return output;
         }
         if (m_use_firmware_retraction) {
-            output += write_native_retract(axis.value);
+            const std::string command = write_native_retract(axis.value);
+            if (!command.empty())
+                output += transition_wipe_marker(false) + command;
         } else {
             if (tool.extrusion_axis().retract_speed() > 0.0)
                 m_gantry.request_speed(tool.extrusion_axis().retract_speed());
             PreparedMove move;
             move.kind = PreparedMove::Kind::Extrusion;
             move.extrusion = tool.extrusion_axis().retract(axis.value);
+            output += transition_wipe_marker(false);
             output += write_lines(move);
         }
     } else if (RAW_EXTRUSION_ROLE_IS_UNRETRACT(role)) {
@@ -977,13 +1142,16 @@ std::string DefaultGCodeFirmwareSession::write_extrusion_axis_event(
             return output;
         }
         if (m_use_firmware_retraction) {
-            output += write_native_unretract();
+            const std::string command = write_native_unretract();
+            if (!command.empty())
+                output += transition_wipe_marker(false) + command;
         } else {
             if (tool.extrusion_axis().deretract_speed() > 0.0)
                 m_gantry.request_speed(tool.extrusion_axis().deretract_speed());
             PreparedMove move;
             move.kind = PreparedMove::Kind::Extrusion;
             move.extrusion = tool.extrusion_axis().unretract();
+            output += transition_wipe_marker(false);
             output += write_lines(move);
         }
     } else {
@@ -1033,7 +1201,7 @@ std::string DefaultGCodeFirmwareSession::write_special_command(
         PreparedMove move;
         move.kind = PreparedMove::Kind::Extrusion;
         move.extrusion = tool.extrusion_axis().extrude(command.extra_data);
-        const std::string output = write_lines(move);
+        const std::string output = transition_wipe_marker(false) + write_lines(move);
         m_gantry.request_speed(inherited_speed);
         return output;
     }

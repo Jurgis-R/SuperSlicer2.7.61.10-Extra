@@ -41,9 +41,11 @@ PrintingPlan, borrowed firmware session, and resolved final output path.
 
 Before crossing that plugin boundary, the step validates the process speed of
 every geometric leaf and explicit E-only extrusion command, including those in
-before/after scope events. This is the last common point where the host can
-describe an invalid tree with its complete PrintingPlan location; a firmware
-session sees only one borrowed tree at a time and cannot recover that context.
+before/after scope events. It also rejects printable roles which cannot be
+converted safely to the legacy marker vocabulary. This is the last common
+point where the host can describe an invalid tree with its complete
+PrintingPlan location; a firmware session sees only one borrowed tree at a
+time and cannot recover that context.
 
 File format decisions still belong to the selected plugin, so external writers
 can replace the built-in implementation without changing the pipeline runner.
@@ -74,7 +76,7 @@ whose path contains it.
 struct SpeedTraversalState
 {
     std::optional<float> effective_speed;
-    std::optional<uint16_t> effective_role;
+    std::optional<raw_extrusion_role> effective_role;
     std::vector<SpeedDeclaration> declarations;
     bool has_non_finite_speed = false;
 };
@@ -122,6 +124,7 @@ struct SpeedValidationReport
     size_t extrusion_e_only_error_count = 0;
     size_t scope_event_error_count = 0;
     size_t missing_root_count = 0;
+    size_t unsupported_role_error_count = 0;
     std::vector<std::string> details;
 
     void add_speed_error(std::string detail)
@@ -155,6 +158,14 @@ struct SpeedValidationReport
         if (details.size() < MaximumReportedValidationErrors)
             details.push_back(std::move(detail));
     }
+
+    void add_unsupported_role_error(std::string detail)
+    {
+        ++error_count;
+        ++unsupported_role_error_count;
+        if (details.size() < MaximumReportedValidationErrors)
+            details.push_back(std::move(detail));
+    }
 };
 
 /* Return a readable value while preserving NaN and infinity signs. */
@@ -162,6 +173,9 @@ std::string speed_value_text(float value);
 
 /* Return the number of DefaultExtruder instances created by the firmware. */
 size_t configured_extruder_count(const Print &print);
+
+/* Return true when marker serialization can safely convert this raw role. */
+bool is_supported_legacy_marker_role(raw_extrusion_role role);
 
 /* Format the zero-based path used by PrintingPlan and the debugger. */
 std::string extrusion_tree_path(const PrintingTreeLocation &location,
@@ -188,6 +202,13 @@ std::string geometric_speed_error(const Print &print,
                                   const PrintingTreeLocation &location,
                                   const std::vector<size_t> &child_path,
                                   const SpeedTraversalState &state);
+
+/* Explain a geometric role which has no safe legacy marker conversion. */
+std::string unsupported_role_error(const Print &print,
+                                   const ExtrusionEntity &entity,
+                                   const PrintingTreeLocation &location,
+                                   const std::vector<size_t> &child_path,
+                                   raw_extrusion_role role);
 
 /* Append every lexical speed declaration used to resolve one movement. */
 void append_speed_declarations(std::ostringstream &out,
@@ -325,6 +346,61 @@ size_t configured_extruder_count(const Print &print)
         config.extruder_offset.size(),
         config.extrusion_multiplier.size()
     });
+}
+
+bool is_supported_legacy_marker_role(const raw_extrusion_role role)
+{
+    // Process-only roles never request a TYPE marker and therefore keep their
+    // existing firmware behavior without entering the legacy converter.
+    if (RAW_EXTRUSION_ROLE_IS_TRAVEL(role) ||
+        RAW_EXTRUSION_ROLE_IS_WIPE(role) ||
+        RAW_EXTRUSION_ROLE_IS_RETRACT(role) ||
+        RAW_EXTRUSION_ROLE_IS_UNRETRACT(role))
+        return true;
+
+    constexpr uint32_t known_mask = (uint32_t(1) << 16) - 1;
+    constexpr uint32_t base_mask =
+        uint32_t(RAW_EXTRUSION_ROLE_PERIMETER) |
+        uint32_t(RAW_EXTRUSION_ROLE_INFILL) |
+        uint32_t(RAW_EXTRUSION_ROLE_SUPPORT) |
+        uint32_t(RAW_EXTRUSION_ROLE_SKIRT) |
+        uint32_t(RAW_EXTRUSION_ROLE_WIPE_TOWER) |
+        uint32_t(RAW_EXTRUSION_ROLE_TRAVEL) |
+        uint32_t(RAW_EXTRUSION_ROLE_MILL) |
+        uint32_t(RAW_EXTRUSION_ROLE_MIXED);
+    const uint32_t bits = static_cast<uint32_t>(role);
+    const uint32_t base = bits & base_mask;
+    if ((bits & ~known_mask) != 0 ||
+        (bits != 0 && (base == 0 || (base & (base - 1)) != 0)))
+        return false;
+
+    // The legacy converter accepts all overhang-perimeter and wipe-tower
+    // refinements. Other printable roles have one exact canonical bit shape.
+    if (base == RAW_EXTRUSION_ROLE_WIPE_TOWER ||
+        (base == RAW_EXTRUSION_ROLE_PERIMETER &&
+         RAW_EXTRUSION_ROLE_IS_BRIDGE(role)))
+        return true;
+
+    switch (role) {
+    case RAW_EXTRUSION_ROLE_NONE:
+    case RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER:
+    case RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER:
+    case RAW_EXTRUSION_ROLE_INTERNAL_INFILL:
+    case RAW_EXTRUSION_ROLE_SOLID_INFILL:
+    case RAW_EXTRUSION_ROLE_TOP_SOLID_INFILL:
+    case RAW_EXTRUSION_ROLE_IRONING_INFILL:
+    case RAW_EXTRUSION_ROLE_BRIDGE_INFILL:
+    case RAW_EXTRUSION_ROLE_INTERNAL_BRIDGE_INFILL:
+    case RAW_EXTRUSION_ROLE_GAP_FILL:
+    case RAW_EXTRUSION_ROLE_THIN_WALL:
+    case RAW_EXTRUSION_ROLE_SKIRT:
+    case RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL:
+    case RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL_INTERFACE:
+    case RAW_EXTRUSION_ROLE_MILLING:
+        return true;
+    default:
+        return false;
+    }
 }
 
 std::string extrusion_tree_path(const PrintingTreeLocation &location,
@@ -488,6 +564,22 @@ std::string geometric_speed_error(const Print &print,
     return out.str();
 }
 
+std::string unsupported_role_error(const Print &print,
+                                   const ExtrusionEntity &entity,
+                                   const PrintingTreeLocation &location,
+                                   const std::vector<size_t> &child_path,
+                                   const raw_extrusion_role role)
+{
+    std::ostringstream out;
+    out << "PrintingPlan location: " << extrusion_tree_path(location, child_path) << "\n";
+    append_plan_source_context(out, print, location);
+    out << "Entity: id=" << entity.get_id()
+        << ", type=" << extrusion_entity_type(entity) << "\n"
+        << "Reason: unsupported effective extrusion role raw=" << role
+        << " has no safe legacy G-code marker conversion.\n";
+    return out.str();
+}
+
 void append_speed_declarations(std::ostringstream &out,
                                const PrintingTreeLocation &location,
                                const SpeedTraversalState &state)
@@ -627,6 +719,11 @@ void validate_extrusion_tree_movements(const Print &print,
     // policy and runtime extrusion-axis state rather than only on this tree.
     if (!geometric_movement)
         return;
+    if (state.effective_role &&
+        !is_supported_legacy_marker_role(*state.effective_role)) {
+        report.add_unsupported_role_error(unsupported_role_error(
+            print, entity, location, child_path, *state.effective_role));
+    }
     if (!state.has_non_finite_speed && state.effective_speed &&
         std::isfinite(*state.effective_speed) && *state.effective_speed > 0.f)
         return;
@@ -680,6 +777,10 @@ std::string speed_validation_message(const SpeedValidationReport &report)
     if (report.missing_root_count > 0)
         out << report.missing_root_count << " PrintingExtrusion "
             << (report.missing_root_count == 1 ? "has" : "entries have") << " no root.\n";
+    if (report.unsupported_role_error_count > 0)
+        out << report.unsupported_role_error_count << " geometric extrusion "
+            << (report.unsupported_role_error_count == 1 ? "leaf has" : "leaves have")
+            << " an unsupported effective role which cannot be converted to a legacy marker.\n";
     out << "All PrintingPlan indices below are zero-based.\n";
     for (size_t detail_idx = 0; detail_idx < report.details.size(); ++detail_idx)
         out << "\n[" << detail_idx + 1 << "/" << report.error_count << "]\n"

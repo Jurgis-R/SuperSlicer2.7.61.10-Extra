@@ -249,6 +249,10 @@ private:
     std::string select_extruder(uint16_t tool_id, bool emit_command = true);
     std::string move_to_group_start(const PrintingGroup &group);
     std::string write_extrusion_tree(const ExtrusionEntity &root);
+    std::optional<float> reliable_layer_height(const PrintingLayerGroup &layer) const;
+    std::string write_printable_markers(const EPropertyAttributes &attributes);
+    std::string write_seam_marker(const ExtrusionEntity &loop) const;
+    std::string transition_wipe_marker(bool wipe);
     std::string write_lines(const PreparedMove &move);
     std::string write_leaf_geometry(const ExtrusionEntity &leaf, const RequestedState &state);
     std::string write_extrusion_axis_event(const EPropertyExtrusionAxis &axis,
@@ -286,6 +290,9 @@ private:
     std::optional<uint16_t> m_current_extruder_idx;
     std::unique_ptr<GCodeFormatter> m_formatter;
     coord_t m_layer_print_z = 0;
+    std::optional<uint8_t> m_marker_role;
+    std::optional<float> m_marker_width;
+    std::optional<float> m_marker_height;
     std::vector<double> m_last_layer_used_filament;
     std::optional<uint16_t> m_script_processing_tool;
     bool m_xyz_relative_mode = false;

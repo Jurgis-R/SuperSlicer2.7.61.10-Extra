@@ -231,12 +231,20 @@ protected:
 private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
+    // Parse one comment-only line using the historical SuperSlicer marker
+    // vocabulary before object markers or neutral-line handling run.
+    bool consume_common_comment(const plugin_run_context &run_context,
+                                const run_ctx_gcode_reader &context,
+                                GCodeStateTracker &state,
+                                const GCodeLineParser::GCodeLine &line,
+                                std::optional<raw_gcode_reader_marker_type> &pending_action) const;
     // Parse one physical line and publish events carrying the tracker's current
     // zero-based line number. The text excludes CR/LF terminators.
     void consume_line(const plugin_run_context &run_context,
                       const run_ctx_gcode_reader &context,
                       GCodeStateTracker &state,
-                      std::string_view text) const;
+                      std::string_view text,
+                      std::optional<raw_gcode_reader_marker_type> &pending_action) const;
 };
 
 }}} // namespace slic3r_api::GCodeGeneration::Reader
