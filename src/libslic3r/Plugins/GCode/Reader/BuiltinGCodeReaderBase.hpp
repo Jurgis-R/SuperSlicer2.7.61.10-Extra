@@ -100,6 +100,12 @@ protected:
                                const run_ctx_gcode_reader &context,
                                GCodeStateTracker &state,
                                const GCodeLineParser::GCodeLine &line) const;
+    // Apply the default homing convention: selected axes become logical zero.
+    // Firmware-specific readers may override this when homing offsets differ.
+    virtual void process_G28(const plugin_run_context &run_context,
+                             const run_ctx_gcode_reader &context,
+                             GCodeStateTracker &state,
+                             const GCodeLineParser::GCodeLine &line) const;
     // Resolve an arc destination and its I/J/K offsets, recording whether the
     // command selected clockwise G2 or counter-clockwise G3 interpolation.
     virtual void process_G2_G3(const plugin_run_context &run_context,

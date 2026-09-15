@@ -537,6 +537,38 @@ void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_conte
     publish_items(run_context, context, state, RAW_GCODE_READER_EVENT_INVALIDATE, items);
 }
 
+void BuiltinGCodeReaderBase::process_G28(
+    const plugin_run_context &run_context,
+    const run_ctx_gcode_reader &context,
+    GCodeStateTracker &state,
+    const GCodeLineParser::GCodeLine &line) const
+{
+    // G28 selects axes by parameter presence; X0 is not a coordinate target.
+    // The default Reader follows the common firmware convention that homing
+    // establishes logical zero. A firmware-specific Reader may override this
+    // virtual handler when its configured home position is different.
+    const bool has_x = line.has_parameter('X');
+    const bool has_y = line.has_parameter('Y');
+    const bool has_z = line.has_parameter('Z');
+    std::vector<raw_gcode_reader_event_item> items;
+    if (!has_x && !has_y && !has_z) {
+        items = {
+            {RAW_GCODE_READER_ITEM_X, 0, 0.0},
+            {RAW_GCODE_READER_ITEM_Y, 0, 0.0},
+            {RAW_GCODE_READER_ITEM_Z, 0, 0.0}
+        };
+    } else {
+        if (has_x)
+            items.push_back({RAW_GCODE_READER_ITEM_X, 0, 0.0});
+        if (has_y)
+            items.push_back({RAW_GCODE_READER_ITEM_Y, 0, 0.0});
+        if (has_z)
+            items.push_back({RAW_GCODE_READER_ITEM_Z, 0, 0.0});
+    }
+    publish_items(run_context, context, state,
+                  RAW_GCODE_READER_EVENT_SET_POSITION, items);
+}
+
 bool BuiltinGCodeReaderBase::consume_common_comment(
     const plugin_run_context &run_context,
     const run_ctx_gcode_reader &context,
@@ -799,6 +831,8 @@ bool BuiltinGCodeReaderBase::consume_numeric_command(
         process_G0_G1(run_context, context, state, line);
     else if (letter == 'G' && (number == 2 || number == 3))
         process_G2_G3(run_context, context, state, line, number);
+    else if (letter == 'G' && number == 28)
+        process_G28(run_context, context, state, line);
     else if (letter == 'G' && (number == 20 || number == 21))
         process_G20_G21(run_context, context, state, number);
     else if (letter == 'G' && (number == 90 || number == 91))
@@ -825,6 +859,11 @@ bool BuiltinGCodeReaderBase::consume_numeric_command(
         process_M117(run_context, context, state);
     else if (letter == 'M' && number == 486)
         process_M486(run_context, context, state, line);
+    else if (letter == 'M' && (number == 17 || number == 18 || number == 84))
+        // Motor enable/disable is not part of the portable state model. The
+        // command is nevertheless recognized so it does not invalidate
+        // unrelated coordinates or appear as an unknown-command warning.
+        publish_state_update(run_context, context, state);
     else
         return false;
     return true;

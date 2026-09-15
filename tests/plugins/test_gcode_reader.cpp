@@ -1137,6 +1137,77 @@ TEST_CASE("G-code reader invalidates stale state after an unknown command",
     CHECK(probe.observed[1].kind == RAW_GCODE_READER_EVENT_INVALIDATE);
 }
 
+TEST_CASE("Built-in readers recognize homing and motor commands",
+          "[plugins][gcode][reader][common-commands]")
+{
+    ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+
+    SECTION("G28 without an axis resets every Cartesian coordinate") {
+        const slic3r_api::GCodeStateTracker state = read_gcode(
+            orchestrator, nullptr, "gcode.reader.default", initial, "G28\n");
+        CHECK(state.x() == Approx(0.0));
+        CHECK(state.y() == Approx(0.0));
+        CHECK(state.z() == Approx(0.0));
+        CHECK(state.e(0) == Approx(0.0));
+        CHECK(state.active_tool() == 0u);
+        CHECK(state.value(RAW_GCODE_READER_ITEM_XYZ_ABSOLUTE) == Approx(1.0));
+    }
+
+    SECTION("G28 only resets explicitly selected axes") {
+        const slic3r_api::GCodeStateTracker state = read_gcode(
+            orchestrator, nullptr, "gcode.reader.marlin2", initial,
+            "G28 X0 Y0\n");
+        CHECK(state.x() == Approx(0.0));
+        CHECK(state.y() == Approx(0.0));
+        CHECK(state.z() == Approx(3.0));
+
+        const slic3r_api::GCodeStateTracker x_only = read_gcode(
+            orchestrator, nullptr, "gcode.reader.marlin2", initial,
+            "G28 X0\n");
+        CHECK(x_only.x() == Approx(0.0));
+        CHECK(x_only.y() == Approx(2.0));
+        CHECK(x_only.z() == Approx(3.0));
+    }
+
+    SECTION("motor commands are neutral") {
+        ReaderProbe probe;
+        probe.chunks = {"M17\nM18\nM84\n"};
+        REQUIRE(execute_default_reader(probe, initial) ==
+                RAW_PLUGIN_EXECUTION_SUCCESS);
+        REQUIRE(probe.final_state);
+        CHECK(probe.final_state->x() == Approx(1.0));
+        CHECK(probe.final_state->y() == Approx(2.0));
+        CHECK(probe.final_state->z() == Approx(3.0));
+        CHECK(probe.final_state->line_number() == 3u);
+        REQUIRE(probe.observed.size() == 3);
+        CHECK(probe.observed[0].line_number == 0u);
+        CHECK(probe.observed[1].line_number == 1u);
+        CHECK(probe.observed[2].line_number == 2u);
+        for (const ObservedEvent &event : probe.observed)
+            CHECK_FALSE(event.diagnostic);
+    }
+
+    SECTION("the viewer preserves the homing discontinuity") {
+        GCodeReaderService service(orchestrator, nullptr);
+        const GCodeProcessorResult result = service.read_for_viewer(
+            "gcode.reader.marlin2",
+            "G1 X10 Y20 Z30 F60\n"
+            "G28 X0\n"
+            "G1 X20 Y30 Z40 F60\n");
+        REQUIRE(result.moves.size() == 2);
+        CHECK(result.moves.front().position.x() == Approx(10.0));
+        CHECK(result.moves.front().position.y() == Approx(20.0));
+        CHECK(result.moves.front().position.z() == Approx(30.0));
+        CHECK(result.moves.back().position.x() == Approx(20.0));
+        CHECK(result.moves.back().position.y() == Approx(30.0));
+        CHECK(result.moves.back().position.z() == Approx(40.0));
+        CHECK(result.reader_diagnostics.empty());
+    }
+}
+
 TEST_CASE("G-code reader detection recognizes firmware tags and falls back deterministically",
           "[plugins][gcode][reader][probe]")
 {
@@ -1479,6 +1550,95 @@ TEST_CASE("Host G-code reader builds viewer movements and derived statistics",
           Approx(filament_area * 10.0));
     CHECK(result.print_statistics.modes[0].time == Approx(12.0));
     CHECK(result.print_statistics.modes[0].travel_time == Approx(6.0));
+}
+
+TEST_CASE("G92 placement does not remove viewer movements",
+          "[plugins][gcode][reader][viewer][g92]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const std::string reset_before_travel =
+        "G92 E0\n"
+        "G1 X10 Y10 F600\n"
+        "G1 X20 Y10 E1 F600\n"
+        "G1 X30 Y10 E2 F600\n";
+    const std::string reset_after_travel =
+        "G1 X10 Y10 F600\n"
+        "G92 E0\n"
+        "G1 X20 Y10 E1 F600\n"
+        "G1 X30 Y10 E2 F600\n";
+
+    const std::vector<std::string> reader_ids = {
+        "gcode.reader.default", "gcode.reader.marlin1"
+    };
+    for (const std::string &reader_id : reader_ids) {
+        CAPTURE(reader_id);
+        const GCodeProcessorResult before = service.read_for_viewer(
+            reader_id, reset_before_travel);
+        const GCodeProcessorResult after = service.read_for_viewer(
+            reader_id, reset_after_travel);
+
+        REQUIRE(before.moves.size() == 3);
+        REQUIRE(after.moves.size() == before.moves.size());
+        for (size_t move_idx = 0; move_idx < before.moves.size(); ++move_idx) {
+            CAPTURE(move_idx);
+            const GCodeProcessorResult::MoveVertex &lhs = before.moves[move_idx];
+            const GCodeProcessorResult::MoveVertex &rhs = after.moves[move_idx];
+            CHECK(lhs.type == rhs.type);
+            CHECK(lhs.position.x() == Approx(rhs.position.x()));
+            CHECK(lhs.position.y() == Approx(rhs.position.y()));
+            CHECK(lhs.position.z() == Approx(rhs.position.z()));
+            CHECK(lhs.delta_extruder == Approx(rhs.delta_extruder));
+            CHECK(lhs.feedrate == Approx(rhs.feedrate));
+            CHECK(lhs.mm3_per_mm == Approx(rhs.mm3_per_mm));
+        }
+        CHECK(before.moves[0].type == EMoveType::Travel);
+        CHECK(before.moves[1].type == EMoveType::Extrude);
+        CHECK(before.moves[2].type == EMoveType::Extrude);
+    }
+}
+
+TEST_CASE("G92 preserves the first extrusion in absolute and relative E modes",
+          "[plugins][gcode][reader][viewer][g92]")
+{
+    ensure_plugin_test_runtime_initialized();
+    GCodeReaderService service(Orchestrator::instance(), nullptr);
+    const std::vector<std::string> reader_ids = {
+        "gcode.reader.default", "gcode.reader.marlin1"
+    };
+    for (const std::string &reader_id : reader_ids) {
+        CAPTURE(reader_id);
+        const GCodeProcessorResult absolute = service.read_for_viewer(
+            reader_id,
+            "M82\n"
+            "G0 X33.878 Y40.185 Z0.3 F7800\n"
+            "G92 E0\n"
+            "G1 X29.878 E1.874 F1800\n"
+            "G1 X28.438 Y40.01 E0.06796\n");
+        const GCodeProcessorResult relative = service.read_for_viewer(
+            reader_id,
+            "M83\n"
+            "G0 X33.878 Y40.185 Z0.3 F7800\n"
+            "G92 E0\n"
+            "G1 X29.878 E1.874 F1800\n"
+            "G1 X28.438 Y40.01 E0.06796\n");
+
+        REQUIRE(absolute.moves.size() == 3);
+        REQUIRE(relative.moves.size() == 3);
+        CHECK(absolute.moves[0].type == EMoveType::Travel);
+        CHECK(absolute.moves[1].type == EMoveType::Extrude);
+        CHECK(absolute.moves[1].delta_extruder == Approx(1.874));
+        CHECK(absolute.moves[1].mm3_per_mm > 0.0f);
+        CHECK(absolute.moves[2].type == EMoveType::Travel);
+        CHECK(absolute.moves[2].delta_extruder == Approx(0.06796 - 1.874));
+        CHECK(relative.moves[0].type == EMoveType::Travel);
+        CHECK(relative.moves[1].type == EMoveType::Extrude);
+        CHECK(relative.moves[1].delta_extruder == Approx(1.874));
+        CHECK(relative.moves[1].mm3_per_mm > 0.0f);
+        CHECK(relative.moves[2].type == EMoveType::Extrude);
+        CHECK(relative.moves[2].delta_extruder == Approx(0.06796));
+        CHECK(relative.moves[2].mm3_per_mm > 0.0f);
+    }
 }
 
 TEST_CASE("Host G-code reader seeds tools and viewer metadata from Print settings",
