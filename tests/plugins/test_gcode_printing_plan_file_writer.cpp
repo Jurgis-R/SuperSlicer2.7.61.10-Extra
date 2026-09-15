@@ -163,6 +163,8 @@ std::unique_ptr<ExtrusionPath> make_integration_path(const ArcPolyline &polyline
         nullptr,
         true));
     path->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+    if (role == ExtrusionRole::ExternalPerimeter)
+        path->get_or_add_property<slic3r_api::EPropertyPerimeter>().shell_count(0);
     return path;
 }
 

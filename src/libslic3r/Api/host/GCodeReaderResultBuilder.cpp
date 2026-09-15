@@ -602,26 +602,39 @@ void GCodeReaderResultBuilder::process_marker(
     const uint32_t fan_id = static_cast<uint32_t>(state_value_or(
         state, RAW_GCODE_READER_ITEM_TOOL_FAN, 0.0, tool));
 
+    //w idht & height of the marker is used (*1.5) to show the marker in the gcodeviewer.
+    const double width = state.value(RAW_GCODE_READER_ITEM_WIDTH).value_or(0.0);
+    const double height = state.value(RAW_GCODE_READER_ITEM_HEIGHT).value_or(0.0);
+    const double marker_width = state.value(RAW_GCODE_READER_ITEM_WIDTH).value_or(width);
+    const double marker_height = state.value(RAW_GCODE_READER_ITEM_HEIGHT).value_or(height);
+
     // Markers have no geometric delta. They sample the current machine state
     // so the viewer can place and color the point without parsing G-code text.
     m_result.moves.emplace_back(
-        gcode_id, type, viewer_role(state),
-        static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)),
-        static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
-        viewer_object_id(state),
+        gcode_id, // uint32_t gcode_id
+        type, // EMoveType type
+        viewer_role(state), // GCodeExtrusionRole extrusion_role
+        static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)), // uint8_t extruder_id
+        static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)), // uint8_t cp_color_id
+        viewer_object_id(state), // uint16_t object_id
         Vec3f(static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_X, 0.0) + offset_x),
               static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_Y, 0.0) + offset_y),
-              static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_Z, 0.0) + offset_z - m_result.z_offset)),
-        0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+              static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_Z, 0.0) + offset_z - m_result.z_offset)), // Vec3f position
+        0.0f, // float delta_extruder
+        0.0f, // float feedrate
+        float(marker_width), // float width
+        float(marker_height), // float height
+        0.0f, // float mm3_per_mm
         static_cast<float>(state.value(
-            RAW_GCODE_READER_ITEM_FAN_SPEED, fan_id).value_or(0.0)),
+            RAW_GCODE_READER_ITEM_FAN_SPEED, fan_id).value_or(0.0)), // float fan_speed
         static_cast<float>(state.value(
-            RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, tool).value_or(0.0)),
-        m_total_time,
+            RAW_GCODE_READER_ITEM_TOOL_TEMPERATURE, tool).value_or(0.0)), // float temperature
+        m_total_time, // float move_time
         static_cast<uint16_t>(std::min<uint32_t>(
             static_cast<uint32_t>(state.value(
-                RAW_GCODE_READER_ITEM_LAYER).value_or(0.0)), UINT16_MAX)),
-        false);
+                RAW_GCODE_READER_ITEM_LAYER).value_or(0.0)), UINT16_MAX)), // uint16_t layer_id
+        false // bool internal_only
+    );
 }
 
 void GCodeReaderResultBuilder::process_diagnostic(

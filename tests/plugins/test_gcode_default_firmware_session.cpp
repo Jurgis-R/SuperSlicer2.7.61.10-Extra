@@ -354,8 +354,10 @@ std::unique_ptr<ExtrusionEntity> marker_test_composed_arc_loop()
     children.push_back(make_firmware_path(
         ArcPolyline(Points{arc_end, start}),
         20.f, 500.f, -1.f, -1.f, -1.f, ExtrusionRole::ExternalPerimeter));
-    return std::unique_ptr<ExtrusionEntity>(
+    std::unique_ptr<ExtrusionEntity> root(
         new ExtrusionEntity(std::move(children), false, false, true));
+    root->get_or_add_property<slic3r_api::EPropertyPerimeter>().shell_count(0);
+    return root;
 }
 
 std::vector<std::string> seam_marker_lines(const std::string &gcode)
@@ -1681,17 +1683,17 @@ TEST_CASE("Default firmware seam_marks_loop_start using serialized coordinates",
     Print print;
     configure_standard_firmware(print);
     PrintingLayerGroup &layer = append_marker_test_layer(print, scale_i(0.2));
-    append_path_extrusion(
-        layer.tool_groups.front(),
-        make_firmware_path(
-            ArcPolyline(Points{
-                Point::new_scale(4.3216, 5.4321),
-                Point::new_scale(6.0, 5.4321),
-                Point::new_scale(6.0, 7.0),
-                Point::new_scale(4.3216, 5.4321)
-            }),
-            20.f, 500.f, -1.f, -1.f, -1.f,
-            ExtrusionRole::ExternalPerimeter));
+    std::unique_ptr<ExtrusionPath> path = make_firmware_path(
+        ArcPolyline(Points{
+            Point::new_scale(4.3216, 5.4321),
+            Point::new_scale(6.0, 5.4321),
+            Point::new_scale(6.0, 7.0),
+            Point::new_scale(4.3216, 5.4321)
+        }),
+        20.f, 500.f, -1.f, -1.f, -1.f,
+        ExtrusionRole::ExternalPerimeter);
+    path->get_or_add_property<slic3r_api::EPropertyPerimeter>().shell_count(0);
+    append_path_extrusion(layer.tool_groups.front(), std::move(path));
 
     const std::string output = export_with_firmware(
         print, "gcode.firmware.marlin2");
@@ -1702,7 +1704,7 @@ TEST_CASE("Default firmware seam_marks_loop_start using serialized coordinates",
     const size_t seam = output.find(";SEAM:4.322:5.432\n");
     REQUIRE(closing_move != std::string::npos);
     REQUIRE(seam != std::string::npos);
-    CHECK(closing_move < seam);
+    CHECK(seam < closing_move);
 }
 
 TEST_CASE("Default firmware emits one seam after a complete composed arc loop",
@@ -1724,7 +1726,7 @@ TEST_CASE("Default firmware emits one seam after a complete composed arc loop",
     REQUIRE(closing_move != std::string::npos);
     REQUIRE(seam != std::string::npos);
     REQUIRE(following_move != std::string::npos);
-    CHECK(closing_move < seam);
+    CHECK(seam < closing_move);
     CHECK(seam < following_move);
     CHECK(count_occurrences(output, ";TYPE:External perimeter\n") == 1);
     CHECK(count_occurrences(output, ";WIDTH:0.4\n") == 1);

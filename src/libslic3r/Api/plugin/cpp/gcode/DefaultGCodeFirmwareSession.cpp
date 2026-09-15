@@ -261,7 +261,6 @@ public:
         m_output.clear();
         m_state = RequestedState{};
         m_parent_states.clear();
-        m_loop_depth = 0;
         traverse(root);
         return m_output;
     }
@@ -269,8 +268,7 @@ public:
 protected:
     void enter_node(ExtrusionEntity entity) override
     {
-        if (entity.is_loop())
-            ++m_loop_depth;
+        m_output += m_session.write_seam_marker(entity);
 
         // Save the inherited request before applying direct properties. The
         // matching leave_node() restores this exact value for the next sibling.
@@ -326,17 +324,10 @@ protected:
 
     void leave_node(ExtrusionEntity entity) override
     {
-        // Only the outer boundary of one composed loop owns its seam. Loop
-        // children remain implementation details of that complete path.
-        const bool closes_loop = entity.is_loop() && m_loop_depth == 1;
-        if (closes_loop)
-            m_output += m_session.write_seam_marker(entity);
         // Requested values are lexical tree state. Machine position, E and
         // already encoded values live in the session objects and are therefore
         // intentionally not restored here.
         m_output += m_session.leave_extrusion_node(entity);
-        if (entity.is_loop())
-            --m_loop_depth;
         m_state = m_parent_states.back();
         m_parent_states.pop_back();
         m_session.apply_requested_state(m_state);
@@ -346,7 +337,6 @@ private:
     DefaultGCodeFirmwareSession &m_session;
     RequestedState m_state;
     std::vector<RequestedState> m_parent_states;
-    uint32_t m_loop_depth = 0;
     std::string m_output;
 };
 
@@ -578,23 +568,22 @@ std::string DefaultGCodeFirmwareSession::write_printable_markers(
     return output;
 }
 
-std::string DefaultGCodeFirmwareSession::write_seam_marker(
-    const ExtrusionEntity &loop) const
-{
-    if (!loop.is_loop() || !extrusion_tree_has_segments(loop))
-        return {};
-    if (!m_current_extruder_idx || !m_gantry.position())
+std::string DefaultGCodeFirmwareSession::write_seam_marker(const ExtrusionEntity &loop) const {
+    // like is_loop, but also work on loop broken by seam_gap
+    const EPropertyPerimeter *loop_property = loop.get(EPropertyPerimeter::key);
+    if (!loop_property)
         return {};
 
-    const c_vec3d serialized_start = m_formatter->quantize(machine_position(loop.front(), 0));
-    const c_vec3d current_position = *m_gantry.position();
-    if (serialized_start.x != current_position.x ||
-        serialized_start.y != current_position.y)
+    // only write seam maker before first point of an external perimeter
+    if (loop_property->shell_count() != 0)
         return {};
+
+    // get seam point: we pick the first of the extrusion
+    const c_vec3d serialized_start = m_formatter->quantize(machine_position(loop.front(), 0));
 
     const uint16_t precision = m_formatter->m_gcode_precision_xyz;
-    return ";SEAM:" + format_number(current_position.x, precision) + ":" +
-           format_number(current_position.y, precision) + "\n";
+    return ";SEAM:" + format_number(serialized_start.x, precision) + ":" +
+        format_number(serialized_start.y, precision) + "\n";
 }
 
 std::string DefaultGCodeFirmwareSession::begin_tool_group(const PrintingToolGroup &tool_group)
