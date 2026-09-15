@@ -16,12 +16,71 @@ checked separately because it belongs to STEP_EXTRUSION_EDIT.
 
 #include "layer_extrusion_edit_transition_test_helpers.hpp"
 
+#include <memory>
+#include <stdexcept>
+
 namespace {
 
 using namespace Slic3r;
 using namespace Slic3r::Printing;
 using namespace Slic3r::Test::TransitionPipeline;
 using slic3r_api::LayerExtrusionEdit::ExtrusionScope::OrderedExtrusionScope;
+
+constexpr const char *ENTRY_STATE_PLUGIN =
+    "layer_extrusion_edit.entry_state.default";
+constexpr const char *TRAVEL_PLUGIN = "layer_extrusion_edit.travel.default";
+
+/* Return the second printable extrusion used as the target in these fixtures. */
+PrintingExtrusion &target_extrusion(Print &print)
+{
+    return print.mutable_printing_plan().groups.front().layers.front()
+        .tool_groups.front().extrusions.back();
+}
+
+/* Replace only the target tree while keeping its plan ownership unchanged. */
+void replace_target_root(Print &print, std::unique_ptr<ExtrusionEntity> root)
+{
+    target_extrusion(print).root = std::move(root);
+}
+
+/* Build an outer inherited-role parent and an inner fixed scope candidate. */
+std::unique_ptr<ExtrusionEntity> make_nested_target_root(
+    std::unique_ptr<ExtrusionEntity> path,
+    const bool override_child_role)
+{
+    if (override_child_role) {
+        ExtrusionAttributes *attributes =
+            path->get_property<ExtrusionAttributes>();
+        if (attributes == nullptr)
+            throw std::runtime_error("The role fixture path has no attributes.");
+        attributes->set_role(ExtrusionRole::ExternalPerimeter);
+    } else {
+        path->remove_property<ExtrusionAttributes>();
+    }
+
+    std::unique_ptr<ExtrusionEntityCollection> inner =
+        std::make_unique<ExtrusionEntityCollection>(false, false);
+    inner->append(std::move(path));
+
+    std::unique_ptr<ExtrusionEntityCollection> outer =
+        std::make_unique<ExtrusionEntityCollection>(true, true);
+    outer->get_or_add_property<ExtrusionAttributes>().set_role(
+        ExtrusionRole::InternalInfill);
+    outer->append(std::move(inner));
+    return std::unique_ptr<ExtrusionEntity>(std::move(outer));
+}
+
+/* Read the semantic role copied onto the target's Unretract event. */
+raw_extrusion_role target_unretract_role(Print &print)
+{
+    const OrderedExtrusionScope target(
+        find_scope(entity_view(*target_extrusion(print).root)),
+        scope_property_key());
+    const slic3r_api::EPropertyAttributes *attributes =
+        target.before().get(slic3r_api::EPropertyAttributes::key);
+    return attributes == nullptr ? RAW_EXTRUSION_ROLE_NONE :
+        attributes->extrusion_role();
+}
 
 TEST_CASE("CreateRetraction registers both transition providers",
           "[plugins][layer-extrusion-edit][retraction][registration]")
@@ -79,6 +138,106 @@ TEST_CASE("CreateRetraction places semantic E events in compact phases",
     CHECK(retract_axis->value == Approx(2.0));
     CHECK(unretract_axis->operation == C_EXTRUSION_AXIS_OPERATION_UNRETRACT);
     CHECK(unretract_axis->restart_extra == Approx(0.1));
+    CHECK(target_unretract_role(print) ==
+          (RAW_EXTRUSION_ROLE_PERIMETER | RAW_EXTRUSION_ROLE_UNRETRACT));
+}
+
+TEST_CASE("CreateRetraction inherits an effective role from a scope parent",
+          "[plugins][layer-extrusion-edit][retraction][role]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    prepare_print(print, model);
+    std::unique_ptr<ExtrusionEntity> path =
+        std::move(target_extrusion(print).root);
+    replace_target_root(print, make_nested_target_root(std::move(path), false));
+
+    run_layer_plugins(print, {TRANSITION_SCOPE_PLUGIN, RETRACTION_PLUGIN});
+
+    CHECK(target_unretract_role(print) ==
+          (RAW_EXTRUSION_ROLE_INFILL | RAW_EXTRUSION_ROLE_UNRETRACT));
+}
+
+TEST_CASE("CreateRetraction lets a direct content role override its parent",
+          "[plugins][layer-extrusion-edit][retraction][role]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    prepare_print(print, model);
+    std::unique_ptr<ExtrusionEntity> path =
+        std::move(target_extrusion(print).root);
+    replace_target_root(print, make_nested_target_root(std::move(path), true));
+
+    run_layer_plugins(print, {TRANSITION_SCOPE_PLUGIN, RETRACTION_PLUGIN});
+
+    CHECK(target_unretract_role(print) ==
+          (RAW_EXTRUSION_ROLE_PERIMETER | RAW_EXTRUSION_ROLE_EXTERNAL |
+           RAW_EXTRUSION_ROLE_UNRETRACT));
+}
+
+TEST_CASE("CreateRetraction stops role lookup at the first geometric leaf",
+          "[plugins][layer-extrusion-edit][retraction][role]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    prepare_print(print, model);
+
+    std::unique_ptr<ExtrusionPath> first = make_print_path(20.0, 25.0);
+    first->remove_property<ExtrusionAttributes>();
+    std::unique_ptr<ExtrusionPath> later = make_print_path(25.0, 30.0);
+    later->set_role(ExtrusionRole::InternalInfill);
+    std::unique_ptr<ExtrusionEntityCollection> root =
+        std::make_unique<ExtrusionEntityCollection>(false, false);
+    root->append(std::move(first));
+    root->append(std::move(later));
+    replace_target_root(print, std::unique_ptr<ExtrusionEntity>(std::move(root)));
+
+    run_layer_plugins(print, {TRANSITION_SCOPE_PLUGIN, RETRACTION_PLUGIN});
+
+    CHECK(target_unretract_role(print) == RAW_EXTRUSION_ROLE_UNRETRACT);
+}
+
+TEST_CASE("CreateRetraction ignores technical phase roles for Unretract",
+          "[plugins][layer-extrusion-edit][retraction][role]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    prepare_print(print, model);
+    std::unique_ptr<ExtrusionEntity> path =
+        std::move(target_extrusion(print).root);
+    path->remove_property<ExtrusionAttributes>();
+    replace_target_root(print, std::move(path));
+
+    run_layer_plugins(print, {
+        TRANSITION_SCOPE_PLUGIN, ENTRY_STATE_PLUGIN, TRAVEL_PLUGIN,
+        RETRACTION_PLUGIN});
+
+    const OrderedExtrusionScope target(
+        find_scope(entity_view(*target_extrusion(print).root)),
+        scope_property_key());
+    const slic3r_api::EPropertyAttributes *travel_attributes =
+        target.travel().get(slic3r_api::EPropertyAttributes::key);
+    REQUIRE(travel_attributes != nullptr);
+    CHECK(travel_attributes->extrusion_role() == RAW_EXTRUSION_ROLE_TRAVEL);
+    CHECK(target_unretract_role(print) == RAW_EXTRUSION_ROLE_UNRETRACT);
+}
+
+TEST_CASE("CreateRetraction falls back to Unretract without a content role",
+          "[plugins][layer-extrusion-edit][retraction][role]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    prepare_print(print, model);
+    target_extrusion(print).root->remove_property<ExtrusionAttributes>();
+
+    run_layer_plugins(print, {TRANSITION_SCOPE_PLUGIN, RETRACTION_PLUGIN});
+
+    CHECK(target_unretract_role(print) == RAW_EXTRUSION_ROLE_UNRETRACT);
 }
 
 TEST_CASE("Tool changes remain semantic when their retraction target is zero",

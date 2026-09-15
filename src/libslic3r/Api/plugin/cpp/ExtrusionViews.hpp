@@ -39,6 +39,54 @@ Developer guides:
 
 namespace slic3r_api {
 
+inline std::string extrusion_role_to_string(raw_extrusion_role role)
+{
+    switch (role) {
+    case RAW_EXTRUSION_ROLE_NONE:
+        return "Unknown";
+    case RAW_EXTRUSION_ROLE_PERIMETER:
+        return "Perimeter";
+    case RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER:
+        return "External perimeter";
+    case RAW_EXTRUSION_ROLE_OVERHANG_PERIMETER:
+    case RAW_EXTRUSION_ROLE_OVERHANG_EXTERNAL_PERIMETER:
+        return "Overhang perimeter";
+    case RAW_EXTRUSION_ROLE_INFILL:
+        return "Internal infill";
+    case RAW_EXTRUSION_ROLE_SOLID_INFILL:
+        return "Solid infill";
+    case RAW_EXTRUSION_ROLE_TOP_SOLID_INFILL:
+        return "Top solid infill";
+    case RAW_EXTRUSION_ROLE_IRONING_INFILL:
+        return "Ironing";
+    case RAW_EXTRUSION_ROLE_BRIDGE_INFILL:
+        return "Bridge infill";
+    case RAW_EXTRUSION_ROLE_INTERNAL_BRIDGE_INFILL:
+        return "Internal bridge infill";
+    case RAW_EXTRUSION_ROLE_THIN_WALL:
+        return "Thin wall";
+    case RAW_EXTRUSION_ROLE_GAP_FILL:
+        return "Gap fill";
+    case RAW_EXTRUSION_ROLE_SKIRT:
+        return "Skirt/Brim";
+    case RAW_EXTRUSION_ROLE_SUPPORT:
+        return "Support material";
+    case RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL_INTERFACE:
+        return "Support material interface";
+    case RAW_EXTRUSION_ROLE_WIPE_TOWER:
+    case RAW_EXTRUSION_ROLE_WIPE_TOWER_RAMMING:
+    case RAW_EXTRUSION_ROLE_WIPE_TOWER_WIPE:
+        return "Wipe tower";
+    case RAW_EXTRUSION_ROLE_MILL:
+        return "Milling";
+    case RAW_EXTRUSION_ROLE_TRAVEL:
+        return "Travel";
+    default:
+        assert(false);
+        return "Unknown";
+    }
+}
+
 class ExtrusionEntity;
 class MutableExtrusionEntity;
 class StoredExtrusionEntity;

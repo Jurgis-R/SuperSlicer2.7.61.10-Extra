@@ -290,7 +290,7 @@ private:
     std::optional<uint16_t> m_current_extruder_idx;
     std::unique_ptr<GCodeFormatter> m_formatter;
     coord_t m_layer_print_z = 0;
-    std::optional<uint8_t> m_marker_role;
+    std::optional<std::string> m_marker_role;
     std::optional<float> m_marker_width;
     std::optional<float> m_marker_height;
     std::vector<double> m_last_layer_used_filament;

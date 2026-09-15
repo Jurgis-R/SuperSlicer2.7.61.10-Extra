@@ -116,6 +116,18 @@ EffectiveState traversal_state(const ExtrusionPropertyState &properties);
 /* Describe the properties which every retraction scope traversal must inherit. */
 ExtrusionPropertyStateDefinition retraction_state_definition();
 
+/* Find the first content leaf without borrowing later siblings' role. */
+bool find_first_geometric_role(
+    MutableExtrusionEntity entity,
+    std::optional<raw_extrusion_role> inherited_role,
+    std::optional<raw_extrusion_role> &result,
+    bool entity_already_resolved = false);
+
+/* Resolve the first role from printable content, never from technical phases. */
+std::optional<raw_extrusion_role> first_content_role(
+    const ScopeEntity &target,
+    const ExtrusionScope::OrderedExtrusionScope &scope);
+
 /* Resolve the first geometric leaf, optionally starting with entity resolved. */
 bool find_first_geometry(MutableExtrusionEntity entity, coord_t print_z,
                          const EffectiveState &parent,
@@ -279,9 +291,57 @@ EffectiveState traversal_state(const ExtrusionPropertyState &properties)
 ExtrusionPropertyStateDefinition retraction_state_definition()
 {
     ExtrusionPropertyStateDefinition definition;
+    definition.track(EPropertyAttributes::key);
     definition.track(EPropertyZOffset::key);
     definition.track(EPropertyModifier::key);
     return definition;
+}
+
+bool find_first_geometric_role(
+    MutableExtrusionEntity entity,
+    const std::optional<raw_extrusion_role> inherited_role,
+    std::optional<raw_extrusion_role> &result,
+    const bool entity_already_resolved)
+{
+    std::optional<raw_extrusion_role> role = inherited_role;
+    if (!entity_already_resolved) {
+        const EPropertyAttributes *attributes =
+            entity.get(EPropertyAttributes::key);
+        if (attributes != nullptr)
+            role = raw_extrusion_role(attributes->extrusion_role());
+    }
+
+    // Geometry ends the search even when no effective role exists. A later
+    // sibling cannot describe the first leaf's semantic process role.
+    if (entity.segment_count() != 0) {
+        result = role;
+        return true;
+    }
+
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        if (find_first_geometric_role(
+                entity.child_mutable(child_idx), role, result))
+            return true;
+    return false;
+}
+
+std::optional<raw_extrusion_role> first_content_role(
+    const ScopeEntity &target,
+    const ExtrusionScope::OrderedExtrusionScope &scope)
+{
+    const EPropertyAttributes *inherited_attributes =
+        target.effective_properties.get(EPropertyAttributes::key);
+    const std::optional<raw_extrusion_role> inherited_role = inherited_attributes ?
+        std::optional<raw_extrusion_role>(raw_extrusion_role(
+            inherited_attributes->extrusion_role())) : std::nullopt;
+    MutableExtrusionEntity content = scope.content();
+    std::optional<raw_extrusion_role> result;
+    if (!find_first_geometric_role(
+            content, inherited_role, result,
+            content.handle() == scope.root().handle()))
+        throw std::runtime_error(
+            "A retraction target scope has no printable geometry.");
+    return result;
 }
 
 bool find_first_geometry(MutableExtrusionEntity entity, const coord_t print_z,
@@ -518,12 +578,14 @@ void write_incoming_retraction(
     const RetractionDecision &decision,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
 {
-    const ExtrusionScope::OrderedExtrusionScope scope(target.entity, key);
     if (!decision.requested || decision.target <= 0.0)
         return;
 
+    const ExtrusionScope::OrderedExtrusionScope scope(target.entity, key);
+    const std::optional<raw_extrusion_role> role = first_content_role(target, scope);
     MutableExtrusionEntity event = ExtrusionScope::append_phase_leaf(scope.before());
-    set_event_attributes(event, RAW_EXTRUSION_ROLE_UNRETRACT);
+    set_event_attributes(event, role.value_or(RAW_EXTRUSION_ROLE_NONE) |
+        RAW_EXTRUSION_ROLE_UNRETRACT);
     event.get_or_add(EPropertyExtrusionAxis::key).unretract(
         decision.restart_extra, decision.toolchange_retraction);
 }

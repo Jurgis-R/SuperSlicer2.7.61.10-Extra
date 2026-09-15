@@ -17,6 +17,7 @@
 #include <string>
 
 #include "libslic3r/Api/plugin/cpp/ExtrusionTreeVisitors.hpp"
+#include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeLineParser.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeStateTracker.hpp"
 #include "libslic3r/ExtrusionRole.hpp"
@@ -542,25 +543,22 @@ std::string DefaultGCodeFirmwareSession::write_printable_markers(
         throw std::invalid_argument(
             "A printable extrusion needs positive finite width and height attributes.");
 
-    const Slic3r::ExtrusionRole role(
-        Slic3r::ExtrusionRoleModifier(uint16_t(attributes.extrusion_role())));
-    const Slic3r::GCodeExtrusionRole legacy_role =
-        Slic3r::extrusion_role_to_gcode_extrusion_role(role);
-    const uint8_t encoded_role = uint8_t(legacy_role);
-    const bool role_changed = !m_marker_role || *m_marker_role != encoded_role;
+    const std::string role_name =
+        slic3r_api::extrusion_role_to_string(attributes.extrusion_role());
+    const bool role_changed = !m_marker_role || *m_marker_role != role_name;
     const bool width_changed = !m_marker_width || *m_marker_width != width;
     const bool height_changed = !m_marker_height || *m_marker_height != height;
 
     std::string output;
     if (role_changed)
-        output += ";TYPE:" + Slic3r::gcode_extrusion_role_to_string(legacy_role) + "\n";
+        output += ";TYPE:" + role_name + "\n";
     if (width_changed)
         output += ";WIDTH:" + format_number(width) + "\n";
     if (height_changed)
         output += ";HEIGHT:" + format_number(height) + "\n";
 
     if (role_changed)
-        m_marker_role = encoded_role;
+        m_marker_role = role_name;
     if (width_changed)
         m_marker_width = width;
     if (height_changed)
@@ -1119,6 +1117,7 @@ std::string DefaultGCodeFirmwareSession::write_extrusion_axis_event(
             move.kind = PreparedMove::Kind::Extrusion;
             move.extrusion = tool.extrusion_axis().retract(axis.value);
             output += transition_wipe_marker(false);
+            //note: i don't need to check the retraction role, as it shoudl be the same as the previous extrusion.
             output += write_lines(move);
         }
     } else if (RAW_EXTRUSION_ROLE_IS_UNRETRACT(role)) {
@@ -1140,7 +1139,16 @@ std::string DefaultGCodeFirmwareSession::write_extrusion_axis_event(
             PreparedMove move;
             move.kind = PreparedMove::Kind::Extrusion;
             move.extrusion = tool.extrusion_axis().unretract();
+            const raw_extrusion_role next_role = role & ~RAW_EXTRUSION_ROLE_UNRETRACT;
             output += transition_wipe_marker(false);
+            if (next_role != RAW_EXTRUSION_ROLE_NONE && is_printable_role(next_role)) {
+                const std::string role_name = slic3r_api::extrusion_role_to_string(next_role);
+                const bool role_changed = !m_marker_role || *m_marker_role != role_name;
+                if (role_changed)
+                    output += ";TYPE:" + role_name + "\n";
+                if (role_changed)
+                    m_marker_role = role_name;
+            }
             output += write_lines(move);
         }
     } else {

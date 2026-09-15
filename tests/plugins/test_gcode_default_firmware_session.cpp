@@ -1507,6 +1507,31 @@ TEST_CASE("Default firmware deduplicates identical consecutive printable markers
     CHECK(count_occurrences(output, ";HEIGHT:0.2\n") == 1);
 }
 
+TEST_CASE("Default firmware maps raw extrusion roles to G-code labels")
+{
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_NONE) == "Unknown");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_PERIMETER) == "Perimeter");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER) == "External perimeter");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_OVERHANG_PERIMETER) == "Overhang perimeter");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_OVERHANG_EXTERNAL_PERIMETER) == "Overhang perimeter");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_INFILL) == "Internal infill");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_SOLID_INFILL) == "Solid infill");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_TOP_SOLID_INFILL) == "Top solid infill");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_IRONING_INFILL) == "Ironing");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_BRIDGE_INFILL) == "Bridge infill");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_INTERNAL_BRIDGE_INFILL) == "Internal bridge infill");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_THIN_WALL) == "Thin wall");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_GAP_FILL) == "Gap fill");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_SKIRT) == "Skirt/Brim");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_SUPPORT) == "Support material");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL_INTERFACE) == "Support material interface");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_WIPE_TOWER) == "Wipe tower");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_WIPE_TOWER_RAMMING) == "Wipe tower");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_WIPE_TOWER_WIPE) == "Wipe tower");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_MILL) == "Milling");
+    CHECK(slic3r_api::extrusion_role_to_string(RAW_EXTRUSION_ROLE_TRAVEL) == "Travel");
+}
+
 TEST_CASE("Default firmware emits only required intra-layer marker transitions",
           "[plugins][gcode][firmware][markers]")
 {
