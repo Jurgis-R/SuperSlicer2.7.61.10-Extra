@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "perimeter_test_helpers.hpp"
 #include "test_data.hpp"
 
 #include "libslic3r/Api/host/GCodeReaderService.hpp"
@@ -23,6 +24,7 @@
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeStateTracker.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/I18N.hpp"
+#include "libslic3r/Layer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
@@ -1524,6 +1526,63 @@ TEST_CASE("Host G-code reader seeds tools and viewer metadata from Print setting
     CHECK(result.moves[1].position.x() == Approx(12.0));
     CHECK(result.moves[1].position.y() == Approx(3.0));
     CHECK(result.moves[1].fan_speed == Approx(128.0 / 255.0 * 100.0));
+}
+
+TEST_CASE("Host G-code reader initializes layer areas from final plan islands",
+          "[plugins][gcode][reader][viewer][layer-area]")
+{
+    ensure_plugin_test_runtime_initialized();
+    using namespace Slic3r::Test::PerimeterPluginTests;
+
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 2);
+
+    Printing::PrintingPlan &plan = prepared.print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    Printing::PrintingGroup &group = plan.groups.back();
+    for (size_t layer_index = 0; layer_index < 2; ++layer_index) {
+        Layer &source_layer = object.layer(layer_index);
+        REQUIRE(source_layer.islands().size() == 1);
+        LayerSliceIsland &source_island = source_layer.island(0);
+        LayerRegionIsland &first_region_island =
+            source_island.get_or_add_region_island(source_island.regions(), 0);
+        LayerRegionIsland &second_region_island =
+            source_island.get_or_add_region_island(source_island.regions(), 1);
+
+        group.layers.emplace_back();
+        Printing::PrintingLayerGroup &layer_group = group.layers.back();
+        layer_group.print_z = source_layer.scaled_print_z();
+        layer_group.layers.push_back(&source_layer);
+        layer_group.tool_groups.emplace_back();
+        Printing::PrintingToolGroup &tool_group = layer_group.tool_groups.back();
+
+        // Two region buckets from the same geometric island must not double
+        // the cross-section, and neither should repeated extrusion roles.
+        tool_group.extrusions.emplace_back();
+        tool_group.extrusions.back().region_island = &first_region_island;
+        tool_group.extrusions.emplace_back();
+        tool_group.extrusions.back().region_island = &first_region_island;
+        tool_group.extrusions.emplace_back();
+        tool_group.extrusions.back().region_island = &second_region_island;
+    }
+
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state raw_initial = initial_state(initial_items);
+    const slic3r_api::GCodeStateTracker initial(raw_initial);
+    prepared.print.print_statistics()._layer_area_stats.emplace_back(
+        scale_i(99.0), 99.0f);
+    GCodeReaderResultBuilder builder(
+        &prepared.print, &plan, "gcode.reader.default", initial);
+
+    const std::vector<std::pair<coord_t, float>> &areas =
+        prepared.print.print_statistics()._layer_area_stats;
+    REQUIRE(areas.size() == 2);
+    CHECK(areas[0].first == object.layer(0).scaled_print_z());
+    CHECK(areas[1].first == object.layer(1).scaled_print_z());
+    CHECK(areas[0].second == Approx(400.0));
+    CHECK(areas[1].second == Approx(400.0));
 }
 
 TEST_CASE("Host G-code reader keeps object ids aligned with viewer names",

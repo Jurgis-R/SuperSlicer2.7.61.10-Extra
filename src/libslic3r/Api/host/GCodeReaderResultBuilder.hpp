@@ -23,6 +23,7 @@ syntax and publishes normalized semantic events; this class turns those
 events into the existing GCodeProcessorResult consumed by GCodeViewer.
 
     Print settings --------> initial machine state and viewer metadata
+    final PrintingPlan ----> source-island areas stored in PrintStatistics
     source chunks ---------> line-end index used by the source-code window
     Reader event + state --> moves, temperatures, fan, time and material
                                 |
@@ -49,8 +50,10 @@ class GCodeReaderResultBuilder
 public:
     // Seed the timeline from a host-owned initial state. Print and plan are
     // either both present for a local export or both null for a standalone
-    // viewer. The builder borrows them only during construction.
-    GCodeReaderResultBuilder(const Print *print,
+    // viewer. The builder borrows them only during construction. For a local
+    // export, construction also replaces PrintStatistics::_layer_area_stats
+    // with the areas of the source islands still referenced by the final plan.
+    GCodeReaderResultBuilder(Print *print,
                              const Printing::PrintingPlan *plan,
                              std::string reader_plugin_id,
                              const slic3r_api::GCodeStateTracker &initial_state);
@@ -71,7 +74,7 @@ public:
 private:
     // Fill metadata and the plan-local instance legend from the local plan, or
     // use deterministic standalone-viewer defaults when no plan exists.
-    void initialize_result(const Print *print,
+    void initialize_result(Print *print,
                            const Printing::PrintingPlan *plan,
                            const std::string &reader_plugin_id);
     // Dispatch semantic events; each listener handles one viewer concern.

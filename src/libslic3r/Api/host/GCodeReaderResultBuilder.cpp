@@ -10,12 +10,16 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "libslic3r/Api/plugin/c/slic3r_extrusions.h"
 #include "libslic3r/ExtrusionRole.hpp"
 #include "libslic3r/I18N.hpp"
+#include "libslic3r/Layer.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 
 /*
@@ -42,6 +46,20 @@ constexpr float DEFAULT_VIEWER_FILAMENT_DENSITY = 1.245f;
 constexpr float DEFAULT_VIEWER_FILAMENT_COST = 0.0f;
 constexpr float DEFAULT_VIEWER_TOOLPATH_HEIGHT = 0.2f;
 constexpr double MM_PER_ARC_SEGMENT = 1.0;
+
+using RegionIslandLookup = std::unordered_map<const LayerRegionIsland *,
+                                              const LayerSliceIsland *>;
+
+// Record the owning geometric island for every region bucket of one trusted
+// source layer. The lookup lets the plan recover boundaries without storing a
+// redundant parent pointer in each PrintingExtrusion.
+void index_source_layer_islands(const Layer &layer, RegionIslandLookup &lookup);
+
+// Replace the public per-layer area series from the final plan. Every logical
+// layer gets one entry, and a source island is counted only once even when
+// several region buckets or extrusion roles refer to it.
+void initialize_layer_area_stats(Print &print,
+                                 const Printing::PrintingPlan &plan);
 
 // Give independently produced results distinct cache identities.
 std::atomic<unsigned int> s_reader_result_id{0};
@@ -142,10 +160,72 @@ Value vector_value_or(const std::vector<Value> &values, size_t index, Value fall
     return index < values.size() ? values[index] : values.front();
 }
 
+void index_source_layer_islands(const Layer &layer, RegionIslandLookup &lookup)
+{
+    for (const LayerSliceIsland &island : layer.islands())
+        for (const LayerRegionIsland &region_island : island.regions_islands()) {
+            const std::pair<RegionIslandLookup::iterator, bool> inserted =
+                lookup.emplace(&region_island, &island);
+            if (!inserted.second && inserted.first->second != &island)
+                throw std::logic_error(
+                    "A LayerRegionIsland belongs to more than one LayerSliceIsland.");
+        }
+}
+
+void initialize_layer_area_stats(Print &print,
+                                 const Printing::PrintingPlan &plan)
+{
+    /*
+    Build the parent relation from Print-owned layers instead of trusting plan
+    pointers. A plan may also contain synthetic or print-level auxiliary work;
+    such region-island pointers are intentionally absent from this lookup and
+    therefore contribute no model cross-section.
+    */
+    RegionIslandLookup lookup;
+    for (const PrintObject &object : print.objects()) {
+        for (const Layer &layer : object.layers())
+            index_source_layer_islands(layer, lookup);
+        for (const Layer &layer : object.auxiliary_layers())
+            index_source_layer_islands(layer, lookup);
+    }
+
+    std::vector<std::pair<coord_t, float>> layer_areas;
+    size_t layer_group_count = 0;
+    for (const Printing::PrintingGroup &group : plan.groups)
+        layer_group_count += group.layers.size();
+    layer_areas.reserve(layer_group_count);
+
+    for (const Printing::PrintingGroup &group : plan.groups)
+        for (const Printing::PrintingLayerGroup &layer_group : group.layers) {
+            std::unordered_set<const LayerSliceIsland *> seen_islands;
+            std::vector<const LayerSliceIsland *> ordered_islands;
+            for (const Printing::PrintingToolGroup &tool_group : layer_group.tool_groups)
+                for (const Printing::PrintingExtrusion &extrusion : tool_group.extrusions) {
+                    if (extrusion.region_island == nullptr)
+                        continue;
+                    const RegionIslandLookup::const_iterator found =
+                        lookup.find(extrusion.region_island);
+                    if (found != lookup.end() && seen_islands.insert(found->second).second)
+                        ordered_islands.push_back(found->second);
+                }
+
+            // Note: we disregard the intersection(island.slice(), regions.slices()) 
+            //  because in a pritning plan, an island is always entirely printed at the same layer or collsions occurs.
+            double layer_area = 0.0;
+            for (const LayerSliceIsland *island : ordered_islands)
+                layer_area += island->get_slice().area();
+            layer_area = unscaled(unscaled(layer_area));
+            layer_areas.emplace_back(layer_group.print_z,
+                                     static_cast<float>(layer_area));
+        }
+
+    print.print_statistics()._layer_area_stats = std::move(layer_areas);
+}
+
 } // namespace
 
 GCodeReaderResultBuilder::GCodeReaderResultBuilder(
-    const Print *print,
+    Print *print,
     const Printing::PrintingPlan *plan,
     std::string reader_plugin_id,
     const slic3r_api::GCodeStateTracker &initial_state)
@@ -158,7 +238,7 @@ GCodeReaderResultBuilder::GCodeReaderResultBuilder(
 }
 
 void GCodeReaderResultBuilder::initialize_result(
-    const Print *print,
+    Print *print,
     const Printing::PrintingPlan *plan,
     const std::string &reader_plugin_id)
 {
@@ -231,6 +311,7 @@ void GCodeReaderResultBuilder::initialize_result(
                 "The PrintingPlan contains an incomplete object-instance catalog.");
         m_result.object_names.push_back(instance.name);
     }
+    initialize_layer_area_stats(*print, *plan);
     m_has_object_instance_catalog = true;
 }
 
