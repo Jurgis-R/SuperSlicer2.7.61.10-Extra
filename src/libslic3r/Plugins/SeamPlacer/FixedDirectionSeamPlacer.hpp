@@ -2,6 +2,29 @@
 ///|/
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+
+/*
+FixedDirectionSeamPlacer: directional seam selection
+====================================================
+The provider reads a compass direction from the selected PrintRegion and
+chooses an admissible point on the requested loop. Constraint geometry is
+prepared once per plan; the regional direction is read during each request.
+
+The execution path is:
+
+    register_fixed_direction_seam_placer_plugin()
+    `-- FixedDirectionSeamPlacer::run_impl()
+        `-- FixedDirectionSession::initialize()
+            `-- SeamPlacementConstraints::initialize()
+
+    FixedDirectionSession::place_seam()
+    |-- read LayerRegion configuration
+    |-- SeamPlacementConstraints::portions()
+    |-- select the directional candidate
+    `-- select_vertex() fallback
+
+The incoming tool position is ignored and host geometry is never modified.
+*/
 #ifndef slic3r_Plugins_SeamPlacer_FixedDirectionSeamPlacer_hpp_
 #define slic3r_Plugins_SeamPlacer_FixedDirectionSeamPlacer_hpp_
 

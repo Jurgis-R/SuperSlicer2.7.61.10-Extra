@@ -24,6 +24,7 @@ add_executable(${_TEST_NAME}_tests
     test_plugin_repository.cpp
     test_plugin_translation_catalogs.cpp
     test_repository_updater.cpp
+    test_seam_placer_cost.cpp
     test_seam_placer_fixed_direction.cpp
     test_seam_placer_service.cpp
     test_gcode_default_firmware_session.cpp

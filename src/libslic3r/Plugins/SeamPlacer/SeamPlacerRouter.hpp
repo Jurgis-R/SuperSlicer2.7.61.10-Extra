@@ -26,16 +26,26 @@ borrowed and must outlive the router.
 class SeamPlacerRouter
 {
 public:
+    /*
+    Construct the complete routing table before ordering workers may request
+    seams. Provider initialization, region selection, and loop-routing errors
+    are therefore reported synchronously during construction.
+    */
     SeamPlacerRouter(orchestrator_handle *orchestrator,
                      const Print &print,
                      const PrintingPlan &plan,
                      storage_handle *scratch_storage);
+    /* Release the immutable route table and its shared provider sessions. */
     ~SeamPlacerRouter();
 
     SeamPlacerRouter(const SeamPlacerRouter &) = delete;
     SeamPlacerRouter &operator=(const SeamPlacerRouter &) = delete;
 
-    /* Ask the provider preselected for loop to choose its final seam. */
+    /*
+    Ask the provider preselected for loop to choose its final seam. loop is
+    borrowed for the call, start_position is a value, and the returned point is
+    produced by the selected provider session.
+    */
     c_point place_seam(const ExtrusionEntity &loop,
                        c_point start_position) const;
 

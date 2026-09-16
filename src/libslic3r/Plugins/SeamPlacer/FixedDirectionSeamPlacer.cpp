@@ -29,11 +29,12 @@ Fixed-direction seam placement
 Without applicable constraints this provider chooses a stored loop vertex.
 Painted and volume constraints restrict eligible line/arc portions. The
 configured compass direction defines the primary projection. A clockwise
-perpendicular projection breaks ties, and the original tree/point order is the
-final deterministic tie-break. Constraint boundaries and directional extrema
-provide extra candidates on true segments and arcs; no chord approximation is
-used. Blockers override enforcers. Free portions are the second choice; fully
-blocked loops fall back to stored vertices.
+perpendicular projection breaks ties. Analytic constrained candidates follow
+portion/tree order and sorted curve-parameter order for exact ties; original
+tree/point order applies to the select_vertex() fallback. Constraint boundaries
+and directional extrema provide extra candidates on true segments and arcs; no
+chord approximation is used. Blockers override enforcers. Free portions are
+the second choice; fully blocked loops fall back to stored vertices.
 
 The direction is read from the LayerRegion passed with every request, so one
 immutable session serves a complete PrintingPlan even when its regions use
@@ -41,6 +42,19 @@ different settings. The provider ignores the incoming tool position because
 its policy is geometric rather than travel based.
 */
 
+/*
+The provider has a preparation path and a request path:
+
+    FixedDirectionSeamPlacer::run_impl()
+    `-- FixedDirectionSession::initialize()
+        `-- SeamPlacementConstraints::initialize()
+
+    FixedDirectionSession::place_seam()
+    |-- read the regional enum
+    |-- portions() and recheck rounded candidates
+    |-- compare status and directional projections
+    `-- select_vertex() if no constrained candidate survives
+*/
 namespace slic3r_api { namespace SeamPlacement { namespace FixedDirectionPlugin {
 namespace {
 
@@ -81,6 +95,7 @@ enum class FixedDirection : int32_t {
 };
 
 struct DirectionVector {
+    // Integer signs represent a compass direction in scaled XY coordinates.
     int32_t x;
     int32_t y;
 };
@@ -154,6 +169,8 @@ private:
 
 DirectionVector direction_vector(const int32_t direction)
 {
+    // Configuration stores a zero-based enum index. Invalid values use the
+    // documented Rear direction so the result remains usable.
     /* Keep this table aligned with k_direction_values and FixedDirection. */
     static const std::array<DirectionVector, 8> directions = {{
         { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 },
@@ -168,6 +185,8 @@ void select_vertex(const ExtrusionEntity &entity,
                    const DirectionVector direction,
                    SelectedVertex &selected)
 {
+    // Compare every local point before visiting children. Strict comparisons
+    // make traversal order the final deterministic tie-break.
     // Rotating (x, y) clockwise gives (y, -x). It supplies the documented
     // secondary direction, for example Rear (+Y) breaks ties toward Right.
     const DirectionVector clockwise = { direction.y, -direction.x };
@@ -213,6 +232,8 @@ c_point FixedDirectionSession::place_seam(const ExtrusionEntity &loop,
                                           const LayerRegion &layer_region,
                                           const c_point) const
 {
+    // Candidate points are reclassified after integer rounding because a
+    // rounded boundary point can change its constraint status.
     // The incoming position is intentionally unnamed: unlike travel-based
     // policies, this provider must return the same vertex from any approach.
     if (!loop.is_loop())
@@ -318,6 +339,7 @@ int32_t FixedDirectionSeamPlacer::defined_config_keys(const char **keys) const n
 
 void FixedDirectionSeamPlacer::inilialize_impl(storage_handle *) const
 {
+    // Register the enum definition before exposing its setting in the GUI.
     // Register a regional enum so each LayerRegion can resolve its own value.
     // STEP_ORDERING is the first plan stage that consumes seam placement here.
     raw_config_option_def def = raw_config_option_def_init();
@@ -353,6 +375,8 @@ void FixedDirectionSeamPlacer::inilialize_impl(storage_handle *) const
 
 void FixedDirectionSeamPlacer::run_impl(const plugin_run_context *run_context) const
 {
+    // A SEAM_PLACER run creates and publishes one initialized session; actual
+    // placement is performed later through its service callbacks.
     // SEAM_PLACER run() is a factory invocation, not a placement request. It
     // initializes one session and transfers its ownership into the payload;
     // ordering consumers will take and eventually destroy that instance.

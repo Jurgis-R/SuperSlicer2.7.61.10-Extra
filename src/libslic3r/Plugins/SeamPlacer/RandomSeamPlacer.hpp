@@ -25,6 +25,19 @@ Published sessions retain immutable seam coordinates indexed by borrowed loop
 and region identities. The host must keep those identities alive; new loops or
 changed geometry/configuration require a new session. Concurrent seam requests
 only read the cache and never alter the host's extrusion tree.
+
+The normal execution path is:
+
+    register_random_seam_placer_plugin()
+    `-- RandomProvider::run_impl()
+        `-- make_random_seam_session()
+            `-- RandomSession::initialize()
+                |-- collect_loops()
+                |-- make_domain() and random_seam()
+                `-- align_loops()
+
+After initialization, RandomSession::place_seam() only looks up the stored
+point. It does not advance the generator or inspect mutable geometry.
 */
 
 #ifndef slic3r_RandomSeamPlacer_hpp_
@@ -43,6 +56,7 @@ namespace SeamPlacement { namespace RandomPlugin {
    factory also allows deterministic validation of seed-zero behavior. */
 std::unique_ptr<SeamPlacerSession> make_random_seam_session(
     storage_handle *storage, std::function<uint64_t()> entropy = {});
+/* Register process-wide metadata and callbacks; it creates no plan session. */
 void register_random_seam_placer_plugin(orchestrator_handle *orchestrator);
 }}}
 #endif

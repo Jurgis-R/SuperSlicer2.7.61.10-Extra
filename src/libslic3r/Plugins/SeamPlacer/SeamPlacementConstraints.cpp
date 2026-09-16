@@ -49,11 +49,32 @@ caches allow concurrent reads while the host keeps borrowed inputs stable.
 #include <functional>
 #include <map>
 #include <stdexcept>
+#include <unordered_set>
 #include "libslic3r/Api/plugin/cpp/VolumeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/LineDistancer.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_property.h"
 
 
+/*
+The preparation and query call trees are intentionally separate:
+
+    initialize()
+    `-- initialize_impl()
+        |-- register plan entities and inherited attributes
+        |-- project painted constraints and slice inside-seam volumes
+        `-- copy_shape() and build spatial indexes
+
+    portions()
+    `-- visit_segments()
+        |-- curve_from()
+        |-- cut_shape()
+        |   |-- curve_bounds()
+        |   `-- cut_line()/cut_circle()
+        `-- classify() for endpoints and interval midpoints
+
+    classify_point()
+    `-- classify()
+*/
 namespace slic3r_api { namespace SeamPlacement {
 namespace {
 constexpr double pi = 3.14159265358979323846;
@@ -98,6 +119,8 @@ void visit_segments(const ExtrusionEntity &entity, const Zones &zones, c_point s
 Shape copy_shape(const PolygonCollection &polygons)
 {
     Shape result;
+    // Copy polygon edges before the temporary view is released. The returned
+    // index refers only to result.edges and is therefore session-owned.
     for (uint32_t i=0;i<polygons.size();++i) {
         const Polygon polygon=polygons.at(i);
         if (polygon.size()<3) continue;
@@ -113,6 +136,8 @@ Shape copy_shape(const PolygonCollection &polygons)
 
 Curve curve_from(c_extrusion_segment segment)
 {
+    // Decode one public segment into a straight line or signed analytic arc;
+    // preserve the original segment for exact endpoint values.
     Curve curve;
     curve.segment = segment;
     if (segment.radius == 0) return curve;
@@ -139,6 +164,8 @@ Curve curve_from(c_extrusion_segment segment)
 
 XY position(const Curve &c, double t)
 {
+    // Evaluate the true curve at a normalized parameter rather than replacing
+    // an arc with its endpoint chord.
     if (c.radius == 0)
         return {double(c.segment.point_a.x) + t * (double(c.segment.point_b.x) - c.segment.point_a.x),
                 double(c.segment.point_a.y) + t * (double(c.segment.point_b.y) - c.segment.point_a.y)};
@@ -166,6 +193,8 @@ c_point upper_bound(XY p)
 
 std::pair<c_point,c_point> curve_bounds(const Curve &curve,double margin)
 {
+    // Arc endpoints are insufficient for a broad-phase box, so include each
+    // cardinal extremum that lies on the requested sweep.
     const XY a=position(curve,0), b=position(curve,1);
     XY min{std::min(a.x,b.x),std::min(a.y,b.y)}, max{std::max(a.x,b.x),std::max(a.y,b.y)};
     if (curve.radius>0) {
@@ -182,6 +211,8 @@ std::pair<c_point,c_point> curve_bounds(const Curve &curve,double margin)
 
 bool contains(const Shape &shape, XY p, double margin, bool independent_rings)
 {
+    // The spatial index selects possible edges; exact boundary distance and
+    // winding determine the final containment result.
     // AABB selection is conservative; retain the previous exact boundary test
     // at the floating point, including its scaled-coordinate tolerance.
     const double radius=margin+1e-5;
@@ -220,6 +251,8 @@ bool contains(const Shape &shape, XY p, double margin, bool independent_rings)
 
 Status classify(const Zones &zones, XY point, double margin)
 {
+    // Blockers have precedence over enforcers; inside-seam volumes are
+    // undilated enforcers and are checked after painted zones.
     if (contains(zones.blocked, point, margin, true)) return Status::Blocked;
     if (contains(zones.enforced, point, margin, true)) return Status::Enforced;
     for (const Shape &volume : zones.volumes)
@@ -275,6 +308,8 @@ void cut_circle(const Curve &c, XY center, double radius, std::vector<double> &c
 
 void cut_shape(const Curve &c, const Shape &shape, double margin, std::vector<double> &cuts)
 {
+    // Add all parameters at which the curve enters or leaves the polygon or
+    // its width capsule. Later midpoint tests assign the resulting intervals.
     const std::pair<c_point,c_point> box=curve_bounds(c,margin+1e-5);
     const std::vector<size_t> candidates=shape.index.all_lines_in_box(box.first,box.second);
     for (size_t idx:candidates) {
@@ -317,6 +352,9 @@ void cut_shape(const Curve &c, const Shape &shape, double margin, std::vector<do
 void visit_segments(const ExtrusionEntity &entity, const Zones &zones, c_point shift,
                     double width, raw_extrusion_role role, const LayerRegion &region, Result &result)
 {
+    // Traverse the full extrusion tree while inheriting width and role. Test
+    // segments in object coordinates, then return their curves in platter
+    // coordinates for the seam provider.
     const c_extrusion_property_attributes *attributes = static_cast<const c_extrusion_property_attributes *>(
         entity.property_data(EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
     if (attributes != nullptr) {
@@ -363,6 +401,8 @@ void visit_segments(const ExtrusionEntity &entity, const Zones &zones, c_point s
 } // namespace
 
 struct SeamPlacementConstraints::Impl {
+    // The maps contain private geometry snapshots and non-owning host handles.
+    // initialize_impl replaces the complete implementation as one unit.
     std::map<const layer_handle *,Zones> layers;
     std::map<const extrusion_entity_handle *,Binding> bindings;
 };
@@ -388,8 +428,32 @@ double SeamPlacementConstraints::Curve::parameter(double angle) const
 
 void SeamPlacementConstraints::initialize(const PrintingPlan &plan, storage_handle *storage)
 {
+    initialize_impl(plan, storage, nullptr);
+}
+
+void SeamPlacementConstraints::initialize_for_regions(
+    const PrintingPlan &plan, storage_handle *storage,
+    const std::vector<PrintRegion> &regions)
+{
+    initialize_impl(plan, storage, &regions);
+}
+
+void SeamPlacementConstraints::initialize_impl(
+    const PrintingPlan &plan, storage_handle *storage,
+    const std::vector<PrintRegion> *regions)
+{
+    // Build the replacement cache locally so a projection or slicing exception
+    // cannot publish a partially initialized cache.
     if (!plan.valid() || storage==nullptr) throw std::invalid_argument("Seam constraints need plan and temporary storage.");
     std::unique_ptr<Impl> prepared(new Impl());
+    std::unordered_set<const print_region_handle *> assigned_regions;
+    if (regions != nullptr) {
+        // Resolve the explicit provider assignment once; the set is temporary
+        // and avoids rescanning the assigned region list for every island.
+        assigned_regions.reserve(regions->size());
+        for (const PrintRegion &region : *regions)
+            if (region.valid()) assigned_regions.insert(region.handle());
+    }
     std::map<const object_handle *,bool> objects;
     /* Register all descendant handles with their explicit source instance. No
        tool-position inference or spatial search across translated copies. */
@@ -414,6 +478,17 @@ void SeamPlacementConstraints::initialize(const PrintingPlan &plan, storage_hand
                     const PrintingExtrusion extrusion=tool.extrusion(e);
                     const LayerRegionIsland island=extrusion.region_island();
                     if (!island.valid() || island.region_count()==0) continue;
+                    // Keep a multi-region island when any LayerRegion belongs to
+                    // the explicit provider list. A null filter means all islands.
+                    if (regions != nullptr) {
+                        bool assigned = false;
+                        for (uint32_t r = 0; r < island.region_count() && !assigned; ++r) {
+                            const PrintRegion source = island.region(r).print_region();
+                            assigned = source.valid() &&
+                                assigned_regions.find(source.handle()) != assigned_regions.end();
+                        }
+                        if (!assigned) continue;
+                    }
                     const Layer layer=island.region(0).layer();
                     const Object object=layer.object();
                     objects.emplace(object.handle(),true);
@@ -453,6 +528,8 @@ void SeamPlacementConstraints::initialize(const PrintingPlan &plan, storage_hand
 
 SeamPlacementConstraints::Result SeamPlacementConstraints::portions(const ExtrusionEntity &loop,const LayerRegion &region, bool include_unconstrained) const
 {
+    // Resolve the loop binding and classify every true segment in tree order.
+    // Unknown loops are rejected once a plan binding cache exists.
     Result result;
     const std::map<const extrusion_entity_handle *,Binding>::const_iterator binding=m_impl->bindings.find(loop.handle());
     if (binding==m_impl->bindings.end()) {
@@ -471,6 +548,8 @@ SeamPlacementConstraints::Result SeamPlacementConstraints::portions(const Extrus
 SeamPlacementConstraints::Status SeamPlacementConstraints::classify_point(
     const ExtrusionEntity &loop, c_point point, double paint_margin) const
 {
+    // Query points are in platter coordinates; the cached instance shift maps
+    // them back to the object frame before containment is evaluated.
     const std::map<const extrusion_entity_handle *,Binding>::const_iterator binding=m_impl->bindings.find(loop.handle());
     if (binding==m_impl->bindings.end()) return Status::Free;
     const std::map<const layer_handle *,Zones>::const_iterator zones=m_impl->layers.find(binding->second.layer);
@@ -491,6 +570,8 @@ double SeamPlacementConstraints::Curve::length() const
 
 double SeamPlacementConstraints::Curve::closest_parameter(c_point target, double begin, double end) const
 {
+    // Project onto the analytic support, then restrict the result to the finite
+    // requested interval by comparing its endpoints.
     double t = begin;
     if (radius > 0) {
         t = parameter(std::atan2(double(target.y)-cy,double(target.x)-cx));

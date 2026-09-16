@@ -391,7 +391,9 @@ struct RegionalRouterFixture
         source->mutable_extrusion(LayerRegionIsland::PERIMETERS).append(*loop);
 
         PrintingPlan &plan = prepared.print.mutable_printing_plan();
+        const PrintingObjectInstanceId catalog_id = plan.find_or_add_object_instance(object, 0);
         plan.groups.emplace_back();
+        plan.groups.back().printing_catalog_ids.push_back(catalog_id);
         plan.groups.back().layers.emplace_back();
         plan.groups.back().layers.back().tool_groups.emplace_back();
         PrintingToolGroup &tool = plan.groups.back().layers.back().tool_groups.back();
@@ -400,6 +402,7 @@ struct RegionalRouterFixture
         extrusion.region_island = source.get();
         extrusion.root = std::move(loop);
         extrusion.sregion_island_role = LayerRegionIsland::PERIMETERS;
+        extrusion.printing_catalog_id = catalog_id;
         tool.extrusions.push_back(std::move(extrusion));
     }
 
@@ -922,6 +925,70 @@ struct ConstraintFixture : DirectionRegionFixture
         return {point.x-shift.x,point.y-shift.y};
     }
 };
+
+/* Execute RandomSession directly with exactly the provider region assignment. */
+slic3r_api::SeamPlacer create_random_session_for(
+    Print &print, const std::vector<slic3r_api::PrintRegion> &regions,
+    PluginStorage &storage)
+{
+    PrintingPlan &native_plan = print.mutable_printing_plan();
+    raw_seam_placer_instance instance = slic3r_api::make_seam_placer_instance(
+        slic3r_api::SeamPlacement::RandomPlugin::make_random_seam_session(
+            reinterpret_cast<storage_handle *>(&storage)),
+        slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&native_plan)),
+        regions);
+    return slic3r_api::SeamPlacer(instance);
+}
+
+/* Append an invalid catalog reference on an island outside the assigned list. */
+void append_unassigned_hostile_extrusion(
+    RegionalRouterFixture &fixture,
+    std::unique_ptr<LayerRegionIsland> &hostile_source)
+{
+    const PrintRegion *unused_region = fixture.add_unused_routing_region();
+    REQUIRE(unused_region != nullptr);
+    Layer &layer = fixture.prepared.print.object(0).layer(0);
+    LayerRegion *hostile_region = &layer.region(layer.region_count() - 1);
+    REQUIRE(&hostile_region->region() == unused_region);
+    hostile_source.reset(new LayerRegionIsland({hostile_region}, 0));
+
+    PrintObject &object = fixture.prepared.print.object(0);
+    PrintingPlan &plan = fixture.prepared.print.mutable_printing_plan();
+    PrintingToolGroup &tool = plan.groups.front().layers.front().tool_groups.front();
+    tool.region_islands.push_back(hostile_source.get());
+    const Point shift = object.instances().front().shift;
+    std::unique_ptr<ExtrusionEntity> root(new ExtrusionEntity(
+        false, ArcPolyline(Points{
+            shift + Point::new_scale(20, 20),
+            shift + Point::new_scale(22, 20),
+            shift + Point::new_scale(22, 22),
+            shift + Point::new_scale(20, 22),
+            shift + Point::new_scale(20, 20)})));
+    PrintingExtrusion hostile;
+    hostile.region_island = hostile_source.get();
+    hostile.root = std::move(root);
+    hostile.sregion_island_role = LayerRegionIsland::PERIMETERS;
+    hostile.printing_catalog_id = plan.find_or_add_object_instance(object, 0);
+    tool.extrusions.push_back(std::move(hostile));
+    tool.extrusions.back().printing_catalog_id = 999999;
+}
+
+/* Append malformed plan-wide work with no source island and no valid catalog entry. */
+void append_hostile_extrusion_without_island(RegionalRouterFixture &fixture)
+{
+    PrintObject &object = fixture.prepared.print.object(0);
+    PrintingPlan &plan = fixture.prepared.print.mutable_printing_plan();
+    PrintingToolGroup &tool = plan.groups.front().layers.front().tool_groups.front();
+    const Point shift = object.instances().front().shift;
+    PrintingExtrusion hostile;
+    hostile.root.reset(new ExtrusionEntity(
+        false, ArcPolyline(Points{
+            shift + Point::new_scale(30, 30),
+            shift + Point::new_scale(32, 30)})));
+    hostile.sregion_island_role = LayerRegionIsland::PERIMETERS;
+    hostile.printing_catalog_id = 999999;
+    tool.extrusions.push_back(std::move(hostile));
+}
 }
 
 TEST_CASE("Fixed seam constraints enforce narrow interior segments and true arcs", "[plugins][seam-placer][fixed][constraints]")
@@ -1419,7 +1486,92 @@ TEST_CASE("Random seam registers regional switches and an object seed", "[plugin
     CHECK(region.opt_bool("seam_random_align_inner_seams"));
     const std::string selector=Slic3r::Steps::plugin_exclusive_group_option_key(orch,SEAM_PLACER,"seam_placer_plugin");
     REQUIRE(region.option(selector)!=nullptr);
-    CHECK(region.option(selector)->serialize()=="seam_placer.fixed");
+    CHECK(region.option(selector)->serialize()=="seam_placer.cost");
+}
+
+TEST_CASE("Random regional preparation ignores hostile unassigned extrusions",
+          "[plugins][seam-placer][random][regions][isolation]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    RegionalRouterFixture fixture(true);
+    std::unique_ptr<LayerRegionIsland> hostile_source;
+    append_unassigned_hostile_extrusion(fixture, hostile_source);
+
+    LayerRegion *assigned_region = &fixture.fixed_region->region() == fixture.routed_print_region ?
+        fixture.fixed_region : fixture.routed_region;
+    const slic3r_api::PrintRegion assigned(
+        reinterpret_cast<const print_region_handle *>(fixture.routed_print_region));
+    const std::vector<slic3r_api::PrintRegion> regions = {assigned};
+    PluginStorage storage;
+    const slic3r_api::SeamPlacer session = create_random_session_for(
+        fixture.prepared.print, regions, storage);
+    const slic3r_api::LayerRegion assigned_view(
+        reinterpret_cast<const layer_region_handle *>(assigned_region));
+    const c_point point = session.place_seam(fixture.loop_view(), assigned_view, {});
+    const c_point shift = assigned_view.layer().object().instance_shift(0);
+    const c_point local = {point.x - shift.x, point.y - shift.y};
+    CHECK(unscaled(local.x) >= -5.0);
+    CHECK(unscaled(local.x) <= 5.0);
+    CHECK(unscaled(local.y) >= -1.0);
+    CHECK(unscaled(local.y) <= 1.0);
+}
+
+TEST_CASE("Random regional preparation keeps a multi-region island for any assigned region",
+          "[plugins][seam-placer][random][regions]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    RegionalRouterFixture fixture(true);
+    LayerRegion *assigned_region = &fixture.fixed_region->region() == fixture.routed_print_region ?
+        fixture.fixed_region : fixture.routed_region;
+    const slic3r_api::PrintRegion assigned(
+        reinterpret_cast<const print_region_handle *>(fixture.routed_print_region));
+    const std::vector<slic3r_api::PrintRegion> regions = {assigned};
+    PluginStorage storage;
+    const slic3r_api::SeamPlacer session = create_random_session_for(
+        fixture.prepared.print, regions, storage);
+    const slic3r_api::LayerRegion assigned_view(
+        reinterpret_cast<const layer_region_handle *>(assigned_region));
+    CHECK_NOTHROW(session.place_seam(fixture.loop_view(), assigned_view, {}));
+}
+
+TEST_CASE("Random regional preparation rejects invalid assigned region views",
+          "[plugins][seam-placer][random][regions]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    RegionalRouterFixture fixture(true);
+    const slic3r_api::PrintRegion assigned(
+        reinterpret_cast<const print_region_handle *>(fixture.routed_print_region));
+    const std::vector<slic3r_api::PrintRegion> regions = {
+        slic3r_api::PrintRegion(), assigned};
+    PluginStorage storage;
+    CHECK_THROWS_WITH(
+        create_random_session_for(fixture.prepared.print, regions, storage),
+        "A seam placer instance received an invalid PrintRegion.");
+}
+
+TEST_CASE("Random empty region assignment preserves all-region preparation",
+          "[plugins][seam-placer][random][regions]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    RegionalRouterFixture fixture(true);
+    std::unique_ptr<LayerRegionIsland> hostile_source;
+    append_unassigned_hostile_extrusion(fixture, hostile_source);
+    const std::vector<slic3r_api::PrintRegion> regions;
+    PluginStorage storage;
+    // Empty is the direct/factory shorthand for the historical plan-wide mode;
+    // the malformed foreign extrusion must therefore remain visible to setup.
+    CHECK_THROWS(create_random_session_for(fixture.prepared.print, regions, storage));
+}
+
+TEST_CASE("Random plan-wide preparation still validates work without an island",
+          "[plugins][seam-placer][random][regions]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    RegionalRouterFixture fixture(true);
+    append_hostile_extrusion_without_island(fixture);
+    const std::vector<slic3r_api::PrintRegion> regions;
+    PluginStorage storage;
+    CHECK_THROWS(create_random_session_for(fixture.prepared.print, regions, storage));
 }
 
 TEST_CASE("Random seams deduplicate joins and remain stable across calls and sessions", "[plugins][seam-placer][random]")
@@ -1721,7 +1873,8 @@ TEST_CASE("Regional seam router selects the configured Random provider", "[plugi
     random_options(fixture,false,false);
     const std::string selector=Slic3r::Steps::plugin_exclusive_group_option_key(Orchestrator::instance(),SEAM_PLACER,"seam_placer_plugin");
     PrintRegionConfig config=fixture.region->region().config();
-    REQUIRE_NOTHROW(config.set_deserialize_strict(selector,"seam_placer.random"));
+    REQUIRE(config.opt<ConfigOptionInt>(selector) != nullptr);
+    config.opt<ConfigOptionInt>(selector)->set_int(1);
     replace_region_config(*fixture.region, config);
     const slic3r_api::ExtrusionEntity loop=fixture.add(square_loop()).root();
     slic3r_api::SeamPlacer reference=create_fixed_session(fixture.prepared.print,"seam_placer.random");
@@ -1828,6 +1981,7 @@ TEST_CASE("Seam router initializes an auxiliary-only canonical region", "[plugin
     PrintingExtrusion &extrusion = print.mutable_printing_plan().groups.front()
         .layers.front().tool_groups.front().extrusions.front();
     extrusion.region_island = fixture.source.get();
+    extrusion.printing_catalog_id = PRINTING_OBJECT_INSTANCE_ID_NONE;
     const Point shift = print.object(0).instances().front().shift;
     slic3r_api::MutableExtrusionEntity root(reinterpret_cast<extrusion_entity_handle *>(extrusion.root.get()));
     REQUIRE(root.translate({-shift.x(), -shift.y()}));

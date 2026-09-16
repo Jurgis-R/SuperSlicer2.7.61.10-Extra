@@ -54,6 +54,7 @@
 #include "libslic3r/Plugins/Ordering/DefaultOrdering.hpp"
 #include "libslic3r/Plugins/PluginLoader.hpp"
 #include "libslic3r/Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp"
+#include "libslic3r/Plugins/SeamPlacer/CostSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/RandomSeamPlacer.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimSkirtTrim.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimGenerator.hpp"
@@ -390,6 +391,7 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::FlatAreaLayerHeightPlugin::register_flat_area_layer_height_plugin(orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
+        slic3r_api::SeamPlacement::CostPlugin::register_cost_seam_placer_plugin(orchestrator_handle_value);
         slic3r_api::SeamPlacement::FixedDirectionPlugin::register_fixed_direction_seam_placer_plugin(
             orchestrator_handle_value);
         slic3r_api::SeamPlacement::RandomPlugin::register_random_seam_placer_plugin(orchestrator_handle_value);
@@ -524,6 +526,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.custom_gcode_event_tools");
         activate_plugin_or_fail(orchestrator, "ordering.printing_extrusion.presort.default");
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
+        activate_plugin_or_fail(orchestrator, "seam_placer.cost");
         activate_plugin_or_fail(orchestrator, "seam_placer.fixed");
         activate_plugin_or_fail(orchestrator, "seam_placer.random");
         // Keep a second SeamPlacer active only while the generated regional
@@ -581,6 +584,7 @@ void ensure_plugin_test_runtime_initialized()
         if (without_png) orchestrator.set_plugin_active("PNG", true);
         register_exclusive_step_group_ui_fragments(orchestrator);
         orchestrator.set_plugin_active("slic3r.test.seam_placer.regional", false);
+        orchestrator.set_plugin_active("seam_placer.cost", false);
         orchestrator.set_plugin_active("seam_placer.random", false);
         initialize_fff_print_config_cache();
         initialize_sla_print_config_cache();

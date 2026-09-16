@@ -23,11 +23,39 @@
 SeamPlacerRouter.cpp
 ====================
 
-The selector for seam placement belongs to PrintRegion configuration, but an
-ordering worker receives only a loop from the transformed PrintingPlan. This
-file joins those two views before parallel ordering starts. Sessions are
-grouped by provider to avoid repeating expensive initialization, and each loop
-stores the winning LayerRegion together with shared ownership of that session.
+This file adapts the configuration-oriented view of seam placement to the
+geometry-oriented view used by the ordering pipeline. A PrintRegion selects a
+SEAM_PLACER provider, while an ordering worker later receives only an atomic
+closed loop and its current starting position. The router builds the missing
+association before workers start.
+
+The complete construction path is:
+
+    SeamPlacerRouter::SeamPlacerRouter()
+    |-- collect_print_regions()
+    |-- group_regions_by_provider()
+    |   `-- OrchestratorView::select_plugin()
+    |-- create_sessions()
+    |   `-- OrchestratorView::execute()
+    |       `-- one provider session initialization per batch
+    `-- build_plan_routes()
+        `-- build_entity_routes() recursively for every extrusion tree
+
+The resulting tables are immutable after construction:
+
+    PrintRegion handle -> shared SeamPlacer session
+    ExtrusionEntity handle -> selected LayerRegion and shared session
+
+Several PrintRegions can select the same provider, so they share one session
+instead of causing repeated initialization. Several loops can use that session
+concurrently during ordering; the session implementation is therefore required
+to be safe for the concurrent calls described by SeamPlacerViews.hpp. The
+router itself only reads its maps after construction.
+
+Borrowed Print, PrintingPlan, LayerRegion and extrusion handles must remain
+valid for the lifetime of the router. The router does not take ownership of
+any data-tree object. Its shared_ptr values own only the C++ SeamPlacer wrapper
+and, through it, the provider session published by the provider.
 */
 
 namespace slic3r_api { namespace SeamPlacement {
@@ -38,22 +66,46 @@ const char *const k_seam_placer_group = "seam_placer_plugin";
 struct ProviderBatch;
 struct LoopRoute;
 
-/* Enumerate unique PrintRegions in stable object/region order. */
+/*
+Enumerate every valid PrintRegion that may be referenced by the plan, once.
+
+The Print is visited first to preserve the normal object/region order. The
+plan is then visited as a fallback for regions referenced by generated plan
+data but not present in the ordinary object list. This order is used for
+deterministic provider batches and session initialization. In
+build_entity_routes(), exact per-loop priority ties retain the candidate
+LayerRegion/source-island order.
+*/
 std::vector<PrintRegion> collect_print_regions(const Print &print, const PrintingPlan &plan);
 
-/* Group regions by the active provider selected from their configurations. */
+/*
+Resolve the configured SEAM_PLACER provider for each region and group regions
+selecting the same provider into one initialization batch. An invalid selector
+is reported with the option key and stored integer value so the caller can
+distinguish configuration failure from provider execution failure.
+*/
 std::vector<ProviderBatch> group_regions_by_provider(
     orchestrator_handle *orchestrator,
     const std::vector<PrintRegion> &regions);
 
-/* Execute each provider once and map every assigned region to its session. */
+/*
+Execute one provider session per batch and map every assigned PrintRegion to
+the resulting shared SeamPlacer wrapper. The raw region-pointer array is valid
+for the provider execution call; the provider receives borrowed plan and
+region views and publishes ownership only for its session object.
+*/
 std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessions(
     orchestrator_handle *orchestrator,
     const Print &print,
     const PrintingPlan &plan,
     std::vector<ProviderBatch> &batches);
 
-/* Resolve all atomic loops below entity; a loop remains one indivisible unit. */
+/*
+Resolve all atomic loops below one extrusion entity. A loop is an indivisible
+seam-placement unit; non-loop entities are only traversal nodes and are
+visited recursively. When several LayerRegions can describe a loop, the
+provider priority selects one region before the route is stored.
+*/
 void build_entity_routes(
     storage_handle *scratch_storage,
     const PrintingPlan &plan,
@@ -62,7 +114,10 @@ void build_entity_routes(
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions,
     std::map<const extrusion_entity_handle *, LoopRoute> &routes);
 
-/* Walk every extrusion root and build the immutable loop routing table. */
+/*
+Walk every PrintingExtrusion root in plan order and populate the immutable
+loop-to-provider routing table used by place_seam().
+*/
 std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
     storage_handle *scratch_storage,
     const PrintingPlan &plan,
@@ -70,14 +125,19 @@ std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
 
 struct ProviderBatch
 {
+    // The provider is stored once for all regions selecting it.
     PluginView provider;
+    // C++ views are kept while the provider is executed and while the region
+    // handles are copied into raw_regions for the C ABI call.
     std::vector<PrintRegion> regions;
     std::vector<const print_region_handle *> raw_regions;
 };
 
 struct LoopRoute
 {
+    // The LayerRegion whose configuration was selected for this loop.
     LayerRegion region;
+    // Shared because all loops assigned to one provider use the same session.
     std::shared_ptr<SeamPlacer> session;
 };
 
@@ -85,6 +145,10 @@ std::vector<PrintRegion> collect_print_regions(const Print &print, const Printin
 {
     std::vector<PrintRegion> result;
     std::map<const print_region_handle *, bool> seen;
+
+    // Start with the ordinary Print object graph. The map is keyed by the
+    // borrowed handle because one PrintRegion can be referenced by many
+    // layers, islands or extrusions in the plan.
     for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx) {
         const Object object = print.object(object_idx);
         for (uint32_t region_idx = 0; region_idx < object.print_region_count(); ++region_idx) {
@@ -93,6 +157,10 @@ std::vector<PrintRegion> collect_print_regions(const Print &print, const Printin
                 result.push_back(region);
         }
     }
+
+    // Include regions discoverable only through the transformed PrintingPlan.
+    // This also makes the router robust to generated or synthetic plan data
+    // that is not represented by the ordinary object-region enumeration.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
@@ -122,9 +190,17 @@ std::vector<ProviderBatch> group_regions_by_provider(
     std::vector<ProviderBatch> batches;
     for (size_t region_idx = 0; region_idx < regions.size(); ++region_idx) {
         const PrintRegion &region = regions[region_idx];
+
+        // The selector is stored in the region configuration. The router does
+        // not choose a default provider: selection must be resolved by the
+        // orchestrator so that all provider activation rules are respected.
         const PluginView provider = orchestrator_view.select_plugin(
             region.config().handle(), SEAM_PLACER, k_seam_placer_group);
         if (!provider.valid()) {
+
+            // Include the actual selector in the diagnostic. A missing or
+            // stale exclusive-group value is a configuration error, not a
+            // provider-session error.
             const std::string option_key = Slic3r::Steps::plugin_exclusive_group_option_key(
                 *reinterpret_cast<const Slic3r::Orchestrator *>(orchestrator),
                 SEAM_PLACER, k_seam_placer_group);
@@ -138,6 +214,8 @@ std::vector<ProviderBatch> group_regions_by_provider(
                 k_seam_placer_group + "'.");
         }
 
+        // Reuse the same batch for equal provider handles. Provider identity,
+        // rather than region identity, determines how many sessions are built.
         ProviderBatch *batch = nullptr;
         for (ProviderBatch &candidate : batches) {
             if (candidate.provider.handle() == provider.handle()) {
@@ -164,6 +242,9 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
     OrchestratorView orchestrator_view(orchestrator);
     std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> result;
     for (ProviderBatch &batch : batches) {
+        // The C ABI stores the number of regions in uint32_t. Reject an
+        // unrepresentable batch before converting the size or building the
+        // pointer array.
         if (batch.regions.size() > std::numeric_limits<uint32_t>::max())
             throw std::runtime_error("A seam placer provider received too many PrintRegions.");
         batch.raw_regions.reserve(batch.regions.size());
@@ -174,6 +255,11 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
         context.plan = plan.handle();
         context.regions = batch.raw_regions.empty() ? nullptr : batch.raw_regions.data();
         context.region_count = uint32_t(batch.raw_regions.size());
+
+        // execute() calls the provider once for this complete batch. The
+        // context and raw_regions remain alive until the call returns; the
+        // published instance must own whatever session state it needs after
+        // that point.
         const raw_plugin_execution_status status = orchestrator_view.execute(
             batch.provider, print.handle(), context);
         if (status != RAW_PLUGIN_EXECUTION_SUCCESS)
@@ -183,6 +269,10 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
 
         std::shared_ptr<SeamPlacer> session;
         try {
+            // SeamPlacer takes ownership of the C instance's provider session.
+            // The shared wrapper is then assigned to every region in this
+            // batch, so all loops using one provider share one initialized
+            // session without copying it.
             session = std::make_shared<SeamPlacer>(context.instance);
         } catch (const std::exception &exception) {
             throw std::runtime_error(
@@ -203,9 +293,14 @@ void build_entity_routes(
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions,
     std::map<const extrusion_entity_handle *, LoopRoute> &routes)
 {
+    // Empty nodes carry no executable geometry and cannot produce a route.
     if (entity.empty())
         return;
     if (entity.is_loop()) {
+        // The resolver follows the PrintingPlan ancestry and returns the
+        // LayerRegions that can legitimately provide configuration for this
+        // atomic loop. It must be done once during construction, not by every
+        // worker request.
         const std::vector<LayerRegion> candidates =
             Ordering::TreeOrderingGeometry::resolve_source_layer_regions(
                 scratch_storage, plan, extrusion, entity);
@@ -219,6 +314,9 @@ void build_entity_routes(
         std::shared_ptr<SeamPlacer> selected_session = first->second;
 
         if (candidates.size() > 1) {
+            // Providers may rank the same loop differently. Strict comparison
+            // keeps the first source region on an exact tie and therefore
+            // preserves the deterministic plan traversal order.
             float best_priority = selected_session->get_priority(entity, selected);
             for (size_t candidate_idx = 1; candidate_idx < candidates.size(); ++candidate_idx) {
                 const LayerRegion candidate = candidates[candidate_idx];
@@ -244,6 +342,8 @@ void build_entity_routes(
         return;
     }
 
+    // Composite entities do not receive a seam themselves. Their children are
+    // visited depth-first so every atomic loop gets exactly one route entry.
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         build_entity_routes(
             scratch_storage, plan, extrusion, entity.child(child_idx), sessions, routes);
@@ -255,6 +355,10 @@ std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions)
 {
     std::map<const extrusion_entity_handle *, LoopRoute> result;
+
+    // Traverse the same group/layer/tool/extrusion hierarchy that ordering
+    // later uses. Keeping this order makes duplicate detection and exact
+    // priority ties deterministic.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
@@ -276,6 +380,9 @@ std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
 
 struct SeamPlacerRouter::Impl
 {
+    // These values are immutable after the constructor finishes. They are
+    // kept behind Impl so the public header needs no definitions for the
+    // routing details or the provider session maps.
     std::vector<ProviderBatch> batches;
     std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> sessions;
     std::map<const extrusion_entity_handle *, LoopRoute> routes;
@@ -287,9 +394,17 @@ SeamPlacerRouter::SeamPlacerRouter(orchestrator_handle *orchestrator,
                                    storage_handle *scratch_storage) :
     m_impl(new Impl())
 {
+    // The router is created before parallel seam requests begin. Rejecting a
+    // missing input here prevents a partially populated route table from
+    // being observed by ordering workers.
     if (orchestrator == nullptr || !print.valid() || !plan.valid() || scratch_storage == nullptr)
         throw std::invalid_argument(
             "SeamPlacerRouter needs an orchestrator, Print, PrintingPlan, and scratch storage.");
+
+    // Construction has four ordered phases: discover regions, resolve their
+    // providers, initialize one session per provider, and route every loop.
+    // None of the later phases may run with an incomplete result from an
+    // earlier phase.
     const std::vector<PrintRegion> regions = collect_print_regions(print, plan);
     m_impl->batches = group_regions_by_provider(orchestrator, regions);
     m_impl->sessions = create_sessions(orchestrator, print, plan, m_impl->batches);
@@ -301,6 +416,10 @@ SeamPlacerRouter::~SeamPlacerRouter() = default;
 c_point SeamPlacerRouter::place_seam(const ExtrusionEntity &loop,
                                      const c_point start_position) const
 {
+    // The ordering code may call this method repeatedly and concurrently. All
+    // provider and region decisions were made during construction, so this
+    // method only performs const map lookup and delegates to the selected
+    // session with the caller's current travel position.
     if (!loop.is_loop())
         throw std::invalid_argument(
             "SeamPlacerRouter needs a non-empty fixed continuous closed loop.");

@@ -336,10 +336,14 @@ set(SLIC3R_SOURCES
 	Plugins/PrintingPlan/PrintingLayerEntryStateProperties.h
 	Plugins/PrintingPlan/PrintingExtrusionScopeProperty.h
 	Plugins/PrintingPlan/PrintingLayerTimeProperty.h
+	Plugins/SeamPlacer/CostSeamPlacer.cpp
+	Plugins/SeamPlacer/CostSeamPlacer.hpp
 	Plugins/SeamPlacer/FixedDirectionSeamPlacer.cpp
 	Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp
 	Plugins/SeamPlacer/RandomSeamPlacer.cpp
 	Plugins/SeamPlacer/RandomSeamPlacer.hpp
+	Plugins/SeamPlacer/SeamCostModel.cpp
+	Plugins/SeamPlacer/SeamCostModel.hpp
 	Plugins/SeamPlacer/SeamPlacementConstraints.cpp
 	Plugins/SeamPlacer/SeamPlacementConstraints.hpp
 	Plugins/SeamPlacer/SeamPlacerRouter.cpp

@@ -6,8 +6,11 @@
 RandomSeamPlacer: from a printing plan to cached seam positions
 =============================================================
 This provider chooses a reproducible random starting point for each atomic loop.
-Its configuration selects either distinct admissible vertices (including actual
-constraint boundaries) or a position drawn uniformly along admissible arclength.
+If vertices-only mode has admissible vertices, it samples uniformly among
+distinct admissible vertices (including actual constraint boundaries). Otherwise,
+it makes best-effort length-weighted samples along admissible arclength. Integer
+rounding may reject sampled points; after 64 attempts it falls back to a
+representable random vertex.
 Inner loops may instead align with an external seam. Arrival positions are ignored.
 
 Preparation has three stages. First, walk the plan, resolve source regions and
@@ -56,6 +59,7 @@ geometry requires a new session. The service adapter owns session destruction.
 #include <map>
 #include <random>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
@@ -69,6 +73,19 @@ using Portion = SeamPlacementConstraints::Portion;
 using Status = SeamPlacementConstraints::Status;
 constexpr double pi = 3.14159265358979323846;
 const char *const keys[] = {"seam_random_vertices_only", "seam_random_align_inner_seams", "seam_random_seed"};
+
+struct RegionFilter
+{
+    bool plan_wide = false;
+    std::unordered_set<const print_region_handle *> assigned;
+};
+
+/* Resolve borrowed region views once so plan traversal does constant-time membership tests. */
+RegionFilter make_region_filter(const std::vector<PrintRegion> &regions);
+/* Include a multi-region island when any one source region is assigned. */
+bool island_is_assigned(const LayerRegionIsland &island, const RegionFilter &filter);
+/* Test one candidate region without dereferencing an invalid view. */
+bool region_is_assigned(const LayerRegion &region, const RegionFilter &filter);
 
 struct Candidate { c_point point{}; double width = 0; };
 struct Domain { std::vector<Portion> ranges; std::vector<Candidate> vertices; Status status = Status::Free; };
@@ -94,7 +111,8 @@ double distance(c_point a, c_point b);
 Domain make_domain(const SeamPlacementConstraints &constraints, const ExtrusionEntity &loop, const LayerRegion &region);
 /* Round a curve point and verify it still belongs to the selected closed zones. */
 bool admissible_point(const SeamPlacementConstraints &constraints, const Loop &loop, const Portion &range, double t, c_point &out);
-/* Select a uniformly weighted vertex or arclength, with representability fallback. */
+/* Sample vertices uniformly or make best-effort length-weighted arclength
+   draws; after 64 rejected rounded points, use a representable random vertex. */
 c_point random_seam(const SeamPlacementConstraints &constraints, const Loop &loop, bool vertices_only, uint64_t &state);
 /* Closest admissible curve point, returning its inherited internal width as well. */
 Candidate nearest(const SeamPlacementConstraints &constraints, const Loop &loop, c_point target);
@@ -111,7 +129,7 @@ bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region,
 /* Reconstruct inherited tags before an atomic loop is recorded. */
 void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
                    uint16_t object_instance_idx,
-                   raw_extrusion_role role, uint16_t flags, const std::vector<PrintRegion> &regions,
+                   raw_extrusion_role role, uint16_t flags, const RegionFilter &filter,
                    std::vector<Loop> &loops);
 /* Align each internal loop against immutable external random seams. */
 void align_loops(const SeamPlacementConstraints &constraints, std::vector<Loop> &loops);
@@ -387,9 +405,37 @@ bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region,
     return false;
 }
 
+RegionFilter make_region_filter(const std::vector<PrintRegion> &regions)
+{
+    RegionFilter filter;
+    filter.plan_wide=regions.empty();
+    filter.assigned.reserve(regions.size());
+    for (const PrintRegion &region:regions)
+        if (region.valid()) filter.assigned.insert(region.handle());
+    return filter;
+}
+
+bool island_is_assigned(const LayerRegionIsland &island, const RegionFilter &filter)
+{
+    if (!island.valid() || island.region_count()==0) return false;
+    if (filter.plan_wide) return true;
+    for (uint32_t i=0;i<island.region_count();++i) {
+        const PrintRegion source=island.region(i).print_region();
+        if (source.valid() && filter.assigned.find(source.handle())!=filter.assigned.end()) return true;
+    }
+    return false;
+}
+
+bool region_is_assigned(const LayerRegion &region, const RegionFilter &filter)
+{
+    if (filter.plan_wide) return true;
+    const PrintRegion source=region.print_region();
+    return source.valid() && filter.assigned.find(source.handle())!=filter.assigned.end();
+}
+
 void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
                    const uint16_t object_instance_idx,
-                   raw_extrusion_role role, uint16_t flags, const std::vector<PrintRegion> &regions,
+                   raw_extrusion_role role, uint16_t flags, const RegionFilter &filter,
                    std::vector<Loop> &loops)
 {
     const c_extrusion_property_attributes *attributes=static_cast<const c_extrusion_property_attributes *>(entity.property_data(EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
@@ -398,11 +444,11 @@ void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entit
     if (perimeter!=nullptr) flags=perimeter->perimeter_flags;
     if (!entity.is_loop()) {
         for (uint32_t i=0;i<entity.child_count();++i)
-            collect_loops(source,entity.child(i),object_instance_idx,role,flags,regions,loops);
+            collect_loops(source,entity.child(i),object_instance_idx,role,flags,filter,loops);
         return;
     }
     const LayerRegionIsland island=source.region_island();
-    if (!island.valid() || island.region_count()==0) return;
+    if (!island_is_assigned(island,filter)) return;
     Loop loop;
     loop.entity=entity;
     loop.instance=object_instance_idx;
@@ -416,9 +462,7 @@ void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entit
     LayerRegion fallback;
     for (uint32_t i=0;i<island.region_count();++i) {
         const LayerRegion candidate=island.region(i);
-        bool assigned=regions.empty();
-        for (const PrintRegion &region:regions) assigned|=region.handle()==candidate.print_region().handle();
-        if (!assigned) continue;
+        if (!region_is_assigned(candidate,filter)) continue;
         if (!fallback.valid()) fallback=candidate;
         if (touches_region(loop.curves,candidate,shift)) { loop.region=candidate; break; }
     }
@@ -476,7 +520,12 @@ void RandomSession::initialize(const PrintingPlan &plan, const std::vector<Print
 {
     if (!plan.valid() || m_storage==nullptr) throw std::invalid_argument("Random seam needs a plan and temporary storage.");
     SeamPlacementConstraints constraints;
-    constraints.initialize(plan,m_storage);
+    // A factory call with no assigned regions is the historical all-regions
+    // mode. An explicit nonempty assignment must filter preparation as well as
+    // loop collection, so foreign provider data cannot break this session.
+    if (regions.empty()) constraints.initialize(plan,m_storage);
+    else constraints.initialize_for_regions(plan,m_storage,regions);
+    const RegionFilter filter=make_region_filter(regions);
     std::vector<Loop> loops;
     for (uint32_t g=0;g<plan.group_count();++g) {
         const PrintingGroup group=plan.group(g);
@@ -486,11 +535,15 @@ void RandomSession::initialize(const PrintingPlan &plan, const std::vector<Print
                 const PrintingToolGroup tool=layer.tool_group(t);
                 for (uint32_t e=0;e<tool.extrusion_count();++e) {
                     const PrintingExtrusion extrusion=tool.extrusion(e);
+                    // Reject foreign-provider work before consulting its
+                    // object-instance metadata. Such work is outside this
+                    // session and may legitimately be incomplete here.
+                    if (!filter.plan_wide && !island_is_assigned(extrusion.region_island(),filter)) continue;
                     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
                     if (object_instance_idx == size_t(-1) || object_instance_idx > std::numeric_limits<uint16_t>::max())
                         throw std::runtime_error("Random seam extrusion has no valid printing-plan instance.");
                     collect_loops(extrusion,extrusion.root(),static_cast<uint16_t>(object_instance_idx),
-                                  extrusion.role(),0,regions,loops);
+                                  extrusion.role(),0,filter,loops);
                 }
             }
         }

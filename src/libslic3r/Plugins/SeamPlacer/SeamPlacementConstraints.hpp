@@ -12,10 +12,13 @@ uses these classifications to implement its own placement policy.
 
 Call initialize(plan, storage) before publishing the seam session. Initialization
 copies projected paint and sliced volume polygons into private memory and records
-which source layer and instance each plan extrusion belongs to. Storage is borrowed
-only for that call; temporary StoredPolygonCollection owners free their allocations,
-including during exception unwinding. The helper owns its copied caches through a
-unique_ptr and releases them on destruction. It never owns or frees host objects.
+which source layer and instance each plan extrusion belongs to. The
+initialize_for_regions(plan, storage, regions) overload has the same behavior but
+prepares only islands for which at least one LayerRegion's PrintRegion is in
+regions. Storage and regions are borrowed only during initialization; temporary
+StoredPolygonCollection owners free their allocations, including during exception
+unwinding. The helper owns its copied caches through a unique_ptr and releases them
+on destruction. It never owns or frees host objects.
 
 The plan, source objects and existing loop handles must outlive the helper. After
 initialization, queries are const and may run concurrently provided the borrowed
@@ -46,10 +49,19 @@ classify_point() before the provider returns a seam to its consumer.
 
 namespace slic3r_api { namespace SeamPlacement {
 
-
 class SeamPlacementConstraints
 {
 public:
+    /*
+    Lifecycle and call sequence:
+
+        initialize(plan, storage)
+        `-- portions(loop, region) or classify_point(loop, point, margin)
+
+    Initialization copies the constraint geometry needed by a provider session.
+    Query methods classify the actual line and analytic arc segments of a loop;
+    they never choose or apply a seam themselves.
+    */
     enum class Status { Blocked, Free, Enforced };
     struct Curve {
         c_extrusion_segment segment{};
@@ -85,6 +97,16 @@ public:
     SeamPlacementConstraints &operator=(const SeamPlacementConstraints &) = delete;
     /* Called once, before publication. storage is borrowed only for this call. */
     void initialize(const PrintingPlan &plan, storage_handle *storage);
+    /*
+    Called once, before publication, with a borrowed region list. Only an island
+    with any LayerRegion whose PrintRegion is in regions is prepared; an empty
+    list therefore prepares no islands. The list and plan must remain valid for
+    this call only, while the plan's source objects and loop handles must outlive
+    later queries. A multi-region island is included when any one of its regions
+    matches, so the filter is island-level rather than loop-level.
+    */
+    void initialize_for_regions(const PrintingPlan &plan, storage_handle *storage,
+                                const std::vector<PrintRegion> &regions);
     /* Classify true segments in tree order, inheriting extrusion width/role.
        Blockers override enforcers; boundaries belong to the closed zone.
        include_unconstrained also returns full segments when no zone applies,
@@ -95,6 +117,8 @@ public:
     /* Recheck integer-rounded candidates against the same closed zones. */
     Status classify_point(const ExtrusionEntity &loop, c_point point, double paint_margin) const;
 private:
+    void initialize_impl(const PrintingPlan &plan, storage_handle *storage,
+                         const std::vector<PrintRegion> *regions);
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };
