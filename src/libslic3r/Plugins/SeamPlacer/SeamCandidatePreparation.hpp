@@ -47,10 +47,12 @@ struct Candidate {
     size_t stable_order = 0;
 };
 
-/* One perimeter loop discovered in an extrusion tree. The external flag and
-   width let each provider decide whether this loop is a candidate source. */
+/* One perimeter loop discovered in an extrusion tree. distance_only records the
+   effective role at this node; providers use it to keep technical loops as
+   projection targets without treating them as seam-candidate sources. */
 struct CollectedLoop {
     const extrusion_entity_handle *loop = nullptr;
+    bool distance_only = false;
     bool has_external_geometry = false;
     double external_width = 0;
 };

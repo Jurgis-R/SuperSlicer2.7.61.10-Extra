@@ -591,6 +591,48 @@ TEST_CASE("Cost seam takes candidates only from effective external perimeter loo
     CHECK(projected.y == scale_i(-2));
 }
 
+TEST_CASE("Cost seam places distance-only loops by direct distance projection",
+          "[plugins][seam-placer][cost][geometry]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("distance-only island")
+    {
+        CostFixture fixture;
+        const slic3r_api::PrintingExtrusion skirt = fixture.add(
+            rectangle_loop(0, 0, 10, 10), RAW_EXTRUSION_ROLE_SKIRT);
+
+        const slic3r_api::SeamPlacer placer =
+            create_cost_session(fixture.prepared.print);
+        const c_point start = {skirt.root().front().x + scale_i(4),
+                               skirt.root().front().y - scale_i(3)};
+        const c_point projected = fixture.local(placer.place_seam(
+            skirt.root(), fixture.region_view(), start));
+
+        CHECK(projected.x == scale_i(4));
+        CHECK(projected.y == 0);
+    }
+
+    SECTION("mixed island")
+    {
+        CostFixture fixture;
+        fixture.add(rectangle_loop(-20, -20, 20, 20),
+                    RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+        const slic3r_api::PrintingExtrusion skirt = fixture.add(
+            rectangle_loop(0, 0, 10, 10), RAW_EXTRUSION_ROLE_SKIRT);
+
+        const slic3r_api::SeamPlacer placer =
+            create_cost_session(fixture.prepared.print);
+        const c_point start = {skirt.root().front().x + scale_i(4),
+                               skirt.root().front().y - scale_i(3)};
+        const c_point projected = fixture.local(placer.place_seam(
+            skirt.root(), fixture.region_view(), start));
+
+        CHECK(projected.x == scale_i(4));
+        CHECK(projected.y == 0);
+    }
+}
+
 TEST_CASE("Cost seam binds composed loops and projects analytically onto arcs",
           "[plugins][seam-placer][cost][geometry]")
 {
@@ -1061,6 +1103,49 @@ TEST_CASE("Cost seam diagnoses invalid source islands",
     invalid.region_island = nullptr;
     CHECK_THROWS_WITH(create_cost_session(fixture.prepared.print),
         "Cost-based seam placement found a perimeter loop with an invalid source LayerRegionIsland.");
+}
+
+TEST_CASE("Aligned seam places distance-only loops by direct distance projection",
+          "[plugins][seam-placer][aligned][geometry]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("distance-only island")
+    {
+        CostFixture fixture;
+        const slic3r_api::PrintingExtrusion skirt = fixture.add(
+            rectangle_loop(0, 0, 10, 10), RAW_EXTRUSION_ROLE_SKIRT);
+
+        const slic3r_api::SeamPlacer placer =
+            create_aligned_session(fixture.prepared.print);
+        const c_point start = {skirt.root().front().x + scale_i(4),
+                               skirt.root().front().y - scale_i(3)};
+        const c_point projected = fixture.local(placer.place_seam(
+            skirt.root(), fixture.region_view(), start));
+
+        CHECK(projected.x == scale_i(4));
+        CHECK(projected.y == 0);
+    }
+
+    SECTION("mixed island")
+    {
+        CostFixture fixture;
+        fixture.source_ptr = attach_native_source(fixture);
+        fixture.add(rectangle_loop(-20, -20, 20, 20),
+                    RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+        const slic3r_api::PrintingExtrusion skirt = fixture.add(
+            rectangle_loop(0, 0, 10, 10), RAW_EXTRUSION_ROLE_SKIRT);
+
+        const slic3r_api::SeamPlacer placer =
+            create_aligned_session(fixture.prepared.print);
+        const c_point start = {skirt.root().front().x + scale_i(4),
+                               skirt.root().front().y - scale_i(3)};
+        const c_point projected = fixture.local(placer.place_seam(
+            skirt.root(), fixture.region_view(), start));
+
+        CHECK(projected.x == scale_i(4));
+        CHECK(projected.y == 0);
+    }
 }
 
 TEST_CASE("Aligned seam projects exact external and nearest internal tracks across instances",

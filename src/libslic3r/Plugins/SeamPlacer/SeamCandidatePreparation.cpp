@@ -88,8 +88,8 @@ std::pair<c_point, double> project_onto_loop_impl(const ExtrusionEntity &entity,
 
 } // namespace
 
-/* Collect every non-empty perimeter loop and retain its effective external
-   width, if the loop's subtree contains external-perimeter geometry. */
+/* Collect every non-empty perimeter loop, classify its effective role, and
+   retain the external width when its subtree supplies candidate geometry. */
 std::vector<CollectedLoop> collect_perimeter_loops(
     const ExtrusionEntity &root, raw_extrusion_role inherited_role);
 
@@ -153,7 +153,9 @@ ExternalGeometry collect_tree(const ExtrusionEntity &entity,
         if (!external.present && child.present) external = child;
     }
     if (entity.is_loop() && !entity.empty() && perimeter)
-        loops.push_back({entity.handle(), external.present, external.width});
+        loops.push_back({entity.handle(),
+                         !RAW_EXTRUSION_ROLE_IS_PERIMETER(role),
+                         external.present, external.width});
     return external;
 }
 

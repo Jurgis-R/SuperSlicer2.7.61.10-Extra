@@ -37,11 +37,6 @@ struct SeamCandidate {
 
 using RegionIslandKey = const layer_region_island_handle *;
 
-struct LoopBinding {
-    RegionIslandKey island;
-    c_point instance_shift;
-};
-
 std::unique_ptr<SeamPlacerSession> make_cost_seam_session(storage_handle *storage);
 void register_cost_seam_placer_plugin(orchestrator_handle *orchestrator);
 

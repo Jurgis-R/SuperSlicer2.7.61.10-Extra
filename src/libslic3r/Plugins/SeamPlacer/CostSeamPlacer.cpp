@@ -46,6 +46,12 @@ must not be mutated concurrently. Source changes do not refresh the snapshots.
 
 namespace slic3r_api { namespace SeamPlacement { namespace CostPlugin {
 
+struct LoopBinding {
+    RegionIslandKey island;
+    c_point instance_shift;
+    bool distance_only = false;
+};
+
 /*
 The session has a build phase followed by a read-only placement phase.
 m_storage is borrowed scratch storage used only by initialize(); its handle is
@@ -102,6 +108,8 @@ struct IslandWork {
     LayerRegionIsland island;
     c_point shift{};
     bool has_perimeter_loop = false;
+    /* Technical-only islands bind loops but do not need candidate finalization. */
+    bool requires_geometric_candidates = false;
     std::vector<CandidatePreparation::Candidate> candidates;
 };
 
@@ -233,16 +241,23 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
                     IslandWork &island_work = work[key];
                     if (first) { island_work.island = island; island_work.shift = shift; }
                     for (const CandidatePreparation::CollectedLoop &loop : collected)
-                        m_bindings.emplace(loop.loop, LoopBinding{key, shift});
-                    if (shift.x != island_work.shift.x || shift.y != island_work.shift.y) continue;
+                        m_bindings.emplace(
+                            loop.loop, LoopBinding{key, shift, loop.distance_only});
                     island_work.has_perimeter_loop = island_work.has_perimeter_loop || !collected.empty();
+                    island_work.requires_geometric_candidates =
+                        island_work.requires_geometric_candidates ||
+                        std::any_of(collected.begin(), collected.end(),
+                            [](const CandidatePreparation::CollectedLoop &loop) {
+                                return !loop.distance_only;
+                            });
+                    if (shift.x != island_work.shift.x || shift.y != island_work.shift.y) continue;
                     // Assignment checks all regions, but region(0) supplies the
                     // fallback flow and external-perimeter nozzle parameters.
                     const LayerRegion region = island.region(0);
                     const c_flow external_flow = region.flow(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
                     const double fallback_width = unscaled(external_flow.width);
                     for (const CandidatePreparation::CollectedLoop &source : collected) {
-                        if (!source.has_external_geometry) continue;
+                        if (source.distance_only || !source.has_external_geometry) continue;
                         const ExtrusionEntity loop(source.loop);
                         const double width = source.external_width > 0 ?
                             source.external_width : fallback_width;
@@ -267,6 +282,7 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
     */
     for (auto &[key, island_work] : work) {
         if (!island_work.has_perimeter_loop) continue;
+        if (!island_work.requires_geometric_candidates) continue;
         if (island_work.candidates.empty())
             throw std::runtime_error(
                 "Cost-based seam placement found perimeter loops but no external geometric candidate for LayerRegionIsland.");
@@ -343,6 +359,14 @@ c_point CostSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &
     const std::map<const extrusion_entity_handle *, LoopBinding>::const_iterator binding =
         m_bindings.find(loop.handle());
     if (binding == m_bindings.end()) throw std::invalid_argument("Cost seam loop was not present in the initialized plan.");
+    if (binding->second.distance_only) {
+        const std::pair<c_point, double> projection =
+            CandidatePreparation::project_onto_loop(loop, start_position);
+        if (!std::isfinite(projection.second))
+            throw std::runtime_error(
+                "Cost-based seam placement could not project the approach position onto a distance-only loop.");
+        return projection.first;
+    }
     const std::map<RegionIslandKey, std::vector<SeamCandidate>>::const_iterator candidates =
         m_candidates.find(binding->second.island);
     if (candidates == m_candidates.end() || candidates->second.empty())

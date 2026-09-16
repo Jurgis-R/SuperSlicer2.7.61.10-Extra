@@ -73,6 +73,7 @@ struct Track {
 struct LoopBinding {
     RegionIslandKey region_island = nullptr;
     c_point instance_shift{};
+    bool distance_only = false;
     size_t external_track = size_t(-1);
 };
 
@@ -438,6 +439,11 @@ AlignedData prepare_aligned_data(const PrintingPlan &plan,
                     const std::vector<CP::CollectedLoop> collected =
                         CP::collect_perimeter_loops(
                             extrusion.root(), extrusion.role());
+                    const bool has_non_distance_only_loop = std::any_of(
+                        collected.begin(), collected.end(),
+                        [](const CP::CollectedLoop &loop) {
+                            return !loop.distance_only;
+                        });
                     if (!region_island.valid() ||
                         region_island.region_count() == 0) {
                         if (!collected.empty())
@@ -457,6 +463,18 @@ AlignedData prepare_aligned_data(const PrintingPlan &plan,
                         }
                     }
                     if (!assigned) continue;
+
+                    const c_point shift = plan.object_instance_shift(extrusion);
+                    if (!has_non_distance_only_loop) {
+                        /* Technical-only loops need only a binding and their
+                           own projection; skip parent-island and graph setup. */
+                        for (const CP::CollectedLoop &loop : collected)
+                            raw_bindings.emplace(
+                                loop.loop,
+                                LoopBinding{region_island.handle(), shift,
+                                            loop.distance_only, size_t(-1)});
+                        continue;
+                    }
 
                     const Layer layer = region_island.region(0).layer();
                     const Object object = layer.object();
@@ -531,7 +549,6 @@ AlignedData prepare_aligned_data(const PrintingPlan &plan,
                         throw std::runtime_error(
                             "Aligned seam placement cannot locate a source LayerRegionIsland in object traversal.");
 
-                    const c_point shift = plan.object_instance_shift(extrusion);
                     const size_t instance_index =
                         printing_plan_object_instance_idx(plan, extrusion);
                     if (instance_index == size_t(-1))
@@ -541,7 +558,7 @@ AlignedData prepare_aligned_data(const PrintingPlan &plan,
                         raw_bindings.emplace(
                             loop.loop,
                             LoopBinding{region_island.handle(), shift,
-                                        size_t(-1)});
+                                        loop.distance_only, size_t(-1)});
 
                     const LayerRegion region = region_island.region(0);
                     const c_flow external_flow = region.flow(
@@ -550,7 +567,8 @@ AlignedData prepare_aligned_data(const PrintingPlan &plan,
                     const double nozzle =
                         unscaled(external_flow.nozzle_diameter);
                     for (const CP::CollectedLoop &source : collected) {
-                        if (!source.has_external_geometry) continue;
+                        if (source.distance_only || !source.has_external_geometry)
+                            continue;
                         const ExtrusionEntity loop(source.loop);
                         Track track;
                         track.loop = source.loop;
@@ -578,7 +596,7 @@ AlignedData prepare_aligned_data(const PrintingPlan &plan,
                         const size_t track_index = data.tracks.size();
                         data.tracks.push_back(std::move(track));
                         data.bindings[source.loop] = {
-                            region_island.handle(), shift, track_index};
+                            region_island.handle(), shift, false, track_index};
                     }
                 }
             }
@@ -629,8 +647,8 @@ float AlignedSession::get_priority(const ExtrusionEntity &,
 }
 
 c_point AlignedSession::place_seam(const ExtrusionEntity &loop,
-                                   const LayerRegion &region,
-                                   c_point) const
+                                    const LayerRegion &region,
+                                    c_point start_position) const
 {
     validate_loop(loop);
     if (!region.valid())
@@ -645,6 +663,14 @@ c_point AlignedSession::place_seam(const ExtrusionEntity &loop,
     if (binding == m_data.bindings.end())
         throw std::invalid_argument(
             "Aligned seam loop was not present in the initialized plan.");
+    if (binding->second.distance_only) {
+        const std::pair<c_point, double> projection =
+            CP::project_onto_loop(loop, start_position);
+        if (!std::isfinite(projection.second))
+            throw std::runtime_error(
+                "Aligned seam could not project the approach position onto a distance-only loop.");
+        return projection.first;
+    }
 
     if (binding->second.external_track != size_t(-1)) {
         const size_t track_index = binding->second.external_track;
