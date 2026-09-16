@@ -15,6 +15,7 @@
 
 #include <array>
 #include <limits>
+#include "libslic3r/Geometry/Curves.hpp"
 #include "libslic3r/Api/plugin/cpp/KDTreeIndirect.hpp"
 #include "libslic3r/Api/plugin/cpp/MeshQueryViews.hpp"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
@@ -291,6 +292,73 @@ std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
     for (const c_vec3f point : points)
         visibility.push_back(calculate_point_visibility(model, point));
     return visibility;
+}
+
+bool fit_weighted_cubic_bspline(const std::vector<WeightedSplinePoint> &points,
+                                std::vector<c_vec2d> &fitted_points)
+{
+    fitted_points.clear();
+    if (points.size() < 4) return false;
+    std::vector<Vec2f> observations;
+    std::vector<float> parameters;
+    std::vector<float> weights;
+    observations.reserve(points.size());
+    parameters.reserve(points.size());
+    weights.reserve(points.size());
+    double total_length = 0;
+    for (size_t index = 0; index < points.size(); ++index) {
+        const WeightedSplinePoint &point = points[index];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+            !std::isfinite(point.z) || !std::isfinite(point.weight) ||
+            point.weight <= 0 || (index != 0 && point.z <= points[index - 1].z))
+            return false;
+        const float x = float(point.x);
+        const float y = float(point.y);
+        const float parameter = float(point.z);
+        const float weight = float(point.weight);
+        if (!std::isfinite(x) || !std::isfinite(y) ||
+            !std::isfinite(parameter) || !std::isfinite(weight) || weight <= 0 ||
+            (!parameters.empty() && parameter <= parameters.back()))
+            return false;
+        observations.emplace_back(x, y);
+        parameters.push_back(parameter);
+        weights.push_back(weight);
+        if (index != 0) {
+            const double dx = point.x - points[index - 1].x;
+            const double dy = point.y - points[index - 1].y;
+            const double dz = point.z - points[index - 1].z;
+            total_length += std::hypot(dx, dy, dz);
+            if (!std::isfinite(total_length)) return false;
+        }
+    }
+    const float parameter_span = parameters.back() - parameters.front();
+    if (!std::isfinite(parameter_span) || parameter_span <= 0) return false;
+    const double requested_segments = total_length / 4.0;
+    // fit_curve requires at least one segment and no more segments than
+    // observations; cap geometric detail before entering its assert boundary.
+    const size_t segment_count = requested_segments >= double(points.size()) ?
+        points.size() : std::max(size_t(1), size_t(requested_segments));
+    const float segment_size = parameter_span / float(segment_count);
+    if (!std::isfinite(segment_size) || segment_size <= 0) return false;
+    try {
+        const Geometry::PiecewiseFittedCurve<2, float,
+            Geometry::CubicBSplineKernel<float>> curve =
+                Geometry::fit_cubic_bspline(observations, parameters, weights,
+                                            segment_count);
+        fitted_points.reserve(points.size());
+        for (const WeightedSplinePoint &point : points) {
+            const Vec2f fitted = curve.get_fitted_value(float(point.z));
+            if (!std::isfinite(fitted.x()) || !std::isfinite(fitted.y())) {
+                fitted_points.clear();
+                return false;
+            }
+            fitted_points.push_back({fitted.x(), fitted.y()});
+        }
+    } catch (const std::exception &) {
+        fitted_points.clear();
+        return false;
+    }
+    return fitted_points.size() == points.size();
 }
 
 } // namespace SeamCostModel

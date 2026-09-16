@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <fstream>
 #include <future>
@@ -23,7 +24,10 @@
 #include "libslic3r/Geometry/ArcWelder.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
+#include "libslic3r/Plugins/SeamPlacer/AlignedSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/CostSeamPlacer.hpp"
+#include "libslic3r/Plugins/SeamPlacer/SeamCandidatePreparation.hpp"
+#include "libslic3r/Plugins/SeamPlacer/SeamCostModel.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/PrintObjectRegion.hpp"
@@ -32,11 +36,11 @@
 #include "libslic3r/TriangleSelector.hpp"
 
 /*
-Cost seam provider tests
-========================
-These focused checks exercise the built-in metadata and a published immutable
-session over a real generated PrintingPlan. The functional case asks the
-service adapter to validate every returned point, so line/arc projection cannot
+Cost and Aligned seam provider tests
+====================================
+These focused checks exercise built-in metadata and published immutable
+sessions over real generated PrintingPlans. Functional cases ask the service
+adapter to validate every returned point, so line/arc projection cannot
 silently return a point outside the requested loop.
 */
 
@@ -47,6 +51,7 @@ using namespace Slic3r::Printing;
 using namespace Slic3r::Test::PerimeterPluginTests;
 
 const char *const k_cost_plugin = "seam_placer.cost";
+const char *const k_aligned_plugin = "seam_placer.aligned";
 
 bool find_loop(const slic3r_api::ExtrusionEntity &entity,
                slic3r_api::ExtrusionEntity &loop)
@@ -91,6 +96,29 @@ slic3r_api::SeamPlacer create_cost_session_for(
     return slic3r_api::SeamPlacer(instance);
 }
 
+/* Initialize Aligned through the same ABI holder used by the production router. */
+slic3r_api::SeamPlacer create_aligned_session(Print &print)
+{
+    PrintingPlan &native_plan = print.mutable_printing_plan();
+    const slic3r_api::PrintingPlan plan(
+        reinterpret_cast<printing_plan_handle *>(&native_plan));
+    const slic3r_api::Print print_view(
+        reinterpret_cast<const print_handle *>(&print));
+    std::vector<slic3r_api::PrintRegion> regions;
+    for (uint32_t object_index = 0;
+         object_index < print_view.object_count(); ++object_index) {
+        const slic3r_api::Object object = print_view.object(object_index);
+        for (uint32_t region_index = 0;
+             region_index < object.print_region_count(); ++region_index)
+            regions.push_back(object.print_region(region_index));
+    }
+    PluginStorage storage;
+    raw_seam_placer_instance instance = slic3r_api::make_seam_placer_instance(
+        slic3r_api::SeamPlacement::AlignedPlugin::make_aligned_seam_session(
+            reinterpret_cast<storage_handle *>(&storage)), plan, regions);
+    return slic3r_api::SeamPlacer(instance);
+}
+
 ExtrusionEntity rectangle_loop(double left, double bottom, double right, double top,
                                bool reverse = false)
 {
@@ -98,6 +126,21 @@ ExtrusionEntity rectangle_loop(double left, double bottom, double right, double 
                   Point::new_scale(right, top), Point::new_scale(left, top),
                   Point::new_scale(left, bottom)};
     if (reverse) std::reverse(points.begin(), points.end());
+    return ExtrusionEntity(false, ArcPolyline(points));
+}
+
+ExtrusionEntity rounded_loop(double leftmost_x, double center_y = 0.0,
+                             double radius = 0.15)
+{
+    Points points;
+    points.reserve(13);
+    const double center_x = leftmost_x + radius;
+    for (size_t index = 0; index <= 12; ++index) {
+        const double angle = PI + 2.0 * PI * double(index) / 12.0;
+        points.emplace_back(Point::new_scale(
+            center_x + radius * std::cos(angle),
+            center_y + radius * std::sin(angle)));
+    }
     return ExtrusionEntity(false, ArcPolyline(points));
 }
 
@@ -261,6 +304,121 @@ LayerRegion *add_neighbor_region(CostFixture &fixture, const ExPolygon &area)
     return &region;
 }
 
+/* Return the real graph-owned region island for one generated cube layer. */
+LayerRegionIsland *native_region_island(Layer &layer)
+{
+    REQUIRE(!layer.islands().empty());
+    LayerSliceIsland &island = layer.island(0);
+    if (island.regions_islands().empty())
+        island.fill_regions(layer);
+    if (island.regions_islands().empty())
+        island.mutable_regions_islands().emplace_back(
+            new LayerRegionIsland({&layer.region(0)}, 0));
+    REQUIRE(!island.regions_islands().empty());
+    for (LayerRegionIslandUPtr &region_island : island.mutable_regions_islands())
+        if (region_island->regions().count(&layer.region(0)) != 0)
+            return region_island.get();
+    FAIL("Generated layer has no region-island association");
+    return nullptr;
+}
+
+LayerRegionIsland *native_region_island_at(Layer &layer, size_t island_index)
+{
+    REQUIRE(island_index < layer.islands().size());
+    LayerSliceIsland &island = layer.island(island_index);
+    if (island.regions_islands().empty())
+        island.fill_regions(layer);
+    if (island.regions_islands().empty())
+        island.mutable_regions_islands().emplace_back(
+            new LayerRegionIsland({&layer.region(0)}, 0));
+    for (LayerRegionIslandUPtr &region_island : island.mutable_regions_islands())
+        if (region_island->regions().count(&layer.region(0)) != 0)
+            return region_island.get();
+    FAIL("Generated layer island has no region-island association");
+    return nullptr;
+}
+
+void replace_test_layer_islands(Layer &layer, const ExPolygons &areas)
+{
+    ApiInternal::LayerAccess::set_islands(layer, ExPolygons(areas));
+    ApiInternal::LayerRegionAccess::slices_mutable(layer.region(0)) = areas;
+    ApiInternal::LayerRegionAccess::surfaces_mutable(layer.region(0)).set(
+        areas, stPosInternal | stDensSolid);
+    for (LayerSliceIsland &island : layer.islands())
+        island.fill_regions(layer);
+}
+
+void rebuild_test_island_graph(PrintObject &object)
+{
+    for (Layer &layer : object.layers())
+        for (LayerSliceIsland &island : layer.islands()) {
+            island.overlaps_above.clear();
+            island.overlaps_below.clear();
+        }
+    for (size_t layer_index = 1; layer_index < object.layer_count(); ++layer_index)
+        Layer::build_up_down_graph(object.layer(layer_index - 1), object.layer(layer_index));
+}
+
+c_point aligned_seam(const slic3r_api::SeamPlacer &placer,
+                     const slic3r_api::PrintingExtrusion &extrusion)
+{
+    const slic3r_api::LayerRegion region = extrusion.region_island().region(0);
+    return placer.place_seam(extrusion.root(), region, {});
+}
+
+/* Append one translated external loop to a chosen layer and object instance. */
+slic3r_api::PrintingExtrusion append_aligned_loop(
+    Print &print, Layer &layer, LayerRegionIsland &source,
+    const ExtrusionEntity &loop, uint16_t instance)
+{
+    PrintingPlan &native_plan = print.mutable_printing_plan();
+    slic3r_api::PrintingPlan plan(
+        reinterpret_cast<printing_plan_handle *>(&native_plan));
+    slic3r_api::PrintingGroup group = plan.group_count() == 0 ?
+        plan.append_group() : plan.group(0);
+    slic3r_api::PrintingLayerGroup layer_group =
+        group.append_layer_group(slic3r_api::LayerRegion(
+            reinterpret_cast<const layer_region_handle *>(&layer.region(0))).layer().print_z());
+    slic3r_api::PrintingToolGroup tool = layer_group.append_tool_group(0);
+    const uint32_t instance_id = plan.find_or_add_object_instance(
+        slic3r_api::Object(reinterpret_cast<const object_handle *>(layer.object())),
+        instance);
+    slic3r_api::PrintingExtrusion extrusion = tool.append_extrusion_clone(
+        plan,
+        slic3r_api::LayerRegionIsland(
+            reinterpret_cast<const layer_region_island_handle *>(&source)),
+        RAW_EXTRUSION_ROLE_PERIMETER,
+        slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(&loop)),
+        instance_id);
+    slic3r_api::MutableExtrusionEntity root = extrusion.mutable_root();
+    c_extrusion_property_attributes *attributes =
+        static_cast<c_extrusion_property_attributes *>(
+            root.get_or_add_property_data_mutable(
+                reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+                EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
+    REQUIRE(attributes != nullptr);
+    attributes->role = RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER;
+    attributes->width = 0.4f;
+    c_extrusion_property_perimeter *perimeter =
+        static_cast<c_extrusion_property_perimeter *>(
+            root.get_or_add_property_data_mutable(
+                reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+                EXTRUSION_PROPERTY_TYPE_PERIMETER));
+    REQUIRE(perimeter != nullptr);
+    perimeter->perimeter_flags = C_EXTRUSION_PERIMETER_FLAG_LOOP;
+    const Point shift = layer.object()->instances()[instance].shift;
+    std::function<void(slic3r_api::MutableExtrusionEntity)> translate;
+    translate = [&](slic3r_api::MutableExtrusionEntity entity) {
+        if (entity.point_count() != 0)
+            REQUIRE(entity.translate({shift.x(), shift.y()}));
+        for (uint32_t index = 0; index < entity.child_count(); ++index)
+            translate(entity.child_mutable(index));
+    };
+    translate(root);
+    return extrusion;
+}
+
 } // namespace
 
 TEST_CASE("Cost seam metadata is the default regional provider",
@@ -268,12 +426,17 @@ TEST_CASE("Cost seam metadata is the default regional provider",
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
+    const Plugin *aligned = orchestrator.get_plugin(k_aligned_plugin);
     const Plugin *cost = orchestrator.get_plugin(k_cost_plugin);
     const Plugin *fixed = orchestrator.get_plugin("seam_placer.fixed");
     const Plugin *random = orchestrator.get_plugin("seam_placer.random");
+    REQUIRE(aligned != nullptr);
     REQUIRE(cost != nullptr);
     REQUIRE(fixed != nullptr);
     REQUIRE(random != nullptr);
+    CHECK(aligned->get_name() == "Aligned");
+    CHECK(aligned->get_priority() == 950);
+    CHECK(aligned->get_dependencies().empty());
     CHECK(cost->get_name() == "Cost-based");
     CHECK(cost->get_priority() == 900);
     CHECK(fixed->get_priority() == 1000);
@@ -329,6 +492,7 @@ TEST_CASE("Cost seam metadata is the default regional provider",
     std::ostringstream contents;
     contents << stream.rdbuf();
     CHECK(contents.str().find("seam_placer.cost = 1") != std::string::npos);
+    CHECK(contents.str().find("seam_placer.aligned = 1") != std::string::npos);
 }
 
 TEST_CASE("Cost seam projects candidates and supports parallel placement",
@@ -897,4 +1061,377 @@ TEST_CASE("Cost seam diagnoses invalid source islands",
     invalid.region_island = nullptr;
     CHECK_THROWS_WITH(create_cost_session(fixture.prepared.print),
         "Cost-based seam placement found a perimeter loop with an invalid source LayerRegionIsland.");
+}
+
+TEST_CASE("Aligned seam projects exact external and nearest internal tracks across instances",
+          "[plugins][seam-placer][aligned][geometry][instances][parallel]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    CostFixture fixture;
+    fixture.source_ptr = attach_native_source(fixture);
+    PrintInstances &instances = const_cast<PrintInstances &>(fixture.object->instances());
+    instances.push_back(instances.front());
+    instances.back().shift += Point::new_scale(40, -25);
+    fixture.add(rectangle_loop(-5, -5, 5, 5),
+                RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER, 0);
+    fixture.add(arc_loop(), RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER, 1);
+    fixture.add(rectangle_loop(-2, -2, 2, 2),
+                RAW_EXTRUSION_ROLE_PERIMETER, 0);
+    const slic3r_api::SeamPlacer placer = create_aligned_session(fixture.prepared.print);
+    const slic3r_api::PrintingExtrusion line = fixture.extrusion(0);
+    const slic3r_api::PrintingExtrusion arc = fixture.extrusion(1);
+    const slic3r_api::PrintingExtrusion inner = fixture.extrusion(2);
+
+    CHECK(placer.get_priority(line.root(), fixture.region_view()) == 50.0f);
+    const Point far_positive = Point::new_scale(100, 100);
+    const Point far_negative = Point::new_scale(-100, -100);
+    const c_point line_point = placer.place_seam(
+        line.root(), fixture.region_view(),
+        {far_positive.x(), far_positive.y()});
+    const c_point arc_point = placer.place_seam(
+        arc.root(), fixture.region_view(),
+        {far_negative.x(), far_negative.y()});
+    const c_point inner_point = placer.place_seam(
+        inner.root(), fixture.region_view(), {});
+    CHECK(slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+        line.root(), line_point).second == 0.0);
+    CHECK(slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+        arc.root(), arc_point).second == 0.0);
+    CHECK(slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+        inner.root(), inner_point).second == 0.0);
+
+    std::vector<std::future<c_point>> calls;
+    for (size_t index = 0; index < 8; ++index)
+        calls.push_back(std::async(std::launch::async, [&placer, inner, &fixture]() {
+            return placer.place_seam(inner.root(), fixture.region_view(), {});
+        }));
+    for (std::future<c_point> &call : calls) {
+        const c_point point = call.get();
+        CHECK(point.x == inner_point.x);
+        CHECK(point.y == inner_point.y);
+    }
+
+    const ExtrusionEntity foreign = rectangle_loop(-1, -1, 1, 1);
+    CHECK_THROWS_WITH(placer.place_seam(
+        slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(&foreign)),
+        fixture.region_view(), {}),
+        "Aligned seam loop was not present in the initialized plan.");
+}
+
+TEST_CASE("Aligned candidate filtering preserves ordered preference stages",
+          "[plugins][seam-placer][aligned][constraints]")
+{
+    using slic3r_api::SeamPlacement::CandidatePreparation::Candidate;
+    std::vector<Candidate> candidates(5);
+    candidates[0].blocked = true;
+    candidates[1].enforced = true;
+    candidates[2].boundary = true;
+    candidates[3].overhang = 1.0;
+    candidates[3].width = 0.4;
+    candidates[4].embedded = -1.0;
+    for (Candidate &candidate : candidates)
+        if (candidate.width == 0) candidate.width = 0.4;
+    slic3r_api::SeamPlacement::CandidatePreparation::filter_candidates(candidates);
+    REQUIRE(candidates.size() == 1);
+    CHECK(candidates.front().enforced);
+
+    std::vector<Candidate> all_blocked(2);
+    all_blocked[0].blocked = true;
+    all_blocked[1].blocked = true;
+    slic3r_api::SeamPlacement::CandidatePreparation::filter_candidates(all_blocked);
+    CHECK(all_blocked.size() == 2);
+}
+
+TEST_CASE("Aligned seam rejects repeated initialization and invalid requests",
+          "[plugins][seam-placer][aligned][errors]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    CostFixture fixture;
+    fixture.source_ptr = attach_native_source(fixture);
+    fixture.add(rectangle_loop(-5, -5, 5, 5),
+                RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+    PrintingPlan &native_plan = fixture.prepared.print.mutable_printing_plan();
+    const slic3r_api::PrintingPlan plan(
+        reinterpret_cast<printing_plan_handle *>(&native_plan));
+    const slic3r_api::Print print_view(
+        reinterpret_cast<const print_handle *>(&fixture.prepared.print));
+    std::vector<slic3r_api::PrintRegion> regions{
+        print_view.object(0).print_region(0)};
+    PluginStorage storage;
+    std::unique_ptr<slic3r_api::SeamPlacerSession> session =
+        slic3r_api::SeamPlacement::AlignedPlugin::make_aligned_seam_session(
+            reinterpret_cast<storage_handle *>(&storage));
+    session->initialize(plan, regions);
+    CHECK_THROWS_WITH(session->initialize(plan, regions),
+        "Aligned seam placement sessions may only be initialized once.");
+
+    const slic3r_api::PrintingExtrusion extrusion = fixture.extrusion(0);
+    CHECK_THROWS_WITH(session->place_seam(
+        extrusion.root(), slic3r_api::LayerRegion(), {}),
+        "Aligned seam placement needs a valid LayerRegion.");
+    const ExtrusionEntity open(false, ArcPolyline(Points{
+        Point::new_scale(-1, 0), Point::new_scale(1, 0)}));
+    CHECK_THROWS_WITH(session->place_seam(
+        slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(&open)),
+        fixture.region_view(), {}),
+        "Aligned seam placement needs a non-empty closed loop.");
+}
+
+TEST_CASE("Aligned weighted spline reports valid fits and rejects non-finite input",
+          "[plugins][seam-placer][aligned][spline]")
+{
+    using Slic3r::SeamCostModel::WeightedSplinePoint;
+    std::vector<WeightedSplinePoint> points;
+    for (size_t index = 0; index < 6; ++index)
+        points.push_back({double(index % 2), 0.0, double(index), 1.0});
+    std::vector<c_vec2d> fitted;
+    REQUIRE(Slic3r::SeamCostModel::fit_weighted_cubic_bspline(points, fitted));
+    REQUIRE(fitted.size() == points.size());
+    for (const c_vec2d point : fitted) {
+        CHECK(std::isfinite(point.x));
+        CHECK(std::isfinite(point.y));
+    }
+    points[2].x = std::numeric_limits<double>::quiet_NaN();
+    CHECK_FALSE(Slic3r::SeamCostModel::fit_weighted_cubic_bspline(points, fitted));
+    CHECK(fitted.empty());
+}
+
+TEST_CASE("Aligned weighted spline keeps long chains in the finite fallback path",
+          "[plugins][seam-placer][aligned][spline][regression]")
+{
+    using Slic3r::SeamCostModel::WeightedSplinePoint;
+    std::vector<WeightedSplinePoint> points;
+    for (size_t index = 0; index < 6; ++index)
+        points.push_back({double(index * 10), 0.0, double(index), 1.0});
+    std::vector<c_vec2d> fitted;
+    const auto fit = [&] {
+        const bool success = Slic3r::SeamCostModel::fit_weighted_cubic_bspline(points, fitted);
+        if (success) {
+            REQUIRE(fitted.size() == points.size());
+            for (const c_vec2d point : fitted) {
+                CHECK(std::isfinite(point.x));
+                CHECK(std::isfinite(point.y));
+            }
+        } else {
+            CHECK(fitted.empty());
+        }
+    };
+    CHECK_NOTHROW(fit());
+}
+
+TEST_CASE("Aligned weighted spline rejects a float-overflowing Z span",
+          "[plugins][seam-placer][aligned][spline][overflow]")
+{
+    using Slic3r::SeamCostModel::WeightedSplinePoint;
+    const double maximum = double(std::numeric_limits<float>::max());
+    const std::vector<WeightedSplinePoint> points = {
+        {0.0, 0.0, -maximum, 1.0},
+        {1.0, 0.0, -1.0, 1.0},
+        {2.0, 0.0, 1.0, 1.0},
+        {3.0, 0.0, maximum, 1.0}};
+    std::vector<c_vec2d> fitted;
+    const auto fit = [&] {
+        const bool success = Slic3r::SeamCostModel::fit_weighted_cubic_bspline(points, fitted);
+        if (success) {
+            REQUIRE(fitted.size() == points.size());
+            for (const c_vec2d point : fitted) {
+                CHECK(std::isfinite(point.x));
+                CHECK(std::isfinite(point.y));
+            }
+        } else {
+            CHECK(fitted.empty());
+        }
+    };
+    CHECK_NOTHROW(fit());
+}
+
+TEST_CASE("Aligned seam smooths six linked layers but keeps broken short chains local",
+          "[plugins][seam-placer][aligned][graph][chain]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 6);
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+    for (size_t layer_index = 0; layer_index < 6; ++layer_index) {
+        Layer &layer = object.layer(layer_index);
+        LayerRegionIsland *source = native_region_island(layer);
+        REQUIRE(source != nullptr);
+        const double offset = layer_index % 2 == 0 ? 0.0 : 1.0;
+        append_aligned_loop(prepared.print, layer, *source,
+            rectangle_loop(-5 + offset, -5, 5 + offset, 5), 0);
+    }
+    const slic3r_api::SeamPlacer linked = create_aligned_session(prepared.print);
+    const slic3r_api::PrintingPlan linked_plan(
+        reinterpret_cast<printing_plan_handle *>(
+            &prepared.print.mutable_printing_plan()));
+    for (uint32_t layer_index = 0; layer_index < 6; ++layer_index) {
+        const slic3r_api::PrintingExtrusion extrusion = linked_plan.group(0)
+            .layer_group(layer_index).tool_group(0).extrusion(0);
+        const slic3r_api::LayerRegion region = extrusion.region_island().region(0);
+        const c_point seam = linked.place_seam(extrusion.root(), region, {});
+        CHECK(slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+            extrusion.root(), seam).second == 0.0);
+    }
+
+    LayerSliceIsland &lower = object.layer(2).island(0);
+    LayerSliceIsland &upper = object.layer(3).island(0);
+    lower.overlaps_above.clear();
+    upper.overlaps_below.clear();
+    const slic3r_api::SeamPlacer broken = create_aligned_session(prepared.print);
+    for (uint32_t layer_index = 0; layer_index < 6; ++layer_index) {
+        const slic3r_api::PrintingExtrusion extrusion = linked_plan.group(0)
+            .layer_group(layer_index).tool_group(0).extrusion(0);
+        const slic3r_api::LayerRegion region = extrusion.region_island().region(0);
+        const c_point seam = broken.place_seam(extrusion.root(), region, {});
+        CHECK(seam.x == extrusion.root().front().x);
+        CHECK(seam.y == extrusion.root().front().y);
+    }
+}
+
+TEST_CASE("Aligned graph ties are stable and leave the unchosen branch available",
+          "[plugins][seam-placer][aligned][graph][branch][determinism]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 7);
+
+    const ExPolygon whole = rectangle_expolygon(-5, -5, 5, 5);
+    const ExPolygon left = rectangle_expolygon(-5, -5, -0.1, 5);
+    const ExPolygon right = rectangle_expolygon(0.1, -5, 5, 5);
+    replace_test_layer_islands(object.layer(0), {whole});
+    for (size_t layer_index = 1; layer_index < 7; ++layer_index)
+        replace_test_layer_islands(object.layer(layer_index), {left, right});
+    rebuild_test_island_graph(object);
+
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+    std::vector<slic3r_api::PrintingExtrusion> tracks;
+    tracks.push_back(append_aligned_loop(prepared.print, object.layer(0),
+        *native_region_island_at(object.layer(0), 0), rounded_loop(0), 0));
+    const std::vector<double> right_roots = {0.5, 0.8, 1.4, 1.1, 1.8, 1.3};
+    const std::vector<double> right_centers_y = {0.0, 0.6, -0.6, 0.6, -0.6, 0.6};
+    for (size_t layer_index = 1; layer_index < 7; ++layer_index) {
+        tracks.push_back(append_aligned_loop(prepared.print, object.layer(layer_index),
+            *native_region_island_at(object.layer(layer_index), 0),
+            rounded_loop(-0.5), 0));
+        const double right_root = right_roots[layer_index - 1];
+        tracks.push_back(append_aligned_loop(prepared.print, object.layer(layer_index),
+            *native_region_island_at(object.layer(layer_index), 1),
+            rounded_loop(right_root, right_centers_y[layer_index - 1]), 0));
+    }
+
+    REQUIRE(object.layer(0).island(0).overlaps_above.size() == 2);
+    const slic3r_api::SeamPlacer first = create_aligned_session(prepared.print);
+    std::vector<c_point> first_seams;
+    first_seams.reserve(tracks.size());
+    for (const slic3r_api::PrintingExtrusion &track : tracks)
+        first_seams.push_back(aligned_seam(first, track));
+
+    // The two branch targets are equal-quality and equal-distance. Reversing
+    // the borrowed link order must not change the stable island-index winner.
+    std::reverse(object.layer(0).island(0).overlaps_above.begin(),
+                 object.layer(0).island(0).overlaps_above.end());
+    const slic3r_api::SeamPlacer reordered = create_aligned_session(prepared.print);
+    for (size_t index = 0; index < tracks.size(); ++index) {
+        const c_point seam = aligned_seam(reordered, tracks[index]);
+        CHECK(seam.x == first_seams[index].x);
+        CHECK(seam.y == first_seams[index].y);
+    }
+    const bool unchosen_branch_was_smoothed =
+        first_seams[4].x != tracks[4].root().front().x ||
+        first_seams[4].y != tracks[4].root().front().y;
+    CHECK(unchosen_branch_was_smoothed);
+}
+
+TEST_CASE("Aligned graph uses one winner at a merge",
+          "[plugins][seam-placer][aligned][graph][merge]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 7);
+
+    const ExPolygon left = rectangle_expolygon(-5, -5, -0.1, 5);
+    const ExPolygon right = rectangle_expolygon(0.1, -5, 5, 5);
+    const ExPolygon whole = rectangle_expolygon(-5, -5, 5, 5);
+    replace_test_layer_islands(object.layer(0), {left, right});
+    for (size_t layer_index = 1; layer_index < 7; ++layer_index)
+        replace_test_layer_islands(object.layer(layer_index), {whole});
+    rebuild_test_island_graph(object);
+
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+    std::vector<slic3r_api::PrintingExtrusion> tracks;
+    tracks.push_back(append_aligned_loop(prepared.print, object.layer(0),
+        *native_region_island_at(object.layer(0), 0), rounded_loop(-0.5), 0));
+    tracks.push_back(append_aligned_loop(prepared.print, object.layer(0),
+        *native_region_island_at(object.layer(0), 1), rounded_loop(0.5), 0));
+    const std::vector<double> roots = {0.0, 0.4, 0.8, 1.2, 1.6, 2.0};
+    const std::vector<double> centers_y = {0.5, -0.5, 0.5, -0.5, 0.5, -0.5};
+    for (size_t layer_index = 1; layer_index < 7; ++layer_index)
+        tracks.push_back(append_aligned_loop(prepared.print, object.layer(layer_index),
+            *native_region_island_at(object.layer(layer_index), 0),
+            rounded_loop(roots[layer_index - 1], centers_y[layer_index - 1]), 0));
+
+    REQUIRE(object.layer(0).island(0).overlaps_above.size() == 1);
+    REQUIRE(object.layer(0).island(1).overlaps_above.size() == 1);
+    const slic3r_api::SeamPlacer placer = create_aligned_session(prepared.print);
+    const c_point unchosen = aligned_seam(placer, tracks[1]);
+    CHECK(unchosen.x == tracks[1].root().front().x);
+    CHECK(unchosen.y == tracks[1].root().front().y);
+
+    const c_point merged_target = aligned_seam(placer, tracks[2]);
+    const bool merged_target_was_smoothed =
+        merged_target.x != tracks[2].root().front().x ||
+        merged_target.y != tracks[2].root().front().y;
+    CHECK(merged_target_was_smoothed);
+}
+
+TEST_CASE("Aligned graph ignores links that skip a layer",
+          "[plugins][seam-placer][aligned][graph][adjacency]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 10);
+    const ExPolygon whole = rectangle_expolygon(-5, -5, 5, 5);
+    for (size_t layer_index = 0; layer_index < 10; ++layer_index)
+        replace_test_layer_islands(object.layer(layer_index), {whole});
+    rebuild_test_island_graph(object);
+
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+    std::vector<slic3r_api::PrintingExtrusion> tracks;
+    tracks.push_back(append_aligned_loop(prepared.print, object.layer(1),
+        *native_region_island_at(object.layer(1), 0), rounded_loop(0), 0));
+    tracks.push_back(append_aligned_loop(prepared.print, object.layer(2),
+        *native_region_island_at(object.layer(2), 0), rounded_loop(0), 0));
+    const std::vector<double> roots = {1.0, 1.5, 1.0, 1.5, 1.0, 1.5};
+    const std::vector<double> centers_y = {0.0, 0.7, -0.7, 0.7, -0.7, 0.7};
+    for (size_t layer_index = 4; layer_index < 10; ++layer_index)
+        tracks.push_back(append_aligned_loop(prepared.print, object.layer(layer_index),
+            *native_region_island_at(object.layer(layer_index), 0),
+            rounded_loop(roots[layer_index - 4], centers_y[layer_index - 4]), 0));
+
+    // The extra edge is deliberately invalid for a one-layer continuation.
+    object.layer(2).island(0).overlaps_above.push_back({
+        &object.layer(4).island(0), 1.0f});
+    REQUIRE(object.layer(2).island(0).overlaps_above.size() == 2);
+    const slic3r_api::SeamPlacer placer = create_aligned_session(prepared.print);
+    const c_point source = aligned_seam(placer, tracks[1]);
+    CHECK(source.x == tracks[1].root().front().x);
+    CHECK(source.y == tracks[1].root().front().y);
 }

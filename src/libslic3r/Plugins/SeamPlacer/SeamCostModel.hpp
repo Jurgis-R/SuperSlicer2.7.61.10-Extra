@@ -27,11 +27,20 @@ class Object;
 namespace Slic3r {
 namespace SeamCostModel {
 
+struct WeightedSplinePoint {
+    double x = 0;
+    double y = 0;
+    double z = 0;
+    double weight = 1;
+};
+
 float gauss(float value, float mean_x_coord, float mean_value, float falloff_speed);
 float compute_angle_penalty(float ccw_angle);
 std::vector<float> calculate_cost_angles(const std::vector<c_point> &points, float min_arm_length);
 std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
                                              const std::vector<c_vec3f> &points, const mesh_query_cancel *cancel = nullptr);
+bool fit_weighted_cubic_bspline(const std::vector<WeightedSplinePoint> &points,
+                                std::vector<c_vec2d> &fitted_points);
 
 } // namespace SeamCostModel
 } // namespace Slic3r
