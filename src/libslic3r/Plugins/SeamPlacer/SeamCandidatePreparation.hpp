@@ -47,9 +47,10 @@ struct Candidate {
     size_t stable_order = 0;
 };
 
-/* One perimeter loop discovered in an extrusion tree. distance_only records the
-   effective role at this node; providers use it to keep technical loops as
-   projection targets without treating them as seam-candidate sources. */
+/* One atomic perimeter loop discovered in an extrusion tree. distance_only
+   summarizes all effective roles in the marked subtree; providers use it to
+   keep technical loops as projection targets without treating them as
+   seam-candidate sources. */
 struct CollectedLoop {
     const extrusion_entity_handle *loop = nullptr;
     bool distance_only = false;
@@ -57,8 +58,8 @@ struct CollectedLoop {
     double external_width = 0;
 };
 
-/* Collect every non-empty perimeter loop while inheriting role and width
-   attributes through composite extrusion nodes. */
+/* Collect every non-empty atomic perimeter loop while inheriting attributes
+   downward and summarizing descendant metadata back onto the loop identity. */
 std::vector<CollectedLoop> collect_perimeter_loops(
     const ExtrusionEntity &root, raw_extrusion_role inherited_role);
 

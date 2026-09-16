@@ -158,6 +158,26 @@ ExtrusionEntity arc_loop()
     return ExtrusionEntity(false, polyline);
 }
 
+/* Attach the metadata layout produced by Arachne, where open child paths carry
+   perimeter classification while their continuous parent owns loop identity. */
+void mark_perimeter_path(slic3r_api::MutableExtrusionEntity entity,
+                         raw_extrusion_role role, float width)
+{
+    orchestrator_handle *orchestrator = reinterpret_cast<orchestrator_handle *>(
+        &Orchestrator::instance());
+    c_extrusion_property_attributes *attributes = static_cast<
+        c_extrusion_property_attributes *>(entity.get_or_add_property_data_mutable(
+            orchestrator, EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
+    REQUIRE(attributes != nullptr);
+    attributes->role = role;
+    attributes->width = width;
+    c_extrusion_property_perimeter *perimeter = static_cast<
+        c_extrusion_property_perimeter *>(entity.get_or_add_property_data_mutable(
+            orchestrator, EXTRUSION_PROPERTY_TYPE_PERIMETER));
+    REQUIRE(perimeter != nullptr);
+    perimeter->perimeter_flags = C_EXTRUSION_PERIMETER_FLAG_LOOP;
+}
+
 struct CostFixture
 {
     explicit CostFixture(std::initializer_list<std::pair<std::string, std::string>> settings =
@@ -667,6 +687,41 @@ TEST_CASE("Cost seam binds composed loops and projects analytically onto arcs",
         CHECK(std::hypot(unscaled(point.x), unscaled(point.y)) == Approx(10).margin(0.0001));
         CHECK((point.x != extrusion.root().front().x || point.y != extrusion.root().front().y));
     }
+}
+
+TEST_CASE("Cost seam binds the atomic parent of Arachne-like perimeter paths",
+          "[plugins][seam-placer][cost][geometry]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    CostFixture fixture;
+    ExtrusionEntity::Children children;
+    children.emplace_back(new ExtrusionEntity(false, ArcPolyline(Points{
+        Point::new_scale(0, 0), Point::new_scale(10, 0)})));
+    children.emplace_back(new ExtrusionEntity(false, ArcPolyline(Points{
+        Point::new_scale(10, 0), Point::new_scale(10, 10)})));
+    children.emplace_back(new ExtrusionEntity(false, ArcPolyline(Points{
+        Point::new_scale(10, 10), Point::new_scale(0, 10),
+        Point::new_scale(0, 0)})));
+    const ExtrusionEntity composed(std::move(children), false, false, false);
+    const slic3r_api::PrintingExtrusion extrusion = fixture.add(
+        composed, RAW_EXTRUSION_ROLE_NONE, 0, nullptr, false);
+    slic3r_api::MutableExtrusionEntity root = extrusion.mutable_root();
+    for (uint32_t index = 0; index < root.child_count(); ++index)
+        mark_perimeter_path(root.child_mutable(index),
+                            RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER, 0.61f);
+
+    const std::vector<slic3r_api::SeamPlacement::CandidatePreparation::CollectedLoop>
+        collected = slic3r_api::SeamPlacement::CandidatePreparation::collect_perimeter_loops(
+            extrusion.root(), RAW_EXTRUSION_ROLE_NONE);
+    REQUIRE(collected.size() == 1);
+    CHECK(collected.front().loop == extrusion.root().handle());
+    CHECK_FALSE(collected.front().distance_only);
+    CHECK(collected.front().has_external_geometry);
+    CHECK(collected.front().external_width == Approx(0.61));
+
+    const slic3r_api::SeamPlacer placer = create_cost_session(fixture.prepared.print);
+    CHECK_NOTHROW(placer.place_seam(
+        extrusion.root(), fixture.region_view(), extrusion.root().front()));
 }
 
 TEST_CASE("Cost seam applies modifier precedence and all-blocked fallback",

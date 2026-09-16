@@ -40,6 +40,12 @@ struct ExternalGeometry {
     double width = 0;
 };
 
+struct TreeSummary {
+    bool has_perimeter_marker = false;
+    bool has_perimeter_role = false;
+    ExternalGeometry external;
+};
+
 /* Return scaled XY distance; callers decide whether the result is in mm. */
 double point_distance(c_point a, c_point b);
 
@@ -47,11 +53,12 @@ double point_distance(c_point a, c_point b);
 void update_attributes(const ExtrusionEntity &entity, raw_extrusion_role &role,
                        double &width);
 
-/* Walk one extrusion subtree and report its first effective external geometry. */
-ExternalGeometry collect_tree(const ExtrusionEntity &entity,
-                              raw_extrusion_role role, double width,
-                              bool perimeter,
-                              std::vector<CollectedLoop> &loops);
+/* Walk one extrusion subtree, collect independent loops, and summarize metadata
+   that may be stored below the atomic loop carrying the stable handle. */
+TreeSummary collect_tree(const ExtrusionEntity &entity,
+                         raw_extrusion_role role, double width,
+                         bool perimeter,
+                         std::vector<CollectedLoop> &loops);
 
 /* Find the LayerIsland containing a source LayerRegionIsland. */
 LayerIsland parent_island(const Layer &layer,
@@ -133,30 +140,47 @@ void update_attributes(const ExtrusionEntity &entity, raw_extrusion_role &role,
     if (attributes->width > 0) width = attributes->width;
 }
 
-ExternalGeometry collect_tree(const ExtrusionEntity &entity,
-                              raw_extrusion_role role, double width,
-                              bool perimeter,
-                              std::vector<CollectedLoop> &loops)
+TreeSummary collect_tree(const ExtrusionEntity &entity,
+                         raw_extrusion_role role, double width,
+                         bool perimeter,
+                         std::vector<CollectedLoop> &loops)
 {
     update_attributes(entity, role, width);
     if (entity.property_data(EXTRUSION_PROPERTY_TYPE_PERIMETER) != nullptr)
         perimeter = true;
-    ExternalGeometry external;
+    TreeSummary summary;
+    summary.has_perimeter_marker = perimeter;
+    summary.has_perimeter_role =
+        perimeter && RAW_EXTRUSION_ROLE_IS_PERIMETER(role);
     if (perimeter && entity.segment_count() != 0 &&
         RAW_EXTRUSION_ROLE_IS_EXTERNAL_PERIMETER(role)) {
-        external.present = true;
-        external.width = width;
+        summary.external.present = true;
+        summary.external.width = width;
     }
+    const size_t first_nested_loop = loops.size();
     for (uint32_t index = 0; index < entity.child_count(); ++index) {
-        const ExternalGeometry child = collect_tree(
+        const TreeSummary child = collect_tree(
             entity.child(index), role, width, perimeter, loops);
-        if (!external.present && child.present) external = child;
+        summary.has_perimeter_marker =
+            summary.has_perimeter_marker || child.has_perimeter_marker;
+        summary.has_perimeter_role =
+            summary.has_perimeter_role || child.has_perimeter_role;
+        if (!summary.external.present && child.external.present)
+            summary.external = child.external;
     }
-    if (entity.is_loop() && !entity.empty() && perimeter)
+
+    /* Ordering and seam placement operate on the continuous closed parent, even
+       when Arachne stores perimeter properties on its open child paths. Keep one
+       binding for that atomic identity and suppress records nested inside it. */
+    if (entity.is_loop() && !entity.empty() &&
+        summary.has_perimeter_marker) {
+        loops.resize(first_nested_loop);
         loops.push_back({entity.handle(),
-                         !RAW_EXTRUSION_ROLE_IS_PERIMETER(role),
-                         external.present, external.width});
-    return external;
+                         !summary.has_perimeter_role,
+                         summary.external.present,
+                         summary.external.width});
+    }
+    return summary;
 }
 
 } // namespace
