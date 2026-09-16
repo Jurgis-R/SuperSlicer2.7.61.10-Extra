@@ -199,7 +199,7 @@ bool ExtrusionPrinter::print_properties(const ExtrusionEntity &entity, const cha
         else
             ss << property->config_id;
         this->begin_property_field(first_field, "processing_extruder_id");
-        if (property->processing_extruder_id == GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID)
+        if (property->processing_extruder_id == EXTRUDER_ID_UNKNOWN)
             ss << "none";
         else
             ss << property->processing_extruder_id;

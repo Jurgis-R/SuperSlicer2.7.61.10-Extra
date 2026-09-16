@@ -127,7 +127,7 @@ protected:
     const std::vector<DefaultExtruder> &extruders() const { return m_extruders; }
     DefaultExtruder &current_extruder();
     const DefaultExtruder &current_extruder() const;
-    std::optional<uint16_t> current_extruder_id() const { return m_current_extruder_idx; }
+    std::optional<extruder_index_t> current_extruder_id() const { return m_current_extruder_idx; }
 
     // Give dialect encoders the same numeric formatting policy as the base
     // implementation without exposing ownership of the session formatter.
@@ -146,13 +146,13 @@ protected:
         gcode_script_type script_type,
         const std::string &script,
         const Config *producer_config = nullptr,
-        uint16_t processing_extruder_id = GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID);
+        extruder_index_t processing_extruder_id = EXTRUDER_ID_UNKNOWN);
 
     // Every script receives its stored structural Config plus the standard
     // machine context. A derived firmware may fill additional runtime options
     // here without changing the generic script processor ABI.
     virtual void complete_script_context(gcode_script_type script_type,
-                                         uint16_t processing_extruder_id,
+                                         extruder_index_t processing_extruder_id,
                                          GCodeScriptConfig &config);
 
     // Resolve a configured script whose setting is empty. The neutral session
@@ -178,7 +178,7 @@ protected:
     virtual void synchronize_reader_private_state(const GCodeStateTracker &state);
     // Update the protocol-level G10/G11 flag reconstructed by a dialect
     // Reader. This does not invent an E position or retraction distance.
-    void synchronize_native_retraction(uint16_t tool_id, bool retracted);
+    void synchronize_native_retraction(extruder_index_t tool_id, bool retracted);
 
     // Convert validated printer limits into this dialect's startup commands.
     // The neutral base emits nothing; concrete firmware sessions choose both
@@ -209,14 +209,14 @@ protected:
     // The methods below encode one already-decided state transition. They must
     // not mutate session state; write_lines() validates state only after an
     // encoder returns successfully.
-    virtual std::string encode_tool_change(uint16_t tool_id) const;
-    virtual std::string encode_tool_temperature(uint16_t tool_id,
+    virtual std::string encode_tool_change(extruder_index_t tool_id) const;
+    virtual std::string encode_tool_temperature(extruder_index_t tool_id,
                                                 int16_t temperature,
                                                 bool wait) const;
     virtual std::string encode_bed_temperature(int16_t temperature, bool wait) const;
     virtual std::string encode_chamber_temperature(int16_t temperature, bool wait) const;
-    virtual std::string encode_fan(uint16_t tool_id, double speed_percent) const;
-    virtual std::string encode_pressure_advance(uint16_t tool_id,
+    virtual std::string encode_fan(extruder_index_t tool_id, double speed_percent) const;
+    virtual std::string encode_pressure_advance(extruder_index_t tool_id,
                                                 double pressure_advance) const;
     virtual std::string encode_acceleration(uint32_t acceleration, bool travel) const;
     virtual std::string encode_move(const PreparedMove &move, bool include_speed) const;
@@ -226,7 +226,7 @@ protected:
     virtual std::string encode_restore_speed_ratio() const;
     virtual std::string encode_flush_planner() const;
     virtual std::string encode_pause(double milliseconds) const;
-    virtual std::string encode_extruder_current(uint16_t tool_id, double current) const;
+    virtual std::string encode_extruder_current(extruder_index_t tool_id, double current) const;
     /* Encode one native firmware retract or unretract request, normally G10/G11. */
     virtual std::string encode_firmware_retraction(bool retract) const;
     // Encode dialect-specific object declarations and boundaries. The common
@@ -246,7 +246,7 @@ private:
     class ExtrusionWriterVisitor;
     class GCodeStateInterpreter;
 
-    std::string select_extruder(uint16_t tool_id, bool emit_command = true);
+    std::string select_extruder(extruder_index_t tool_id, bool emit_command = true);
     std::string move_to_group_start(const PrintingGroup &group);
     std::string write_extrusion_tree(const ExtrusionEntity &root);
     std::optional<float> reliable_layer_height(const PrintingLayerGroup &layer) const;
@@ -281,20 +281,20 @@ private:
     void apply_requested_state(const RequestedState &state);
     c_vec3d machine_position(c_point point, coord_t z_offset) const;
     double segment_length_mm(const c_extrusion_segment &segment) const;
-    DefaultExtruder &extruder(uint16_t tool_id);
-    const DefaultExtruder &extruder(uint16_t tool_id) const;
+    DefaultExtruder &extruder(extruder_index_t tool_id);
+    const DefaultExtruder &extruder(extruder_index_t tool_id) const;
 
     Gantry m_gantry;
     Printer m_printer;
     std::vector<DefaultExtruder> m_extruders;
-    std::optional<uint16_t> m_current_extruder_idx;
+    std::optional<extruder_index_t> m_current_extruder_idx;
     std::unique_ptr<GCodeFormatter> m_formatter;
     coord_t m_layer_print_z = 0;
     std::optional<std::string> m_marker_role;
     std::optional<float> m_marker_width;
     std::optional<float> m_marker_height;
     std::vector<double> m_last_layer_used_filament;
-    std::optional<uint16_t> m_script_processing_tool;
+    std::optional<extruder_index_t> m_script_processing_tool;
     bool m_xyz_relative_mode = false;
     bool m_units_in_mm = true;
     bool m_e_relative_mode = false;

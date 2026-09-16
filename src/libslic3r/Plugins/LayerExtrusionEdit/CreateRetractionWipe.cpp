@@ -96,7 +96,7 @@ private:
     struct Key
     {
         const Slic3r::Layer *layer = nullptr;
-        uint16_t extruder_id = UINT16_MAX;
+        extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
 
         bool operator<(const Key &rhs) const
         {
@@ -214,7 +214,7 @@ void set_wipe_attributes(MutableExtrusionEntity entity,
                          raw_extrusion_role role);
 
 /* Return the configured wipe speed or its travel-speed fallback. */
-double wipe_speed(const Config &print_config, uint16_t extruder_id);
+double wipe_speed(const Config &print_config, extruder_index_t extruder_id);
 
 /* Convert one source Retract into initial E, wipe motion and residual E. */
 void add_outgoing_wipe(
@@ -606,7 +606,7 @@ void add_inside_start(
         !target_leaf.loop ||
         !RAW_EXTRUSION_ROLE_HAS(target_leaf.role, RAW_EXTRUSION_ROLE_EXTERNAL))
         return;
-    const uint16_t extruder_id = target.tool_group.extruder_id();
+    const extruder_index_t extruder_id = target.tool_group.extruder_id();
     if (!print_config.vector_bool_or_default(
             "wipe_inside_start", extruder_id, false))
         return;
@@ -672,7 +672,7 @@ void set_wipe_attributes(MutableExtrusionEntity entity,
         .no_seam_enabled(false);
 }
 
-double wipe_speed(const Config &print_config, const uint16_t extruder_id)
+double wipe_speed(const Config &print_config, const extruder_index_t extruder_id)
 {
     const double configured = print_config.vector_float_or_default(
         "wipe_speed", extruder_id, 0.0);
@@ -707,7 +707,7 @@ bool WipeCrossingChecker::crosses(
     if (layer == nullptr)
         return false;
 
-    const uint16_t extruder_id = target_scope.tool_group.extruder_id();
+    const extruder_index_t extruder_id = target_scope.tool_group.extruder_id();
     const Key cache_key{layer, extruder_id};
     std::map<Key, std::unique_ptr<Slic3r::AvoidCrossingPerimeters>>::iterator found =
         m_routers.find(cache_key);
@@ -757,7 +757,7 @@ void add_outgoing_wipe(
     const ExtrusionScope::OrderedExtrusionScope scope(source.entity, key);
     if (!scope.has_outgoing_transition())
         return;
-    const uint16_t extruder_id = source.tool_group.extruder_id();
+    const extruder_index_t extruder_id = source.tool_group.extruder_id();
     if (!print_config.vector_bool_or_default("wipe", extruder_id, false))
         return;
 

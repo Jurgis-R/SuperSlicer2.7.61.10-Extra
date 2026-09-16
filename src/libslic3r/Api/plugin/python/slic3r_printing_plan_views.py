@@ -37,6 +37,7 @@ from typing import Iterator
 PRINTING_OBJECT_INSTANCE_ID_NONE = 0xFFFFFFFF
 
 from slic3r_abi import abi_requires_headers
+from slic3r_api_generated import EXTRUDER_ID_UNKNOWN
 from slic3r_datatree_views import (
     CPoint,
     Layer,
@@ -410,8 +411,10 @@ class MutablePrintingToolGroup(PrintingToolGroup):
         )
 
     def set_extruder_id(self, extruder_id: int) -> None:
-        if extruder_id < 0 or extruder_id > 0xFFFF:
-            raise ValueError("extruder id must fit in uint16")
+        if not isinstance(extruder_id, int):
+            raise TypeError("extruder id must be an integer")
+        if extruder_id < EXTRUDER_ID_UNKNOWN or extruder_id > 0x7FFF:
+            raise ValueError("extruder id must be UNKNOWN or fit in extruder_index_t")
         self.api.host.printing_tool_group_set_extruder_id(
             self.mutable_c_handle(), int(extruder_id)
         )
@@ -644,8 +647,10 @@ class MutablePrintingLayerGroup(PrintingLayerGroup):
         return self.tool_groups()
 
     def append_tool_group(self, extruder_id: int) -> MutablePrintingToolGroup:
-        if extruder_id < 0 or extruder_id > 0xFFFF:
-            raise ValueError("extruder id must fit in uint16")
+        if not isinstance(extruder_id, int):
+            raise TypeError("extruder id must be an integer")
+        if extruder_id < EXTRUDER_ID_UNKNOWN or extruder_id > 0x7FFF:
+            raise ValueError("extruder id must be UNKNOWN or fit in extruder_index_t")
         return MutablePrintingToolGroup(
             self.api,
             self.api.host.printing_layer_group_append_tool_group(

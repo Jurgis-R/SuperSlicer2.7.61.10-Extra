@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "libslic3r/ExtrusionRole.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_def.h"
 
 namespace Slic3r {
 
@@ -87,7 +88,7 @@ private:
     // Internal data.
     // X,Y,Z,E,F
     float                           m_current_pos[5];
-    size_t                          m_current_extruder;
+    extruder_index_t                m_current_extruder;
     std::vector<std::string>        m_extruder_names;
     GCodeExtrusionRole              m_current_extrusion_role;
     bool                            m_retracted;
@@ -161,7 +162,7 @@ private:
         bool        pos_provided[5];
 
         // Index of the active extruder.
-        size_t      extruder_id;
+        extruder_index_t extruder_id;
         // Extrusion role of this segment.
         GCodeExtrusionRole extrusion_role;
 

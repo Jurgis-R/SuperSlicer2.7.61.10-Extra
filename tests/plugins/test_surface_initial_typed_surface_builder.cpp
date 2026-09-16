@@ -167,7 +167,7 @@ LayerRegionSetCPtrs region_set(const LayerRegion &region)
 
 const LayerRegionIsland &region_island_for(const LayerSliceIsland &island,
                                            const LayerRegionSetCPtrs &regions,
-                                           const uint16_t extruder_id)
+                                           const extruder_index_t extruder_id)
 {
     const LayerRegionIsland *found = nullptr;
     for (const LayerRegionIsland &region_island : island.regions_islands())

@@ -176,7 +176,7 @@ public:
     bool is_mm_painted() const;
 
     // returns 0-based indices of extruders used to print the object (without brim, support and other helper extrusions)
-    std::set<uint16_t>   object_extruders() const;
+    std::set<extruder_index_t> object_extruders() const;
     double               get_first_layer_height() const;
 
     // Called by make_perimeters()

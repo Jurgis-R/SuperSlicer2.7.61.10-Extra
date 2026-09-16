@@ -1268,7 +1268,7 @@ void _calculate_overhanging_perimeters(
     if (lri.has_extrusion(LayerRegionIsland::PERIMETERS)) {
         const LayerRegionSetCPtrs &regions = lri.regions();
         //LayerRegionSetCPtrs regions_with_dynamic_speeds;
-        //if (lri.extruder_id != uint16_t(-1)) {
+        //if (lri.extruder_id != EXTRUDER_ID_UNKNOWN) {
         //    has_at_least_one_dynamic_speed = layer.object()->print()->config().overhangs_dynamic_fan_speed.is_enabled(
         //        extruder_id);
         //    regions_with_dynamic_speeds = regions;
@@ -1347,11 +1347,15 @@ void _calculate_overhanging_perimeters(
                 ExtrusionAttributes *attributes = entity.get_property<ExtrusionAttributes>();
                 if (attributes == nullptr)
                     return;
-                size_t extruder_id = layer_region->region().extruder(attributes->extrusion_role().is_external() ?
-                                                                        FlowRole::frExternalPerimeter :
-                                                                        FlowRole::frPerimeter,
-                                                                    *layer->object()) -
-                    1;
+                const int configured_extruder = layer_region->region().extruder(
+                    attributes->extrusion_role().is_external() ?
+                        FlowRole::frExternalPerimeter : FlowRole::frPerimeter,
+                    *layer->object());
+                if (configured_extruder <= 0 ||
+                    configured_extruder - 1 > (std::numeric_limits<extruder_index_t>::max)())
+                    throw Slic3r::InvalidArgument("Overhang flow resolved an invalid extruder setting");
+                const extruder_index_t extruder_id =
+                    static_cast<extruder_index_t>(configured_extruder - 1);
                 ExtrusionPath *path = dynamic_cast<ExtrusionPath*>(&entity);
                 if (path != nullptr)
                     ExtrusionProcessor::apply_overhang_flow(*path, *print_config, *layer_region, extruder_id);
@@ -1889,7 +1893,7 @@ void PrintObject::tag_under_bridge() {
                                                 || dfaAutoOrEnlarged == algo) {
                                                 //check if small enough
                                                 double max_nozzle_diam = 0;
-                                                for (uint16_t extruder_id : object_extruders()) {
+                                                for (extruder_index_t extruder_id : object_extruders()) {
                                                     max_nozzle_diam = std::max(max_nozzle_diam, print()->config().nozzle_diameter.get_at(extruder_id));
                                                 }
                                                 coordf_t min_width = scale_d(max_nozzle_diam) / region->config().fill_density.get_effective_value(1.);
@@ -4214,7 +4218,7 @@ std::shared_ptr<SlicingParameters> PrintObject::slicing_parameters(const Dynamic
 	size_t              num_extruders = print_config.nozzle_diameter.size();
 	object_config = object_config_from_model_object(object_config, model_object, num_extruders);
 
-    std::set<uint16_t> object_extruders;
+    std::set<extruder_index_t> object_extruders;
     for (const ModelVolume* model_volume : model_object.volumes)
         if (model_volume->is_model_part()) {
             PrintRegion::collect_object_printing_extruders(
@@ -4240,9 +4244,9 @@ std::shared_ptr<SlicingParameters> PrintObject::slicing_parameters(const Dynamic
 }
 
 // returns 0-based indices of extruders used to print the object (without brim, support and other helper extrusions)
-std::set<uint16_t> PrintObject::object_extruders() const
+std::set<extruder_index_t> PrintObject::object_extruders() const
 {
-    std::set<uint16_t> extruders;
+    std::set<extruder_index_t> extruders;
     for (const PrintRegion &region : this->all_regions())
         region.collect_object_printing_extruders(*this->print(), extruders);
     return extruders;
@@ -4254,7 +4258,7 @@ double PrintObject::get_first_layer_height() const
     double object_first_layer_height = config().first_layer_height.value;
     if (config().first_layer_height.percent) {
         object_first_layer_height = 1000000000;
-        for (uint16_t extruder_id : object_extruders()) {
+        for (extruder_index_t extruder_id : object_extruders()) {
             double nozzle_diameter = print()->config().nozzle_diameter.get_at(extruder_id);
             object_first_layer_height = std::fmin(object_first_layer_height, config().first_layer_height.get_effective_value(nozzle_diameter));
         }

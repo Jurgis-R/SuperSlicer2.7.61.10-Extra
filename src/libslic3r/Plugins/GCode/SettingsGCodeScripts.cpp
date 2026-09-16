@@ -82,8 +82,8 @@ struct LayerContext
 struct PlanSummary
 {
     coord_t max_print_z = 0;
-    std::optional<uint16_t> first_extruder;
-    std::optional<uint16_t> last_extruder;
+    std::optional<extruder_index_t> first_extruder;
+    std::optional<extruder_index_t> last_extruder;
     std::optional<LayerContext> first_layer;
     std::optional<LayerContext> previous_layer;
     std::optional<LayerContext> last_layer;
@@ -112,7 +112,7 @@ void append_script_event(storage_handle *storage,
                          gcode_script_type script_type,
                          const Config &arguments,
                          ScopeEventPosition position,
-                         uint16_t processing_extruder_id = GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID);
+                         extruder_index_t processing_extruder_id = EXTRUDER_ID_UNKNOWN);
 // Search one tree for the first scope whose incoming boundary selects a tool.
 MutableExtrusionEntity first_toolchange_scope_in_entity(
     MutableExtrusionEntity entity,
@@ -129,7 +129,7 @@ void append_start_filament_script(
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const std::string &script,
     const Config &arguments,
-    uint16_t processing_extruder_id);
+    extruder_index_t processing_extruder_id);
 
 PlanSummary summarize_plan(const PrintingPlan &plan)
 {
@@ -146,8 +146,8 @@ PlanSummary summarize_plan(const PrintingPlan &plan)
             summary.previous_layer = summary.last_layer;
             summary.last_layer = current_layer;
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const uint16_t extruder_id = layer.tool_group(tool_idx).extruder_id();
-                if (extruder_id == uint16_t(-1))
+                const extruder_index_t extruder_id = layer.tool_group(tool_idx).extruder_id();
+                if (extruder_id == EXTRUDER_ID_UNKNOWN)
                     continue;
                 if (!summary.first_extruder)
                     summary.first_extruder = extruder_id;
@@ -212,7 +212,7 @@ void append_script_event(storage_handle *storage,
                          gcode_script_type script_type,
                          const Config &arguments,
                          ScopeEventPosition position,
-                         uint16_t processing_extruder_id)
+                         extruder_index_t processing_extruder_id)
 {
     if (script.empty())
         return;
@@ -284,7 +284,7 @@ void append_start_filament_script(
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const std::string &script,
     const Config &arguments,
-    const uint16_t processing_extruder_id)
+    const extruder_index_t processing_extruder_id)
 {
     if (script.empty())
         return;
@@ -382,7 +382,7 @@ private:
                             config.string_or_default("start_gcode", std::string()),
                             GCODE_SCRIPT_TYPE_START_GCODE, start_arguments,
                             ScopeEventPosition::Before,
-                            summary.first_extruder.value_or(GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID));
+                            summary.first_extruder.value_or(EXTRUDER_ID_UNKNOWN));
 
         const std::string before_layer = config.string_or_default("before_layer_gcode", std::string());
         const std::string after_layer = config.string_or_default("layer_gcode", std::string());
@@ -390,10 +390,10 @@ private:
         const bool between_before_move = config.bool_or_default("between_objects_gcode_before_move", false);
         const bool single_extruder_multi_material =
             config.bool_or_default("single_extruder_multi_material", false);
-        int32_t current_tool = -1;
+        extruder_index_t current_tool = EXTRUDER_ID_UNKNOWN;
         int32_t layer_number = 0;
         bool seen_layer = false;
-        std::set<uint16_t> used_tools;
+        std::set<extruder_index_t> used_tools;
         std::optional<uint32_t> previous_object;
         std::optional<LayerContext> previous_layer;
         std::optional<PrintingScopeEvents> previous_object_events;
@@ -454,9 +454,9 @@ private:
                 for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                     const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                     const PrintingScopeEvents tool_events = tool_group.events();
-                    const uint16_t target_tool = tool_group.extruder_id();
+                    const extruder_index_t target_tool = tool_group.extruder_id();
                     used_tools.insert(target_tool);
-                    if (current_tool == int32_t(target_tool)) {
+                    if (current_tool == target_tool) {
                         previous_tool_events = tool_events;
                         continue;
                     }
@@ -466,7 +466,7 @@ private:
                     set_int_argument(tool_arguments, "previous_extruder", current_tool);
                     set_int_argument(tool_arguments, "next_extruder", int32_t(target_tool));
                     set_float_argument(tool_arguments, "toolchange_z", unscaled(current_layer.print_z));
-                    if (current_tool >= 0) {
+                    if (current_tool != EXTRUDER_ID_UNKNOWN) {
                         assert(previous_tool_events.has_value());
                         StoredConfig end_filament_arguments = copy_arguments(
                             run_context->plugin_storage, tool_arguments);
@@ -475,9 +475,9 @@ private:
                             run_context->plugin_storage, *previous_tool_events,
                             config.vector_string_or_default("end_filament_gcode", uint32_t(current_tool), std::string()),
                             GCODE_SCRIPT_TYPE_END_FILAMENT_GCODE, end_filament_arguments,
-                            ScopeEventPosition::After, uint16_t(current_tool));
+                            ScopeEventPosition::After, current_tool);
                     }
-                    const MutableExtrusionEntity transition_scope = current_tool >= 0 ?
+                    const MutableExtrusionEntity transition_scope = current_tool != EXTRUDER_ID_UNKNOWN ?
                         first_toolchange_scope(tool_group, m_scope_property) :
                         MutableExtrusionEntity();
                     StoredConfig start_filament_arguments = copy_arguments(
@@ -506,10 +506,10 @@ private:
             }
         }
 
-        if (current_tool >= 0) {
-            const std::set<uint16_t> final_tools = single_extruder_multi_material ?
-                std::set<uint16_t>{uint16_t(current_tool)} : used_tools;
-            for (uint16_t tool_id : final_tools) {
+        if (current_tool != EXTRUDER_ID_UNKNOWN) {
+            const std::set<extruder_index_t> final_tools = single_extruder_multi_material ?
+                std::set<extruder_index_t>{extruder_index_t(current_tool)} : used_tools;
+            for (extruder_index_t tool_id : final_tools) {
                 StoredConfig arguments(run_context->plugin_storage);
                 if (summary.last_layer)
                     arguments.deserialize_all(layer_arguments(
@@ -538,7 +538,7 @@ private:
                             config.string_or_default("end_gcode", std::string()),
                             GCODE_SCRIPT_TYPE_END_GCODE, end_arguments,
                             ScopeEventPosition::After,
-                            summary.last_extruder.value_or(GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID));
+                            summary.last_extruder.value_or(EXTRUDER_ID_UNKNOWN));
     }
 
     PluginPropertyKey<PrintingExtrusionScopeProperty> m_scope_property;

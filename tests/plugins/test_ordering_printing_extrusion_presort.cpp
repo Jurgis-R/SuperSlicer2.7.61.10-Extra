@@ -94,7 +94,7 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
 }
 
 /* Add one layer containing one tool visit. */
-PrintingToolGroup &append_tool(PrintingGroup &group, const uint16_t extruder_id = 0)
+PrintingToolGroup &append_tool(PrintingGroup &group, const extruder_index_t extruder_id = 0)
 {
     if (group.layers.empty())
         group.layers.emplace_back();
@@ -106,7 +106,7 @@ PrintingToolGroup &append_tool(PrintingGroup &group, const uint16_t extruder_id 
 
 /* Add a later layer and return its first tool visit. */
 PrintingToolGroup &append_layer_with_tool(PrintingGroup &group,
-                                          const uint16_t extruder_id = 0)
+                                          const extruder_index_t extruder_id = 0)
 {
     group.layers.emplace_back();
     group.layers.back().tool_groups.emplace_back();

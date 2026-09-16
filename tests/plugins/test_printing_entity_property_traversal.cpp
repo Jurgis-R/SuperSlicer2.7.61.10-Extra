@@ -50,7 +50,7 @@ struct CallbackRecord
     const printing_tool_group_handle *tool = nullptr;
     const printing_extrusion_handle *extrusion = nullptr;
     const extrusion_entity_handle *entity = nullptr;
-    uint16_t extruder_id = UINT16_MAX;
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     uint16_t printing_catalog_idx = UINT16_MAX;
 };
 

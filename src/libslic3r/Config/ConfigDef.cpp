@@ -985,8 +985,12 @@ const ConfigOptionDef* ConfigBase::get_option_def(const t_config_option_key& opt
 
 // Return an absolute value of a possibly relative config variable.
 // For example, return absolute infill extrusion width, either from an absolute value, or relative to the layer height.
-double ConfigBase::get_computed_value(const t_config_option_key &opt_key, int extruder_id) const
+double ConfigBase::get_computed_value(
+    const t_config_option_key &opt_key, const extruder_index_t extruder_id) const
 {
+    if (extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw ConfigurationError("ConfigBase::get_computed_value(): invalid extruder index");
+
     // Get stored option value.
     const ConfigOption *raw_opt = this->option(opt_key);
     if (raw_opt == nullptr) {
@@ -1005,17 +1009,17 @@ double ConfigBase::get_computed_value(const t_config_option_key &opt_key, int ex
         if (raw_opt->type() == coFloatOrPercent) {
             auto cofop = static_cast<const ConfigOptionFloatOrPercent*>(raw_opt);
             if (cofop->value == 0 && boost::ends_with(opt_key, "_extrusion_width")) {
-                int idx = extruder_id;
-                if (extruder_id < 0) {
+                extruder_index_t idx = extruder_id;
+                if (extruder_id == EXTRUDER_ID_UNKNOWN) {
                     const ConfigOption* opt_extruder_id = nullptr;
                     if ((opt_extruder_id = this->option("extruder")) == nullptr)
                         if ((opt_extruder_id = this->option("current_extruder")) == nullptr
-                            || opt_extruder_id->get_int() < 0 || opt_extruder_id->get_int() >= uint16_t(-1)) {
+                            || opt_extruder_id->get_int() < 0
+                            || opt_extruder_id->get_int() > std::numeric_limits<extruder_index_t>::max()) {
                             std::stringstream ss; ss << "Flow::extrusion_width(): " << opt_key << " need to has the extuder id to get the right value, but it's not available";
                             throw ConfigurationError(ss.str());
                         }
-                    extruder_id = opt_extruder_id->get_int();
-                    idx = extruder_id;
+                    idx = static_cast<extruder_index_t>(opt_extruder_id->get_int());
                 }
                 return Flow::extrusion_width(opt_key, *this, idx);
             }
@@ -1043,19 +1047,20 @@ double ConfigBase::get_computed_value(const t_config_option_key &opt_key, int ex
     } else {
         // check if it's an extruder_id array
         const ConfigOptionVectorBase* vector_opt = static_cast<const ConfigOptionVectorBase*>(raw_opt);
-        int idx = -1;
+        extruder_index_t idx = EXTRUDER_ID_UNKNOWN;
         if (vector_opt->is_extruder_size()) {
             idx = extruder_id;
-            if (extruder_id < 0) {
+            if (extruder_id == EXTRUDER_ID_UNKNOWN) {
                 const ConfigOption* opt_extruder_id = nullptr;
                 if ((opt_extruder_id = this->option("extruder")) == nullptr)
                     if ((opt_extruder_id = this->option("current_extruder")) == nullptr
-                        || opt_extruder_id->get_int() < 0 || opt_extruder_id->get_int() >= vector_opt->size()) {
+                        || opt_extruder_id->get_int() < 0
+                        || opt_extruder_id->get_int() > std::numeric_limits<extruder_index_t>::max()
+                        || size_t(opt_extruder_id->get_int()) >= vector_opt->size()) {
                         std::stringstream ss; ss << "ConfigBase::get_effective_value(): " << opt_key << " need to has the extuder id to get the right value, but it's not available";
                         throw ConfigurationError(ss.str());
                     }
-                extruder_id = opt_extruder_id->get_int();
-                idx = extruder_id;
+                idx = static_cast<extruder_index_t>(opt_extruder_id->get_int());
             }
         } else {
             //t_config_option_keys machine_limits = Preset::machine_limits_options();
@@ -1064,7 +1069,7 @@ double ConfigBase::get_computed_value(const t_config_option_key &opt_key, int ex
             //}
             idx = extruder_id;
         }
-        if (idx >= 0) {
+        if (idx != EXTRUDER_ID_UNKNOWN) {
             if (raw_opt->type() == coFloats || raw_opt->type() == coInts || raw_opt->type() == coBools)
                 return vector_opt->get_float(idx);
             if (raw_opt->type() == coFloatsOrPercents) {
@@ -1074,7 +1079,7 @@ double ConfigBase::get_computed_value(const t_config_option_key &opt_key, int ex
 
                 const ConfigOptionDef* opt_def = this->get_option_def(opt_key);
                 if (opt_def == nullptr) // maybe a placeholder?
-                    return opt_fl_per->get_effective_value(1., extruder_id);
+                    return opt_fl_per->get_effective_value(1., idx);
                 if (opt_def->ratio_over.empty())
                     return opt_fl_per->get_effective_value(1., idx);
                 if (opt_def->ratio_over != "depends")
@@ -1086,7 +1091,7 @@ double ConfigBase::get_computed_value(const t_config_option_key &opt_key, int ex
                 const ConfigOptionPercents* opt_per = static_cast<const ConfigOptionPercents*>(raw_opt);
                 const ConfigOptionDef* opt_def = this->get_option_def(opt_key);
                 if (opt_def == nullptr) // maybe a placeholder?
-                    return opt_per->get_effective_value(1., extruder_id);
+                    return opt_per->get_effective_value(1., idx);
                 if (opt_def->ratio_over.empty())
                     return opt_per->get_effective_value(1., idx);
                 if (opt_def->ratio_over != "depends")

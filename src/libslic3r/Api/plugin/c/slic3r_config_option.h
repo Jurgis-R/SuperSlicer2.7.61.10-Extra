@@ -5,13 +5,14 @@
 #ifndef slic3r_config_option_h_
 #define slic3r_config_option_h_
 
-#define SLIC3R_PLUGIN_API_CONFIG_OPTION_MAJOR 2u
+#define SLIC3R_PLUGIN_API_CONFIG_OPTION_MAJOR 3u
 #define SLIC3R_PLUGIN_API_CONFIG_OPTION_MINOR 0u
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "slic3r_config_option_type.h"
+#include "slic3r_def.h"
 #include "slic3r_geometry.h"
 
 #ifdef __cplusplus
@@ -81,14 +82,15 @@ typedef struct config_handle config_handle;
 /*
 Resolve one numeric option through the host ConfigBase ratio chain.
 
-extruder_id selects vector values used directly or through ratio_over. The
-function returns zero when the key is absent, disabled, has no usable vector
-item, cannot be represented as a number, or cannot be resolved. No C++
-exception crosses the plugin ABI.
+extruder_id selects vector values used directly or through ratio_over.
+EXTRUDER_ID_UNKNOWN cannot select a vector item and therefore makes vector
+resolution fail. The function returns zero when the id is invalid, the key is
+absent or disabled, the vector has no usable item, or the value cannot be
+represented or resolved. No C++ exception crosses the plugin ABI.
 */
 SLIC3R_HOST_API int32_t config_get_computed_value(const config_handle *me,
                                                   const char *key,
-                                                  int32_t extruder_id,
+                                                  extruder_index_t extruder_id,
                                                   double *value_out);
 
 SLIC3R_HOST_API config_option_type config_option_type_get(const config_option_handle *me);

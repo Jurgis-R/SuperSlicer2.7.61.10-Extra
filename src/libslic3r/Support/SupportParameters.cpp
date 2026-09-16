@@ -119,7 +119,7 @@ SupportParameters::SupportParameters(const PrintObject &object)
     this->can_merge_support_regions = object_config.support_material_extruder.value == object_config.support_material_interface_extruder.value;
     if (!this->can_merge_support_regions && (object_config.support_material_extruder.value == 0 || object_config.support_material_interface_extruder.value == 0)) {
         // One of the support extruders is of "don't care" type.
-        std::set<uint16_t> object_extruders = object.object_extruders();
+        std::set<extruder_index_t> object_extruders = object.object_extruders();
         if (object_extruders.size() == 1 &&
             *object_extruders.begin() == std::max<unsigned int>(object_config.support_material_extruder.value, object_config.support_material_interface_extruder.value))
             // Object is printed with the same extruder as the support.

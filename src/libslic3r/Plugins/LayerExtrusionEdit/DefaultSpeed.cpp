@@ -86,13 +86,13 @@ const RegionSettings::OptionKeyGroup k_region_speed_keys = {
     "top_solid_infill_speed"
 };
 
-using AutospeedTargets = std::vector<std::map<uint16_t, double>>;
+using AutospeedTargets = std::vector<std::map<extruder_index_t, double>>;
 using RegionalSettingsPartitions = std::map<RegionalSourceKey, RegionalSettingsPartition>;
 
 struct AutospeedPartitionKey
 {
     RegionalSourceKey source;
-    uint16_t extruder_id = uint16_t(-1);
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     raw_extrusion_role role = RAW_EXTRUSION_ROLE_NONE;
     bool full_overhang_speed = false;
 
@@ -103,7 +103,7 @@ struct SpeedPartitionKey
 {
     RegionalSourceKey source;
     uint32_t group_idx = 0;
-    uint16_t extruder_id = uint16_t(-1);
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     raw_extrusion_role role = RAW_EXTRUSION_ROLE_NONE;
     bool full_overhang_speed = false;
     double mm3_per_mm = 0.0;
@@ -182,7 +182,7 @@ void assign_speed_tree(MutableExtrusionEntity entity,
 // Return a target for one group/extruder, or zero when autospeed is unavailable.
 double autospeed_target(const AutospeedTargets &targets,
                         uint32_t group_idx,
-                        uint16_t extruder_id);
+                        extruder_index_t extruder_id);
 
 // Resolve and compact speed on one cloned extrusion root.
 void edit_extrusion(const Print &print,
@@ -483,7 +483,7 @@ void prepare_plan(storage_handle *storage,
 
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         const PrintingGroup group = plan.group(group_idx);
-        std::map<uint16_t, double> minimum_by_extruder;
+        std::map<extruder_index_t, double> minimum_by_extruder;
 
         // Validate the entire plan before any parallel mutation. During the
         // same pass, collect the minimum flow when autospeed is enabled.
@@ -528,8 +528,8 @@ void prepare_plan(storage_handle *storage,
         if (maximum_volumetric <= 0.0)
             continue;
 
-        for (std::map<uint16_t, double>::value_type &entry : minimum_by_extruder) {
-            const uint16_t extruder_id = entry.first;
+        for (std::map<extruder_index_t, double>::value_type &entry : minimum_by_extruder) {
+            const extruder_index_t extruder_id = entry.first;
             const double max_print_speed = print_config.computed_float_or_default(
                 "max_print_speed", int32_t(extruder_id), 0.0);
             if (max_print_speed <= 0.0)
@@ -701,11 +701,11 @@ void assign_speed_tree(MutableExtrusionEntity entity,
 
 double autospeed_target(const AutospeedTargets &targets,
                         uint32_t group_idx,
-                        uint16_t extruder_id)
+                        extruder_index_t extruder_id)
 {
     if (group_idx >= targets.size())
         return 0.0;
-    const std::map<uint16_t, double>::const_iterator found = targets[group_idx].find(extruder_id);
+    const std::map<extruder_index_t, double>::const_iterator found = targets[group_idx].find(extruder_id);
     return found == targets[group_idx].end() ? 0.0 : found->second;
 }
 

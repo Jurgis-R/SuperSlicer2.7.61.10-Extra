@@ -198,9 +198,13 @@ public:
         return PluginProperties(printing_tool_group_get_properties(handle()));
     }
 
-    uint16_t extruder_id() const { return printing_tool_group_get_extruder_id(handle()); }
-    void set_extruder_id(uint16_t extruder_id) const {
-        printing_tool_group_set_extruder_id(mutable_handle(), extruder_id);
+    extruder_index_t extruder_id() const { return printing_tool_group_get_extruder_id(handle()); }
+    void set_extruder_id(int64_t extruder_id) const {
+        if (extruder_id < EXTRUDER_ID_UNKNOWN ||
+            extruder_id > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The extruder id does not fit in extruder_index_t.");
+        printing_tool_group_set_extruder_id(
+            mutable_handle(), static_cast<extruder_index_t>(extruder_id));
     }
 
     uint32_t region_island_count() const { return printing_tool_group_count_region_island(handle()); }
@@ -277,8 +281,12 @@ public:
     PrintingToolGroup tool_group(uint32_t idx) const {
         return PrintingToolGroup(printing_layer_group_get_tool_group_mutable(mutable_handle(), idx));
     }
-    PrintingToolGroup append_tool_group(uint16_t extruder_id) const {
-        return PrintingToolGroup(printing_layer_group_append_tool_group(mutable_handle(), extruder_id));
+    PrintingToolGroup append_tool_group(int64_t extruder_id) const {
+        if (extruder_id < EXTRUDER_ID_UNKNOWN ||
+            extruder_id > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The extruder id does not fit in extruder_index_t.");
+        return PrintingToolGroup(printing_layer_group_append_tool_group(
+            mutable_handle(), static_cast<extruder_index_t>(extruder_id)));
     }
     bool move_tool_group(uint32_t from_idx, uint32_t to_idx) const {
         return printing_layer_group_move_tool_group(mutable_handle(), from_idx, to_idx) != 0;

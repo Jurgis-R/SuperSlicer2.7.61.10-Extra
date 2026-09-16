@@ -6,6 +6,7 @@
 #define slic3r_Api_plugin_cpp_gcode_GCodeScriptProcessorViews_hpp_
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -182,12 +183,18 @@ public:
         config().set(key, value);
     }
 
-    std::string process(const std::string &script, uint16_t current_extruder) const
+    std::string process(const std::string &script, int64_t current_extruder) const
     {
+        if (current_extruder < EXTRUDER_ID_UNKNOWN ||
+            current_extruder > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The current extruder does not fit in extruder_index_t.");
         raw_gcode_script_result result = {};
         result.struct_size = sizeof(result);
         result.status = RAW_GCODE_SCRIPT_STATUS_UNSET;
-        m_processor->process(m_processor->context, script.c_str(), current_extruder, &result);
+        m_processor->process(m_processor->context,
+                             script.c_str(),
+                             static_cast<extruder_index_t>(current_extruder),
+                             &result);
 
         if (result.status != RAW_GCODE_SCRIPT_STATUS_SUCCESS) {
             const char *message = result.error_message != nullptr ?

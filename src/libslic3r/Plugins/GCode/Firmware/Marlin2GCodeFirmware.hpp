@@ -31,7 +31,7 @@ protected:
     std::string encode_machine_envelope(const MachineEnvelope &envelope) const override;
     void synchronize_selected_extruder_state(const DefaultExtruder *previous,
                                               DefaultExtruder &selected) override;
-    std::string encode_tool_temperature(uint16_t tool_id,
+    std::string encode_tool_temperature(extruder_index_t tool_id,
                                         int16_t temperature,
                                         bool wait) const override;
     std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const override;

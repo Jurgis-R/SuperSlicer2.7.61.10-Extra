@@ -9,7 +9,9 @@
 #include <cassert>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -245,16 +247,22 @@ LayerRegionSetCPtrs region_set_from_handles(const layer_region_handle *const *re
     return regions;
 }
 
-uint16_t perimeter_extruder_id(const LayerRegionSetCPtrs &regions)
+extruder_index_t perimeter_extruder_id(const LayerRegionSetCPtrs &regions)
 {
     // LayerRegionIsland is keyed partly by extruder. For now a region group is
     // expected to be compatible enough that the first region defines the
     // perimeter extruder for the whole generated island.
     if (regions.empty())
-        return uint16_t(-1);
+        return EXTRUDER_ID_UNKNOWN;
 
-    const int16_t extruder_id = int16_t((*regions.begin())->region().config().perimeter_extruder) - 1;
-    return extruder_id < 0 ? uint16_t(-1) : uint16_t(extruder_id);
+    const int64_t configured_extruder =
+        (*regions.begin())->region().config().perimeter_extruder;
+    if (configured_extruder <= 0)
+        return EXTRUDER_ID_UNKNOWN;
+    if (configured_extruder > int64_t((std::numeric_limits<extruder_index_t>::max)()) + 1)
+        throw std::out_of_range(
+            "The perimeter extruder does not fit in extruder_index_t.");
+    return static_cast<extruder_index_t>(configured_extruder - 1);
 }
 
 uint32_t requested_perimeter_count(const LayerRegionSetCPtrs &regions)

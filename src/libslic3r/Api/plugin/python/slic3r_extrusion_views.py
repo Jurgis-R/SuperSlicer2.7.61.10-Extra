@@ -78,7 +78,7 @@ from slic3r_api_generated import (
     C_EXTRUSION_CUSTOM_GCODE_SCRIPT,
     EXTRUSION_DATA_ID_INVALID,
     EXTRUSION_INDEX_INVALID,
-    GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID,
+    EXTRUDER_ID_UNKNOWN,
     GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM,
     GCODE_SCRIPT_TYPE_INVALID,
     EXTRUSION_PROPERTY_TYPE_ATTRIBUTES,
@@ -398,7 +398,7 @@ class ExtrusionPropertyMutableMixin:
             else GCODE_SCRIPT_TYPE_INVALID
         )
         payload.config_id = EXTRUSION_DATA_ID_INVALID
-        payload.processing_extruder_id = GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID
+        payload.processing_extruder_id = EXTRUDER_ID_UNKNOWN
         text_id = self.store_property_string(CExtrusionPropertyCustomGcode, payload, "text_id", text)
         if text_id == EXTRUSION_DATA_ID_INVALID:
             self.remove_property(CExtrusionPropertyCustomGcode)
@@ -415,11 +415,17 @@ class ExtrusionPropertyMutableMixin:
         # Serialize before touching the extrusion so a configuration error
         # cannot replace an existing custom G-code property halfway through.
         serialized_config = None if config is None else config.serialize_all()
+        if processing_extruder_id is not None:
+            if not isinstance(processing_extruder_id, int):
+                raise TypeError("A script processing extruder must be an integer.")
+            if (processing_extruder_id < EXTRUDER_ID_UNKNOWN or
+                processing_extruder_id > 0x7FFF):
+                raise ValueError(
+                    "A script processing extruder must be UNKNOWN or fit in extruder_index_t."
+                )
         payload = self.custom_gcode(text, C_EXTRUSION_CUSTOM_GCODE_SCRIPT)
         payload.script_type = int(script_type)
         if processing_extruder_id is not None:
-            if processing_extruder_id < 0 or processing_extruder_id >= GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID:
-                raise ValueError("A script processing extruder must fit in uint16_t.")
             payload.processing_extruder_id = int(processing_extruder_id)
 
         if serialized_config is not None:

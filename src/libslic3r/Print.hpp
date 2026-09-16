@@ -128,11 +128,11 @@ struct PrintStatistics
     double                          total_wipe_tower_cost;
     double                          total_wipe_tower_filament;
     double                          total_wipe_tower_filament_weight;
-    std::vector<unsigned int>       printing_extruders;
-    unsigned int                    initial_extruder_id;
+    std::vector<extruder_index_t>   printing_extruders;
+    extruder_index_t                initial_extruder_id;
     std::string                     initial_filament_type;
     std::string                     printing_filament_types;
-    std::map<size_t, double>        filament_stats; // extruder id -> volume in mm3
+    std::map<extruder_index_t, double> filament_stats; // extruder id -> volume in mm3
     std::vector<std::pair<coord_t, float>> _layer_area_stats; // print_z to area
 
     std::atomic_bool is_computing_gcode;
@@ -153,7 +153,7 @@ struct PrintStatistics
         total_wipe_tower_cost  = 0.;
         total_wipe_tower_filament = 0.;
         total_wipe_tower_filament_weight = 0.;
-        initial_extruder_id    = 0;
+        initial_extruder_id    = EXTRUDER_ID_UNKNOWN;
         initial_filament_type.clear();
         printing_filament_types.clear();
         filament_stats.clear();
@@ -240,18 +240,18 @@ public:
 
     // Returns an empty string if valid, otherwise returns an error message.
     std::pair<PrintValidationError, std::string> validate(std::vector<std::string>* warnings = nullptr) const override;
-    Flow                brim_flow(size_t extruder_id, const PrintObjectConfig &brim_config) const;
-    Flow                skirt_flow(size_t extruder_id, bool first_layer=false) const;
+    Flow                brim_flow(extruder_index_t extruder_id, const PrintObjectConfig &brim_config) const;
+    Flow                skirt_flow(extruder_index_t extruder_id, bool first_layer=false) const;
     coord_t             get_min_first_layer_height() const;
     coord_t             get_object_first_layer_height(const PrintObject& object) const;
 
     // get the extruders of these objects
-    std::set<uint16_t>  object_extruders(const PrintObjectPtrs &objects, coord_t z = -1) const;
+    std::set<extruder_index_t> object_extruders(const PrintObjectPtrs &objects, coord_t z = -1) const;
     // get all extruders from the list of objects in this print ( same as print.object_extruders(print.objects()) )
-    std::set<uint16_t>  object_extruders(coord_t z = -1) const;
-    std::set<uint16_t>  support_material_extruders(coord_t z = -1) const;
+    std::set<extruder_index_t> object_extruders(coord_t z = -1) const;
+    std::set<extruder_index_t> support_material_extruders(coord_t z = -1) const;
     // all extruder to print layers that extrude at this z.
-    std::set<uint16_t>  extruders(coord_t z = -1) const;
+    std::set<extruder_index_t> extruders(coord_t z = -1) const;
     // Effective first-layer bed temperature across every tool used at Z=0.
     int32_t first_layer_bed_temperature() const;
     double              max_allowed_layer_height() const;

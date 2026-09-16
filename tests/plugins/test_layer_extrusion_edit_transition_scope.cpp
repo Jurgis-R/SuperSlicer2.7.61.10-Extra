@@ -103,7 +103,7 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
 /* Append one layer and tool visit to the selected PrintingGroup. */
 PrintingLayerGroup &append_layer(PrintingGroup &group,
                                  coord_t print_z,
-                                 uint16_t extruder_id);
+                                 extruder_index_t extruder_id);
 
 /* Run only transition preparation, optionally for a second idempotence pass. */
 void run_transition_scopes(Print &print, uint32_t run_count = 1);
@@ -176,7 +176,7 @@ PrintingExtrusion &append_extrusion(PrintingToolGroup &tool,
 
 PrintingLayerGroup &append_layer(PrintingGroup &group,
                                  const coord_t print_z,
-                                 const uint16_t extruder_id)
+                                 const extruder_index_t extruder_id)
 {
     group.layers.emplace_back();
     PrintingLayerGroup &layer = group.layers.back();

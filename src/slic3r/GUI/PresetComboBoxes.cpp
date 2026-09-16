@@ -887,7 +887,9 @@ void PlaterPresetComboBox::update()
     this->Clear();
     invalidate_selection();
 
-    const ExtruderFilaments& extruder_filaments  = m_preset_bundle->extruders_filaments[m_extruder_idx >= 0 ? m_extruder_idx : 0];
+    const ExtruderFilaments &extruder_filaments =
+        m_preset_bundle->extruders_filaments[
+            m_extruder_idx != EXTRUDER_ID_UNKNOWN ? size_t(m_extruder_idx) : size_t(0)];
 
     const Preset* selected_filament_preset = nullptr;
     std::string extruder_color;

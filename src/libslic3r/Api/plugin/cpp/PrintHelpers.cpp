@@ -43,17 +43,20 @@ input unchanged when the requested Z step is disabled or too small.
 namespace slic3r_api {
 namespace {
 
-uint16_t normalize_extruder_id(const Config &print_config, int32_t one_based_id)
+extruder_index_t normalize_extruder_id(const Config &print_config, int32_t one_based_id)
 {
     const ConfigOption nozzle_diameter = print_config.get("nozzle_diameter");
     const uint32_t num_extruders = nozzle_diameter.size();
     const int32_t idx = std::max<int32_t>(0, one_based_id - 1);
-    return static_cast<uint16_t>((num_extruders == 0 || uint32_t(idx) >= num_extruders) ? 0 : idx);
+    const uint32_t normalized = (num_extruders == 0 || uint32_t(idx) >= num_extruders) ? 0 : uint32_t(idx);
+    if (normalized > uint32_t(std::numeric_limits<extruder_index_t>::max()))
+        throw std::invalid_argument("An object extruder index exceeds extruder_index_t.");
+    return static_cast<extruder_index_t>(normalized);
 }
 
 void append_support_extruders(const Print &print,
                               const std::vector<Object> &objects,
-                              std::set<uint16_t> &extruders)
+                              std::set<extruder_index_t> &extruders)
 {
     const Config print_config = print.config();
     bool support_uses_current_extruder = false;
@@ -87,7 +90,7 @@ void append_support_extruders(const Print &print,
 
     if (support_uses_current_extruder)
         for (Object object : objects) {
-            const std::set<uint16_t> object_tools = object_extruders(print, object);
+            const std::set<extruder_index_t> object_tools = object_extruders(print, object);
             extruders.insert(object_tools.begin(), object_tools.end());
         }
 }
@@ -104,14 +107,17 @@ coord_t check_z_step(coord_t val, coord_t z_step)
 void collect_object_printing_extruders(const Print &print,
                                        const Object &object,
                                        const PrintRegion &region,
-                                       std::set<uint16_t> &object_extruders)
+                                       std::set<extruder_index_t> &object_extruders)
 {
     const ConfigOption nozzle_diameter = print.config().get("nozzle_diameter");
     const int num_extruders = static_cast<int>(nozzle_diameter.size());
 
     auto emplace_extruder = [num_extruders, &object_extruders](int extruder_id) {
         const int idx = std::max(0, extruder_id - 1);
-        object_extruders.insert(static_cast<uint16_t>((idx >= num_extruders) ? 0 : idx));
+        const int normalized = idx >= num_extruders ? 0 : idx;
+        if (normalized > std::numeric_limits<extruder_index_t>::max())
+            throw std::invalid_argument("An object extruder index exceeds extruder_index_t.");
+        object_extruders.insert(static_cast<extruder_index_t>(normalized));
     };
 
     const Config object_config = object.config();
@@ -132,9 +138,9 @@ void collect_object_printing_extruders(const Print &print,
         emplace_extruder(region_config.get("solid_infill_extruder").get_int());
 }
 
-std::set<uint16_t> object_extruders(const Print &print, const Object &object)
+std::set<extruder_index_t> object_extruders(const Print &print, const Object &object)
 {
-    std::set<uint16_t> extruders;
+    std::set<extruder_index_t> extruders;
     for (uint32_t region_idx = 0; region_idx < object.print_region_count(); ++region_idx)
         collect_object_printing_extruders(print, object, object.print_region(region_idx), extruders);
     return extruders;
@@ -150,8 +156,10 @@ coord_t get_object_first_layer_height(const Print &print, const Object &object)
         return scale_to_layer_coord(first_layer_height.get_float());
 
     coord_t out = std::numeric_limits<coord_t>::max();
-    const std::set<uint16_t> extruders = object_extruders(print, object);
-    for (uint16_t extruder_id : extruders) {
+    const std::set<extruder_index_t> extruders = object_extruders(print, object);
+    for (extruder_index_t extruder_id : extruders) {
+        assert(extruder_id != EXTRUDER_ID_UNKNOWN &&
+               uint32_t(extruder_id) < print_config.size("nozzle_diameter", 0));
         const double nozzle_diameter = print_config.vector_float_or_default("nozzle_diameter", extruder_id, 0.4);
         out = std::min(out, scale_to_layer_coord(first_layer_height.get_effective_value(nozzle_diameter)));
     }
@@ -176,12 +184,12 @@ coord_t get_min_first_layer_height(const Print &print)
     return out;
 }
 
-std::set<uint16_t> collect_print_extruders_for_skirt(const Print &print,
-                                                     const std::vector<Object> &objects)
+std::set<extruder_index_t> collect_print_extruders_for_skirt(const Print &print,
+                                                             const std::vector<Object> &objects)
 {
-    std::set<uint16_t> extruders;
+    std::set<extruder_index_t> extruders;
     for (Object object : objects) {
-        const std::set<uint16_t> object_tools = object_extruders(print, object);
+        const std::set<extruder_index_t> object_tools = object_extruders(print, object);
         extruders.insert(object_tools.begin(), object_tools.end());
     }
     append_support_extruders(print, objects, extruders);
@@ -190,9 +198,11 @@ std::set<uint16_t> collect_print_extruders_for_skirt(const Print &print,
     return extruders;
 }
 
-double e_per_mm(const Print &print, uint16_t extruder_id, double mm3_per_mm)
+double e_per_mm(const Print &print, extruder_index_t extruder_id, double mm3_per_mm)
 {
     const Config print_config = print.config();
+    assert(extruder_id != EXTRUDER_ID_UNKNOWN &&
+           uint32_t(extruder_id) < print_config.size("extrusion_multiplier", 0));
     const double extrusion_multiplier =
         print_config.vector_float_or_default("extrusion_multiplier", extruder_id, 1.0);
     if (print_config.bool_or_default("use_volumetric_e", false))

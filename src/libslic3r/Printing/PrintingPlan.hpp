@@ -169,7 +169,7 @@ struct PrintingToolGroup
     PrintingScopeEvents events;
     // Auxiliary metadata follows this complete tool visit when it is reordered.
     PluginPropertyContainer properties;
-    uint16_t extruder_id = uint16_t(-1);
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     std::vector<const LayerRegionIsland*> region_islands;
     std::vector<PrintingExtrusion> extrusions;
 };
@@ -340,13 +340,14 @@ tool change.
 
 After the tool order is known, each layer group can be rearranged so the selected
 starting extruder is first, the remaining extruders stay grouped, and the last
-extruder is chosen to help the next layer. first_extruder may be uint16_t(-1)
+extruder is chosen to help the next layer. first_extruder may be
+EXTRUDER_ID_UNKNOWN
 when no previous tool is known; in that case the smallest extruder id is used
 only as a deterministic tie-break for the first printable layer.
 
 */
 void order_printing_tool_groups(PrintingGroup &printing_group,
-                                uint16_t first_extruder = uint16_t(-1));
+                                extruder_index_t first_extruder = EXTRUDER_ID_UNKNOWN);
 
 /*
 Build a work plan from the current Print data tree.

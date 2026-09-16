@@ -177,7 +177,7 @@ bool has_toolchange_script(const ExtrusionEntity &root)
 }
 
 // Return true when the ordered extrusion stream selects its tool explicitly.
-bool has_semantic_toolchange(const ExtrusionEntity &root, const uint16_t target_tool)
+bool has_semantic_toolchange(const ExtrusionEntity &root, const extruder_index_t target_tool)
 {
     const EPropertySpecialCommand *command = root.get(EPropertySpecialCommand::key);
     if (command != nullptr && command->code == C_EXTRUSION_SPECIAL_COMMAND_TOOLCHANGE &&
@@ -353,11 +353,14 @@ void DefaultGCodeFirmwareSession::setup(const Config &config)
         option_size_or_zero(config, "extruder_offset"),
         option_size_or_zero(config, "extrusion_multiplier")
     });
+    if (extruder_count >
+        static_cast<uint32_t>((std::numeric_limits<extruder_index_t>::max)()) + 1u)
+        throw std::invalid_argument("The printer defines too many extruders for extruder_index_t.");
 
     m_extruders.clear();
     m_extruders.reserve(extruder_count);
     for (uint32_t extruder_idx = 0; extruder_idx < extruder_count; ++extruder_idx) {
-        m_extruders.emplace_back(uint16_t(extruder_idx));
+        m_extruders.emplace_back(static_cast<extruder_index_t>(extruder_idx));
         m_extruders.back().setup(config);
     }
     m_native_retraction_active.assign(extruder_count, 0);
@@ -770,18 +773,20 @@ std::string DefaultGCodeFirmwareSession::encode_machine_envelope(
     return {};
 }
 
-DefaultExtruder &DefaultGCodeFirmwareSession::extruder(uint16_t tool_id)
+DefaultExtruder &DefaultGCodeFirmwareSession::extruder(extruder_index_t tool_id)
 {
-    if (tool_id >= m_extruders.size())
+    if (tool_id == EXTRUDER_ID_UNKNOWN || tool_id < EXTRUDER_ID_UNKNOWN ||
+        static_cast<size_t>(tool_id) >= m_extruders.size())
         throw std::out_of_range("The PrintingPlan selected an extruder that is not configured.");
-    return m_extruders[tool_id];
+    return m_extruders[static_cast<size_t>(tool_id)];
 }
 
-const DefaultExtruder &DefaultGCodeFirmwareSession::extruder(uint16_t tool_id) const
+const DefaultExtruder &DefaultGCodeFirmwareSession::extruder(extruder_index_t tool_id) const
 {
-    if (tool_id >= m_extruders.size())
+    if (tool_id == EXTRUDER_ID_UNKNOWN || tool_id < EXTRUDER_ID_UNKNOWN ||
+        static_cast<size_t>(tool_id) >= m_extruders.size())
         throw std::out_of_range("The PrintingPlan selected an extruder that is not configured.");
-    return m_extruders[tool_id];
+    return m_extruders[static_cast<size_t>(tool_id)];
 }
 
 DefaultExtruder &DefaultGCodeFirmwareSession::current_extruder()
@@ -798,7 +803,7 @@ const DefaultExtruder &DefaultGCodeFirmwareSession::current_extruder() const
     return extruder(*m_current_extruder_idx);
 }
 
-std::string DefaultGCodeFirmwareSession::select_extruder(uint16_t tool_id, bool emit_command)
+std::string DefaultGCodeFirmwareSession::select_extruder(extruder_index_t tool_id, bool emit_command)
 {
     DefaultExtruder &selected = extruder(tool_id);
     if (m_current_extruder_idx && *m_current_extruder_idx == tool_id)
@@ -1168,9 +1173,10 @@ std::string DefaultGCodeFirmwareSession::write_special_command(
     switch (command.code) {
     case C_EXTRUSION_SPECIAL_COMMAND_TOOLCHANGE: {
         if (!std::isfinite(command.extra_data) || command.extra_data < 0.0 ||
-            command.extra_data > double(std::numeric_limits<uint16_t>::max()))
+            command.extra_data > double(std::numeric_limits<extruder_index_t>::max()) ||
+            std::trunc(command.extra_data) != command.extra_data)
             throw std::invalid_argument("A tool-change command contains an invalid tool id.");
-        const uint16_t tool_id = uint16_t(std::lround(command.extra_data));
+        const extruder_index_t tool_id = static_cast<extruder_index_t>(command.extra_data);
         const std::string output = select_extruder(tool_id);
         apply_requested_state(state);
         return output;
@@ -1262,7 +1268,7 @@ std::string DefaultGCodeFirmwareSession::write_custom_gcode(
     }
     if (custom_gcode.script_type != GCODE_SCRIPT_TYPE_INVALID ||
         custom_gcode.config_id != EXTRUSION_DATA_ID_INVALID ||
-        custom_gcode.processing_extruder_id != GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID)
+        custom_gcode.processing_extruder_id != EXTRUDER_ID_UNKNOWN)
         throw std::invalid_argument("Raw G-code and comments cannot carry script metadata.");
     const std::string output = encode_custom_gcode(custom_gcode.kind, text);
     synchronize_after_custom_gcode(output);
@@ -1305,10 +1311,11 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
         // E coordinates belong to the currently selected extruder. Supplying
         // them for every tool would incorrectly claim that all E origins are
         // synchronized with the machine.
-        const uint32_t tool_id = *m_current_extruder_idx;
+        const extruder_index_t tool_id = *m_current_extruder_idx;
+        const uint32_t reader_target = static_cast<uint32_t>(tool_id);
         items.push_back({RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, double(tool_id)});
         if (m_e_position_known)
-            items.push_back({RAW_GCODE_READER_ITEM_E, tool_id,
+            items.push_back({RAW_GCODE_READER_ITEM_E, reader_target,
                              current_extruder().extrusion_axis().position()});
     }
     for (const DefaultExtruder &tool : m_extruders) {
@@ -1360,8 +1367,12 @@ void DefaultGCodeFirmwareSession::synchronize_after_custom_gcode(const std::stri
     const std::optional<double> active_tool = tracked.value(RAW_GCODE_READER_ITEM_ACTIVE_TOOL);
     // A reader may report a tool identifier that this print does not own.
     // Treat it as unknown instead of indexing outside m_extruders.
-    if (active_tool && *active_tool >= 0.0 && *active_tool < double(m_extruders.size()))
-        m_current_extruder_idx = uint16_t(*active_tool);
+    if (active_tool && std::isfinite(*active_tool) &&
+        *active_tool >= 0.0 &&
+        *active_tool <= double((std::numeric_limits<extruder_index_t>::max)()) &&
+        std::trunc(*active_tool) == *active_tool &&
+        *active_tool < double(m_extruders.size()))
+        m_current_extruder_idx = static_cast<extruder_index_t>(*active_tool);
     else
         m_current_extruder_idx.reset();
 
@@ -1437,7 +1448,7 @@ void DefaultGCodeFirmwareSession::synchronize_reader_private_state(
 {}
 
 void DefaultGCodeFirmwareSession::synchronize_native_retraction(
-    uint16_t tool_id, bool retracted)
+    extruder_index_t tool_id, bool retracted)
 {
     if (tool_id >= m_native_retraction_active.size())
         throw std::invalid_argument("A Reader returned retraction state for an unknown tool.");
@@ -1445,14 +1456,14 @@ void DefaultGCodeFirmwareSession::synchronize_native_retraction(
 }
 
 std::string DefaultGCodeFirmwareSession::process_script(gcode_script_type type,
-    const std::string &script, const Config *config, uint16_t tool)
+    const std::string &script, const Config *config, extruder_index_t tool)
 {
     return m_preamble->process_script(type, script, config, tool);
 }
 
 void DefaultGCodeFirmwareSession::complete_script_context(
     gcode_script_type,
-    uint16_t,
+    extruder_index_t,
     GCodeScriptConfig &)
 {
     // The standard script types are fully described by the final plan and the
@@ -1571,12 +1582,12 @@ std::string DefaultGCodeFirmwareSession::write_lines(const PreparedMove &prepare
     return output;
 }
 
-std::string DefaultGCodeFirmwareSession::encode_tool_change(uint16_t tool_id) const
+std::string DefaultGCodeFirmwareSession::encode_tool_change(extruder_index_t tool_id) const
 {
     return "T" + std::to_string(tool_id) + "\n";
 }
 
-std::string DefaultGCodeFirmwareSession::encode_tool_temperature(uint16_t tool_id,
+std::string DefaultGCodeFirmwareSession::encode_tool_temperature(extruder_index_t tool_id,
                                                                   int16_t temperature,
                                                                   bool wait) const
 {
@@ -1596,7 +1607,7 @@ std::string DefaultGCodeFirmwareSession::encode_chamber_temperature(int16_t temp
     return std::string(wait ? "M191" : "M141") + " S" + std::to_string(temperature) + "\n";
 }
 
-std::string DefaultGCodeFirmwareSession::encode_fan(uint16_t, double speed_percent) const
+std::string DefaultGCodeFirmwareSession::encode_fan(extruder_index_t, double speed_percent) const
 {
     if (speed_percent <= 0.0)
         return "M107\n";
@@ -1606,7 +1617,7 @@ std::string DefaultGCodeFirmwareSession::encode_fan(uint16_t, double speed_perce
 }
 
 std::string DefaultGCodeFirmwareSession::encode_pressure_advance(
-    uint16_t,
+    extruder_index_t,
     double pressure_advance) const
 {
     return "M900 K" + compact_number(pressure_advance) + "\n";
@@ -1719,7 +1730,7 @@ std::string DefaultGCodeFirmwareSession::encode_pause(double milliseconds) const
     return "G4 P" + compact_number(milliseconds, 3) + "\n";
 }
 
-std::string DefaultGCodeFirmwareSession::encode_extruder_current(uint16_t tool_id,
+std::string DefaultGCodeFirmwareSession::encode_extruder_current(extruder_index_t tool_id,
                                                                  double current) const
 {
     if (!std::isfinite(current) || current < 0.0)

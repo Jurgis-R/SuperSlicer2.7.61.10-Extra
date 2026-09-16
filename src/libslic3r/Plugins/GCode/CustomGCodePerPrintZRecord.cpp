@@ -103,6 +103,19 @@ bool valid_type(int32_t type)
 
 } // namespace
 
+extruder_index_t custom_gcode_row_extruder_index(const CustomGCodeRow &row,
+                                                 uint32_t extruder_count)
+{
+    if (row.extruder <= 0 || uint32_t(row.extruder) > extruder_count)
+        throw std::out_of_range(
+            "custom_gcode_per_print_z row extruder is outside the printer range.");
+    const int64_t zero_based = int64_t(row.extruder) - 1;
+    if (zero_based > int64_t((std::numeric_limits<extruder_index_t>::max)()))
+        throw std::out_of_range(
+            "custom_gcode_per_print_z row extruder does not fit extruder_index_t.");
+    return static_cast<extruder_index_t>(zero_based);
+}
+
 std::optional<CustomGCodeTable> read_custom_gcode_per_print_z(const Print &print)
 {
     const std::optional<Config> record_optional =
@@ -201,7 +214,7 @@ Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingP
     if (extruder_count <= 1)
         return Slic3r::CustomGCode::SingleExtruder;
 
-    std::set<uint16_t> object_tools;
+    std::set<extruder_index_t> object_tools;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {

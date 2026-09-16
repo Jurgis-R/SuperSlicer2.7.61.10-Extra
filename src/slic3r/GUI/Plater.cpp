@@ -1008,7 +1008,7 @@ Sidebar::Sidebar(Plater *parent)
 
 Sidebar::~Sidebar() {}
 
-void Sidebar::init_filament_combo(PlaterPresetComboBox** combo, const int extr_idx)
+void Sidebar::init_filament_combo(PlaterPresetComboBox** combo, const extruder_index_t extr_idx)
 {
     *combo = new PlaterPresetComboBox(p->presets_panel, Slic3r::Preset::TYPE_FFF_FILAMENT);
     (*combo)->set_extruder_idx(extr_idx);
@@ -8288,7 +8288,9 @@ void Plater::on_extruders_change(size_t num_extruders)
     while ( i < num_extruders )
     {
         PlaterPresetComboBox* choice/*{ nullptr }*/;
-        sidebar().init_filament_combo(&choice, i);
+        if (i > size_t((std::numeric_limits<extruder_index_t>::max)()))
+            throw std::out_of_range("Filament combo extruder does not fit in extruder_index_t.");
+        sidebar().init_filament_combo(&choice, static_cast<extruder_index_t>(i));
         choices.push_back(choice);
 
         // initialize selection

@@ -15,6 +15,7 @@
 #include <memory>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 #include <boost/algorithm/string/case_conv.hpp>
@@ -91,7 +92,7 @@ public:
 
     WipeTowerWriter& 			 set_position(const Vec2f &pos) { m_current_pos = pos; return *this; }
 
-    WipeTowerWriter&				 set_initial_tool(size_t tool) { m_current_tool = tool; return *this; }
+    WipeTowerWriter& set_initial_tool(extruder_index_t tool) { m_current_tool = tool; return *this; }
 
 	WipeTowerWriter&				 set_z(float z) 
 		{ m_current_z = z; return *this; }
@@ -330,7 +331,7 @@ public:
 		return *this;
 	}
 
-    WipeTowerWriter& set_tool(size_t tool)
+    WipeTowerWriter& set_tool(extruder_index_t tool)
 	{
 		m_current_tool = tool;
 		return *this;
@@ -404,7 +405,7 @@ public:
     }
 
 	// Set extruder temperature, don't wait by default.
-    WipeTowerWriter& set_extruder_temp(unsigned int temperature, size_t tool, bool wait = false, std::string comment = "")
+    WipeTowerWriter& set_extruder_temp(unsigned int temperature, extruder_index_t tool, bool wait = false, std::string comment = "")
     {
         if (wait && (this->m_gcode_flavor == gcfMakerWare || this->m_gcode_flavor == (gcfSailfish)))
             return *this;
@@ -434,7 +435,7 @@ public:
         }
         gcode << temperature;
         bool multiple_tools = false; // ?
-        if (this->m_current_tool != -1 && (multiple_tools || this->m_gcode_flavor == (gcfMakerWare) || this->m_gcode_flavor == (gcfSailfish))) {
+        if (this->m_current_tool != EXTRUDER_ID_UNKNOWN && (multiple_tools || this->m_gcode_flavor == (gcfMakerWare) || this->m_gcode_flavor == (gcfSailfish))) {
             if (this->m_gcode_flavor != (gcfRepRap)) {
                 gcode << " T" << tool;
             }
@@ -556,7 +557,7 @@ private:
     std::vector<Vec2f>  m_wipe_path;
 	float    	  m_current_z;
 	float 	  	  m_current_feedrate;
-    size_t        m_current_tool;
+    extruder_index_t m_current_tool;
 	float 		  m_layer_height;
 	float 	  	  m_extrusion_flow;
 	bool		  m_preview_suppressed;
@@ -622,12 +623,12 @@ private:
 
 WipeTower::ToolChangeResult WipeTower::construct_tcr(WipeTowerWriter& writer,
                                                      bool priming,
-                                                     size_t old_tool) const
+                                                     extruder_index_t old_tool) const
 {
     ToolChangeResult result;
     result.priming      = priming;
-    result.initial_tool = int(old_tool);
-    result.new_tool     = int(m_current_tool);
+    result.initial_tool = old_tool;
+    result.new_tool     = m_current_tool;
     result.print_z      = m_z_pos;
     result.layer_height = m_layer_height;
     result.elapsed_time = writer.elapsed_time();
@@ -641,7 +642,7 @@ WipeTower::ToolChangeResult WipeTower::construct_tcr(WipeTowerWriter& writer,
 
 
 
-WipeTower::WipeTower(const PrintConfig& config, const PrintObjectConfig& default_object_config, const PrintRegionConfig& default_region_config, const std::vector<std::vector<float>>& wiping_matrix, size_t initial_tool) :
+WipeTower::WipeTower(const PrintConfig& config, const PrintObjectConfig& default_object_config, const PrintRegionConfig& default_region_config, const std::vector<std::vector<float>>& wiping_matrix, extruder_index_t initial_tool) :
     m_config(&config),
     m_object_config(&default_object_config),
     m_region_config(&default_region_config),
@@ -716,8 +717,10 @@ WipeTower::WipeTower(const PrintConfig& config, const PrintObjectConfig& default
 
 
 
-void WipeTower::set_extruder(size_t idx)
+void WipeTower::set_extruder(extruder_index_t idx)
 {
+    if (idx < 0)
+        throw std::invalid_argument("WipeTower requires a known extruder index");
     //while (m_filpar.size() < idx+1)   // makes sure the required element is in the vector
     m_filpar.push_back(FilamentParameters());
 
@@ -798,7 +801,7 @@ void WipeTower::set_extruder(size_t idx)
         m_filpar[idx].multitool_ramming_time = vol/flow;
     }
 
-    m_used_filament_length.resize(std::max(m_used_filament_length.size(), idx + 1)); // makes sure that the vector is big enough so we don't have to check later
+    m_used_filament_length.resize(std::max(m_used_filament_length.size(), size_t(idx) + 1)); // makes sure that the vector is big enough so we don't have to check later
 }
 
 
@@ -808,7 +811,7 @@ std::vector<WipeTower::ToolChangeResult> WipeTower::prime(
 	// print_z of the first layer.
 	float 						first_layer_height, 
 	// Extruder indices, in the order to be primed. The last extruder will later print the wipe tower brim, print brim and the object.
-	const std::vector<uint16_t> &tools,
+	const std::vector<extruder_index_t> &tools,
 	// If true, the last priming are will be the same as the other priming areas, and the rest of the wipe will be performed inside the wipe tower.
 	// If false, the last priming are will be large enough to wipe the last extruder sufficiently.
     bool 						/*last_wipe_inside_wipe_tower*/)
@@ -842,7 +845,7 @@ std::vector<WipeTower::ToolChangeResult> WipeTower::prime(
 
     // Iterate over all priming toolchanges and push respective ToolChangeResults into results vector.
     for (size_t idx_tool = 0; idx_tool < tools.size(); ++ idx_tool) {
-        size_t old_tool = m_current_tool;
+        const extruder_index_t old_tool = m_current_tool;
 
         WipeTowerWriter writer(m_layer_height, m_perimeter_width, m_gcode_flavor, m_config->tool_name.get_values(), m_filpar);
         writer.set_extrusion_flow(m_extrusion_flow)
@@ -865,7 +868,7 @@ std::vector<WipeTower::ToolChangeResult> WipeTower::prime(
             writer.set_initial_position(results.back().end_pos);
 
 
-        uint16_t tool = tools[idx_tool];
+        const extruder_index_t tool = tools[idx_tool];
         m_left_to_right = true;
         toolchange_Change(writer, tool); // Select the tool, set a speed override for soluble and flex materials.
         writer.speed_override(int(100 * get_speed_reduction()));
@@ -913,15 +916,15 @@ std::vector<WipeTower::ToolChangeResult> WipeTower::prime(
 	return results;
 }
 
-WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool)
+WipeTower::ToolChangeResult WipeTower::tool_change(extruder_index_t tool)
 {
-    size_t old_tool = m_current_tool;
+    const extruder_index_t old_tool = m_current_tool;
 
     float wipe_area = 0.f;
 	float wipe_volume = 0.f;
 	
 	// Finds this toolchange info
-	if (tool != (unsigned int)(-1))
+	if (tool != EXTRUDER_ID_UNKNOWN)
 	{
 		for (const auto &b : m_layer_info->tool_changes)
 			if ( b.new_tool == tool ) {
@@ -937,14 +940,14 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool)
     box_coordinates cleaning_box(
 		Vec2f(m_perimeter_width / 2.f, m_perimeter_width / 2.f),
 		m_wipe_tower_width - m_perimeter_width,
-        (tool != (unsigned int)(-1) ? wipe_area+m_depth_traversed-0.5f*m_perimeter_width
+        (tool != EXTRUDER_ID_UNKNOWN ? wipe_area+m_depth_traversed-0.5f*m_perimeter_width
                                     : m_wipe_tower_depth-m_perimeter_width));
 
 	WipeTowerWriter writer(m_layer_height, m_perimeter_width, m_gcode_flavor, m_config->tool_name.get_values(), m_filpar);
 	writer.set_extrusion_flow(m_extrusion_flow)
 		.set_z(m_z_pos + m_config->z_offset.value)
 		.set_initial_tool(m_current_tool)
-        .set_y_shift(m_y_shift + (tool!=(unsigned int)(-1) && (m_current_shape == SHAPE_REVERSED) ? m_layer_info->depth - m_layer_info->toolchanges_depth(): 0.f))
+        .set_y_shift(m_y_shift + (tool != EXTRUDER_ID_UNKNOWN && (m_current_shape == SHAPE_REVERSED) ? m_layer_info->depth - m_layer_info->toolchanges_depth(): 0.f))
 		.append(";--------------------\n"
 				"; CP TOOLCHANGE START\n");
 
@@ -965,7 +968,7 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool)
 		writer.set_extruder_trimpot(750);
 
     // Ram the hot material out of the melt zone, retract the filament into the cooling tubes and let it cool.
-    if (tool != (unsigned int)-1){ 			// This is not the last change.
+    if (tool != EXTRUDER_ID_UNKNOWN) { // This is not the last change.
         toolchange_Unload(writer, cleaning_box,
                           is_first_layer() ? m_filpar[tool].first_layer_temperature : m_filpar[tool].temperature, tool);
         toolchange_Change(writer, tool); // Change the tool, set a speed override for soluble and flex materials.
@@ -1003,7 +1006,7 @@ void WipeTower::toolchange_Unload(
 	WipeTowerWriter &writer,
 	const box_coordinates 	&cleaning_box,
 	const int 				 new_temperature,
-    const size_t             next_tool)
+    const extruder_index_t next_tool)
 {
 	float xl = cleaning_box.ld.x() + 1.f * m_perimeter_width;
 	float xr = cleaning_box.rd.x() - 1.f * m_perimeter_width;
@@ -1242,7 +1245,7 @@ void WipeTower::toolchange_Unload(
 // Change the tool, set a speed override for soluble and flex materials.
 void WipeTower::toolchange_Change(
 	WipeTowerWriter &writer,
-    const size_t 	new_tool)
+    const extruder_index_t new_tool)
 {
     // Ask the writer about how much of the old filament we consumed:
     if (m_current_tool < m_used_filament_length.size())
@@ -1416,7 +1419,7 @@ WipeTower::ToolChangeResult WipeTower::finish_layer()
 	assert(! this->layer_finished());
     m_current_layer_finished = true;
 
-    size_t old_tool = m_current_tool;
+    const extruder_index_t old_tool = m_current_tool;
 
 	WipeTowerWriter writer(m_layer_height, m_perimeter_width, m_gcode_flavor, m_config->tool_name.get_values(), m_filpar);
 	writer.set_extrusion_flow(m_extrusion_flow)
@@ -1733,8 +1736,8 @@ std::vector<std::vector<float>> WipeTower::extract_wipe_volumes(const ConfigBase
 }
 
 // Appends a toolchange into m_plan and calculates neccessary depth of the corresponding box
-void WipeTower::plan_toolchange(float z_par, float layer_height_par, uint16_t old_tool,
-                                uint16_t new_tool, float wipe_volume)
+void WipeTower::plan_toolchange(float z_par, float layer_height_par, extruder_index_t old_tool,
+                                extruder_index_t new_tool, float wipe_volume)
 {
 	assert(m_plan.empty() || m_plan.back().z <= z_par + WT_EPSILON);	// refuses to add a layer below the last one
 

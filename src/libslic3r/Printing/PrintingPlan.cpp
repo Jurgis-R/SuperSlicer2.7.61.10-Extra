@@ -24,8 +24,8 @@ namespace {
 
 struct ToolOrderCandidate
 {
-    uint16_t first_extruder = uint16_t(-1);
-    uint16_t last_extruder = uint16_t(-1);
+    extruder_index_t first_extruder = EXTRUDER_ID_UNKNOWN;
+    extruder_index_t last_extruder = EXTRUDER_ID_UNKNOWN;
     bool valid = false;
 };
 
@@ -103,7 +103,7 @@ kept in the output but receives an invalid candidate and is ignored by the
 transition cost.
 */
 std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup &printing_group,
-                                                             uint16_t first_extruder);
+                                                             extruder_index_t first_extruder);
 
 /*
 Return the unique extruder ids of a layer in their current order.
@@ -113,7 +113,7 @@ split that tool into several visits. The ordering decision only needs the id
 once; apply_tool_order_candidate() later moves all matching groups together
 while preserving their relative order.
 */
-std::vector<uint16_t> unique_layer_extruders(const PrintingLayerGroup &layer_group);
+std::vector<extruder_index_t> unique_layer_extruders(const PrintingLayerGroup &layer_group);
 
 /*
 Generate all valid first/last choices for one printable layer.
@@ -124,7 +124,8 @@ order, while last is visited from the current end toward the beginning so a
 fixed first extruder keeps the rest of the layer as close as possible to the
 existing order when there is no transition reason to choose another last tool.
 */
-std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(const std::vector<uint16_t> &extruders);
+std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(
+    const std::vector<extruder_index_t> &extruders);
 
 /*
 Return true when lhs is a better DP score than rhs.
@@ -288,7 +289,7 @@ Return the PrintingToolGroup for extruder_id, creating it if needed.
 Tool groups are local to one PrintingLayerGroup: two layers at different Z may
 use the same extruder id but still need separate ordered extrusion lists.
 */
-PrintingToolGroup &tool_group_for_extruder(PrintingLayerGroup &layer_group, uint16_t extruder_id);
+PrintingToolGroup &tool_group_for_extruder(PrintingLayerGroup &layer_group, extruder_index_t extruder_id);
 
 /*
 Store the source LayerRegionIsland pointer once inside a tool group.
@@ -466,7 +467,7 @@ PrintingExtrusion::PrintingExtrusion(const LayerRegionIsland &source,
 {
 }
 
-void order_printing_tool_groups(PrintingGroup &printing_group, const uint16_t first_extruder)
+void order_printing_tool_groups(PrintingGroup &printing_group, const extruder_index_t first_extruder)
 {
     const std::vector<ToolOrderCandidate> selected_candidates =
         select_tool_order_candidates(printing_group, first_extruder);
@@ -712,11 +713,11 @@ std::vector<ExtrusionRole> layer_region_island_roles()
 }
 
 std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup &printing_group,
-                                                             const uint16_t first_extruder)
+                                                             const extruder_index_t first_extruder)
 {
     std::vector<ToolOrderCandidate> selected_candidates(printing_group.layers.size());
     std::vector<size_t> active_layer_indices;
-    std::vector<std::vector<uint16_t>> active_layer_extruders;
+    std::vector<std::vector<extruder_index_t>> active_layer_extruders;
     std::vector<std::vector<ToolOrderCandidate>> active_layer_candidates;
 
     /*
@@ -725,7 +726,7 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
     tool changes between the surrounding printable layers.
     */
     for (size_t layer_idx = 0; layer_idx < printing_group.layers.size(); ++layer_idx) {
-        std::vector<uint16_t> extruders = unique_layer_extruders(printing_group.layers[layer_idx]);
+        std::vector<extruder_index_t> extruders = unique_layer_extruders(printing_group.layers[layer_idx]);
         if (extruders.empty())
             continue;
 
@@ -737,10 +738,10 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
     if (active_layer_indices.empty())
         return selected_candidates;
 
-    uint16_t preferred_first_extruder = first_extruder;
-    if (preferred_first_extruder == uint16_t(-1)) {
+    extruder_index_t preferred_first_extruder = first_extruder;
+    if (preferred_first_extruder == EXTRUDER_ID_UNKNOWN) {
         preferred_first_extruder = active_layer_extruders.front().front();
-        for (const uint16_t extruder_id : active_layer_extruders.front())
+        for (const extruder_index_t extruder_id : active_layer_extruders.front())
             preferred_first_extruder = std::min(preferred_first_extruder, extruder_id);
     }
 
@@ -796,9 +797,9 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
     return selected_candidates;
 }
 
-std::vector<uint16_t> unique_layer_extruders(const PrintingLayerGroup &layer_group)
+std::vector<extruder_index_t> unique_layer_extruders(const PrintingLayerGroup &layer_group)
 {
-    std::vector<uint16_t> extruders;
+    std::vector<extruder_index_t> extruders;
     extruders.reserve(layer_group.tool_groups.size());
     for (const PrintingToolGroup &tool_group : layer_group.tool_groups)
         if (std::find(extruders.begin(), extruders.end(), tool_group.extruder_id) == extruders.end())
@@ -806,7 +807,8 @@ std::vector<uint16_t> unique_layer_extruders(const PrintingLayerGroup &layer_gro
     return extruders;
 }
 
-std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(const std::vector<uint16_t> &extruders)
+std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(
+    const std::vector<extruder_index_t> &extruders)
 {
     std::vector<ToolOrderCandidate> candidates;
     if (extruders.empty())
@@ -822,8 +824,8 @@ std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(const std::v
     }
 
     candidates.reserve(extruders.size() * (extruders.size() - 1));
-    for (const uint16_t first : extruders) {
-        for (std::vector<uint16_t>::const_reverse_iterator last_it = extruders.rbegin();
+    for (const extruder_index_t first : extruders) {
+        for (std::vector<extruder_index_t>::const_reverse_iterator last_it = extruders.rbegin();
              last_it != extruders.rend();
              ++last_it) {
             if (first == *last_it)
@@ -1251,7 +1253,7 @@ void append_layer_once(PrintingLayerGroup &layer_group, const Layer &layer)
     layer_group.layers.push_back(&layer);
 }
 
-PrintingToolGroup &tool_group_for_extruder(PrintingLayerGroup &layer_group, const uint16_t extruder_id)
+PrintingToolGroup &tool_group_for_extruder(PrintingLayerGroup &layer_group, const extruder_index_t extruder_id)
 {
     for (PrintingToolGroup &tool_group : layer_group.tool_groups)
         if (tool_group.extruder_id == extruder_id)

@@ -161,8 +161,8 @@ public:
     ScalableButton *edit_btn { nullptr };
     wxStaticText   *label { nullptr };
 
-    void set_extruder_idx(const int extr_idx)   { m_extruder_idx = extr_idx; }
-    int  get_extruder_idx() const               { return m_extruder_idx; }
+    void set_extruder_idx(const extruder_index_t extr_idx) { m_extruder_idx = extr_idx; }
+    extruder_index_t get_extruder_idx() const              { return m_extruder_idx; }
 
     void switch_to_tab();
     void change_extruder_color();
@@ -178,7 +178,7 @@ public:
     std::string get_selected_ph_printer_name() const;
 
 private:
-    int     m_extruder_idx = -1;
+    extruder_index_t m_extruder_idx = EXTRUDER_ID_UNKNOWN;
 };
 
 
@@ -191,7 +191,7 @@ class TabPresetComboBox : public PresetComboBox
     bool show_incompatible {false};
     bool m_enable_all {false};
     // This parameter is used by FilamentSettings tab to show filament setting related to the active extruder
-    int  m_active_extruder_idx {0};
+    extruder_index_t m_active_extruder_idx {0};
 
 public:
     TabPresetComboBox(wxWindow *parent, Preset::Type preset_type);
@@ -213,7 +213,7 @@ public:
     Preset::Type        type()      const { return m_type; }
 
     // used by Filaments tab to update preset list according to the particular extruder
-    void set_active_extruder(int extruder_idx) { m_active_extruder_idx = extruder_idx; }
+    void set_active_extruder(extruder_index_t extruder_idx) { m_active_extruder_idx = extruder_idx; }
 };
 
 } // namespace GUI

@@ -526,7 +526,8 @@ protected:
 	void			create_line_with_widget(ConfigOptionsGroup* optgroup, const std::string& opt_key, const std::string& path, int32_t idx, widget_t widget);
 	wxSizer*		compatible_widget_create(wxWindow* parent, PresetDependencies &deps, int32_t setting_idx);
 	void 			compatible_widget_reload(PresetDependencies &deps);
-    void            load_key_value(const t_config_option_key& opt_key, const boost::any& value, bool saved_value = false, int16_t extruder_id = -1);
+    void            load_key_value(const t_config_option_key& opt_key, const boost::any& value, bool saved_value = false,
+                                   extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN);
 
 	// return true if cancelled
 	bool			tree_sel_change_delayed();
@@ -604,7 +605,7 @@ public:
 	ogStaticText*	m_machine_limits_descr {nullptr};
 protected:
     BitmapComboBox* m_extruders_cb {nullptr};
-    int             m_active_extruder {0};
+    extruder_index_t m_active_extruder {0};
 
     //void            create_line_with_near_label_widget(ConfigOptionsGroupShp optgroup, const std::string &opt_key, int32_t opt_index = 0);
     //void            update_line_with_near_label_widget(ConfigOptionsGroupShp optgroup, const std::string &opt_key, int32_t opt_index = 0, bool is_checked = true);
@@ -635,11 +636,11 @@ public:
 
     // set actiev extruder and update preset combobox if needed
     // return false, if new preset wasn't selected
-    bool        set_active_extruder(int new_selected_extruder);
-    void        invalidate_active_extruder() { m_active_extruder = -1; }
+    bool        set_active_extruder(extruder_index_t new_selected_extruder);
+    void        invalidate_active_extruder() { m_active_extruder = EXTRUDER_ID_UNKNOWN; }
     void        update_extruder_combobox();
     void        update_extruder_combobox_visibility();
-    int         get_active_extruder() const { return m_active_extruder; }
+    extruder_index_t get_active_extruder() const { return m_active_extruder; }
 
     const std::string  &get_custom_gcode(const OptionKeyIdx &opt_key_idx) override;
     void                set_custom_gcode(const OptionKeyIdx &opt_key_idx, const std::string &value) override;

@@ -29,6 +29,7 @@ import weakref
 
 from slic3r_abi import abi_requires_headers
 from slic3r_api_generated import (
+    EXTRUDER_ID_UNKNOWN,
     GCODE_FIRMWARE,
     GCODE_FIRMWARE_BEGIN_GROUP,
     GCODE_FIRMWARE_BEGIN_LAYER,
@@ -245,8 +246,12 @@ class GCodeScriptContext:
         """Process one script and copy the host-owned UTF-8 result immediately."""
         if not isinstance(script, str):
             raise TypeError("script must be a string")
-        if current_extruder < 0 or current_extruder > 0xFFFF:
-            raise ValueError("current extruder must fit in uint16")
+        if not isinstance(current_extruder, int):
+            raise TypeError("current extruder must be an integer")
+        if current_extruder < EXTRUDER_ID_UNKNOWN or current_extruder > 0x7FFF:
+            raise ValueError(
+                "current extruder must be UNKNOWN or fit in extruder_index_t"
+            )
         with self._processor._state.lock:
             self._validate()
             result = RawGcodeScriptResult()

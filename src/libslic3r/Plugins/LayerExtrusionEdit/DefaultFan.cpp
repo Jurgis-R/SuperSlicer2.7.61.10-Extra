@@ -98,17 +98,17 @@ struct LayerFanPolicy
 };
 
 int role_index(FanRole role);
-int legacy_fan_value(const Config &config, const char *key, uint16_t extruder_id);
+int legacy_fan_value(const Config &config, const char *key, extruder_index_t extruder_id);
 int normalize_fan_value(int value);
 FanRole fan_role(raw_extrusion_role role);
 bool can_increase(FanRole role);
 bool can_ramp(FanRole role);
 LayerFanPolicy layer_fan_policy(const Config &config,
-                                uint16_t extruder_id,
+                                extruder_index_t extruder_id,
                                 uint32_t layer_idx,
                                 double duration_seconds);
 float dynamic_overhang_fan(const Config &config,
-                           uint16_t extruder_id,
+                           extruder_index_t extruder_id,
                            raw_extrusion_role role,
                            const EffectiveTreeState &state,
                            const LayerFanPolicy &policy);
@@ -120,12 +120,12 @@ void mark_generated_fields(MutableExtrusionEntity entity,
 void assign_fan_tree(MutableExtrusionEntity entity,
                      const EffectiveTreeState &parent_state,
                      const Config &config,
-                     uint16_t extruder_id,
+                     extruder_index_t extruder_id,
                      const LayerFanPolicy &policy,
                      EPropertySpeedFieldEditor &editor);
 void edit_extrusion(const PrintingExtrusion &extrusion,
                     const Config &config,
-                    uint16_t extruder_id,
+                    extruder_index_t extruder_id,
                     const LayerFanPolicy &policy,
                     const PluginPropertyKey<GeneratedFanMarker> &marker);
 
@@ -162,7 +162,7 @@ int role_index(FanRole role)
     return int(uint8_t(role));
 }
 
-int legacy_fan_value(const Config &config, const char *key, uint16_t extruder_id)
+int legacy_fan_value(const Config &config, const char *key, extruder_index_t extruder_id)
 {
     return normalize_fan_value(config.vector_int_or_default(key, extruder_id, -1));
 }
@@ -225,7 +225,7 @@ bool can_ramp(FanRole role)
 }
 
 LayerFanPolicy layer_fan_policy(const Config &config,
-                                uint16_t extruder_id,
+                                extruder_index_t extruder_id,
                                 uint32_t layer_idx,
                                 double duration_seconds)
 {
@@ -264,7 +264,7 @@ LayerFanPolicy layer_fan_policy(const Config &config,
         policy.speed[role_index(FanRole::InternalBridgeInfill)] = policy.speed[role_index(FanRole::BridgeInfill)];
 
     const ConfigOption dynamic_option = config.get("overhangs_dynamic_fan_speed");
-    const bool dynamic_overhang = dynamic_option.valid() && extruder_id < dynamic_option.size() &&
+    const bool dynamic_overhang = dynamic_option.valid() && size_t(extruder_id) < dynamic_option.size() &&
                                   dynamic_option.is_enabled(extruder_id);
     if (dynamic_overhang)
         policy.speed[role_index(FanRole::OverhangPerimeter)] = -1;
@@ -340,7 +340,7 @@ LayerFanPolicy layer_fan_policy(const Config &config,
 }
 
 float dynamic_overhang_fan(const Config &config,
-                           uint16_t extruder_id,
+                           extruder_index_t extruder_id,
                            raw_extrusion_role role,
                            const EffectiveTreeState &state,
                            const LayerFanPolicy &policy)
@@ -350,7 +350,7 @@ float dynamic_overhang_fan(const Config &config,
     int result = policy.speed[role_index(fallback_role)];
 
     const ConfigOption option = config.get("overhangs_dynamic_fan_speed");
-    if (!state.has_overhang || !option.valid() || extruder_id >= option.size() ||
+    if (!state.has_overhang || !option.valid() || size_t(extruder_id) >= option.size() ||
         !option.is_enabled(extruder_id) || state.overhang.start_distance_from_prev_layer <= 0.f ||
         state.overhang.end_distance_from_prev_layer <= 0.f)
         return float(result);
@@ -403,7 +403,7 @@ void mark_generated_fields(MutableExtrusionEntity entity,
 void assign_fan_tree(MutableExtrusionEntity entity,
                      const EffectiveTreeState &parent_state,
                      const Config &config,
-                     uint16_t extruder_id,
+                     extruder_index_t extruder_id,
                      const LayerFanPolicy &policy,
                      EPropertySpeedFieldEditor &editor)
 {
@@ -430,7 +430,7 @@ void assign_fan_tree(MutableExtrusionEntity entity,
 
 void edit_extrusion(const PrintingExtrusion &extrusion,
                     const Config &config,
-                    uint16_t extruder_id,
+                    extruder_index_t extruder_id,
                     const LayerFanPolicy &policy,
                     const PluginPropertyKey<GeneratedFanMarker> &marker)
 {
@@ -571,7 +571,7 @@ void DefaultFan::run_impl(const plugin_run_context *run_ctx) const
 
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
         const PrintingToolGroup tool = layer.tool_group(tool_idx);
-        if (tool.extruder_id() == uint16_t(-1))
+        if (tool.extruder_id() == EXTRUDER_ID_UNKNOWN)
             throw std::runtime_error("Printing layer fan calculation needs a concrete extruder id.");
         const LayerFanPolicy policy = layer_fan_policy(
             config, tool.extruder_id(), ctx->layer_group_idx, time->duration_seconds);

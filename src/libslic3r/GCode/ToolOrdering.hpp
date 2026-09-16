@@ -51,22 +51,22 @@ public:
     // When allocating extruder overrides of an object's ExtrusionEntity, overrides for maximum 3 copies are allocated in place.
     using ExtruderPerCopy =
 #ifdef NDEBUG
-        boost::container::small_vector<int32_t, 3>;
+        boost::container::small_vector<extruder_index_t, 3>;
 #else // NDEBUG
-        std::vector<int32_t>;
+        std::vector<extruder_index_t>;
 #endif // NDEBUG
 
     // This is called from GCode::process_layer_single_object()
     // Returns positive number if the extruder is overridden.
     // Returns -1 if not.
-    int get_extruder_override(const ExtrusionEntity* entity, uint32_t instance_id) const {
+    extruder_index_t get_extruder_override(const ExtrusionEntity* entity, uint32_t instance_id) const {
         auto entity_map_it = m_entity_map.find(entity);
-        return entity_map_it == m_entity_map.end() ? -1 : entity_map_it->second[instance_id];
+        return entity_map_it == m_entity_map.end() ? EXTRUDER_ID_UNKNOWN : entity_map_it->second[instance_id];
     }
 
     // This function goes through all infill entities(), decides which ones will be used for wiping and
     // marks them by the extruder id. Returns volume that remains to be wiped on the wipe tower:
-    float mark_wiping_extrusions(const Print& print, const LayerTools& lt, uint16_t old_extruder, uint16_t new_extruder, float volume_to_wipe);
+    float mark_wiping_extrusions(const Print& print, const LayerTools& lt, extruder_index_t old_extruder, extruder_index_t new_extruder, float volume_to_wipe);
 
     void ensure_perimeters_infills_order(const Print& print, const LayerTools& lt);
 
@@ -74,12 +74,12 @@ public:
 
 private:
     // This function is called from mark_wiping_extrusions and sets extruder that it should be printed with (-1 .. as usual)
-    void set_extruder_override(const ExtrusionEntity* entity, size_t copy_id, int extruder, size_t num_of_copies);
+    void set_extruder_override(const ExtrusionEntity* entity, size_t copy_id, extruder_index_t extruder, size_t num_of_copies);
 
     // Returns true in case that entity is not printed with its usual extruder for a given copy:
     bool is_entity_overridden(const ExtrusionEntity* entity, size_t copy_id) const {
         auto it = m_entity_map.find(entity);
-        return it == m_entity_map.end() ? false : it->second[copy_id] != -1;
+        return it == m_entity_map.end() ? false : it->second[copy_id] != EXTRUDER_ID_UNKNOWN;
     }
 
     std::map<const ExtrusionEntity*, ExtruderPerCopy> m_entity_map;  // to keep track of who prints what
@@ -95,21 +95,21 @@ public:
     bool operator< (const LayerTools &rhs) const { return _print_z < rhs._print_z; }
     bool operator==(const LayerTools &rhs) const { return _print_z == rhs._print_z; }
 
-    bool is_extruder_order(uint16_t a, uint16_t b) const;
-    bool has_extruder(uint16_t extruder) const { return std::find(this->extruders.begin(), this->extruders.end(), extruder) != this->extruders.end(); }
+    bool is_extruder_order(extruder_index_t a, extruder_index_t b) const;
+    bool has_extruder(extruder_index_t extruder) const { return std::find(this->extruders.begin(), this->extruders.end(), extruder) != this->extruders.end(); }
 
     // Return a zero based extruder from the region, or extruder_override if overriden.
-    uint16_t perimeter_extruder(const PrintRegion &region) const;
-    uint16_t infill_extruder(const PrintRegion &region) const;
-    uint16_t solid_infill_extruder(const PrintRegion &region) const;
+    extruder_index_t perimeter_extruder(const PrintRegion &region) const;
+    extruder_index_t infill_extruder(const PrintRegion &region) const;
+    extruder_index_t solid_infill_extruder(const PrintRegion &region) const;
 	// Returns a zero based extruder this eec should be printed with, according to PrintRegion config or extruder_override if overriden.
-    uint16_t extruder(const ExtrusionEntityCollection &extrusions, const PrintRegion &region) const;
+    extruder_index_t extruder(const ExtrusionEntityCollection &extrusions, const PrintRegion &region) const;
 
     coord_t                     _print_z = 0;
     bool 						has_object = false;
     bool						has_support = false;
     // Zero based extruder IDs, ordered to minimize tool switches.
-    std::vector<uint16_t> 	    extruders;
+    std::vector<extruder_index_t> extruders;
     // If per layer extruder switches are inserted by the G-code preview slider, this value contains the new (1 based) extruder, with which the whole object layer is being printed with.
     // If not overriden, it is set to 0.
     uint16_t                    extruder_override = 0;
@@ -149,15 +149,15 @@ public:
 
     // For the use case when each object is printed separately
     // (print.config.complete_objects is true).
-    ToolOrdering(const PrintObject &object, uint16_t first_extruder, bool prime_multi_material = false);
+    ToolOrdering(const PrintObject &object, extruder_index_t first_extruder, bool prime_multi_material = false);
 
     // For the use case when each object is printed separately but only for some layers
     // (print.config.parallel_objects_step > 0).
-    ToolOrdering(const PrintObject &object, const GCode::ObjectsLayerToPrint &layers, uint16_t first_extruder, bool prime_multi_material = false);
+    ToolOrdering(const PrintObject &object, const GCode::ObjectsLayerToPrint &layers, extruder_index_t first_extruder, bool prime_multi_material = false);
 
     // For the use case when all objects are printed at once.
     // (print.config.complete_objects is false).
-    ToolOrdering(const Print &print, uint16_t first_extruder, bool prime_multi_material = false);
+    ToolOrdering(const Print &print, extruder_index_t first_extruder, bool prime_multi_material = false);
 
     void 				clear() { m_layer_tools.clear(); }
 
@@ -168,13 +168,13 @@ public:
 	void 				assign_custom_gcodes(const Print &print);
 
     // Get the first extruder printing, including the extruder priming areas, returns -1 if there is no layer printed.
-    unsigned int   		first_extruder() const { return m_first_printing_extruder; }
+    extruder_index_t first_extruder() const { return m_first_printing_extruder; }
 
     // Get the first extruder printing the layer_tools, returns -1 if there is no layer printed.
-    unsigned int   		last_extruder() const { return m_last_printing_extruder; }
+    extruder_index_t last_extruder() const { return m_last_printing_extruder; }
 
     // For a multi-material print, the printing extruders are ordered in the order they shall be primed.
-    const std::vector<uint16_t>& all_extruders() const { return m_all_printing_extruders; }
+    const std::vector<extruder_index_t>& all_extruders() const { return m_all_printing_extruders; }
 
     // Find LayerTools with the closest print_z.
     const LayerTools*	tools_for_layer(coord_t print_z) const;
@@ -187,7 +187,7 @@ public:
     bool 				empty()       const { return m_layer_tools.empty(); }
     std::vector<LayerTools>& layer_tools() { return m_layer_tools; }
     const std::vector<LayerTools>& layer_tools() const { return m_layer_tools; }
-    bool 				has_wipe_tower() const { return ! m_layer_tools.empty() && m_first_printing_extruder != (uint16_t)-1 && m_layer_tools.front().wipe_tower_partitions > 0; }
+    bool 				has_wipe_tower() const { return ! m_layer_tools.empty() && m_first_printing_extruder != EXTRUDER_ID_UNKNOWN && m_layer_tools.front().wipe_tower_partitions > 0; }
     int                 toolchanges_count() const;
     const std::vector<const PrintObject *>& objects() const { return m_objects; };
 
@@ -197,7 +197,7 @@ private:
                            const GCode::ObjectsLayerToPrint &layers,
                            const std::vector<std::pair<coord_t, uint16_t>> &per_layer_extruder_switches,
                            const std::vector<std::pair<coord_t, uint16_t>> &per_layer_color_changes);
-    void				reorder_extruders(uint16_t last_extruder_id);
+    void				reorder_extruders(extruder_index_t last_extruder_id);
     void fill_wipe_tower_partitions(const PrintConfig &config,
                                     coord_t object_bottom_z,
                                     coord_t max_layer_height);
@@ -208,11 +208,11 @@ private:
     std::vector<LayerTools>     m_layer_tools;
     std::vector<const PrintObject*> m_objects;
     // First printing extruder, including the multi-material priming sequence.
-    uint16_t                    m_first_printing_extruder = (uint16_t)-1;
+    extruder_index_t            m_first_printing_extruder = EXTRUDER_ID_UNKNOWN;
     // Final printing extruder.
-    uint16_t                    m_last_printing_extruder  = (uint16_t)-1;
+    extruder_index_t            m_last_printing_extruder  = EXTRUDER_ID_UNKNOWN;
     // All extruders, which extrude some material over m_layer_tools.
-    std::vector<uint16_t>       m_all_printing_extruders;
+    std::vector<extruder_index_t> m_all_printing_extruders;
 
     const PrintConfig*          m_print_config_ptr = nullptr;
     const PrintObjectConfig*    m_print_object_config_ptr = nullptr;

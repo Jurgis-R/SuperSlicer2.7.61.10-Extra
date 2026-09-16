@@ -20,7 +20,9 @@
 #include <cassert>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
+#include <stdexcept>
 #include <string_view>
 
 #include <boost/lexical_cast.hpp>
@@ -108,11 +110,11 @@ Vec2d GCodeWriter::current_tool_offset() const {
     return Vec2d { 0, 0 };
 }
 
-std::vector<uint16_t> GCodeWriter::extruder_ids() const {
-    std::vector<uint16_t> out;
+std::vector<extruder_index_t> GCodeWriter::extruder_ids() const {
+    std::vector<extruder_index_t> out;
     out.reserve(m_extruders.size());
     for (const Extruder& e : m_extruders)
-        out.push_back(e.id());
+        out.push_back(static_cast<extruder_index_t>(e.id()));
     return out;
 }
 
@@ -146,12 +148,18 @@ const Tool* GCodeWriter::get_tool(uint16_t id) const{
     return nullptr;
 }
 
-void GCodeWriter::set_extruders(std::vector<uint16_t> extruder_ids)
+void GCodeWriter::set_extruders(std::vector<extruder_index_t> extruder_ids)
 {
+    for (extruder_index_t extruder_id : extruder_ids) {
+        if (extruder_id == EXTRUDER_ID_UNKNOWN)
+            throw std::invalid_argument("An extruder ID must identify a concrete extruder.");
+        if (extruder_id < EXTRUDER_ID_UNKNOWN)
+            throw std::invalid_argument("An extruder ID cannot use an invalid negative value.");
+    }
     std::sort(extruder_ids.begin(), extruder_ids.end());
     m_extruders.clear();
     m_extruders.reserve(extruder_ids.size());
-    for (uint16_t extruder_id : extruder_ids)
+    for (extruder_index_t extruder_id : extruder_ids)
         m_extruders.emplace_back(Extruder(extruder_id, this->config));
 
     /*  we enable support for multiple extruder if any extruder greater than 0 is used
@@ -227,13 +235,15 @@ std::string GCodeWriter::write_pressure_advance(double pa) {
         return "";
     std::string gcode;
     std::string_view comment = " ; Pressure advance value "sv;
-    int16_t tool_id = -1;
-    if (m_tool) {
-        tool_id = m_tool->id();
+    extruder_index_t tool_id = EXTRUDER_ID_UNKNOWN;
+    if (tool_is_extruder()) {
+        if (m_tool->id() > static_cast<uint16_t>((std::numeric_limits<extruder_index_t>::max)()))
+            throw std::invalid_argument("The active extruder does not fit in extruder_index_t.");
+        tool_id = static_cast<extruder_index_t>(m_tool->id());
     }
     m_last_pressure_advance = pa;
     if (FLAVOR_IS(gcfRepRap) || FLAVOR_IS(gcfSprinter)) {
-        if (tool_id >= 0 && !this->config.single_extruder_multi_material.value) {
+        if (tool_id != EXTRUDER_ID_UNKNOWN && !this->config.single_extruder_multi_material.value) {
             gcode += "M572 D" + std::to_string(tool_id) + " S" + to_string_nozero(pa, 4);
         } else {
             // is it possible to have no tool id? or a -1 is possible?
@@ -241,7 +251,8 @@ std::string GCodeWriter::write_pressure_advance(double pa) {
         }
     } else if (FLAVOR_IS(gcfKlipper)) {
         gcode = std::string("SET_PRESSURE_ADVANCE ADVANCE=") + to_string_nozero(pa, 4);
-        if (this->config.tool_name.size() > tool_id && !this->config.tool_name.get_at(tool_id).empty()) {
+        if (tool_id != EXTRUDER_ID_UNKNOWN && this->config.tool_name.size() > size_t(tool_id) &&
+            !this->config.tool_name.get_at(tool_id).empty()) {
             gcode += std::string(" EXTRUDER=") + this->config.tool_name.get_at(tool_id);
             } else if(tool_id > 0){
                 gcode += std::string(" EXTRUDER=extruder") + std::to_string(tool_id);

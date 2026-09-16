@@ -80,7 +80,7 @@ const RegionSettings::OptionKeyGroup k_region_acceleration_keys = {
 struct AccelerationPartitionKey
 {
     RegionalSourceKey source;
-    uint16_t extruder_id = uint16_t(-1);
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     raw_extrusion_role role = RAW_EXTRUSION_ROLE_NONE;
 
     bool operator<(const AccelerationPartitionKey &rhs) const

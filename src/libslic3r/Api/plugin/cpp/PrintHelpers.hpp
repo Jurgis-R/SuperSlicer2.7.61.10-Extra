@@ -31,9 +31,9 @@ inside the helpers when needed.
 void collect_object_printing_extruders(const Print &print,
                                        const Object &object,
                                        const PrintRegion &region,
-                                       std::set<uint16_t> &object_extruders);
+                                       std::set<extruder_index_t> &object_extruders);
 
-std::set<uint16_t> object_extruders(const Print &print, const Object &object);
+std::set<extruder_index_t> object_extruders(const Print &print, const Object &object);
 
 /*
 Return the object first-layer height in scaled coordinates.
@@ -62,8 +62,8 @@ is configured to use the "current extruder" (setting value 0), the object
 extruders are kept as possible support tools because the concrete tool is chosen
 later by ordering/G-code logic.
 */
-std::set<uint16_t> collect_print_extruders_for_skirt(const Print &print,
-                                                     const std::vector<Object> &objects);
+std::set<extruder_index_t> collect_print_extruders_for_skirt(const Print &print,
+                                                             const std::vector<Object> &objects);
 
 /*
 Convert volumetric extrusion (mm3 per mm of path) into filament E per mm.
@@ -73,7 +73,7 @@ cross-section and multiply by extrusion_multiplier. In volumetric E mode, the
 G-code E axis already uses mm3, so the conversion factor is only the extrusion
 multiplier.
 */
-double e_per_mm(const Print &print, uint16_t extruder_id, double mm3_per_mm);
+double e_per_mm(const Print &print, extruder_index_t extruder_id, double mm3_per_mm);
 
 coord_t check_z_step(coord_t val, coord_t z_step);
 

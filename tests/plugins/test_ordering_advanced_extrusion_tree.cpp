@@ -355,7 +355,7 @@ PrintingLayerGroup &append_layer(PrintingGroup &group)
     return group.layers.back();
 }
 
-PrintingToolGroup &append_tool(PrintingLayerGroup &layer, const uint16_t extruder_id)
+PrintingToolGroup &append_tool(PrintingLayerGroup &layer, const extruder_index_t extruder_id)
 {
     layer.tool_groups.emplace_back();
     PrintingToolGroup &tool = layer.tool_groups.back();

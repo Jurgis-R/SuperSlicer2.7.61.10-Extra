@@ -33,11 +33,11 @@ protected:
     std::string resolve_empty_script(gcode_script_type script_type,
                                      const Config *producer_config) const override;
     std::string encode_machine_envelope(const MachineEnvelope &envelope) const override;
-    std::string encode_tool_temperature(uint16_t tool_id,
+    std::string encode_tool_temperature(extruder_index_t tool_id,
                                         int16_t temperature,
                                         bool wait) const override;
-    std::string encode_fan(uint16_t tool_id, double speed_percent) const override;
-    std::string encode_pressure_advance(uint16_t tool_id,
+    std::string encode_fan(extruder_index_t tool_id, double speed_percent) const override;
+    std::string encode_pressure_advance(extruder_index_t tool_id,
                                         double pressure_advance) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;
     std::string encode_firmware_retraction(bool retract) const override;

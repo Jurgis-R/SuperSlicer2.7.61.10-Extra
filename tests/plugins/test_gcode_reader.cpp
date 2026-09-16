@@ -1378,6 +1378,18 @@ TEST_CASE("Klipper G-code reader resolves configured tool names conservatively",
         "ACTIVATE_EXTRUDER EXTRUDER=right_hotend\n");
     CHECK_FALSE(unavailable.active_tool());
 
+    ReaderProbe overflowing_probe;
+    overflowing_probe.chunks = {
+        "ACTIVATE_EXTRUDER EXTRUDER=extruder32768\n"};
+    REQUIRE(execute_reader(
+        "gcode.reader.klipper", overflowing_probe, initial) ==
+        RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(overflowing_probe.final_state);
+    CHECK_FALSE(overflowing_probe.final_state->active_tool());
+    REQUIRE(overflowing_probe.observed.size() == 2);
+    CHECK(overflowing_probe.observed[0].diagnostic ==
+          RAW_GCODE_READER_DIAGNOSTIC_UNKNOWN_TOOL);
+
     ReaderProbe unknown_probe;
     unknown_probe.chunks = {"ACTIVATE_EXTRUDER EXTRUDER=extruder\n"};
     REQUIRE(execute_reader(

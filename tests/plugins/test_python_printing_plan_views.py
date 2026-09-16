@@ -427,6 +427,31 @@ class PythonPrintingPlanViewTests(unittest.TestCase):
                 self.views.LayerRegionIsland(foreign_api, 110)
             )
 
+    def test_extruder_identity_boundaries_reject_before_ctypes_narrowing(self):
+        api, host = self.make_api()
+        plan = self.views.MutablePrintingPlan(api, 10)
+        layer_group = plan.group(0).layer_group(0)
+        tool_group = layer_group.tool_group(0)
+
+        for extruder_id in (self.generated.EXTRUDER_ID_UNKNOWN, 0, 0x7FFF):
+            tool_group.set_extruder_id(extruder_id)
+            self.assertEqual(host.calls[-1], ("set_extruder_id", 40, extruder_id))
+
+        call_count = len(host.calls)
+        for invalid in (-2, 0x8000):
+            with self.assertRaises(ValueError):
+                tool_group.set_extruder_id(invalid)
+        with self.assertRaises(TypeError):
+            tool_group.set_extruder_id(1.5)
+        self.assertEqual(len(host.calls), call_count)
+
+        for invalid in (-2, 0x8000):
+            with self.assertRaises(ValueError):
+                layer_group.append_tool_group(invalid)
+        with self.assertRaises(TypeError):
+            layer_group.append_tool_group(1.5)
+        self.assertEqual(len(host.calls), call_count)
+
     def test_step_contexts_expose_const_correct_plan_views(self):
         api, _host = self.make_api()
         common = self.generated.PluginRunContext()

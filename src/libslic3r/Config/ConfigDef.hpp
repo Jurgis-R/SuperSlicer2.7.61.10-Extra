@@ -751,7 +751,9 @@ public:
         { ConfigSubstitutionContext ctxt{ ForwardCompatibilitySubstitutionRule::Disable }; this->set_deserialize(items, ctxt); }
 
     const ConfigOptionDef* get_option_def(const t_config_option_key& opt_key) const;
-    double get_computed_value(const t_config_option_key &opt_key, int extruder_id = -1) const;
+    double get_computed_value(
+        const t_config_option_key &opt_key,
+        extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN) const;
 
     std::string&        opt_string(const t_config_option_key &opt_key, bool create = false)     { return this->option<ConfigOptionString>(opt_key, create)->value; }
     const std::string&  opt_string(const t_config_option_key &opt_key) const                    { return const_cast<ConfigBase*>(this)->opt_string(opt_key); }

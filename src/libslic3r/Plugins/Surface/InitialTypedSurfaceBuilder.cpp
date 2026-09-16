@@ -7,6 +7,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <vector>
 
@@ -67,20 +68,24 @@ raw_surface_type bottom_surface_type(const bool is_first_layer)
     return is_first_layer ? k_bottom_surface : raw_surface_type(k_bottom_surface | RAW_SURFACE_TYPE_MOD_BRIDGE);
 }
 
-int32_t region_infill_extruder_id(const LayerRegion &region)
+extruder_index_t region_infill_extruder_id(const LayerRegion &region)
 {
     // Config extruders are user-facing 1-based values. LayerRegionIsland stores
     // the resolved extruder as 0-based because the rest of the slicing pipeline
     // indexes extruders that way.
     const ConfigOption option = region.print_region().config().get("infill_extruder");
-    const int32_t extruder_id = option.get_int() - 1;
-    assert(extruder_id >= 0);
-    return extruder_id < 0 ? -1 : extruder_id;
+    const int64_t one_based_id = option.get_int();
+    if (one_based_id <= 0)
+        return EXTRUDER_ID_UNKNOWN;
+    const int64_t zero_based_id = one_based_id - 1;
+    if (zero_based_id > int64_t((std::numeric_limits<extruder_index_t>::max)()))
+        return EXTRUDER_ID_UNKNOWN;
+    return static_cast<extruder_index_t>(zero_based_id);
 }
 
-std::map<int32_t, std::vector<LayerRegion>> infill_regions_by_extruder(const LayerIsland &island)
+std::map<extruder_index_t, std::vector<LayerRegion>> infill_regions_by_extruder(const LayerIsland &island)
 {
-    std::map<int32_t, std::vector<LayerRegion>> out;
+    std::map<extruder_index_t, std::vector<LayerRegion>> out;
     for (uint32_t region_idx = 0; region_idx < island.region_count(); ++region_idx) {
         const LayerRegion region = island.region(region_idx);
         out[region_infill_extruder_id(region)].push_back(region);
@@ -257,7 +262,7 @@ void build_island_surfaces(const run_ctx_surface_generation &ctx,
                            const LayerIsland &island,
                            const bool is_first_layer)
 {
-    std::map<int32_t, std::vector<LayerRegion>> grouped_regions = infill_regions_by_extruder(island);
+    std::map<extruder_index_t, std::vector<LayerRegion>> grouped_regions = infill_regions_by_extruder(island);
     if (grouped_regions.empty())
         return;
 

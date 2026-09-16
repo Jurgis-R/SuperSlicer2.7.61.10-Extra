@@ -24,8 +24,8 @@ Tool::Tool(uint16_t id, GCodeConfig &config) :
     //reset();
 }
 
-Extruder::Extruder(uint16_t id, GCodeConfig &config) :
-    Tool(id, config)
+Extruder::Extruder(extruder_index_t id, GCodeConfig &config) :
+    Tool(checked_tool_id(id), config)
 {
     // set extra_toolchange to be init for when it will be new current extruder
     m_restart_extra_toolchange = retract_restart_extra_toolchange();

@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <utility>
 #include <vector>
@@ -543,19 +544,27 @@ ExPolygons brim_subject_from_extrusion(const Slic3r::ExtrusionEntity &extrusion)
 
 Flow brim_flow_for_object(const Slic3r::Print &print, const PrintObject &object)
 {
-    std::set<uint16_t> extruders = print.object_extruders(PrintObjectPtrs{ const_cast<PrintObject *>(&object) });
+    std::set<extruder_index_t> extruders = print.object_extruders(PrintObjectPtrs{ const_cast<PrintObject *>(&object) });
     append(extruders, print.support_material_extruders());
-    const size_t extruder_id =
-        extruders.empty() ? print.print_region(0).config().perimeter_extruder.value - 1 : *extruders.begin();
+    const int configured_extruder = print.print_region(0).config().perimeter_extruder.value;
+    if (extruders.empty() && (configured_extruder <= 0 ||
+        configured_extruder - 1 > (std::numeric_limits<extruder_index_t>::max)()))
+        throw Slic3r::InvalidArgument("Brim flow resolved an invalid extruder setting");
+    const extruder_index_t extruder_id = extruders.empty() ?
+        static_cast<extruder_index_t>(configured_extruder - 1) : *extruders.begin();
     return print.brim_flow(extruder_id, object.config());
 }
 
 Flow brim_flow_for_print(const Slic3r::Print &print)
 {
-    std::set<uint16_t> extruders = print.object_extruders();
+    std::set<extruder_index_t> extruders = print.object_extruders();
     append(extruders, print.support_material_extruders());
-    const size_t extruder_id =
-        extruders.empty() ? print.print_region(0).config().perimeter_extruder.value - 1 : *extruders.begin();
+    const int configured_extruder = print.print_region(0).config().perimeter_extruder.value;
+    if (extruders.empty() && (configured_extruder <= 0 ||
+        configured_extruder - 1 > (std::numeric_limits<extruder_index_t>::max)()))
+        throw Slic3r::InvalidArgument("Brim flow resolved an invalid extruder setting");
+    const extruder_index_t extruder_id = extruders.empty() ?
+        static_cast<extruder_index_t>(configured_extruder - 1) : *extruders.begin();
     return print.brim_flow(extruder_id, print.default_object_config());
 }
 

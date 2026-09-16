@@ -94,7 +94,7 @@ std::shared_ptr<SlicingParameters> SlicingParameters::create_from_config(
     const PrintObjectConfig &object_config,
     const PrintRegionConfig &default_region_config,
 	double				     object_height,
-	const std::set<uint16_t> &object_extruders)
+	const std::set<extruder_index_t> &object_extruders)
 {
     // if the first_layer_height setting depends of the nozzle width, use the first one. Apply the z_step
 
@@ -103,7 +103,7 @@ std::shared_ptr<SlicingParameters> SlicingParameters::create_from_config(
     double min_nozzle_diameter = print_config.nozzle_diameter.get_at(0);
     if (object_config.first_layer_height.percent) {
         first_layer_height = 1000000000.;
-        for (uint16_t extruder_id : object_extruders) {
+        for (extruder_index_t extruder_id : object_extruders) {
             if (print_config.nozzle_diameter.size() <= extruder_id)
                 break;
             double nozzle_diameter = print_config.nozzle_diameter.get_at(extruder_id);
@@ -116,7 +116,7 @@ std::shared_ptr<SlicingParameters> SlicingParameters::create_from_config(
     
     first_layer_height = check_z_step(first_layer_height, print_config.z_step);
     assert(first_layer_height > 0);
-    for (uint16_t extruder_id : object_extruders)
+    for (extruder_index_t extruder_id : object_extruders)
         assert(first_layer_height >=
                print_config.min_layer_height.get_effective_value(print_config.nozzle_diameter.get_at(extruder_id), extruder_id) - EPSILON);
     if (first_layer_height <= EPSILON)
@@ -192,12 +192,12 @@ std::shared_ptr<SlicingParameters> SlicingParameters::create_from_config(
             params.min_suport_layer_height = params.min_layer_height;
     }
     if (object_extruders.empty()) {
-        params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, 1));
-        params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, 1));
+        params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, 0));
+        params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, 0));
     } else {
-        for (unsigned int extruder_id : object_extruders) {
-            params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, extruder_id + 1));
-            params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, extruder_id + 1));
+        for (extruder_index_t extruder_id : object_extruders) {
+            params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, extruder_id));
+            params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, extruder_id));
         }
     }
 
@@ -242,8 +242,8 @@ std::shared_ptr<SlicingParameters> SlicingParameters::create_from_config(
         if (object_config.raft_contact_distance_type.value == zdFilament) {
             if (default_region_config.bridge_type == BridgeType::btFromNozzle) {
                 float nzd_avg = 0;
-                for (unsigned int extruder_id : object_extruders) {
-                    nzd_avg += print_config.nozzle_diameter.get_at(extruder_id - 1);
+                for (extruder_index_t extruder_id : object_extruders) {
+                    nzd_avg += print_config.nozzle_diameter.get_at(extruder_id);
                 }
                 nzd_avg /= object_extruders.size();
                 params.gap_raft_object += nzd_avg * sqrt(default_region_config.bridge_flow_ratio.get_effective_value(1)) -

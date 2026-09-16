@@ -238,7 +238,7 @@ void MaxOverhangThreshold::run_impl(const plugin_run_context *run_ctx) const {
     bool has_enlargment = false;
 
     coord_t max_nz_diam = 0;
-    for (int16_t extr_id : object_extruders(print, object)) {
+    for (extruder_index_t extr_id : object_extruders(print, object)) {
         max_nz_diam = std::max(max_nz_diam, scale_i(print.config().get("nozzle_diameter").get_float(extr_id)));
     }
     if (max_nz_diam == 0)

@@ -622,9 +622,9 @@ const printing_tool_group_handle *printing_layer_group_get_tool_group(const prin
 }
 
 printing_tool_group_handle *printing_layer_group_append_tool_group(printing_layer_group_handle *me,
-                                                                   uint16_t extruder_id)
+                                                                   extruder_index_t extruder_id)
 {
-    if (me == nullptr)
+    if (me == nullptr || extruder_id < EXTRUDER_ID_UNKNOWN)
         return nullptr;
     Slic3r::Printing::PrintingToolGroup &tool_group = Slic3r::to_layer_group(me)->tool_groups.emplace_back();
     tool_group.plan_identity = Slic3r::to_layer_group(me)->plan_identity;
@@ -673,14 +673,14 @@ plugin_property_container_handle *printing_tool_group_get_properties(const print
     return reinterpret_cast<plugin_property_container_handle *>(&tool_group->properties);
 }
 
-uint16_t printing_tool_group_get_extruder_id(const printing_tool_group_handle *me)
+extruder_index_t printing_tool_group_get_extruder_id(const printing_tool_group_handle *me)
 {
-    return me == nullptr ? uint16_t(-1) : Slic3r::to_tool_group(me)->extruder_id;
+    return me == nullptr ? EXTRUDER_ID_UNKNOWN : Slic3r::to_tool_group(me)->extruder_id;
 }
 
-void printing_tool_group_set_extruder_id(printing_tool_group_handle *me, uint16_t extruder_id)
+void printing_tool_group_set_extruder_id(printing_tool_group_handle *me, extruder_index_t extruder_id)
 {
-    if (me != nullptr)
+    if (me != nullptr && extruder_id >= EXTRUDER_ID_UNKNOWN)
         Slic3r::to_tool_group(me)->extruder_id = extruder_id;
 }
 

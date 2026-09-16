@@ -48,7 +48,7 @@ struct SlicingParameters
         const PrintObjectConfig &object_config,
         const PrintRegionConfig &default_region_config,
         double                   object_height,
-        const std::set<uint16_t> &object_extruders);
+        const std::set<extruder_index_t> &object_extruders);
 
     // Has any raft layers?
     bool        has_raft() const { return raft_layers() > 0; }

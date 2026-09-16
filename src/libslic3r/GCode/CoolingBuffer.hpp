@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "libslic3r/Point.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_def.h"
 
 namespace Slic3r {
 
@@ -42,7 +43,7 @@ class CoolingBuffer {
 public:
     CoolingBuffer(GCodeGenerator &gcodegen);
     void        reset(const Vec3d &position);
-    void        set_current_extruder(unsigned int extruder_id) { m_current_extruder = extruder_id; }
+    void        set_current_extruder(extruder_index_t extruder_id) { m_current_extruder = extruder_id; }
     /// process the layer: check the time and apply fan / speed change
     /// append_time_only: if the layer is only support, then you can put this at true to not process the layer but just append its time to the next one.
     std::string process_layer(std::string &&gcode, size_t layer_id, bool flush, bool append_time_only = false);
@@ -69,13 +70,13 @@ private:
     int                         m_fan_speed;
     // Cached from GCodeWriter.
     // Printing extruder IDs, zero based.
-    std::vector<unsigned int>   m_extruder_ids;
+    std::vector<extruder_index_t> m_extruder_ids;
     // Highest of m_extruder_ids plus 1.
     uint16_t                    m_num_extruders { 0 };
     // Referencs GCodeGenerator::m_config, which is FullPrintConfig. While the PrintObjectConfig slice of FullPrintConfig is being modified,
     // the PrintConfig slice of FullPrintConfig is constant, thus no thread synchronization is required.
     const FullPrintConfig      &m_config;
-    uint16_t                    m_current_extruder;
+    extruder_index_t            m_current_extruder;
 
     //saved previous unslowed layer 
     std::map<size_t, float> saved_layer_time_support;

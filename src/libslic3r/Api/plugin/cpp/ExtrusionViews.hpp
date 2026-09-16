@@ -475,7 +475,7 @@ public:
     {
         EPropertyCustomGcode &payload = get_or_add(EPropertyCustomGcode::key);
         payload.set_kind(kind);
-        payload.processing_extruder_id = GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID;
+        payload.processing_extruder_id = EXTRUDER_ID_UNKNOWN;
         if (store_property_string(EPropertyCustomGcode::property_type, &payload.text_id, text) ==
             EXTRUSION_DATA_ID_INVALID) {
             remove(EPropertyCustomGcode::key);
@@ -491,10 +491,13 @@ public:
     EPropertyCustomGcode &script_gcode(
         std::string_view text,
         gcode_script_type script_type,
-        uint16_t processing_extruder_id = GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID) {
+        int64_t processing_extruder_id = EXTRUDER_ID_UNKNOWN) {
+        if (processing_extruder_id < EXTRUDER_ID_UNKNOWN ||
+            processing_extruder_id > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The script processing extruder does not fit in extruder_index_t.");
         EPropertyCustomGcode &payload = custom_gcode(text, C_EXTRUSION_CUSTOM_GCODE_SCRIPT);
         payload.script_type = script_type;
-        payload.processing_extruder_id = processing_extruder_id;
+        payload.processing_extruder_id = static_cast<extruder_index_t>(processing_extruder_id);
         return payload;
     }
 
@@ -503,7 +506,7 @@ public:
         std::string_view text,
         gcode_script_type script_type,
         const Config &config,
-        uint16_t processing_extruder_id = GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID) {
+        int64_t processing_extruder_id = EXTRUDER_ID_UNKNOWN) {
         // Serialize before touching the entity so an invalid Config leaves any
         // existing property and its owned buffers unchanged.
         const std::string serialized_config = config.serialize_all();

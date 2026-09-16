@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -686,30 +687,44 @@ void append_destination_regions(DensePostInfillWork &work, const LayerRegionIsla
     }
 }
 
-int32_t destination_infill_extruder_id(const DensePostInfillWork &work)
+extruder_index_t normalized_infill_extruder(int32_t one_based_id,
+                                            uint32_t extruder_count)
+{
+    if (one_based_id <= 0 || extruder_count == 0)
+        return EXTRUDER_ID_UNKNOWN;
+    const uint32_t candidate = uint32_t(one_based_id - 1);
+    if (candidate >= extruder_count ||
+        candidate > uint32_t((std::numeric_limits<extruder_index_t>::max)()))
+        return EXTRUDER_ID_UNKNOWN;
+    return static_cast<extruder_index_t>(candidate);
+}
+
+extruder_index_t destination_infill_extruder_id(const DensePostInfillWork &work,
+                                                uint32_t extruder_count)
 {
     // The generic data-tree API receives an explicit extruder id. Dense infill
     // moves internal-infill subtrees, so the destination group must resolve to
     // one unique infill_extruder across every region it collected.
-    int32_t destination_extruder_id = -1;
+    extruder_index_t destination_extruder_id = EXTRUDER_ID_UNKNOWN;
     for (const layer_region_handle *handle : work.destination_regions) {
         if (handle == nullptr)
-            return -1;
+            return EXTRUDER_ID_UNKNOWN;
 
         const LayerRegion region(handle);
         const Config config = region.print_region().config();
         if (!config.has(k_infill_extruder_key))
-            return -1;
+            return EXTRUDER_ID_UNKNOWN;
 
-        const int32_t extruder_id = config.get(k_infill_extruder_key).get_int() - 1;
-        if (extruder_id < 0)
-            return -1;
-        if (destination_extruder_id < 0) {
+        const extruder_index_t extruder_id = normalized_infill_extruder(
+            config.get(k_infill_extruder_key).get_int(), extruder_count);
+        if (extruder_id == EXTRUDER_ID_UNKNOWN)
+            return EXTRUDER_ID_UNKNOWN;
+        if (destination_extruder_id == EXTRUDER_ID_UNKNOWN) {
             destination_extruder_id = extruder_id;
             continue;
         }
         if (destination_extruder_id != extruder_id)
-            return -1;
+            return EXTRUDER_ID_UNKNOWN;
     }
     return destination_extruder_id;
 }
@@ -774,14 +789,16 @@ bool extract_dense_children_from_root(storage_handle *storage,
 void publish_dense_children_by_priority(const run_ctx_post_infill_generation &ctx,
                                         storage_handle *storage,
                                         const LayerIsland &island,
-                                        DensePostInfillWork &work)
+                                        DensePostInfillWork &work,
+                                        uint32_t extruder_count)
 {
     if (work.dense_children_by_priority.empty() ||
         ctx.get_region_island_mutable_extrusion == nullptr)
         return;
 
-    const int32_t destination_extruder_id = destination_infill_extruder_id(work);
-    if (destination_extruder_id < 0)
+    const extruder_index_t destination_extruder_id =
+        destination_infill_extruder_id(work, extruder_count);
+    if (destination_extruder_id == EXTRUDER_ID_UNKNOWN)
         return;
 
     layer_region_island_handle *destination_region_island =
@@ -829,6 +846,7 @@ void process_post_infill_layer(uint32_t layer_idx,
     assert(ctx->get_region_island_mutable_extrusion != nullptr);
 
     const Object object(ctx->object);
+    const uint32_t extruder_count = Print(ctx->print).config().get(k_nozzle_diameter_key).size();
     const Layer layer = object.layer(layer_idx);
     for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
         const LayerIsland island = layer.island(island_idx);
@@ -856,7 +874,7 @@ void process_post_infill_layer(uint32_t layer_idx,
                     work))
                 append_destination_regions(work, region_island);
         }
-        publish_dense_children_by_priority(*ctx, scratch_storage, island, work);
+        publish_dense_children_by_priority(*ctx, scratch_storage, island, work, extruder_count);
     }
 }
 
@@ -994,7 +1012,8 @@ void DenseInfillPostInfillOrder::setup_run_impl(const plugin_run_context *run_ct
 void DenseInfillPostInfillOrder::run_impl(const plugin_run_context *run_ctx) const
 {
     const run_ctx_post_infill_generation *ctx = plugin_ctx_as_post_infill_generation(run_ctx);
-    if (ctx == nullptr || ctx->object == nullptr || ctx->get_region_island_mutable_extrusion == nullptr)
+    if (ctx == nullptr || ctx->object == nullptr || ctx->print == nullptr ||
+        ctx->get_region_island_mutable_extrusion == nullptr)
         return;
 
     const Object object(ctx->object);

@@ -92,7 +92,7 @@ struct ScopeDescriptor
     extrusion_entity_handle *entity = nullptr;
     LeafBoundary first;
     LeafBoundary last;
-    uint16_t extruder_id = UINT16_MAX;
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     // Travel providers publish their final result in these two bits. Preserve
     // them when this producer validates an already prepared scope.
     uint8_t preserved_materialized_flags = 0;
@@ -118,7 +118,7 @@ struct StreamEntry
     StreamEntryKind kind = StreamEntryKind::Process;
     ScopeDescriptor scope;
     raw_extrusion_role process_role = RAW_EXTRUSION_ROLE_NONE;
-    uint16_t selected_extruder = UINT16_MAX;
+    extruder_index_t selected_extruder = EXTRUDER_ID_UNKNOWN;
 };
 
 /* Cache slot written by one setup_run worker and read after the barrier. */
@@ -209,7 +209,7 @@ EntityAnalysis append_entity_stream(
     MutableExtrusionEntity entity,
     coord_t print_z,
     const EffectiveState &parent,
-    uint16_t extruder_id,
+    extruder_index_t extruder_id,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     std::vector<StreamEntry> &output);
 
@@ -450,7 +450,7 @@ EntityAnalysis append_entity_stream(
     MutableExtrusionEntity entity,
     const coord_t print_z,
     const EffectiveState &parent,
-    const uint16_t extruder_id,
+    const extruder_index_t extruder_id,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     std::vector<StreamEntry> &output)
 {
@@ -642,7 +642,7 @@ TransitionFacts transition_between(const std::vector<LayerScan> &layers,
     const ScopeDescriptor &source_scope = scope_at(layers, source);
     const ScopeDescriptor &target_scope = scope_at(layers, target);
     TransitionFacts facts;
-    uint16_t selected_extruder = source_scope.extruder_id;
+    extruder_index_t selected_extruder = source_scope.extruder_id;
 
     // Replay all tool and process entries strictly between source and target.
     // A pure Travel marks an already materialized connection; Wipe remains a

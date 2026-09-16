@@ -960,7 +960,7 @@ public:
     bool         set_key_value(const std::string &opt_key, ConfigOption *opt) { bool out = m_data.set_key_value(opt_key, opt); this->touch(); return out; }
     template<typename T>
     void         set(const std::string &opt_key, T value) { m_data.set(opt_key, value, true); this->touch(); }
-    void set_any(const std::string &opt_key, bool enable, boost::any value, int16_t extruder_id)
+    void set_any(const std::string &opt_key, bool enable, boost::any value, extruder_index_t extruder_id)
     {
         ConfigOption *opt = m_data.option(opt_key, true);
         assert(opt);

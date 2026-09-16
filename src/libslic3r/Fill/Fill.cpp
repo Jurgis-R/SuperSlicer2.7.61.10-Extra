@@ -11,7 +11,9 @@
 
 #include <cassert>
 #include <cstdio>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/ExtrusionEntityVisitors.hpp"
@@ -33,6 +35,17 @@
 #include "FillEnsuring.hpp"
 
 namespace Slic3r {
+
+/* Convert a mandatory one-based extruder setting into the common zero-based identity. */
+static extruder_index_t checked_config_extruder_index(int64_t one_based_id);
+
+static extruder_index_t checked_config_extruder_index(const int64_t one_based_id)
+{
+    if (one_based_id <= 0 ||
+        one_based_id > int64_t((std::numeric_limits<extruder_index_t>::max)()) + 1)
+        throw std::out_of_range("Configured fill extruder does not fit in extruder_index_t.");
+    return static_cast<extruder_index_t>(one_based_id - 1);
+}
 
 struct NormalizeVisitor : public ExtrusionVisitor {
     bool need_remove = false;
@@ -777,16 +790,16 @@ void Layer::_make_fills(LayerSliceIsland& island,
         assert(nb_others == 0);
         // find our LayerRegionIsland or create it
         assert(!regions.empty());
-        int16_t sparse_fill_extruder = int16_t((*regions.begin())->region().config().infill_extruder.value - 1);
-        int16_t solid_fill_extruder = int16_t((*regions.begin())->region().config().solid_infill_extruder.value - 1);
-        assert(sparse_fill_extruder >= 0);
-        assert(solid_fill_extruder >= 0);
+        const extruder_index_t sparse_fill_extruder = checked_config_extruder_index(
+            (*regions.begin())->region().config().infill_extruder.value);
+        const extruder_index_t solid_fill_extruder = checked_config_extruder_index(
+            (*regions.begin())->region().config().solid_infill_extruder.value);
         LayerRegionIsland *region_island_sparse = nb_sparse == 0 ?
             nullptr :
-            &island.get_or_add_region_island(regions, uint16_t(sparse_fill_extruder));
+            &island.get_or_add_region_island(regions, sparse_fill_extruder);
         LayerRegionIsland *region_island_solid = nb_solid == 0 ?
             nullptr :
-            &island.get_or_add_region_island(regions, uint16_t(solid_fill_extruder));
+            &island.get_or_add_region_island(regions, solid_fill_extruder);
         assert(!region_island_sparse || !region_island_sparse->has_extrusion(LayerRegionIsland::INFILLS));
         assert(!region_island_solid || !region_island_solid->has_extrusion(LayerRegionIsland::INFILLS));
         ExtrusionEntityCollection *root_sparse = region_island_sparse ?
@@ -870,7 +883,7 @@ void Layer::_make_fills(LayerSliceIsland& island,
     };
     //surface_fills is sorted by region_id
     LayerRegionSetCPtrs current_regions;
-    uint16_t current_extruder = -1;
+    unsigned int current_extruder = (std::numeric_limits<unsigned int>::max)();
     size_t first_object_layer_id = this->object()->layer(0).id();
     for (SurfaceFill &surface_fill : surface_fills) {
         // store the region fill when changing region (if there is something to store in fills_by_priority).
@@ -1494,8 +1507,8 @@ void Layer::_make_ironing(LayerSliceIsland &island)
         //double flow_mm3_per_mm = flow.mm3_per_mm();
         Surface surface_fill((stPosTop | stDensSolid), ExPolygon());
         // get or create the LayerRegionIsland
-        int16_t fill_extruder = int16_t(region_config.solid_infill_extruder.value - 1);
-        assert(fill_extruder >= 0);
+        const extruder_index_t fill_extruder =
+            checked_config_extruder_index(region_config.solid_infill_extruder.value);
         LayerRegionIsland &region_island = island.get_or_add_region_island(region_ironed, fill_extruder);
         ExtrusionEntityCollection &eec_root = region_island.mutable_extrusion(LayerRegionIsland::IRONINGS);
         assert(eec_root.empty());

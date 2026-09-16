@@ -201,10 +201,11 @@ extern "C" {
 
 int32_t config_get_computed_value(const config_handle *me,
                                   const char *key,
-                                  int32_t extruder_id,
+                                  extruder_index_t extruder_id,
                                   double *value_out)
 {
-    if (me == nullptr || key == nullptr || value_out == nullptr)
+    if (me == nullptr || key == nullptr || value_out == nullptr ||
+        extruder_id < EXTRUDER_ID_UNKNOWN)
         return 0;
 
     const Slic3r::ConfigBase *config = Slic3r::to_config(me);

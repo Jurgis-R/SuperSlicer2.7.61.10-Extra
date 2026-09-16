@@ -5,7 +5,7 @@
 #ifndef slic3r_printing_plan_h_
 #define slic3r_printing_plan_h_
 
-#define SLIC3R_PLUGIN_API_PRINTING_PLAN_MAJOR 5u
+#define SLIC3R_PLUGIN_API_PRINTING_PLAN_MAJOR 6u
 #define SLIC3R_PLUGIN_API_PRINTING_PLAN_MINOR 0u
 
 /*
@@ -232,8 +232,12 @@ SLIC3R_HOST_API printing_tool_group_handle *printing_layer_group_get_tool_group_
 SLIC3R_HOST_API const printing_tool_group_handle *printing_layer_group_get_tool_group(
     const printing_layer_group_handle *me,
     uint32_t idx);
+/*
+Append a visit for one zero-based extruder, or an unresolved visit with
+EXTRUDER_ID_UNKNOWN. Invalid negative identities are rejected with NULL.
+*/
 SLIC3R_HOST_API printing_tool_group_handle *printing_layer_group_append_tool_group(printing_layer_group_handle *me,
-                                                                                  uint16_t extruder_id);
+                                                                                  extruder_index_t extruder_id);
 SLIC3R_HOST_API int32_t printing_layer_group_move_tool_group(printing_layer_group_handle *me,
                                                              uint32_t from_idx,
                                                              uint32_t to_idx);
@@ -257,8 +261,11 @@ SLIC3R_HOST_API const printing_scope_events_handle *printing_tool_group_get_even
 /* The borrowed property container moves with this complete tool visit. */
 SLIC3R_HOST_API plugin_property_container_handle *printing_tool_group_get_properties(
     const printing_tool_group_handle *me);
-SLIC3R_HOST_API uint16_t printing_tool_group_get_extruder_id(const printing_tool_group_handle *me);
-SLIC3R_HOST_API void printing_tool_group_set_extruder_id(printing_tool_group_handle *me, uint16_t extruder_id);
+/* Null groups report EXTRUDER_ID_UNKNOWN. */
+SLIC3R_HOST_API extruder_index_t printing_tool_group_get_extruder_id(const printing_tool_group_handle *me);
+/* Invalid negative identities leave the existing value unchanged. */
+SLIC3R_HOST_API void printing_tool_group_set_extruder_id(printing_tool_group_handle *me,
+                                                         extruder_index_t extruder_id);
 SLIC3R_HOST_API uint32_t printing_tool_group_count_region_island(const printing_tool_group_handle *me);
 SLIC3R_HOST_API const layer_region_island_handle *printing_tool_group_get_region_island(
     const printing_tool_group_handle *me,

@@ -91,7 +91,7 @@ group boundary or an earlier semantic TOOLCHANGE command.
 */
 struct ActiveToolState
 {
-    std::optional<uint16_t> tool_id;
+    std::optional<extruder_index_t> tool_id;
     std::string source = "no tool has been selected yet";
 };
 
@@ -671,12 +671,13 @@ void validate_extrusion_tree_movements(const Print &print,
         // node entry, just like ExtrusionWriterVisitor, so following siblings
         // and later event roots observe the selected tool.
         if (!std::isfinite(special_command->extra_data) || special_command->extra_data < 0.0 ||
-            special_command->extra_data > double(std::numeric_limits<uint16_t>::max())) {
+            special_command->extra_data > double((std::numeric_limits<extruder_index_t>::max)()) ||
+            std::trunc(special_command->extra_data) != special_command->extra_data) {
             active_tool.tool_id.reset();
             active_tool.source = extrusion_tree_path(location, child_path) +
                 " contains an invalid TOOLCHANGE value";
         } else {
-            active_tool.tool_id = uint16_t(std::lround(special_command->extra_data));
+            active_tool.tool_id = static_cast<extruder_index_t>(special_command->extra_data);
             active_tool.source = extrusion_tree_path(location, child_path) +
                 " SpecialCommand::TOOLCHANGE";
         }

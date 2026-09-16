@@ -33,10 +33,10 @@ protected:
     void synchronize_selected_extruder_state(const DefaultExtruder *previous,
                                               DefaultExtruder &selected) override;
     std::string encode_chamber_temperature(int16_t temperature, bool wait) const override;
-    std::string encode_pressure_advance(uint16_t tool_id,
+    std::string encode_pressure_advance(extruder_index_t tool_id,
                                         double pressure_advance) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;
-    std::string encode_extruder_current(uint16_t tool_id, double current) const override;
+    std::string encode_extruder_current(extruder_index_t tool_id, double current) const override;
 };
 
 }}} // namespace slic3r_api::GCodeGeneration::Firmware

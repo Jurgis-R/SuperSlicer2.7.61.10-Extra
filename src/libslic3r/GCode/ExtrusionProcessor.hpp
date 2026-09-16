@@ -267,11 +267,11 @@ ExtrusionEntityCollection calculate_and_split_overhanging_extrusions(
 
 std::pair<float, float> calculate_overhang_speed(const ExtrusionPath &path,
                                                  const FullPrintConfig &config,
-                                                 size_t extruder_id);
+                                                 extruder_index_t extruder_id);
 void apply_overhang_flow(ExtrusionPath &path,
                          const PrintConfig &print_config,
                          const LayerRegion &region,
-                         size_t extruder_id);
+                         extruder_index_t extruder_id);
 
 }} // namespace Slic3r::ExtrusionProcessor
 

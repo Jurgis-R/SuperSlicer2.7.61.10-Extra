@@ -63,8 +63,8 @@ private:
         const std::string_view command = line.command();
         int32_t code = 0;
         if (command_code(command, 'T', &code)) {
-            if (code >= 0 && code <= int32_t(std::numeric_limits<uint16_t>::max()))
-                (void)m_session.select_extruder(uint16_t(code), false);
+            if (code >= 0 && code <= int32_t(std::numeric_limits<extruder_index_t>::max()))
+                (void)m_session.select_extruder(static_cast<extruder_index_t>(code), false);
             return;
         }
 
@@ -120,14 +120,16 @@ private:
 
     double unit_scale() const { return m_session.m_units_in_mm ? 1.0 : 25.4; }
 
-    std::optional<uint16_t> addressed_tool(const GCodeLineParser::GCodeLine &line,
-                                           char selector) const
+    std::optional<extruder_index_t> addressed_tool(const GCodeLineParser::GCodeLine &line,
+                                                   char selector) const
     {
         int32_t tool_id = -1;
         if (line.parameter_value(selector, tool_id)) {
-            if (tool_id < 0 || tool_id >= int32_t(m_session.m_extruders.size()))
+            if (tool_id == EXTRUDER_ID_UNKNOWN || tool_id < EXTRUDER_ID_UNKNOWN ||
+                tool_id > (std::numeric_limits<extruder_index_t>::max)() ||
+                tool_id >= int32_t(m_session.m_extruders.size()))
                 return std::nullopt;
-            return uint16_t(tool_id);
+            return static_cast<extruder_index_t>(tool_id);
         }
         if (m_session.m_current_extruder_idx)
             return m_session.m_current_extruder_idx;
@@ -139,7 +141,7 @@ private:
         const double scale = unit_scale();
         const std::optional<float> e = line.parameter_value('E');
         if (e) {
-            const std::optional<uint16_t> tool_id = addressed_tool(line, 'T');
+            const std::optional<extruder_index_t> tool_id = addressed_tool(line, 'T');
             if (tool_id)
                 m_session.extruder(*tool_id).extrusion_axis().set_position(*e * scale);
         }
@@ -183,7 +185,7 @@ private:
 
         const std::optional<float> e = line.parameter_value('E');
         if (e) {
-            const std::optional<uint16_t> tool_id = addressed_tool(line, 'T');
+            const std::optional<extruder_index_t> tool_id = addressed_tool(line, 'T');
             if (tool_id)
                 m_session.extruder(*tool_id).extrusion_axis().observe_external_move(
                     *e * scale, m_session.m_e_relative_mode);
@@ -203,14 +205,14 @@ private:
 
     void apply_tool_temperature(const GCodeLineParser::GCodeLine &line, bool waited)
     {
-        const std::optional<uint16_t> tool_id = addressed_tool(line, 'T');
+        const std::optional<extruder_index_t> tool_id = addressed_tool(line, 'T');
         if (tool_id)
             apply_heater(line, m_session.extruder(*tool_id).heater(), waited);
     }
 
     void apply_fan(const GCodeLineParser::GCodeLine &line, bool stopped)
     {
-        const std::optional<uint16_t> tool_id = addressed_tool(line, 'P');
+        const std::optional<extruder_index_t> tool_id = addressed_tool(line, 'P');
         if (!tool_id)
             return;
         const float pwm = stopped ? 0.f : line.parameter_value('S').value_or(255.f);
@@ -232,7 +234,7 @@ std::string GCodePreamble::begin(
     m_config = &config;
     m_in_preamble = true;
     m_start_written = false;
-    m_initial_tool = UINT16_MAX;
+    m_initial_tool = EXTRUDER_ID_UNKNOWN;
     m_initial_tools.clear();
     m_trailing_thumbnails.clear();
     try {
@@ -241,10 +243,10 @@ std::string GCodePreamble::begin(
             for (uint32_t li = 0; li < group.layer_group_count() && m_initial_tools.empty(); ++li) {
                 const PrintingLayerGroup layer = group.layer_group(li);
                 for (uint32_t ti = 0; ti < layer.tool_group_count(); ++ti) {
-                    const uint16_t tool = layer.tool_group(ti).extruder_id();
+                    const extruder_index_t tool = layer.tool_group(ti).extruder_id();
                     if (tool >= m_session.m_extruders.size())
                         throw std::invalid_argument("Preamble requires resolved, valid tool IDs.");
-                    if (m_initial_tool == UINT16_MAX) m_initial_tool = tool;
+                    if (m_initial_tool == EXTRUDER_ID_UNKNOWN) m_initial_tool = tool;
                     if (std::find(m_initial_tools.begin(), m_initial_tools.end(), tool) == m_initial_tools.end())
                         m_initial_tools.push_back(tool);
                 }
@@ -314,7 +316,7 @@ std::string GCodePreamble::post_start()
     DefaultGCodeFirmwareSession::GCodeStateInterpreter(m_session).apply(output);
     const std::optional<MachineEnvelope> envelope = configured_machine_envelope(*m_config);
     if (envelope) output += m_session.encode_machine_envelope(*envelope);
-    if (m_initial_tool == UINT16_MAX) return output;
+    if (m_initial_tool == EXTRUDER_ID_UNKNOWN) return output;
     output += m_session.select_extruder(m_initial_tool);
     const bool mmu = m_config->bool_or_default("single_extruder_multi_material", false);
     // Bed and chamber are shared hardware and use the initial tool's profile.
@@ -331,7 +333,7 @@ std::string GCodePreamble::post_start()
             heater.mark_encoded_with_wait();
         }
     }
-    for (uint16_t id : m_initial_tools) {
+    for (extruder_index_t id : m_initial_tools) {
         if (mmu && id != m_initial_tool) continue;
         // Some dialects (notably Klipper's M104/M109) address the active
         // heater, so select each physical tool before using those encoders.
@@ -362,7 +364,7 @@ std::string GCodePreamble::process_script(
     gcode_script_type script_type,
     const std::string &script,
     const Config *producer_config,
-    uint16_t processing_extruder_id)
+    extruder_index_t processing_extruder_id)
 {
     if (!m_session.m_scripts.valid())
         throw std::invalid_argument(
@@ -378,8 +380,8 @@ std::string GCodePreamble::process_script(
         m_session.m_scripts.prepare(script_type) : m_session.m_scripts.prepare(script_type, *producer_config);
     GCodeScriptConfig config = context.config();
 
-    uint16_t processing_tool = m_session.m_current_extruder_idx.value_or(0);
-    if (processing_extruder_id != GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID)
+    extruder_index_t processing_tool = m_session.m_current_extruder_idx.value_or(0);
+    if (processing_extruder_id != EXTRUDER_ID_UNKNOWN)
         processing_tool = processing_extruder_id;
     if (processing_tool >= m_session.m_extruders.size())
         throw std::invalid_argument("A custom G-code script references an unknown processing extruder.");

@@ -16,6 +16,9 @@
 #include <boost/log/trivial.hpp>
 #include <clipper/clipper.hpp>
 
+#include <limits>
+#include <stdexcept>
+
 #include "Api/internal/LayerAccess.hpp"
 #include "Api/internal/LayerIslandAccess.hpp"
 #include "BoundingBox.hpp"
@@ -222,7 +225,7 @@ bool LayerSliceIsland::has_extrusions() const {
 }
 
 LayerRegionIsland &LayerSliceIsland::add_region_island(const LayerRegionSetCPtrs &region_set,
-                                                            uint16_t extruder_id) {
+                                                            extruder_index_t extruder_id) {
     // these region are all inside this islands
     for (auto regionptr : region_set) {
         assert(this->regions().find(regionptr) != this->regions().end());
@@ -233,7 +236,7 @@ LayerRegionIsland &LayerSliceIsland::add_region_island(const LayerRegionSetCPtrs
 }
 
 LayerRegionIsland &LayerSliceIsland::get_or_add_region_island(const LayerRegionSetCPtrs &region_set,
-                                                            uint16_t extruder_id) {
+                                                            extruder_index_t extruder_id) {
     LayerRegionIsland *region_island = nullptr;
     for (LayerRegionIsland &ri : this->regions_islands()) {
         if (ri.regions() == region_set && ri.extruder_id() == extruder_id) {
@@ -1010,9 +1013,15 @@ void Layer::make_perimeters() {
         //    // use the island expolygon
         //} else {
             for (LayerRegionSetCPtrs &regions : regions_groups) {
-                int16_t perimeter_extruder = int16_t((*regions.begin())->region().config().perimeter_extruder) - 1;
-                assert(perimeter_extruder >= 0);
-                LayerRegionIsland &region_island = island->get_or_add_region_island(regions, uint16_t(perimeter_extruder));
+                const int64_t configured_extruder =
+                    (*regions.begin())->region().config().perimeter_extruder;
+                if (configured_extruder <= 0 ||
+                    configured_extruder > int64_t((std::numeric_limits<extruder_index_t>::max)()) + 1)
+                    throw std::out_of_range(
+                        "The perimeter extruder does not fit in extruder_index_t.");
+                const extruder_index_t perimeter_extruder =
+                    static_cast<extruder_index_t>(configured_extruder - 1);
+                LayerRegionIsland &region_island = island->get_or_add_region_island(regions, perimeter_extruder);
                 island->make_perimeters(region_island);
             }
             append(all_fill_expolygon, island->infill_areas());

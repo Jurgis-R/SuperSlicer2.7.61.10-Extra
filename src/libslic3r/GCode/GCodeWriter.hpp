@@ -48,10 +48,10 @@ public:
     void                apply_print_config(const PrintConfig &print_config);
     void                apply_print_region_config(const PrintRegionConfig& print_region_config);
     // Extruders are expected to be sorted in an increasing order.
-    void                set_extruders(std::vector<uint16_t> extruder_ids);
+    void                set_extruders(std::vector<extruder_index_t> extruder_ids);
     const std::vector<Extruder>& extruders() const { return m_extruders; }
-    std::vector<uint16_t> extruder_ids() const;
-    void                set_mills(std::vector<uint16_t> extruder_ids);
+    std::vector<extruder_index_t> extruder_ids() const;
+    void                set_mills(std::vector<uint16_t> mill_ids);
     const std::vector<Mill>& mills() const { return m_millers; }
     std::vector<uint16_t> mill_ids() const;
     //give the first mill id or an id after the last extruder. Can be used to see if an id is an extruder or a mill

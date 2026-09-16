@@ -46,7 +46,7 @@ ExtrusionPropertyModifier::ExtrusionPropertyModifier()
 ExtrusionPropertyCustomGcode::ExtrusionPropertyCustomGcode()
     : c_extrusion_property_custom_gcode{C_EXTRUSION_CUSTOM_GCODE_GCODE, GCODE_SCRIPT_TYPE_INVALID,
                                         EXTRUSION_DATA_ID_INVALID, EXTRUSION_DATA_ID_INVALID,
-                                        GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID} {}
+                                        EXTRUDER_ID_UNKNOWN} {}
 
 ExtrusionPropertyCustomGcode::ExtrusionPropertyCustomGcode(Code c,
                                                            extrusion_data_id text_id,
@@ -57,7 +57,7 @@ ExtrusionPropertyCustomGcode::ExtrusionPropertyCustomGcode(Code c,
                                             script_type,
                                         text_id,
                                         EXTRUSION_DATA_ID_INVALID,
-                                        GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID} {}
+                                        EXTRUDER_ID_UNKNOWN} {}
 
 ExtrusionPropertyCustomGcodeText::ExtrusionPropertyCustomGcodeText(const std::string &str)
     : code(Code::GCODE)
@@ -167,7 +167,7 @@ ExtrusionPropertyContainer::add_property(const ExtrusionPropertyCustomGcodeText 
     out.kind = c_extrusion_custom_gcode_kind(property.code);
     out.script_type = property.script_type;
     out.config_id = EXTRUSION_DATA_ID_INVALID;
-    out.processing_extruder_id = GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID;
+    out.processing_extruder_id = EXTRUDER_ID_UNKNOWN;
     this->store_property_data_aligned(
         ExtrusionPropertyCustomGcode::property_type, &out.text_id,
         property.gcode.c_str(), property.gcode.size() + 1, alignof(char));

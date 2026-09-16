@@ -124,7 +124,7 @@ struct ObjectLayerToPrint
     // used as adress check, so you can store nullptr.
     std::set<const LayerSliceIsland*> islands;
     // if mmu, extruder order override
-    std::vector<uint16_t> extruders_order;
+    std::vector<extruder_index_t> extruders_order;
     // wipetower managment, for parallel object/islands
     bool allow_wipe_tower = true; // allow to print wipetoer & finish wieptower layer
     coord_t finish_wipe_tower_until = 0; // before printing anything, finish all unfinish wp layer until this z (should be <= _print_z())
@@ -166,7 +166,10 @@ public:
     const Vec2d&    origin() const { return m_origin; }
     void            set_origin(const Vec2d &pointf);
     void            set_origin(const coordf_t x, const coordf_t y) { this->set_origin(Vec2d(x, y)); }
-    uint16_t        last_extruder(uint16_t def = 0) const { return m_writer.tool() ? uint16_t(m_writer.tool()->id()) : def; }
+    extruder_index_t last_extruder(extruder_index_t def = EXTRUDER_ID_UNKNOWN) const
+    {
+        return m_writer.tool_is_extruder() ? static_cast<extruder_index_t>(m_writer.tool()->id()) : def;
+    }
     const Point&    last_pos() const { assert(m_last_pos); return *m_last_pos; }
     bool            last_pos_defined() const { return m_last_pos.has_value(); }
     void            set_last_pos(const Point &pos) { m_last_pos = pos; }
@@ -214,7 +217,7 @@ public:
     // inside the generated string and after the G-code export finishes.
     std::string placeholder_parser_process(const std::string &name,
                                            const std::string &templ,
-                                           uint16_t current_extruder_id,
+                                           extruder_index_t current_extruder_id,
                                            const DynamicConfig *config_override = nullptr);
     bool            enable_cooling_markers() const { return m_enable_cooling_markers; }
 
@@ -274,7 +277,7 @@ private:
         GCodeProcessor   &m_processor;
     };
     void            _do_export(Print &print, GCodeOutputStream &file, ThumbnailsGeneratorCallback thumbnail_cb);
-    void            _move_to_print_object(std::string& gcode_out, const Print& print, size_t finished_objects, uint16_t initial_extruder_id);
+    void            _move_to_print_object(std::string& gcode_out, const Print& print, size_t finished_objects, extruder_index_t initial_extruder_id);
     void            _init_multiextruders(const Print& print, std::string& gcode_out, GCodeWriter& writer, const std::vector<ToolOrdering>& tool_ordering, const std::string& custom_gcode);
 
     static ObjectsLayerToPrint                                  collect_layers_to_print(const PrintObject &object, Print::StatusMonitor &status_monitor);
@@ -283,7 +286,7 @@ private:
                                                              const coord_t start_e,
                                                              const coord_t max_height,
                                                              const std::vector<GraphData> &extruder_min_dist,
-                                                             const uint16_t current_extruder_id);
+                                                             const extruder_index_t current_extruder_id);
 
 
     LayerResult process_layer(
@@ -322,7 +325,7 @@ private:
         std::string                             &preamble,
         GCodeOutputStream                       &output_stream);
     
-    void            set_extruders(const std::vector<uint16_t> &extruder_ids);
+    void            set_extruders(const std::vector<extruder_index_t> &extruder_ids);
     std::string     preamble();
     std::string change_layer(coord_t from_z, coord_t to_z);
 
@@ -380,7 +383,7 @@ private:
 
     struct ExtrudeArgs{
         // Index of the extruder currently active.
-        uint16_t                  extruder_id;
+        extruder_index_t          extruder_id;
         // What object and instance is going to be printed.
         const InstanceToPrint    &print_instance;
         // Container for extruder overrides (when wiping into object or infill).
@@ -437,10 +440,10 @@ private:
     std::string     retract_and_wipe(bool toolchange = false, bool inhibit_lift = false);
     std::string     unretract() { return m_writer.unlift() + m_writer.unretract(); }
     // enforce lift_min
-    void            set_extra_lift(const coord_t previous_print_z, const int layer_id, const PrintConfig& print_config, GCodeWriter & writer, int extruder_id);
-    std::string     set_extruder(uint16_t extruder_id, coord_t print_z, bool no_toolchange = false);
-    std::string     toolchange(uint16_t extruder_id, coord_t print_z);
-    bool line_distancer_is_required(const std::vector<uint16_t>& extruder_ids);
+    void            set_extra_lift(const coord_t previous_print_z, const int layer_id, const PrintConfig& print_config, GCodeWriter & writer, extruder_index_t extruder_id);
+    std::string     set_extruder(extruder_index_t extruder_id, coord_t print_z, bool no_toolchange = false);
+    std::string     toolchange(extruder_index_t extruder_id, coord_t print_z);
+    bool line_distancer_is_required(const std::vector<extruder_index_t>& extruder_ids);
 
     // Cache for custom seam enforcers/blockers for each layer.
     // Owned subsystems are kept behind pointers so GCode.hpp does not pull their
@@ -545,7 +548,7 @@ private:
     coord_t                             _m_next_lift_min{0};
 
     double                              m_current_perimeter_extrusion_width = 0.4;
-    std::optional<unsigned>             m_layer_change_extruder_id;
+    std::optional<extruder_index_t>     m_layer_change_extruder_id;
     // bool                                m_already_unretracted{false};
     // a previous extrusion path that is too small to be extruded, have to fusion it into the next call.
     ExtrusionPath                       m_last_too_small;
@@ -611,10 +614,10 @@ private:
     std::string               _after_extrude(const ExtrusionPath &path);
     void print_machine_envelope(GCodeOutputStream &file, const Print &print);
     int32_t _compute_bed_temperature(const Print &print);
-    void _print_first_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, uint16_t first_printing_extruder_id, bool wait);
-    void _print_second_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, uint16_t first_printing_extruder_id, bool wait);
-    void _print_first_layer_chamber_temperature(std::string &out, const Print &print, const std::string &gcode, uint16_t first_printing_extruder_id, bool wait);
-    void _print_first_layer_extruder_temperatures(std::string &out, const Print &print, const std::string &gcode, uint16_t first_printing_extruder_id, bool wait);
+    void _print_first_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, extruder_index_t first_printing_extruder_id, bool wait);
+    void _print_second_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, extruder_index_t first_printing_extruder_id, bool wait);
+    void _print_first_layer_chamber_temperature(std::string &out, const Print &print, const std::string &gcode, extruder_index_t first_printing_extruder_id, bool wait);
+    void _print_first_layer_extruder_temperatures(std::string &out, const Print &print, const std::string &gcode, extruder_index_t first_printing_extruder_id, bool wait);
     // On the first printing layer. This flag triggers first layer speeds.
     bool                                on_first_layer() const { return m_layer != nullptr && m_layer->id() == 0; }
     // To control print speed of 1st object layer over raft interface.

@@ -63,7 +63,7 @@ private:
     // in unit/second
     double m_current_speed = 1000 / 60.0;
     bool m_is_custom_gcode = false;
-    uint16_t m_current_extruder = 0;
+    extruder_index_t m_current_extruder = 0;
 
     // variable for when you add a line (front of the buffer)
     int m_front_buffer_fan_speed = 1;

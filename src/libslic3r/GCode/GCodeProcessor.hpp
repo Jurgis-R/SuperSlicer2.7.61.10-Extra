@@ -82,10 +82,10 @@ namespace Slic3r {
         };
 
         std::vector<double>                                     volumes_per_color_change;
-        std::map<size_t, double>                                volumes_per_extruder;
-        std::map<size_t, std::map<size_t, std::map<GCodeExtrusionRole, double>>> volumes_per_role_per_extruder_per_object;
+        std::map<extruder_index_t, double>                      volumes_per_extruder;
+        std::map<size_t, std::map<extruder_index_t, std::map<GCodeExtrusionRole, double>>> volumes_per_role_per_extruder_per_object;
         std::map<GCodeExtrusionRole, std::pair<double, double>> used_filaments_per_role;
-        std::map<size_t, double>                                cost_per_extruder;
+        std::map<extruder_index_t, double>                      cost_per_extruder;
 
         std::array<Mode, static_cast<size_t>(ETimeMode::Count)> modes;
 
@@ -141,7 +141,7 @@ namespace Slic3r {
         struct MoveVertex
         {
             MoveVertex() {}
-            MoveVertex(uint32_t gcode_id, EMoveType type, GCodeExtrusionRole extrusion_role, uint8_t extruder_id,
+            MoveVertex(uint32_t gcode_id, EMoveType type, GCodeExtrusionRole extrusion_role, extruder_index_t extruder_id,
                 uint8_t cp_color_id, uint16_t object_id, Vec3f position, float delta_extruder, float feedrate, float width, float height,
                 float mm3_per_mm, float fan_speed, float temperature, float time, uint16_t layer_id,
                 bool internal_only) :
@@ -159,7 +159,7 @@ namespace Slic3r {
             uint32_t gcode_id{ 0 };
             EMoveType type{ EMoveType::Noop };
             GCodeExtrusionRole extrusion_role{ GCodeExtrusionRole::None };
-            uint8_t extruder_id{ 0 };
+            extruder_index_t extruder_id{ 0 };
             uint8_t cp_color_id{ 0 };
             uint16_t object_id{ OBJECT_INSTANCE_ID_NONE };
             Vec3f position{ Vec3f::Zero() }; // mm
@@ -453,20 +453,20 @@ namespace Slic3r {
             std::vector<double> volumes_per_color_change;
             
             double tool_change_cache;
-            std::map<size_t, double> volumes_per_extruder;
+            std::map<extruder_index_t, double> volumes_per_extruder;
             double object_change_cache;
-            std::map<size_t, std::map<size_t, std::map<GCodeExtrusionRole, double>>> volumes_per_role_per_extruder_per_object;
+            std::map<size_t, std::map<extruder_index_t, std::map<GCodeExtrusionRole, double>>> volumes_per_role_per_extruder_per_object;
 
             double role_cache;
             std::map<GCodeExtrusionRole, std::pair<double, double>> filaments_per_role; // ExtrusionRole -> (m, g)
 
             void reset();
 
-            void increase_caches(double extruded_volume, uint16_t extruder_id, double parking_volume, double extra_loading_volume);
+            void increase_caches(double extruded_volume, extruder_index_t extruder_id, double parking_volume, double extra_loading_volume);
 
             void process_color_change_cache();
-            void process_extruder_cache(uint16_t extruder_id, size_t object_id, GCodeExtrusionRole role);
-            void process_object_cache(uint16_t extruder_id, size_t object_id, GCodeExtrusionRole role);
+            void process_extruder_cache(extruder_index_t extruder_id, size_t object_id, GCodeExtrusionRole role);
+            void process_object_cache(extruder_index_t extruder_id, size_t object_id, GCodeExtrusionRole role);
             void process_role_cache(const GCodeProcessor* processor);
             void process_caches(const GCodeProcessor* processor);
        private:
@@ -647,7 +647,7 @@ namespace Slic3r {
         float m_fan_speed; // percentage
         float m_z_offset; // mm
         GCodeExtrusionRole m_extrusion_role;
-        uint16_t m_extruder_id;
+        extruder_index_t m_extruder_id;
         size_t m_current_object_id;
         std::map<std::string, size_t> m_all_objects;
         ExtruderColors m_extruder_colors;
@@ -900,7 +900,7 @@ namespace Slic3r {
         // Processes T line (Select Tool)
         void process_T(const GCodeReader::GCodeLine& line);
         void process_T(const std::string_view command);
-        void process_toolchange(uint16_t command_id);
+        void process_toolchange(extruder_index_t command_id);
         void process_klipper_ACTIVATE_EXTRUDER(const GCodeReader::GCodeLine& line);
 
         // post process the file with the given filename to:
@@ -923,9 +923,9 @@ namespace Slic3r {
         void  set_acceleration(PrintEstimatedStatistics::ETimeMode mode, float value);
         float get_travel_acceleration(PrintEstimatedStatistics::ETimeMode mode) const;
         void  set_travel_acceleration(PrintEstimatedStatistics::ETimeMode mode, float value);
-        float get_filament_load_time(size_t extruder_id);
-        float get_filament_unload_time(size_t extruder_id);
-        void  set_extruder_temp(float new_temp, size_t extruder_id);
+        float get_filament_load_time(extruder_index_t extruder_id);
+        float get_filament_unload_time(extruder_index_t extruder_id);
+        void  set_extruder_temp(float new_temp, extruder_index_t extruder_id);
         void  move_next_layer_id();
 
         void process_custom_gcode_time(CustomGCode::Type code);

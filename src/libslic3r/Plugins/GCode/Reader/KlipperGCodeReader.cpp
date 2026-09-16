@@ -41,7 +41,7 @@ struct KlipperToolResolution
 {
     enum class Status { Found, Unknown, Ambiguous };
     Status status = Status::Unknown;
-    uint32_t tool = 0;
+    extruder_index_t tool = 0;
 };
 KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
                                       std::string_view name);
@@ -51,14 +51,18 @@ std::optional<std::string_view> klipper_object_name(
 KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
                                       std::string_view name)
 {
-    std::vector<uint32_t> matches;
+    std::vector<extruder_index_t> matches;
     if (context.print != nullptr) {
         const Config config = Print(context.print).config();
         if (config.has("tool_name")) {
             const ConfigOption names = config.get("tool_name");
-            for (uint32_t index = 0; index < names.size(); ++index)
-                if (names.is_enabled(index) && names.get_string(index) == name)
-                    matches.push_back(index);
+            for (uint32_t index = 0; index < names.size(); ++index) {
+                if (names.is_enabled(index) && names.get_string(index) == name) {
+                    if (index > uint32_t((std::numeric_limits<extruder_index_t>::max)()))
+                        return {KlipperToolResolution::Status::Unknown, 0};
+                    matches.push_back(static_cast<extruder_index_t>(index));
+                }
+            }
         }
         if (matches.size() == 1)
             return {KlipperToolResolution::Status::Found, matches.front()};
@@ -72,8 +76,9 @@ KlipperToolResolution klipper_tool_id(const run_ctx_gcode_reader &context,
         uint32_t index = 0;
         const std::from_chars_result parsed = std::from_chars(
             name.data() + 8, name.data() + name.size(), index);
-        if (parsed.ec == std::errc() && parsed.ptr == name.data() + name.size())
-            matches.push_back(index);
+        if (parsed.ec == std::errc() && parsed.ptr == name.data() + name.size() &&
+            index <= uint32_t((std::numeric_limits<extruder_index_t>::max)()))
+            matches.push_back(static_cast<extruder_index_t>(index));
     }
     if (matches.size() == 1)
         return {KlipperToolResolution::Status::Found, matches.front()};

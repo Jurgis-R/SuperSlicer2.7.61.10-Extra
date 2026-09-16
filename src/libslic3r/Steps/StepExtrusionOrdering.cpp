@@ -181,6 +181,9 @@ const char *instance_kind(const Printing::PrintingObjectInstance *instance,
 
 void clean_and_prepare(Print &print)
 {
+    // Rebuilding the PrintingPlan discards all process properties added by
+    // downstream steps, including the speeds required by STEP_GCODE.
+    print.mark_step_and_dependents_for_execution(STEP_ORDERING);
     print.reset_printing_plan();
 }
 
@@ -266,6 +269,9 @@ bool validate_post(const Print &print, std::string *error)
                 const std::string tool_path = layer_path + ".tool[" + std::to_string(tool_idx) + "]";
                 if (tool.plan_identity != plan->identity_token())
                     return validation_failure(error, tool_path, "tool group belongs to another PrintingPlan");
+                if (tool.extruder_id == EXTRUDER_ID_UNKNOWN)
+                    return validation_failure(error, tool_path,
+                                              "tool group has no concrete extruder after STEP_ORDERING");
 
                 for (size_t extrusion_idx = 0; extrusion_idx < tool.extrusions.size(); ++extrusion_idx) {
                     const Printing::PrintingExtrusion &extrusion = tool.extrusions[extrusion_idx];

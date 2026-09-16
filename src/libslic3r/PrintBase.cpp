@@ -78,7 +78,14 @@ std::string PrintBase::output_filename(const std::string &format, const std::str
 		cfg.set_key_value("input_filename_base", new ConfigOptionString(filename_base));
     }
     try {
-        uint16_t extruder_initial = config_override->option("initial_extruder") != nullptr && config_override->option("initial_extruder")->type() == coInt ? config_override->option("initial_extruder")->get_int() : 0;
+        const int64_t raw_initial_extruder = config_override != nullptr &&
+                config_override->option("initial_extruder") != nullptr &&
+                config_override->option("initial_extruder")->type() == coInt ?
+            config_override->option("initial_extruder")->get_int() : 0;
+        if (raw_initial_extruder < EXTRUDER_ID_UNKNOWN ||
+            raw_initial_extruder > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::invalid_argument("initial_extruder does not fit in extruder_index_t");
+        const extruder_index_t extruder_initial = static_cast<extruder_index_t>(raw_initial_extruder);
         boost::filesystem::path filepath = format.empty() ?
             cfg.opt_string("input_filename_base") + default_ext :
             this->placeholder_parser().process(format, extruder_initial, &cfg);

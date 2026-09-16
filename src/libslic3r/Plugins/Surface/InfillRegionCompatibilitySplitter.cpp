@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -90,7 +91,7 @@ const raw_used_config_key k_used_config_keys[] = {
 struct RegionKey
 {
     std::vector<const layer_region_handle *> handles;
-    int32_t extruder_id = -1;
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
 
     bool operator==(const RegionKey &rhs) const
     {
@@ -140,14 +141,19 @@ const char *extruder_key_for_role(const raw_extrusion_role role)
     return k_infill_extruder_key;
 }
 
-int32_t region_extruder_id_for_role(const LayerRegion &region, const raw_extrusion_role role)
+extruder_index_t region_extruder_id_for_role(const LayerRegion &region, const raw_extrusion_role role)
 {
     const char *key = extruder_key_for_role(role);
     if (key == nullptr || !region.print_region().config().has(key))
-        return -1;
+        return EXTRUDER_ID_UNKNOWN;
 
-    const int32_t extruder = region.print_region().config().get(key).get_int();
-    return extruder <= 0 ? -1 : extruder - 1;
+    const int64_t one_based_id = region.print_region().config().get(key).get_int();
+    if (one_based_id <= 0)
+        return EXTRUDER_ID_UNKNOWN;
+    const int64_t zero_based_id = one_based_id - 1;
+    if (zero_based_id > int64_t((std::numeric_limits<extruder_index_t>::max)()))
+        return EXTRUDER_ID_UNKNOWN;
+    return static_cast<extruder_index_t>(zero_based_id);
 }
 
 const char *pattern_key_for_surface(const Surface &surface)
@@ -272,10 +278,10 @@ bool key_from_regions(const std::vector<LayerRegion> &regions,
 {
     key.handles.reserve(regions.size());
     for (const LayerRegion &region : regions) {
-        const int32_t extruder_id = region_extruder_id_for_role(region, role);
-        if (extruder_id < 0)
+        const extruder_index_t extruder_id = region_extruder_id_for_role(region, role);
+        if (extruder_id == EXTRUDER_ID_UNKNOWN)
             return false;
-        if (key.extruder_id < 0)
+        if (key.extruder_id == EXTRUDER_ID_UNKNOWN)
             key.extruder_id = extruder_id;
         else if (key.extruder_id != extruder_id)
             return false;
@@ -284,7 +290,7 @@ bool key_from_regions(const std::vector<LayerRegion> &regions,
 
     std::sort(key.handles.begin(), key.handles.end());
     key.handles.erase(std::unique(key.handles.begin(), key.handles.end()), key.handles.end());
-    return key.extruder_id >= 0 && !key.handles.empty();
+    return key.extruder_id != EXTRUDER_ID_UNKNOWN && !key.handles.empty();
 }
 
 StoredSurfaceCollection &surfaces_for_region_key(std::vector<PendingSurfaceGroup> &groups,

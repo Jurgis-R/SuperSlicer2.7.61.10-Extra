@@ -133,7 +133,7 @@ void append_path_extrusion(Printing::PrintingToolGroup &tool_group,
 
 void append_multi_tool_process_sequence(Printing::PrintingLayerGroup &layer)
 {
-    const uint16_t tool_ids[] = {0, 1, 0};
+    const extruder_index_t tool_ids[] = {0, 1, 0};
     const float temperatures[] = {200.f, 210.f, 200.f};
     const float fan_speeds[] = {20.f, 30.f, 20.f};
     const float pressure_advances[] = {0.01f, 0.02f, 0.01f};

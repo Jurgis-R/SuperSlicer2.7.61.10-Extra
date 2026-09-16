@@ -16,7 +16,7 @@ using namespace std::string_view_literals;
 
 namespace Slic3r::GCode {
 
-void Wipe::init(const PrintConfig &config, const GCodeWriter &writer, const std::vector<uint16_t> &extruders)
+void Wipe::init(const PrintConfig &config, const GCodeWriter &writer, const std::vector<extruder_index_t> &extruders)
 {
     this->reset_path();
 
@@ -24,7 +24,7 @@ void Wipe::init(const PrintConfig &config, const GCodeWriter &writer, const std:
     // Paths longer than wipe_xy should never be needed for the wipe move.
     double wipe_xy = 0;
     const bool multimaterial = extruders.size() > 1;
-    for (uint16_t id : extruders) // != writer.extruders() ?
+    for (extruder_index_t id : extruders) // != writer.extruders() ?
         if (config.wipe.get_at(id)) {
             // Wipe length to extrusion ratio.
             const double xy_to_e = this->calc_xy_to_e_ratio(writer, id);

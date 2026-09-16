@@ -35,6 +35,7 @@ class DataTreeHost:
         self.generated = generated
         self.flow_calls = []
         self.bridge_calls = []
+        self.region_island_calls = []
         self.curled = [
             generated.CCurledLine(
                 generated.CPoint(10, 20), generated.CPoint(30, 40), 0.5
@@ -66,6 +67,14 @@ class DataTreeHost:
 
     def layer_region_island_get_region(self, region_island, idx):
         return 200 + int(idx)
+
+    def layer_island_get_or_create_region_island(
+        self, island, _regions, region_count, extruder_id
+    ):
+        self.region_island_calls.append(
+            (address(island), int(region_count), int(extruder_id))
+        )
+        return 701
 
     def layer_get_height(self, layer):
         return 40
@@ -151,6 +160,24 @@ class PythonDataTreeViewTests(unittest.TestCase):
             region_island.region(-1)
         with self.assertRaises(IndexError):
             region_island.region(2)
+
+    def test_region_island_extruder_boundaries_reject_before_ctypes_narrowing(self):
+        api = self.make_api()
+        island = self.views.LayerIsland(api, 30)
+        host = api.host
+
+        for extruder_id in (self.generated.EXTRUDER_ID_UNKNOWN, 0, 0x7FFF):
+            region_island = island.get_or_create_full_region_island(extruder_id)
+            self.assertEqual(region_island.address, 701)
+            self.assertEqual(host.region_island_calls[-1], (30, 0, extruder_id))
+
+        call_count = len(host.region_island_calls)
+        for invalid in (-2, 0x8000):
+            with self.assertRaises(ValueError):
+                island.get_or_create_full_region_island(invalid)
+        with self.assertRaises(TypeError):
+            island.get_or_create_full_region_island(1.5)
+        self.assertEqual(len(host.region_island_calls), call_count)
 
     def test_stored_config_has_unique_ownership(self):
         api = self.make_api()

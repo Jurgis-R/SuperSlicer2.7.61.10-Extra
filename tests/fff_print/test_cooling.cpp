@@ -16,7 +16,7 @@ using namespace Slic3r;
 std::unique_ptr<CoolingBuffer> make_cooling_buffer(
     GCodeGenerator                  &gcode,
     const DynamicPrintConfig        &config         = DynamicPrintConfig{}, 
-    const std::vector<unsigned int> &extruder_ids   = { 0 })
+    const std::vector<extruder_index_t> &extruder_ids = { 0 })
 {
     PrintConfig print_config;
     print_config.apply(config, true); // ignore_nonexistent

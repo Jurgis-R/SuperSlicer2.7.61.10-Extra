@@ -60,6 +60,7 @@ from slic3r_api_generated import (
     CMeshSlicingParams,
     CTriangleIndices,
     CVec2d,
+    EXTRUDER_ID_UNKNOWN,
     PLUGIN_PROPERTY_TYPE_LAYER_ADHESION,
     PLUGIN_PROPERTY_TYPE_LAYER_BRIM,
     PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT,
@@ -807,6 +808,10 @@ class Config(DataTreeView):
         ``fallback`` is returned when the key or selected vector item is
         absent, disabled, non-numeric, non-finite or otherwise unresolved.
         """
+        if not isinstance(extruder_id, int):
+            raise TypeError("extruder id must be an integer")
+        if extruder_id < EXTRUDER_ID_UNKNOWN or extruder_id > 0x7FFF:
+            raise ValueError("extruder id must be UNKNOWN or fit in extruder_index_t")
         output = ctypes.c_double(float(fallback))
         resolved = self.api.host.config_get_computed_value(
             self.c_handle(), _as_bytes(key), int(extruder_id), ctypes.byref(output)
@@ -1411,6 +1416,10 @@ class LayerIsland(DataTreeView):
         Passing an empty region list means "all regions of this island", just
         like get_or_create_full_region_island().
         """
+        if not isinstance(extruder_id, int):
+            raise TypeError("extruder id must be an integer")
+        if extruder_id < EXTRUDER_ID_UNKNOWN or extruder_id > 0x7FFF:
+            raise ValueError("extruder id must be UNKNOWN or fit in extruder_index_t")
         region_addresses = [_address(region.c_handle()) for region in regions]
         region_array = None
         if region_addresses:
@@ -1432,6 +1441,10 @@ class LayerIsland(DataTreeView):
         extruder is still explicit, because the data-tree API does not infer it
         from an extrusion role.
         """
+        if not isinstance(extruder_id, int):
+            raise TypeError("extruder id must be an integer")
+        if extruder_id < EXTRUDER_ID_UNKNOWN or extruder_id > 0x7FFF:
+            raise ValueError("extruder id must be UNKNOWN or fit in extruder_index_t")
         handle = self.api.host.layer_island_get_or_create_region_island(
             self.c_handle(),
             None,

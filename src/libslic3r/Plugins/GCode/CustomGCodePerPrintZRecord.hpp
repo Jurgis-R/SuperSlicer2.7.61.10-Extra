@@ -54,6 +54,14 @@ channel throws std::runtime_error and must abort the current plugin pass.
 */
 std::optional<CustomGCodeTable> read_custom_gcode_per_print_z(const Print &print);
 
+/*
+Convert one validated record tool number from its stored one-based form to the
+zero-based identity used by the PrintingPlan. The bounds check is repeated at
+the conversion boundary so direct test tables cannot bypass the record reader.
+*/
+extruder_index_t custom_gcode_row_extruder_index(const CustomGCodeRow &row,
+                                                 uint32_t extruder_count);
+
 /* Resolve the old Undef mode with the same semantic rules as the Model helper. */
 Slic3r::CustomGCode::Mode effective_record_mode(const CustomGCodeTable &table);
 

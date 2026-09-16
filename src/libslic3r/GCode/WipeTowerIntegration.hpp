@@ -42,7 +42,7 @@ public:
 
     std::string prime(GCodeGenerator &gcodegen);
     void next_layer() { ++ m_layer_idx; m_tool_change_idx = 0; }
-    std::string tool_change(GCodeGenerator &gcodegen, int extruder_id, bool finish_layer);
+    std::string tool_change(GCodeGenerator &gcodegen, extruder_index_t extruder_id, bool finish_layer);
     std::string finalize(GCodeGenerator &gcodegen);
     std::vector<float> used_filament_length() const;
     int get_current_layer_idx() const { return m_layer_idx; }
@@ -51,7 +51,7 @@ public:
 
 private:
     WipeTowerIntegration& operator=(const WipeTowerIntegration&);
-    std::string append_tcr(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id, double z = -1., bool need_ensure_z = true) const;
+    std::string append_tcr(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult &tcr, extruder_index_t new_extruder_id, double z = -1., bool need_ensure_z = true) const;
 
     // Postprocesses gcode: rotates and moves G1 extrusions and returns result
     std::string post_process_wipe_tower_moves(const WipeTower::ToolChangeResult &tcr,
@@ -59,10 +59,10 @@ private:
                                               float angle,
                                               //const GCodeFlavor gcode_flavor,
                                               GCodeGenerator &gcodegen,
-                                              int new_extruder_id
+                                              extruder_index_t new_extruder_id
                                               ) const;
-    std::string deretraction_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, int new_extruder_id) const;
-    std::string toolchange_gcode_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, int new_extruder_id) const;
+    std::string deretraction_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, extruder_index_t new_extruder_id) const;
+    std::string toolchange_gcode_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, extruder_index_t new_extruder_id) const;
 
     // Left / right edges of the wipe tower, for the planning of wipe moves.
     const float                                                  m_left;

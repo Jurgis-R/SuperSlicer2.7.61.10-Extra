@@ -2113,8 +2113,8 @@ std::set<int> TickCodeInfo::get_used_extruders_for_tick(int tick, int only_extru
                                                        return unscaled(lhs._print_z) < rhs;
                                                    });
             for (; it_layer_tools != tool_ordering.end(); ++it_layer_tools) {
-                const std::vector<uint16_t> &extruders = it_layer_tools->extruders;
-                for (const uint16_t &extruder : extruders)
+                const std::vector<extruder_index_t> &extruders = it_layer_tools->extruders;
+                for (const extruder_index_t extruder : extruders)
                     used_extruders.emplace(extruder + 1);
             }
         }

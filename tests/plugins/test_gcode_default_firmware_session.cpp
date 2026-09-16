@@ -75,7 +75,7 @@ class CustomFanFirmwareSession final :
     public slic3r_api::GCodeGeneration::DefaultGCodeFirmwareSession
 {
 protected:
-    std::string encode_fan(uint16_t tool_id, double speed_percent) const override
+    std::string encode_fan(extruder_index_t tool_id, double speed_percent) const override
     {
         return "CUSTOM_FAN T" + std::to_string(tool_id) +
                " S" + std::to_string(int32_t(std::lround(speed_percent))) + "\n";
@@ -398,7 +398,7 @@ std::string export_composed_seam_fixture(bool gcode_comments,
 /* Add the minimum plan hierarchy needed by STEP_GCODE validation tests. */
 PrintingToolGroup &append_speed_validation_tool_group(Print &print,
                                                       coord_t print_z = scale_i(0.42),
-                                                      uint16_t extruder_id = 3)
+                                                      extruder_index_t extruder_id = 3)
 {
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
@@ -902,6 +902,29 @@ TEST_CASE("STEP_GCODE pre-validation checks explicit E-only extrusion inputs",
         plan.events.append_before(ExtrusionEntity(std::move(commands), false, false, true));
 
         CHECK(Steps::StepGenerateGcode::validate_pre(print));
+    }
+
+    SECTION("a fractional semantic tool change is rejected instead of rounded") {
+        Print print;
+        PrintConfig &config = const_cast<PrintConfig &>(print.config());
+        config.nozzle_diameter.set(std::vector<double>{0.4, 0.4});
+        PrintingPlan &plan = print.mutable_printing_plan();
+
+        ExtrusionEntity::Children commands;
+        std::unique_ptr<ExtrusionNop> toolchange(new ExtrusionNop());
+        toolchange->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.5));
+        commands.push_back(std::move(toolchange));
+        std::unique_ptr<ExtrusionNop> extrusion(new ExtrusionNop());
+        extrusion->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, 0.5));
+        extrusion->add_property(ExtrusionPropertySpeed(15.f));
+        commands.push_back(std::move(extrusion));
+        plan.events.append_before(ExtrusionEntity(std::move(commands), false, false, true));
+
+        std::string error;
+        CHECK_FALSE(Steps::StepGenerateGcode::validate_pre(print, &error));
+        CHECK(error.find("invalid TOOLCHANGE value") != std::string::npos);
     }
 
     SECTION("the selected tool remains available to later after events") {
@@ -1975,7 +1998,7 @@ TEST_CASE("E-only unretraction resolves zero speed per extruder without inherite
           "[plugins][gcode][firmware][retraction][deretract-zero]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
-    const uint16_t tool_id = GENERATE(uint16_t(0), uint16_t(1));
+    const extruder_index_t tool_id = GENERATE(extruder_index_t(0), extruder_index_t(1));
     const bool explicit_speed = GENERATE(false, true);
     Print print;
     select_printing_plan_writer(print);

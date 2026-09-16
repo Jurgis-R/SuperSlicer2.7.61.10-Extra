@@ -642,10 +642,10 @@ static std::vector<TravelPoint> simplify_travel(const AvoidCrossingPerimeters::B
 // called by get_perimeter_spacing() / get_perimeter_spacing_external()
 static inline coord_t get_default_perimeter_spacing(const PrintObject &print_object)
 {
-    std::set<uint16_t> printing_extruders = print_object.object_extruders();
+    std::set<extruder_index_t> printing_extruders = print_object.object_extruders();
     assert(!printing_extruders.empty());
     coord_t avg_extruder = 0;
-    for(uint16_t extruder_id : printing_extruders)
+    for(extruder_index_t extruder_id : printing_extruders)
         avg_extruder += scale_i(print_object.print()->config().nozzle_diameter.get_at(extruder_id));
     avg_extruder /= printing_extruders.size();
     return avg_extruder;
@@ -2203,7 +2203,7 @@ static std::vector<std::pair<ExPolygon, ExPolygon>> inner_offset(const ExPolygon
 //#define INCLUDE_SUPPORTS_IN_BOUNDARY
 
 // called by AvoidCrossingPerimeters::travel_to()
-static ExPolygons get_boundary(const Layer &layer, uint16_t extruder_id, std::vector<std::pair<ExPolygon, ExPolygon>> &slice_2_boundary, ExPolygons &to_avoid)
+static ExPolygons get_boundary(const Layer &layer, extruder_index_t extruder_id, std::vector<std::pair<ExPolygon, ExPolygon>> &slice_2_boundary, ExPolygons &to_avoid)
 {
     const coord_t perimeter_spacing = get_perimeter_spacing(layer);
     const bool support_layer = layer.get_property<LayerSupportProperty>() != nullptr;

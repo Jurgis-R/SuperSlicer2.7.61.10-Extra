@@ -19,6 +19,7 @@
 #include "libslic3r/EdgeGrid.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/Point.hpp"
+#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
@@ -45,7 +46,7 @@ public:
         const Layer &layer;
         Point start;
         Point origin;
-        uint16_t extruder_id;
+        extruder_index_t extruder_id;
         double max_detour;
         bool max_detour_is_percent;
     };
@@ -65,7 +66,7 @@ public:
         const Layer &layer;
         const std::vector<const Layer *> &already_printed_object_layers;
         uint64_t instance_id;
-        uint16_t extruder_id;
+        extruder_index_t extruder_id;
         coord_t nozzle_radius;
         std::function<void()> throw_if_canceled;
     };
@@ -170,7 +171,7 @@ private:
         const Layer *layer = nullptr;
         const PrintObject *object = nullptr;
         uint64_t instance_id = uint64_t(-1);
-        uint16_t extruder_id = uint16_t(-1);
+        extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
         coord_t nozzle_radius = 0;
     };
 

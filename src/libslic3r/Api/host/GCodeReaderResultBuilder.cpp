@@ -50,6 +50,16 @@ constexpr double MM_PER_ARC_SEGMENT = 1.0;
 using RegionIslandLookup = std::unordered_map<const LayerRegionIsland *,
                                               const LayerSliceIsland *>;
 
+// Reader state carries tool ids as uint32_t. Convert only after enforcing the
+// signed public identity range used by the historical viewer result.
+extruder_index_t checked_extruder_index(const uint32_t tool)
+{
+    if (tool > static_cast<uint32_t>(std::numeric_limits<extruder_index_t>::max()))
+        throw std::out_of_range(
+            "A Reader extruder id cannot be represented by extruder_index_t.");
+    return static_cast<extruder_index_t>(tool);
+}
+
 // Record the owning geometric island for every region bucket of one trusted
 // source layer. The lookup lets the plan recover boundaries without storing a
 // redundant parent pointer in each PrintingExtrusion.
@@ -400,6 +410,7 @@ void GCodeReaderResultBuilder::process_tool_change(
     uint32_t new_tool)
 {
     ensure_tool(new_tool);
+    const extruder_index_t extruder_id = checked_extruder_index(new_tool);
 
     const Vec3d position(
         state_value_or(state, RAW_GCODE_READER_ITEM_X, 0.0),
@@ -417,7 +428,7 @@ void GCodeReaderResultBuilder::process_tool_change(
         state, RAW_GCODE_READER_ITEM_TOOL_FAN, 0.0, new_tool));
     m_result.moves.emplace_back(
         line + 1u, EMoveType::Tool_change, viewer_role(state),
-        static_cast<uint8_t>(std::min<uint32_t>(new_tool, UINT8_MAX)),
+        extruder_id,
         static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
         viewer_object_id(state),
         Vec3f(static_cast<float>(position.x() + offset_x),
@@ -584,6 +595,7 @@ void GCodeReaderResultBuilder::process_marker(
 
     const uint32_t tool = state.active_tool().value_or(0);
     ensure_tool(tool);
+    const extruder_index_t extruder_id = checked_extruder_index(tool);
     if (type == EMoveType::Color_change)
         m_current_color = std::max<uint32_t>(m_current_color + 1u,
             static_cast<uint32_t>(std::min<size_t>(m_result.extruders_count,
@@ -614,7 +626,7 @@ void GCodeReaderResultBuilder::process_marker(
         gcode_id, // uint32_t gcode_id
         type, // EMoveType type
         viewer_role(state), // GCodeExtrusionRole extrusion_role
-        static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)), // uint8_t extruder_id
+        extruder_id, // extruder_index_t extruder_id
         static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)), // uint8_t cp_color_id
         viewer_object_id(state), // uint16_t object_id
         Vec3f(static_cast<float>(state_value_or(state, RAW_GCODE_READER_ITEM_X, 0.0) + offset_x),
@@ -728,6 +740,7 @@ void GCodeReaderResultBuilder::append_move(
     const std::optional<uint32_t> active_tool = state.active_tool();
     const uint32_t tool = active_tool.value_or(0);
     ensure_tool(tool);
+    const extruder_index_t extruder_id = checked_extruder_index(tool);
     const Vec3d delta = end - start;
     const double xyz_distance = delta.norm();
     const bool xyz_changed = xyz_distance > EPSILON;
@@ -822,7 +835,7 @@ void GCodeReaderResultBuilder::append_move(
 
     m_result.moves.emplace_back(
         line + 1u, type, role,
-        static_cast<uint8_t>(std::min<uint32_t>(tool, UINT8_MAX)),
+        extruder_id,
         static_cast<uint8_t>(std::min<uint32_t>(m_current_color, UINT8_MAX)),
         viewer_object_id(state),
         Vec3f(static_cast<float>(end.x() + offset_x),
@@ -842,10 +855,10 @@ void GCodeReaderResultBuilder::append_move(
         m_result.print_statistics.modes[0].travel_time += elapsed;
 
     if (volume > 0.0) {
-        m_result.print_statistics.volumes_per_extruder[tool] += volume;
+        m_result.print_statistics.volumes_per_extruder[extruder_id] += volume;
         const uint16_t object = viewer_object_id(state);
         if (object != GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE)
-            m_result.print_statistics.volumes_per_role_per_extruder_per_object[object][tool][role] += volume;
+            m_result.print_statistics.volumes_per_role_per_extruder_per_object[object][extruder_id][role] += volume;
         const double length_m = filament_area > 0.0 ? volume / filament_area * 0.001 : 0.0;
         const double density = vector_value_or(
             m_result.filament_densities, tool, DEFAULT_VIEWER_FILAMENT_DENSITY);
@@ -856,7 +869,7 @@ void GCodeReaderResultBuilder::append_move(
         role_filament.second += mass_g;
         const double cost_per_kg = vector_value_or(
             m_result.filament_cost, tool, DEFAULT_VIEWER_FILAMENT_COST);
-        m_result.print_statistics.cost_per_extruder[tool] += mass_g * cost_per_kg * 0.001;
+        m_result.print_statistics.cost_per_extruder[extruder_id] += mass_g * cost_per_kg * 0.001;
         if (m_color_volumes.size() <= m_current_color)
             m_color_volumes.resize(static_cast<size_t>(m_current_color) + 1, 0.0);
         m_color_volumes[m_current_color] += volume;
@@ -865,9 +878,7 @@ void GCodeReaderResultBuilder::append_move(
 
 void GCodeReaderResultBuilder::ensure_tool(uint32_t tool)
 {
-    if (tool > UINT8_MAX)
-        throw std::invalid_argument(
-            "The G-code viewer cannot represent a tool id above 255.");
+    (void)checked_extruder_index(tool);
     const size_t required = static_cast<size_t>(tool) + 1;
     if (m_retracted_filament.size() < required)
         m_retracted_filament.resize(required, 0.0);

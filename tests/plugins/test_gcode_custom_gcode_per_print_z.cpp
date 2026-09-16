@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -151,6 +152,23 @@ TEST_CASE("Custom height record reader validates the complete table",
     record.set_key_value(CustomGCode::PrintRecordExtraKey,
                          new ConfigOptionStrings({"only one row"}));
     CHECK_THROWS_AS(read_custom_gcode_per_print_z(print_view), std::runtime_error);
+}
+
+TEST_CASE("Custom height row tools validate before zero-based conversion",
+          "[plugins][gcode][custom-per-print-z][extruder-index]")
+{
+    CustomGCodeRow row;
+    row.extruder = 1;
+    CHECK(custom_gcode_row_extruder_index(row, 2) == extruder_index_t(0));
+    row.extruder = 2;
+    CHECK(custom_gcode_row_extruder_index(row, 2) == extruder_index_t(1));
+
+    for (const int32_t invalid : { -1, 0, 3 }) {
+        row.extruder = invalid;
+        CHECK_THROWS_AS(custom_gcode_row_extruder_index(row, 2), std::out_of_range);
+    }
+    row.extruder = 32769;
+    CHECK_THROWS_AS(custom_gcode_row_extruder_index(row, 32769), std::out_of_range);
 }
 
 TEST_CASE("Custom height rows map to the first matching layer in model order",

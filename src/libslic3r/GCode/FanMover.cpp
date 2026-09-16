@@ -5,6 +5,9 @@
 
 #include "FanMover.hpp"
 
+#include <limits>
+#include <stdexcept>
+
 #include <boost/log/trivial.hpp>
 
 #include "GCodeReader.hpp"
@@ -250,7 +253,9 @@ void FanMover::_process_T(const std::string_view command)
 {
     if (command.length() > 1 && command[1] >= '0' && command[1] <= '9') {
         int eid = 0;
-        if (!FanMover_func::parse_number(command.substr(1), eid) || eid < 0 || eid > 255) {
+        if (!FanMover_func::parse_number(command.substr(1), eid) ||
+            eid == EXTRUDER_ID_UNKNOWN || eid < EXTRUDER_ID_UNKNOWN ||
+            eid > (std::numeric_limits<extruder_index_t>::max)()) {
             GCodeFlavor flavor = m_writer.config.gcode_flavor;
             // Specific to the MMU2 V2 (see https://www.help.prusa3d.com/en/article/prusa-specific-g-codes_112173):
             if ((flavor == gcfMarlinLegacy || flavor == gcfMarlinFirmware) && (command == "Tx" || command == "Tc" || command == "T?"))
@@ -258,9 +263,9 @@ void FanMover::_process_T(const std::string_view command)
 
             // T-1 is a valid gcode line for RepRap Firmwares (used to deselects all tools) see https://github.com/prusa3d/PrusaSlicer/issues/5677
             if ((flavor != gcfRepRap && flavor != gcfSprinter) || eid != -1)
-                m_current_extruder = static_cast<uint16_t>(0);
+                m_current_extruder = 0;
         } else {
-            m_current_extruder = static_cast<uint16_t>(eid);
+            m_current_extruder = static_cast<extruder_index_t>(eid);
         }
     }
 }
@@ -282,18 +287,22 @@ void FanMover::_process_ACTIVATE_EXTRUDER(const std::string_view cmd)
             // we have a "name". It may be whatever or "extruder" + X
             for (const Extruder &extruder : m_writer.extruders()) {
                 if (m_writer.config.tool_name.get_at(extruder.id()) == extruder_name) {
-                    m_current_extruder = static_cast<uint16_t>(extruder.id());
+                    if (extruder.id() > uint16_t(std::numeric_limits<extruder_index_t>::max()))
+                        throw std::out_of_range("FanMover extruder index exceeds extruder_index_t");
+                    m_current_extruder = static_cast<extruder_index_t>(extruder.id());
                     return;
                 }
             }
             std::string extruder_str("extruder");
             if (extruder_str == extruder_name) {
-                m_current_extruder = static_cast<uint16_t>(0);
+                m_current_extruder = 0;
                 return;
             }
             for (const Extruder &extruder : m_writer.extruders()) {
                 if (extruder_str + std::to_string(extruder.id()) == extruder_name) {
-                    m_current_extruder = static_cast<uint16_t>(extruder.id());
+                    if (extruder.id() > uint16_t(std::numeric_limits<extruder_index_t>::max()))
+                        throw std::out_of_range("FanMover extruder index exceeds extruder_index_t");
+                    m_current_extruder = static_cast<extruder_index_t>(extruder.id());
                     return;
                 }
             }

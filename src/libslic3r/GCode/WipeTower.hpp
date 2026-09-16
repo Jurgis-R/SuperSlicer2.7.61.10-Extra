@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "libslic3r/Point.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_def.h"
 
 namespace Slic3r
 {
@@ -40,14 +41,14 @@ public:
 
     struct Extrusion
     {
-		Extrusion(const Vec2f &pos, float width, uint16_t tool) : pos(pos), width(width), tool(tool) {}
+		Extrusion(const Vec2f &pos, float width, extruder_index_t tool) : pos(pos), width(width), tool(tool) {}
 		// End position of this extrusion.
 		Vec2f				pos;
 		// Width of a squished extrusion, corrected for the roundings of the squished extrusions.
 		// This is left zero if it is a travel move.
 		float 			width;
 		// Current extruder index.
-		uint16_t    tool;
+		extruder_index_t tool;
 	};
 
 	struct ToolChangeResult
@@ -80,10 +81,10 @@ public:
         std::vector<Vec2f> wipe_path;
 
         // Initial tool
-        int initial_tool;
+        extruder_index_t initial_tool;
 
         // New tool
-        int new_tool;
+        extruder_index_t new_tool;
 
 		// Sum the total length of the extrusion.
 		float total_extrusion_length_in_plane() {
@@ -136,7 +137,7 @@ public:
     // WipeTowerWriter is moved from !
     ToolChangeResult construct_tcr(WipeTowerWriter& writer,
                                    bool priming,
-                                   size_t old_tool) const;
+                                   extruder_index_t old_tool) const;
 
 	// x			-- x coordinates of wipe tower in mm ( left bottom corner )
 	// y			-- y coordinates of wipe tower in mm ( left bottom corner )
@@ -146,14 +147,14 @@ public:
               const PrintObjectConfig& default_object_config,
               const PrintRegionConfig& default_region_config,
               const std::vector<std::vector<float>>& wiping_matrix,
-              size_t initial_tool);
+              extruder_index_t initial_tool);
 
 	// Set the extruder properties.
-    void set_extruder(size_t idx);
+    void set_extruder(extruder_index_t idx);
 
 	// Appends into internal structure m_plan containing info about the future wipe tower
 	// to be used before building begins. The entries must be added ordered in z.
-    void plan_toolchange(float z_par, float layer_height_par, uint16_t old_tool, uint16_t new_tool, float wipe_volume = 0.f);
+    void plan_toolchange(float z_par, float layer_height_par, extruder_index_t old_tool, extruder_index_t new_tool, float wipe_volume = 0.f);
 
 	// Iterates through prepared m_plan, generates ToolChangeResults and appends them to "result"
 	void generate(std::vector<std::vector<ToolChangeResult>> &result);
@@ -215,14 +216,14 @@ public:
 		// print_z of the first layer.
 		float 						first_layer_height, 
 		// Extruder indices, in the order to be primed. The last extruder will later print the wipe tower brim, print brim and the object.
-		const std::vector<uint16_t> &tools,
+		const std::vector<extruder_index_t> &tools,
 		// If true, the last priming are will be the same as the other priming areas, and the rest of the wipe will be performed inside the wipe tower.
 		// If false, the last priming are will be large enough to wipe the last extruder sufficiently.
 		bool 						last_wipe_inside_wipe_tower);
 
 	// Returns gcode for a toolchange and a final print head position.
 	// On the first layer, extrude a brim around the future wipe tower first.
-    ToolChangeResult tool_change(size_t new_tool);
+    ToolChangeResult tool_change(extruder_index_t new_tool);
 
 	// Fill the unfilled space with a sparse infill.
 	// Call this method only if layer_finished() is false.
@@ -344,7 +345,7 @@ private:
 	bool m_print_brim = true;
 	// A fill-in direction (positive Y, negative Y) alternates with each layer.
 	wipe_shape   	m_current_shape = SHAPE_NORMAL;
-    size_t 	m_current_tool  = 0;
+    extruder_index_t m_current_tool = 0;
     const std::vector<std::vector<float>> wipe_volumes;
 
 	float           m_depth_traversed = 0.f; // Current y position at the wipe tower.
@@ -380,13 +381,13 @@ private:
     // to store information about tool changes for a given layer
 	struct WipeTowerInfo{
 		struct ToolChange {
-            size_t old_tool;
-            size_t new_tool;
+			extruder_index_t old_tool;
+			extruder_index_t new_tool;
 			float required_depth;
             float ramming_depth;
             float first_wipe_line;
             float wipe_volume;
-            ToolChange(size_t old, size_t newtool, float depth=0.f, float ramming_depth=0.f, float fwl=0.f, float wv=0.f)
+            ToolChange(extruder_index_t old, extruder_index_t newtool, float depth=0.f, float ramming_depth=0.f, float fwl=0.f, float wv=0.f)
             : old_tool{old}, new_tool{newtool}, required_depth{depth}, ramming_depth{ramming_depth}, first_wipe_line{fwl}, wipe_volume{wv} {}
 		};
 		float z;		// z position of the layer
@@ -422,11 +423,11 @@ private:
 		WipeTowerWriter &writer,
 		const box_coordinates  &cleaning_box, 
 		const int 				new_temperature,
-        const size_t            temp_tool);
+        extruder_index_t temp_tool);
 
 	void toolchange_Change(
 		WipeTowerWriter &writer,
-        const size_t		new_tool);
+        extruder_index_t new_tool);
 	
 	void toolchange_Load(
 		WipeTowerWriter &writer,

@@ -78,29 +78,40 @@ coord_t z_step_unit(coord_t z_step)
     return z_step > SCALED_EPSILON ? z_step : 1;
 }
 
-uint32_t config_extruder_idx(int extruder_id)
+extruder_index_t config_extruder_idx(int extruder_id, const ConfigOption &nozzle_diameter)
 {
     // Config values use 1-based extruder ids where 0 means "default". The
     // vector options in ConfigOption are indexed from zero.
-    return extruder_id > 0 ? uint32_t(extruder_id - 1) : 0;
+    const uint32_t count = nozzle_diameter.size();
+    if (count == 0)
+        return EXTRUDER_ID_UNKNOWN;
+    const int64_t requested = int64_t(extruder_id);
+    const int64_t candidate = requested > 0 ? requested - 1 : 0;
+    const uint32_t idx = candidate >= 0 && uint64_t(candidate) < count ?
+        uint32_t(candidate) : count - 1;
+    if (idx > uint32_t((std::numeric_limits<extruder_index_t>::max)()))
+        return EXTRUDER_ID_UNKNOWN;
+    return static_cast<extruder_index_t>(idx);
 }
 
-void insert_config_extruder_idx(std::set<uint16_t> &extruders, const ConfigOption &nozzle_diameter, int extruder_id)
+void insert_config_extruder_idx(std::set<extruder_index_t> &extruders,
+                                const ConfigOption &nozzle_diameter,
+                                int extruder_id)
 {
     // Clamp to an existing nozzle entry. Invalid or stale extruder ids should
     // not make this planning plugin fail; they fall back to the last known
     // configured nozzle diameter, matching the defensive style of config code.
-    const uint32_t count = nozzle_diameter.size();
-    const uint32_t idx = std::min(config_extruder_idx(extruder_id), count > 0 ? count - 1 : 0);
-    extruders.insert(uint16_t(idx));
+    const extruder_index_t idx = config_extruder_idx(extruder_id, nozzle_diameter);
+    if (idx != EXTRUDER_ID_UNKNOWN)
+        extruders.insert(idx);
 }
 
-std::set<uint16_t> object_extruders(Print print, Object object)
+std::set<extruder_index_t> object_extruders(Print print, Object object)
 {
     // Layer height limits are constrained by every extruder that may print this
     // object. Scan all print regions and collect the extruders used by
     // perimeters, brim, sparse infill and solid infill.
-    std::set<uint16_t> extruders;
+    std::set<extruder_index_t> extruders;
     const Config print_config = print.config();
     const Config object_config = object.config();
     const ConfigOption nozzle_diameter = print_config.get("nozzle_diameter");
@@ -127,31 +138,35 @@ std::set<uint16_t> object_extruders(Print print, Object object)
     return extruders;
 }
 
-coord_t min_layer_height_from_nozzle(const Config &print_config, uint32_t extruder_idx)
+coord_t min_layer_height_from_nozzle(const Config &print_config, extruder_index_t extruder_idx)
 {
     // min_layer_height may be expressed relative to nozzle diameter. Resolve it
     // for one extruder, apply the physical minimum, then snap to z_step.
     const ConfigOption nozzle_diameter_opt = print_config.get("nozzle_diameter");
-    const uint32_t nozzle_idx = extruder_idx < nozzle_diameter_opt.size() ? extruder_idx : 0;
+    const uint32_t nozzle_idx = extruder_idx != EXTRUDER_ID_UNKNOWN &&
+        uint32_t(extruder_idx) < nozzle_diameter_opt.size() ? uint32_t(extruder_idx) : 0;
     const double nozzle_diameter = nozzle_diameter_opt.get_float(nozzle_idx);
     const ConfigOption min_layer_height_opt = print_config.get("min_layer_height");
-    const uint32_t value_idx = extruder_idx < min_layer_height_opt.size() ? extruder_idx : 0;
+    const uint32_t value_idx = extruder_idx != EXTRUDER_ID_UNKNOWN &&
+        uint32_t(extruder_idx) < min_layer_height_opt.size() ? uint32_t(extruder_idx) : 0;
     double value = min_layer_height_opt.get_effective_value(nozzle_diameter, value_idx);
     if (value == 0.0)
         value = nozzle_diameter / 2.0;
     return check_z_step(scale_i(std::max(MIN_LAYER_HEIGHT, value)), scale_i(print_config.get("z_step").get_float()));
 }
 
-coord_t max_layer_height_from_nozzle(const Config &print_config, uint32_t extruder_idx)
+coord_t max_layer_height_from_nozzle(const Config &print_config, extruder_index_t extruder_idx)
 {
     // A disabled or zero max_layer_height means the usual 75% of nozzle
     // diameter. The max must never fall below the resolved minimum for the same
     // extruder.
     const ConfigOption nozzle_diameter_opt = print_config.get("nozzle_diameter");
-    const uint32_t nozzle_idx = extruder_idx < nozzle_diameter_opt.size() ? extruder_idx : 0;
+    const uint32_t nozzle_idx = extruder_idx != EXTRUDER_ID_UNKNOWN &&
+        uint32_t(extruder_idx) < nozzle_diameter_opt.size() ? uint32_t(extruder_idx) : 0;
     const double nozzle_diameter = nozzle_diameter_opt.get_float(nozzle_idx);
     const ConfigOption max_layer_height_opt = print_config.get("max_layer_height");
-    const uint32_t value_idx = extruder_idx < max_layer_height_opt.size() ? extruder_idx : 0;
+    const uint32_t value_idx = extruder_idx != EXTRUDER_ID_UNKNOWN &&
+        uint32_t(extruder_idx) < max_layer_height_opt.size() ? uint32_t(extruder_idx) : 0;
     double value = max_layer_height_opt.get_effective_value(nozzle_diameter, value_idx);
     if (value == 0.0 || !max_layer_height_opt.is_enabled(value_idx))
         value = 0.75 * nozzle_diameter;
@@ -166,7 +181,7 @@ LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, O
     // tightest min/max layer height range across all relevant extruders.
     const Config print_config = print.config();
     const Config object_config = object.config();
-    const std::set<uint16_t> extruders = object_extruders(print, object);
+    const std::set<extruder_index_t> extruders = object_extruders(print, object);
 
     LayerHeightSlicingParameters out;
     out.z_step = scale_i(print_config.get("z_step").get_float());
@@ -180,10 +195,11 @@ LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, O
         // smallest effective value among object extruders so every active
         // extruder can print the first layer.
         first_layer_height = std::numeric_limits<coord_t>::max();
-        for (uint16_t extruder_idx : extruders) {
-            if (extruder_idx >= nozzle_diameter_opt.size())
+        for (extruder_index_t extruder_idx : extruders) {
+            if (extruder_idx == EXTRUDER_ID_UNKNOWN ||
+                uint32_t(extruder_idx) >= nozzle_diameter_opt.size())
                 continue;
-            const double nozzle = nozzle_diameter_opt.get_float(extruder_idx);
+            const double nozzle = nozzle_diameter_opt.get_float(uint32_t(extruder_idx));
             first_layer_height = std::min(first_layer_height, scale_i(first_layer_height_opt.get_effective_value(nozzle)));
         }
         if (first_layer_height == std::numeric_limits<coord_t>::max())
@@ -213,14 +229,20 @@ LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, O
         const int support_extruder = object_config.get("support_material_extruder").get_int();
         const int support_interface_extruder = object_config.get("support_material_interface_extruder").get_int();
         if (support_extruder > 0) {
-            const uint32_t idx = config_extruder_idx(support_extruder);
-            min_layer_height = std::max(min_layer_height, min_layer_height_from_nozzle(print_config, idx));
-            max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, idx));
+            const extruder_index_t idx = config_extruder_idx(
+                support_extruder, nozzle_diameter_opt);
+            if (idx != EXTRUDER_ID_UNKNOWN) {
+                min_layer_height = std::max(min_layer_height, min_layer_height_from_nozzle(print_config, idx));
+                max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, idx));
+            }
         }
         if (support_interface_extruder > 0) {
-            const uint32_t idx = config_extruder_idx(support_interface_extruder);
-            min_layer_height = std::max(min_layer_height, min_layer_height_from_nozzle(print_config, idx));
-            max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, idx));
+            const extruder_index_t idx = config_extruder_idx(
+                support_interface_extruder, nozzle_diameter_opt);
+            if (idx != EXTRUDER_ID_UNKNOWN) {
+                min_layer_height = std::max(min_layer_height, min_layer_height_from_nozzle(print_config, idx));
+                max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, idx));
+            }
         }
     }
 
@@ -230,7 +252,7 @@ LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, O
         min_layer_height = std::max(min_layer_height, min_layer_height_from_nozzle(print_config, 0));
         max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, 0));
     } else {
-        for (uint16_t extruder_idx : extruders) {
+        for (extruder_index_t extruder_idx : extruders) {
             min_layer_height = std::max(min_layer_height, min_layer_height_from_nozzle(print_config, extruder_idx));
             max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, extruder_idx));
         }

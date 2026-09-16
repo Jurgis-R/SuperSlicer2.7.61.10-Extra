@@ -585,7 +585,7 @@ layer_region_island_handle *layer_island_get_or_create_region_island(
     layer_island_handle *island_handle,
     const layer_region_handle *const *region_handles,
     uint32_t region_count,
-    int32_t extruder_id)
+    extruder_index_t extruder_id)
 {
     Slic3r::LayerSliceIsland *island = Slic3r::to_layer_island(island_handle);
     if (island == nullptr)
@@ -607,16 +607,13 @@ layer_region_island_handle *layer_island_get_or_create_region_island(
     if (regions.empty())
         return nullptr;
 
-    // uint16_t(-1) is the host-side sentinel for "no concrete extruder".
-    // Accept it only through negative input so a real extruder id cannot
-    // accidentally collide with the sentinel value.
-    if (extruder_id > int32_t(std::numeric_limits<uint16_t>::max() - 1))
+    // Reject malformed negative identities instead of silently converting
+    // them into the one public unknown-extruder sentinel.
+    if (extruder_id < EXTRUDER_ID_UNKNOWN)
         return nullptr;
-    const uint16_t native_extruder_id =
-        extruder_id < 0 ? uint16_t(-1) : uint16_t(extruder_id);
 
     Slic3r::LayerRegionIsland &region_island =
-        island->get_or_add_region_island(regions, native_extruder_id);
+        island->get_or_add_region_island(regions, extruder_id);
     return reinterpret_cast<layer_region_island_handle *>(&region_island);
 }
 
@@ -649,12 +646,10 @@ const layer_island_handle *layer_island_get_upper_island(const layer_island_hand
     return reinterpret_cast<const layer_island_handle *>(Slic3r::to_layer_island(me)->overlaps_above[idx].to);
 }
 
-int32_t layer_region_island_extruder_id(const layer_region_island_handle *me) {
+extruder_index_t layer_region_island_extruder_id(const layer_region_island_handle *me) {
     if (me == nullptr)
-        return -1;
-    uint16_t extruder_id = Slic3r::to_layer_region_island(me)->extruder_id();
-    // correctly convert -1
-    return extruder_id == uint16_t(-1) ? int32_t(-1) : static_cast<int32_t>(extruder_id);
+        return EXTRUDER_ID_UNKNOWN;
+    return Slic3r::to_layer_region_island(me)->extruder_id();
 }
 
 int32_t layer_region_island_has_extrusions(const layer_region_island_handle *me)

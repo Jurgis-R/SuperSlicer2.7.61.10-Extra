@@ -294,7 +294,7 @@ ExtrusionEntityUPtr make_arc_loop()
     return std::make_unique<ExtrusionEntity>(false, std::move(polyline));
 }
 
-PrintingToolGroup &make_plan_with_tool(Print &print, const uint16_t extruder = 0)
+PrintingToolGroup &make_plan_with_tool(Print &print, const extruder_index_t extruder = 0)
 {
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();

@@ -13,7 +13,7 @@ SCENARIO("lift() is not ignored after unlift() at normal values of Z", "[GCodeWr
         GCodeConfig &config = writer.config;
         config.load(std::string(TEST_DATA_DIR) + "/fff_print_tests/test_gcodewriter/config_lift_unlift.ini", ForwardCompatibilitySubstitutionRule::Disable);
 
-        std::vector<uint16_t> extruder_ids {0};
+        std::vector<extruder_index_t> extruder_ids {0};
         writer.set_extruders(extruder_ids);
         writer.set_tool(0);
 

@@ -607,9 +607,9 @@ void Print::active_step_add_warning(PrintStateBase::WarningLevel warning_level, 
 }
 
 // returns 0-based indices of used extruders
-std::set<uint16_t> Print::object_extruders(const PrintObjectPtrs &objects, coord_t z /*= -1*/) const
+std::set<extruder_index_t> Print::object_extruders(const PrintObjectPtrs &objects, coord_t z /*= -1*/) const
 {
-    std::set<uint16_t> extruders;
+    std::set<extruder_index_t> extruders;
     for (const PrintObject *object : objects) {
         std::vector<std::reference_wrapper<const PrintRegion>> ok_regions;
         if (z < 0) {
@@ -640,7 +640,7 @@ std::set<uint16_t> Print::object_extruders(const PrintObjectPtrs &objects, coord
     }
     return extruders;
 }
-std::set<uint16_t> Print::object_extruders(coord_t z /*= -1*/) const
+std::set<extruder_index_t> Print::object_extruders(coord_t z /*= -1*/) const
 {
     PrintObjectPtrs objects;
     objects.reserve(m_objects.size());
@@ -650,11 +650,11 @@ std::set<uint16_t> Print::object_extruders(coord_t z /*= -1*/) const
 }
 
 // returns 0-based indices of used extruders
-std::set<uint16_t> Print::support_material_extruders(coord_t z /*= -1*/) const
+std::set<extruder_index_t> Print::support_material_extruders(coord_t z /*= -1*/) const
 {
-    std::set<uint16_t> extruders;
+    std::set<extruder_index_t> extruders;
     bool support_uses_current_extruder = false;
-    auto num_extruders = (uint16_t)m_config.nozzle_diameter.size();
+    const size_t num_extruders = m_config.nozzle_diameter.size();
 
     for (const PrintObjectUPtr &object : m_objects) {
         if (object->has_support_material()) {
@@ -676,8 +676,10 @@ std::set<uint16_t> Print::support_material_extruders(coord_t z /*= -1*/) const
                 if (object->config().support_material_extruder == 0)
                     support_uses_current_extruder = true;
                 else {
-                    uint16_t i = (uint16_t) object->config().support_material_extruder - 1;
-                    extruders.insert((i >= num_extruders) ? 0 : i);
+                    const size_t index = size_t(object->config().support_material_extruder.value - 1);
+                    if (index > size_t(std::numeric_limits<extruder_index_t>::max()))
+                        throw std::invalid_argument("A support extruder index exceeds extruder_index_t.");
+                    extruders.insert(static_cast<extruder_index_t>(index >= num_extruders ? 0 : index));
                 }
             }
             if (has_support && has_support_interface) {
@@ -685,8 +687,10 @@ std::set<uint16_t> Print::support_material_extruders(coord_t z /*= -1*/) const
                 if (object->config().support_material_interface_extruder == 0)
                     support_uses_current_extruder = true;
                 else {
-                    uint16_t i = (uint16_t)object->config().support_material_interface_extruder - 1;
-                    extruders.insert((i >= num_extruders) ? 0 : i);
+                    const size_t index = size_t(object->config().support_material_interface_extruder.value - 1);
+                    if (index > size_t(std::numeric_limits<extruder_index_t>::max()))
+                        throw std::invalid_argument("A support interface extruder index exceeds extruder_index_t.");
+                    extruders.insert(static_cast<extruder_index_t>(index >= num_extruders ? 0 : index));
                 }
             }
         }
@@ -700,9 +704,9 @@ std::set<uint16_t> Print::support_material_extruders(coord_t z /*= -1*/) const
 }
 
 // returns 0-based indices of used extruders
-std::set<uint16_t> Print::extruders(coord_t z /*= -1*/) const
+std::set<extruder_index_t> Print::extruders(coord_t z /*= -1*/) const
 {
-    std::set<uint16_t> extruders = this->object_extruders(z);
+    std::set<extruder_index_t> extruders = this->object_extruders(z);
     append(extruders, this->support_material_extruders(z));
 
     if (z < 0) {
@@ -711,7 +715,10 @@ std::set<uint16_t> Print::extruders(coord_t z /*= -1*/) const
         if (has_wipe_tower() && m_default_object_config.wipe_tower_extruder != 0 && extruders.size() > 1) {
             assert(m_default_object_config.wipe_tower_extruder > 0 &&
                    m_default_object_config.wipe_tower_extruder < int(m_config.nozzle_diameter.size()));
-            extruders.insert(uint16_t(m_default_object_config.wipe_tower_extruder.value - 1)); // the config value is 1-based
+            const int32_t zero_based = m_default_object_config.wipe_tower_extruder.value - 1;
+            if (zero_based > std::numeric_limits<extruder_index_t>::max())
+                throw std::invalid_argument("The wipe tower extruder index exceeds extruder_index_t.");
+            extruders.insert(static_cast<extruder_index_t>(zero_based)); // the config value is 1-based
         }
     }
 
@@ -723,7 +730,7 @@ int32_t Print::first_layer_bed_temperature() const {
         return m_config.print_first_layer_bed_temperature.value;
 
     int32_t temperature = 0;
-    for (uint16_t extruder_id : this->extruders(0))
+    for (extruder_index_t extruder_id : this->extruders(0))
         temperature = std::max(temperature, m_config.first_layer_bed_temperature.get_at(extruder_id));
     return temperature;
 }
@@ -739,7 +746,7 @@ uint16_t Print::num_object_instances() const
 double Print::max_allowed_layer_height() const
 {
     double nozzle_diameter_max = 0.;
-    for (unsigned int extruder_id : this->extruders())
+    for (extruder_index_t extruder_id : this->extruders())
         nozzle_diameter_max = std::max(nozzle_diameter_max, m_config.nozzle_diameter.get_at(extruder_id));
     return nozzle_diameter_max;
 }
@@ -900,12 +907,12 @@ coord_t Print::get_object_first_layer_height(const PrintObject& object) const {
     //get object first layer height
     coord_t object_first_layer_height = scale_to_layer_coord(object.config().first_layer_height.value);
     if (object.config().first_layer_height.percent) {
-        std::set<uint16_t> object_extruders;
+        std::set<extruder_index_t> object_extruders;
         for (const PrintRegion& region : object.all_regions()) {
             PrintRegion::collect_object_printing_extruders(config(), object.config(), region.config(), object_extruders);
         }
         object_first_layer_height = 1000000000;
-        for (uint16_t extruder_id : object_extruders) {
+        for (extruder_index_t extruder_id : object_extruders) {
             const double nozzle_diameter = config().nozzle_diameter.get_at(extruder_id);
             const coord_t first_layer_height = scale_to_layer_coord(object.config().first_layer_height.get_effective_value(nozzle_diameter));
             object_first_layer_height = std::min(object_first_layer_height, first_layer_height);
@@ -936,7 +943,7 @@ boost::regex regex_g92e0 { "^[ \\t]*[gG]92[ \\t]*[eE](0(\\.0*)?|\\.0+)[ \\t]*(;.
 // Precondition: Print::validate() requires the Print::apply() to be called its invocation.
 std::pair<PrintBase::PrintValidationError, std::string> Print::validate(std::vector<std::string>* warnings) const
 {
-    std::set<uint16_t> extruders = this->extruders();
+    std::set<extruder_index_t> extruders = this->extruders();
 
     if (warnings) {
         for (auto it_a = extruders.begin(); it_a != extruders.end() ;++it_a)
@@ -1043,7 +1050,7 @@ std::pair<PrintBase::PrintValidationError, std::string> Print::validate(std::vec
         // EPSILON comparison is used for nozzles and 10 % tolerance is used for filaments
         double first_nozzle_diam = m_config.nozzle_diameter.get_at(*extruders.begin());
         double first_filament_diam = m_config.filament_diameter.get_at(*extruders.begin());
-        //for (const uint16_t& extruder_idx : extruders) {
+        //for (const extruder_index_t extruder_idx : extruders) {
         //    double nozzle_diam = m_config.nozzle_diameter.get_at(extruder_idx);
         //    double filament_diam = m_config.filament_diameter.get_at(extruder_idx);
         //    if (nozzle_diam - EPSILON > first_nozzle_diam || nozzle_diam + EPSILON < first_nozzle_diam
@@ -1123,7 +1130,7 @@ std::pair<PrintBase::PrintValidationError, std::string> Print::validate(std::vec
 		// Find the smallest used nozzle diameter and the number of unique nozzle diameters.
 		double min_nozzle_diameter = std::numeric_limits<double>::max();
 		double max_nozzle_diameter = 0;
-		for (uint16_t extruder_id : extruders) {
+		for (extruder_index_t extruder_id : extruders) {
 			double dmr = m_config.nozzle_diameter.get_at(extruder_id);
 			min_nozzle_diameter = std::min(min_nozzle_diameter, dmr);
 			max_nozzle_diameter = std::max(max_nozzle_diameter, dmr);
@@ -1190,11 +1197,11 @@ std::pair<PrintBase::PrintValidationError, std::string> Print::validate(std::vec
             
             // validate layer_height for each region
             for (const PrintRegion& region : object->all_regions()) {
-                std::set<uint16_t> object_extruders;
+                std::set<extruder_index_t> object_extruders;
                 PrintRegion::collect_object_printing_extruders(config(), object->config(), region.config(), object_extruders);
                 const coord_t object_first_layer_height = get_object_first_layer_height(*object);
                 const coord_t layer_height = scale_to_layer_coord(object->config().layer_height.value);
-                for (uint16_t extruder_id : object_extruders) {
+                for (extruder_index_t extruder_id : object_extruders) {
                     double nozzle_diameter = config().nozzle_diameter.get_at(extruder_id);
                     const coord_t min_layer_height = scale_to_layer_coord(config().min_layer_height.get_effective_value(nozzle_diameter, extruder_id));
                     coord_t max_layer_height = scale_to_layer_coord(config().max_layer_height.get_effective_value(nozzle_diameter, extruder_id));
@@ -1326,7 +1333,7 @@ BoundingBox Print::total_bounding_box() const
         if (skirts == 0 && this->has_infinite_skirt()) skirts = 1;
         double max_skirt_width = 0;
         double max_skirt_spacing = 0;
-        for (unsigned int extruder_id : this->object_extruders()) {
+        for (extruder_index_t extruder_id : this->object_extruders()) {
             Flow   flow = this->skirt_flow(extruder_id);
             max_skirt_width = std::max(max_skirt_width, flow.width());
             max_skirt_spacing = std::max(max_skirt_spacing, flow.spacing());
@@ -1351,8 +1358,10 @@ BoundingBox Print::total_bounding_box() const
 }
 #endif
 
-Flow Print::brim_flow(size_t extruder_id, const PrintObjectConfig& brim_config) const
+Flow Print::brim_flow(extruder_index_t extruder_id, const PrintObjectConfig& brim_config) const
 {
+    if (extruder_id == EXTRUDER_ID_UNKNOWN || extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("brim_flow requires a concrete extruder index");
     //use default region, but current object config.
     PrintRegionConfig tempConf = m_default_region_config;
     tempConf.parent = &brim_config;
@@ -1366,8 +1375,10 @@ Flow Print::brim_flow(size_t extruder_id, const PrintObjectConfig& brim_config) 
     );
 }
 
-Flow Print::skirt_flow(size_t extruder_id, bool first_layer/*=false*/) const
+Flow Print::skirt_flow(extruder_index_t extruder_id, bool first_layer/*=false*/) const
 {
+    if (extruder_id == EXTRUDER_ID_UNKNOWN || extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("skirt_flow requires a concrete extruder index");
     if (m_objects.empty())
         throw Slic3r::InvalidArgument("skirt_first_layer_height() can't be called without PrintObjects");
 
@@ -1375,12 +1386,12 @@ Flow Print::skirt_flow(size_t extruder_id, bool first_layer/*=false*/) const
     double max_nozzle_diam = 0.f;
     for (const PrintObjectUPtr &pobject : m_objects) {
         PrintObject& object = *pobject;
-        std::set<uint16_t> object_extruders;
+        std::set<extruder_index_t> object_extruders;
         for (const PrintRegion& region : pobject->all_regions()) {
             PrintRegion::collect_object_printing_extruders(config(), object.config(), region.config(), object_extruders);
         }
         //get object first layer extruder diam
-        for (uint16_t extruder_id : object_extruders) {
+        for (extruder_index_t extruder_id : object_extruders) {
             double nozzle_diameter = config().nozzle_diameter.get_at(extruder_id);
             max_nozzle_diam = std::max(max_nozzle_diam, nozzle_diameter);
         }
@@ -1493,11 +1504,11 @@ void Print::process() {
             else if (config().complete_objects_sort.value == cosNearest)
                 instances_ordering = chain_print_object_instances(*this);
             // Find the 1st printing object, find its tool ordering and the initial extruder ID.
-            uint16_t previous_final_extruder = -1;
+            extruder_index_t previous_final_extruder = EXTRUDER_ID_UNKNOWN;
             for (auto it = instances_ordering.begin(); it != instances_ordering.end(); ++it) {
                 m_tool_orderings.emplace_back(*(*it)->print_object, previous_final_extruder);
                 // last_extruder == -1 => nothign to print, so skip
-                if (m_tool_orderings.back().last_extruder() != uint16_t(-1)) {
+                if (m_tool_orderings.back().last_extruder() != EXTRUDER_ID_UNKNOWN) {
                     previous_final_extruder = m_tool_orderings.back().last_extruder();
                 }
             }
@@ -1505,8 +1516,8 @@ void Print::process() {
         } else {
             // Initialize the tool ordering, so it could be used by the G-code preview slider for planning tool
             // changes and filament switches.
-            m_tool_orderings.emplace_back(*this, -1, /*prime_mmu*/ true /*false*/);
-            if (m_tool_orderings.empty() || m_tool_orderings.back().last_extruder() == uint16_t(-1))
+            m_tool_orderings.emplace_back(*this, EXTRUDER_ID_UNKNOWN, /*prime_mmu*/ true /*false*/);
+            if (m_tool_orderings.empty() || m_tool_orderings.back().last_extruder() == EXTRUDER_ID_UNKNOWN)
                 throw Slic3r::SlicingError(
                     "The print is empty. The model is not printable with current print settings.");
 
@@ -1660,11 +1671,11 @@ void Print::process()
             else if (config().complete_objects_sort.value == cosNearest)
                 instances_ordering = chain_print_object_instances(*this);
             // Find the 1st printing object, find its tool ordering and the initial extruder ID.
-            uint16_t previous_final_extruder = -1;
+            extruder_index_t previous_final_extruder = EXTRUDER_ID_UNKNOWN;
             for (auto it = instances_ordering.begin(); it != instances_ordering.end(); ++it) {
                 m_tool_orderings.emplace_back(*(*it)->print_object, previous_final_extruder);
                 // last_extruder == -1 => nothign to print, so skip
-                if (m_tool_orderings.back().last_extruder() != uint16_t(-1)) {
+                if (m_tool_orderings.back().last_extruder() != EXTRUDER_ID_UNKNOWN) {
                     previous_final_extruder = m_tool_orderings.back().last_extruder();
                 }
             }
@@ -1672,8 +1683,8 @@ void Print::process()
         } else {
             // Initialize the tool ordering, so it could be used by the G-code preview slider for planning tool
             // changes and filament switches.
-            m_tool_orderings.emplace_back(*this, -1, /*prime_mmu*/ true /*false*/);
-            if (m_tool_orderings.empty() || m_tool_orderings.back().last_extruder() == uint16_t(-1))
+            m_tool_orderings.emplace_back(*this, EXTRUDER_ID_UNKNOWN, /*prime_mmu*/ true /*false*/);
+            if (m_tool_orderings.empty() || m_tool_orderings.back().last_extruder() == EXTRUDER_ID_UNKNOWN)
                 throw Slic3r::SlicingError(
                     "The print is empty. The model is not printable with current print settings.");
 
@@ -2103,18 +2114,18 @@ void Print::_make_skirt(const PrintObjectPtrs &objects, ExtrusionEntityCollectio
     // Skirt may be printed on several layers, having distinct layer heights,
     // but loops must be aligned so can't vary width/spacing
     
-    std::vector<size_t> extruders;
+    std::vector<extruder_index_t> extruders;
     std::vector<double> extruders_e_per_mm;
     {
-        std::set<uint16_t> set_extruders = this->object_extruders(objects);
+        std::set<extruder_index_t> set_extruders = this->object_extruders(objects);
         append(set_extruders, this->support_material_extruders());
         extruders.reserve(set_extruders.size());
         extruders_e_per_mm.reserve(set_extruders.size());
-        for (unsigned int extruder_id : set_extruders) {
+        for (extruder_index_t extruder_id : set_extruders) {
             Flow   flow = this->skirt_flow(extruder_id);
             double mm3_per_mm = flow.mm3_per_mm();
             extruders.push_back(extruder_id);
-            extruders_e_per_mm.push_back(Extruder((unsigned int)extruder_id, m_config).e_per_mm(mm3_per_mm));
+            extruders_e_per_mm.push_back(Extruder(extruder_id, m_config).e_per_mm(mm3_per_mm));
         }
     }
 

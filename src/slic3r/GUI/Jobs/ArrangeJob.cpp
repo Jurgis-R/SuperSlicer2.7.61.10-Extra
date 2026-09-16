@@ -245,7 +245,7 @@ coord_t get_skirt_offset(const Plater* plater) {
         if (!print.objects().empty() && print.config().skirts.value > 0) {
             double max_skirt_width = 0;
             double max_skirt_spacing = 0;
-            for (unsigned int extruder_id : print.object_extruders()) {
+            for (extruder_index_t extruder_id : print.object_extruders()) {
                 Flow   flow = print.skirt_flow(extruder_id);
                 max_skirt_width = std::max(max_skirt_width, flow.width());
                 max_skirt_spacing = std::max(max_skirt_spacing, flow.spacing());

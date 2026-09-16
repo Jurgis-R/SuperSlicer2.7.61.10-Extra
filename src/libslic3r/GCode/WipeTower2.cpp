@@ -127,7 +127,7 @@ std::vector<const PrintObject *> WipeTower2::WipeTowerLayerData::objects() const
 void WipeTower2::init(const Print *print, const SpanOfConstPtrs<PrintObject> &objects, ToolOrdering &ordering) {
     const coord_t min_wipe_tower_height = 0.1;
     coord_t max_line_width = 0;
-    std::set<uint16_t> init_extruders;
+    std::set<extruder_index_t> init_extruders;
     const ConfigOptionFloatOrPercent &line_width_config = m_object_config->wipe_tower_extrusion_width;
 
     // create a list of all layers ordered by Z
@@ -164,7 +164,7 @@ void WipeTower2::init(const Print *print, const SpanOfConstPtrs<PrintObject> &ob
     }
 
     // now create layer info
-    int16_t last_extruder_id = -1;
+    extruder_index_t last_extruder_id = EXTRUDER_ID_UNKNOWN;
     size_t idx_layer = 0;
     for (auto &ordered_layer_z : ordered_layers_z) {
         assert(idx_layer < ordering.layer_tools().size());
@@ -174,7 +174,7 @@ void WipeTower2::init(const Print *print, const SpanOfConstPtrs<PrintObject> &ob
         const size_t layer_id = ordered_layer_z.second.front()->id();
         for (const Layer *layer : ordered_layer_z.second) {
             // init new extruders
-            for (uint16_t extr_id : layer_tools.extruders) {
+            for (extruder_index_t extr_id : layer_tools.extruders) {
                 if (init_extruders.find(extr_id) == init_extruders.end()) {
                     init_extruders.insert(extr_id);
                     // compute width
@@ -298,7 +298,7 @@ void WipeTower2::init(const Print *print, const SpanOfConstPtrs<PrintObject> &ob
             ZLayerData &extruder_data = wp_layer->extruders_data[layer_z];
             extruder_data.real_z = layer_z;
             extruder_data.extruders = layer_tools.extruders;
-            if (last_extruder_id >= 0 && last_extruder_id != layer_tools.extruders.front()) {
+            if (last_extruder_id != EXTRUDER_ID_UNKNOWN && last_extruder_id != layer_tools.extruders.front()) {
                 // add previous extruder as the first to be changed.
                 extruder_data.extruders.insert(extruder_data.extruders.begin(), last_extruder_id);
             }
@@ -313,7 +313,7 @@ void WipeTower2::init(const Print *print, const SpanOfConstPtrs<PrintObject> &ob
     assert(m_printz_to_WTLayer_data.size() <= ordering.layer_tools().size());
 
     // compute estimated tower length for each layer
-    uint16_t previous_tool_id = uint16_t(-1);
+    extruder_index_t previous_tool_id = EXTRUDER_ID_UNKNOWN;
     for (auto &entry : m_printz_to_WTLayer_data) {
         WipeTowerLayerData &wp_layer = *entry.second;
         const size_t nb_toolchange = 0;
@@ -321,7 +321,7 @@ void WipeTower2::init(const Print *print, const SpanOfConstPtrs<PrintObject> &ob
         for (auto &entry : wp_layer.extruders_data) {
             ZLayerData &extruder_data = entry.second;
             extruder_data.estimated_wipe_tower_length = 0;
-            for (uint16_t tool_id : extruder_data.extruders) {
+            for (extruder_index_t tool_id : extruder_data.extruders) {
                 // how many lines we need to reserve?
                 if (tool_id != previous_tool_id && previous_tool_id < m_filament_change_data.size()) {
                     // unloading
@@ -418,14 +418,14 @@ bool WipeTower2::has_toolchange() const {
 ExtrusionEntityCollection WipeTower2::prime(
     // Extruder indices, in the order to be primed. The last extruder will later print the wipe tower brim, print brim
     // and the object.
-    const std::vector<uint16_t> &tools,
+    const std::vector<extruder_index_t> &tools,
     // print_z of the first layer, for the flow
     coord_t first_layer_height) {
     const size_t count_extruders = m_config->nozzle_diameter.size();
     // compute flows
     float max_width = 0.f;
     std::vector<Flow> tool_2_flow(count_extruders);
-    for (uint16_t tool_id : tools) {
+    for (extruder_index_t tool_id : tools) {
         assert(tool_id < count_extruders);
         // TODO: prime width, currently 200%
         double nz = m_config->nozzle_diameter.get_at(tool_id);
@@ -469,7 +469,7 @@ ExtrusionEntityCollection WipeTower2::prime(
     // TODO: compute min purge length: min length for loading, purge, unloading. Currently hardcoded to nozzle * 2,
     // nozzle*4, nozzle*2
     distf_t min_length_mm = 0;
-    for (uint16_t tool_id : tools) {
+    for (extruder_index_t tool_id : tools) {
         min_length_mm += scale_d(this->get_loading_volume(tool_id) / tool_2_flow[tool_id].mm3_per_mm());
         min_length_mm += scale_d(this->get_prime_volume(tool_id) / tool_2_flow[tool_id].mm3_per_mm());
         min_length_mm += scale_d(this->get_unloading_volume(tool_id) / tool_2_flow[tool_id].mm3_per_mm());
@@ -566,7 +566,7 @@ ExtrusionEntityCollection WipeTower2::prime(
         ExtrusionNop(ExtrusionPropertyCustomGcodeText(ExtrusionPropertyCustomGcodeText::Code::COMMENT, "CP PRIMING START")));
     Point start_point = path_around_bed.front();
     size_t next_point_idx = 1;
-    for (uint16_t tool_id : tools) {
+    for (extruder_index_t tool_id : tools) {
         // move to this tool
         tool_extrusions.append(ExtrusionNop(
             ExtrusionPropertySpecialCommand(ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, tool_id)));
@@ -653,8 +653,8 @@ coord_t WipeTowerLayer::compute_y(coord_t raw_y) {
 }
 
 void WipeTowerLayer::init(const std::vector<const Layer *> layers,
-                          const std::vector<uint16_t> &ordered_extruders,
-                          const std::vector<uint16_t> &purges) {
+                          const std::vector<extruder_index_t> &ordered_extruders,
+                          const std::vector<extruder_index_t> &purges) {
     // create Toolchange & Purge
     assert(m_wipe_tower_info);
     assert(m_wipe_tower_info->m_printz_to_WTLayer_data.find(extrusion_z) !=
@@ -710,8 +710,8 @@ void WipeTowerLayer::init(const std::vector<const Layer *> layers,
 
     // create toolchanges
     for (size_t i = 1; i < ordered_extruders.size(); i++) {
-        std::tuple<coord_t, uint16_t, uint16_t> key(layers.front()->scaled_print_z(), ordered_extruders[i - 1],
-                                                    ordered_extruders[i]);
+        std::tuple<coord_t, extruder_index_t, extruder_index_t> key(
+            layers.front()->scaled_print_z(), ordered_extruders[i - 1], ordered_extruders[i]);
         assert(m_toolchanges.find(key) == m_toolchanges.end());
         Toolchange &toolchange = m_toolchanges[key];
         toolchange.layer = layers.front();
@@ -900,8 +900,8 @@ void WipeTowerLayer::init(const std::vector<const Layer *> layers,
 }
 
 ExtrusionEntityCollection WipeTowerLayer::tool_change(const Layer *layer,
-                                                      uint16_t old_tool,
-                                                      uint16_t new_tool,
+                                                      extruder_index_t old_tool,
+                                                      extruder_index_t new_tool,
                                                       double de_retraction_new_tool) {
     assert(layer);
     assert(!initialized_z.empty());
@@ -927,7 +927,7 @@ ExtrusionEntityCollection WipeTowerLayer::tool_change(const Layer *layer,
 
     if (old_tool != new_tool) {
         // find the toolchange
-        std::tuple<coord_t, uint16_t, uint16_t> key(layer->scaled_print_z(), old_tool, new_tool);
+        std::tuple<coord_t, extruder_index_t, extruder_index_t> key(layer->scaled_print_z(), old_tool, new_tool);
         assert(m_toolchanges.find(key) != m_toolchanges.end());
         if (auto it = m_toolchanges.find(key); it != m_toolchanges.end()) {
             const Toolchange &toolchange = it->second;
@@ -972,7 +972,7 @@ ExtrusionEntityCollection WipeTowerLayer::tool_change(const Layer *layer,
     return collection;
 }
 
-Flow WipeTower2::get_ramming_flow(const uint16_t tool_id, const bool first_layer, const double layer_height) {
+Flow WipeTower2::get_ramming_flow(extruder_index_t tool_id, bool first_layer, double layer_height) {
     double nozzle_diameter = m_config->nozzle_diameter.get_at(tool_id);
     double perimeter_width = m_object_config->wipe_tower_extrusion_width.get_effective_value(nozzle_diameter);
     // FIXME use PrintObject function to have first layer flow.
@@ -1028,7 +1028,7 @@ Polyline load_move_x_advanced(
 
 void WipeTowerLayer::toolchange_load(ExtrusionEntityCollection &collection,
                                      const Polyline &loading_lines,
-                                     const uint16_t tool_id) {
+                                     extruder_index_t tool_id) {
     ExtrusionEntityCollection load_collection(false, false);
     Polyline unused = loading_lines;
     const distf_t load_dist = loading_lines.length();
@@ -1080,7 +1080,7 @@ void WipeTowerLayer::toolchange_load(ExtrusionEntityCollection &collection,
 // Ram the hot material out of the melt zone, retract the filament into the cooling tubes and let it cool.
 bool WipeTowerLayer::toolchange_Unload(ExtrusionEntityCollection &collection,
                                        const Polyline &ramming_lines,
-                                       const uint16_t tool_id,
+                                       extruder_index_t tool_id,
                                        const Flow &ramming_flow) {
     assert(!collection.can_sort() && !collection.can_reverse());
     // cleaning_lines needs to be far apart enough so my flow doesn't create any issues. Caller's problem
@@ -1319,7 +1319,7 @@ bool WipeTowerLayer::toolchange_Unload(ExtrusionEntityCollection &collection,
 void WipeTowerLayer::toolchange_Wipe(ExtrusionEntityCollection &collection,
                                      Polyline wipe_lines,
                                      const Flow wipe_flow,
-                                     const uint16_t tool_id,
+                                     extruder_index_t tool_id,
                                      const double de_retraction_new_tool) {
     if (wipe_lines.size() < 2)
         return;
@@ -1510,7 +1510,7 @@ void WipeTowerLayer::toolchange_Wipe(ExtrusionEntityCollection &collection,
 }
 
 // Change the tool, set a speed override for soluble and flex materials.
-void WipeTowerLayer::toolchange_Change(ExtrusionEntityCollection &collection, const uint16_t new_tool) {
+void WipeTowerLayer::toolchange_Change(ExtrusionEntityCollection &collection, extruder_index_t new_tool) {
 
     //if (true) {
     //    collection.append(
@@ -1573,7 +1573,7 @@ bool WipeTowerLayer::print_perimeter(ExtrusionEntityCollection &collection, bool
     return true;
 }
 
-bool WipeTowerLayer::finish_layer(ExtrusionEntityCollection &collection, uint16_t current_extruder, bool force) {
+bool WipeTowerLayer::finish_layer(ExtrusionEntityCollection &collection, extruder_index_t current_extruder, bool force) {
     // check if last z to wipe
     if (!uninitialized_z.empty()) {
         return false;
@@ -1604,7 +1604,7 @@ bool WipeTowerLayer::finish_layer(ExtrusionEntityCollection &collection, uint16_
     }
     m_is_finished = true;
 
-    uint16_t old_tool = current_extruder;
+    extruder_index_t old_tool = current_extruder;
 
     const WipeTower2::FilamentToolchangeInfo &fil_info = m_wipe_tower_info->m_filament_change_data[current_extruder];
     Flow infill_flow = Flow::new_from_width(unscaled(fil_info.wipe_width),

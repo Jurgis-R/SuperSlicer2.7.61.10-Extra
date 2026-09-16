@@ -88,8 +88,10 @@ public:
     LayerRegionIslandUPtrs &mutable_regions_islands() { return m_extrusions; }
     const Layer *layer() const { return m_layer; }
 
-    LayerRegionIsland& get_or_add_region_island(const LayerRegionSetCPtrs &regions, uint16_t extruder_id = uint16_t(-1));
-    LayerRegionIsland& add_region_island(const LayerRegionSetCPtrs &regions, uint16_t extruder_id = uint16_t(-1));
+    LayerRegionIsland& get_or_add_region_island(
+        const LayerRegionSetCPtrs &regions, extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN);
+    LayerRegionIsland& add_region_island(
+        const LayerRegionSetCPtrs &regions, extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN);
 
         // Unspecified fill polygons, used for overhang detection ("ensure vertical wall thickness feature")
     // and for re-starting of infills.

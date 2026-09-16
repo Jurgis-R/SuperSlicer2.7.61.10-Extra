@@ -28,8 +28,8 @@ Default tool-change event producer
 The layer-extrusion-edit step executes one run per PrintingLayerGroup, possibly
 in parallel. Tool selection, however, is a prefix state across the complete
 plan. setup_impl() therefore performs one cheap hierarchy-only scan and stores
-the tool active before each layer. Unconstrained visits (UINT16_MAX, the
-unsigned representation of -1) receive that tool during this serialized scan.
+the tool active before each layer. Unconstrained visits
+(EXTRUDER_ID_UNKNOWN) receive that tool during this serialized scan.
 No vectors are resized or reordered; subsequent plugins see concrete IDs.
 Leading unconstrained visits use the first explicit tool, or tool 0 if none is
 requested anywhere in the plan. run_impl() can then replay only its local
@@ -49,12 +49,12 @@ const char *const k_no_dependencies[] = {nullptr};
 struct LayerToolState
 {
     int32_t layer_number = -1;
-    int32_t incoming_extruder = -1;
+    extruder_index_t incoming_extruder = EXTRUDER_ID_UNKNOWN;
     coord_t print_z = 0;
 };
 
 /* Find the initial tool for leading unconstrained visits; fall back to tool 0. */
-uint16_t initial_plan_extruder(const PrintingPlan &plan);
+extruder_index_t initial_plan_extruder(const PrintingPlan &plan);
 
 /* Return true when a setting contains at least one non-whitespace character. */
 bool has_visible_text(const std::string &text);
@@ -72,8 +72,8 @@ void append_tool_change_event(storage_handle *storage,
                               int32_t layer_number,
                               coord_t layer_z,
                               coord_t max_layer_z,
-                              uint16_t previous_extruder,
-                              uint16_t next_extruder);
+                              extruder_index_t previous_extruder,
+                              extruder_index_t next_extruder);
 
 /* Built-in producer registered in the layer-extrusion-edit plugin chain. */
 class CreateToolChange final : public PluginBase
@@ -121,15 +121,15 @@ private:
     mutable std::mutex m_storage_mutex;
 };
 
-uint16_t initial_plan_extruder(const PrintingPlan &plan)
+extruder_index_t initial_plan_extruder(const PrintingPlan &plan)
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const uint16_t tool = layer.tool_group(tool_idx).extruder_id();
-                if (tool != UINT16_MAX)
+                const extruder_index_t tool = layer.tool_group(tool_idx).extruder_id();
+                if (tool != EXTRUDER_ID_UNKNOWN)
                     return tool;
             }
         }
@@ -158,8 +158,8 @@ void append_tool_change_event(storage_handle *storage,
                               const int32_t layer_number,
                               const coord_t layer_z,
                               const coord_t max_layer_z,
-                              const uint16_t previous_extruder,
-                              const uint16_t next_extruder)
+                              const extruder_index_t previous_extruder,
+                              const extruder_index_t next_extruder)
 {
     if (storage == nullptr)
         throw std::invalid_argument("A tool-change event needs plugin storage.");
@@ -276,7 +276,7 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
 
     const PrintingPlan plan(ctx->plan);
     m_layer_states.resize(plan.group_count());
-    int32_t current_extruder = initial_plan_extruder(plan);
+    extruder_index_t current_extruder = initial_plan_extruder(plan);
     int32_t layer_number = 0;
     uint32_t counted_layers = 0;
 
@@ -298,11 +298,11 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
             for (uint32_t tool_idx = 0;
                  tool_idx < layer.tool_group_count(); ++tool_idx) {
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
-                const uint16_t tool = tool_group.extruder_id();
-                if (tool == UINT16_MAX)
-                    tool_group.set_extruder_id(uint16_t(current_extruder));
+                const extruder_index_t tool = tool_group.extruder_id();
+                if (tool == EXTRUDER_ID_UNKNOWN)
+                    tool_group.set_extruder_id(current_extruder);
                 else
-                    current_extruder = int32_t(tool);
+                    current_extruder = tool;
             }
         }
     }
@@ -342,19 +342,19 @@ void CreateToolChange::run_impl(const plugin_run_context *run_ctx) const
     const PrintingLayerGroup layer(ctx->layer_group);
     const std::string script = Print(ctx->print).config().string_or_default(
         "toolchange_gcode", std::string());
-    int32_t current_extruder = state.incoming_extruder;
+    extruder_index_t current_extruder = state.incoming_extruder;
 
     // Each tool-group belongs to this worker's layer. The first global tool and
     // repeated visits need no explicit event; every actual transition is added
     // before entering its target group.
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
         const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
-        const uint16_t target_extruder = tool_group.extruder_id();
-        if (target_extruder == UINT16_MAX)
+        const extruder_index_t target_extruder = tool_group.extruder_id();
+        if (target_extruder == EXTRUDER_ID_UNKNOWN)
             throw std::runtime_error(
                 "A PrintingToolGroup has no valid extruder for tool-change planning.");
-        if (current_extruder >= 0 &&
-            current_extruder != int32_t(target_extruder)) {
+        if (current_extruder != EXTRUDER_ID_UNKNOWN &&
+            current_extruder != target_extruder) {
             // Runs own separate tool-groups, but the host currently lends one
             // PluginStorage to all of them. Keep its short allocation and move
             // transaction serialized while all hierarchy work remains parallel.
@@ -362,9 +362,9 @@ void CreateToolChange::run_impl(const plugin_run_context *run_ctx) const
             append_tool_change_event(
                 run_ctx->plugin_storage, tool_group, script,
                 state.layer_number, state.print_z, m_max_layer_z,
-                uint16_t(current_extruder), target_extruder);
+                current_extruder, target_extruder);
         }
-        current_extruder = int32_t(target_extruder);
+        current_extruder = target_extruder;
     }
     progress().increment();
 }

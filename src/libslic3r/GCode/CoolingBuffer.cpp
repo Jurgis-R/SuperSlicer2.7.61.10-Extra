@@ -17,6 +17,8 @@
 #include <cassert>
 #include <cfloat>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <unordered_set>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -43,8 +45,10 @@ CoolingBuffer::CoolingBuffer(GCodeGenerator &gcodegen) : m_config(gcodegen.confi
     const std::vector<Extruder> &extruders = gcodegen.writer().extruders();
     m_extruder_ids.reserve(extruders.size());
     for (const Extruder &ex : extruders) {
+        if (ex.id() > uint16_t(std::numeric_limits<extruder_index_t>::max()))
+            throw std::out_of_range("CoolingBuffer extruder index exceeds extruder_index_t");
         m_num_extruders = std::max(uint16_t(ex.id() + 1), m_num_extruders);
-        m_extruder_ids.emplace_back(ex.id());
+        m_extruder_ids.emplace_back(static_cast<extruder_index_t>(ex.id()));
     }
 }
 
@@ -110,7 +114,8 @@ struct CoolingLine
 
     CoolingLine(unsigned int type, size_t  line_start, size_t  line_end) :
         type(type), line_start(line_start), line_end(line_end),
-        length(0.f), has_move(false), feedrate(0.f), time(0.f), time_max(0.f), slowdown(false) {}
+        length(0.f), has_move(false), feedrate(0.f), time(0.f), time_max(0.f), slowdown(false),
+        new_tool(EXTRUDER_ID_UNKNOWN) {}
 
     bool adjustable(bool slowdown_external_perimeters) const {
         return (this->type & TYPE_ADJUSTABLE) && 
@@ -142,7 +147,7 @@ struct CoolingLine
     // If marked with the "slowdown" flag, the line has been slowed down.
     bool    slowdown;
     // for TYPE_SET_TOOL
-    uint16_t new_tool;
+    extruder_index_t new_tool = EXTRUDER_ID_UNKNOWN;
 };
 
 // Calculate the required per extruder time stretches.
@@ -277,7 +282,7 @@ struct PerExtruderAdjustments
     }
 
     // Extruder, for which the G-code will be adjusted.
-    unsigned int                extruder_id         = 0;
+    extruder_index_t            extruder_id         = 0;
     // Is the cooling slow down logic enabled for this extruder's material?
     bool                        cooling_slow_down_enabled = false;
     // Slow down the print down to min_print_speed if the total layer time is below slowdown_below_layer_time.
@@ -425,7 +430,7 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
     std::vector<size_t>                 map_extruder_to_per_extruder_adjustment(m_num_extruders, 0);
     for (size_t i = 0; i < m_extruder_ids.size(); ++ i) {
         PerExtruderAdjustments &adj         = per_extruder_adjustments[i];
-        uint16_t                extruder_id = m_extruder_ids[i];
+        const extruder_index_t  extruder_id = m_extruder_ids[i];
         adj.extruder_id               = extruder_id;
         adj.cooling_slow_down_enabled = m_config.slowdown_below_layer_time.get_at(extruder_id) > 0;
         adj.slowdown_below_layer_time = float(m_config.slowdown_below_layer_time.get_at(extruder_id));
@@ -434,7 +439,7 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
         map_extruder_to_per_extruder_adjustment[extruder_id] = i;
     }
 
-    uint16_t        current_extruder  = m_current_extruder;
+    extruder_index_t current_extruder = m_current_extruder;
     PerExtruderAdjustments *adjustment  = &per_extruder_adjustments[map_extruder_to_per_extruder_adjustment[current_extruder]];
     const char       *line_start = gcode.c_str();
     const char       *line_end   = line_start;
@@ -633,23 +638,25 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
         } else if (boost::starts_with(sline, ";_TOOLCHANGE")) {
             //not using m_toolchange_prefix anymore because there is no use case for it, there is always a _TOOLCHANGE for when a fan change is needed.
             int prefix = 13;
-            uint16_t new_extruder = (uint16_t)atoi(sline.data() + 12);
-            auto res = std::from_chars(sline.data() + prefix, sline.data() + sline.size(), new_extruder);
-            if (res.ec != std::errc::invalid_argument) {
-            // Only change extruder in case the number is meaningful. User could provide an out-of-range index through custom gcodes - those shall be ignored.
-            if (new_extruder < map_extruder_to_per_extruder_adjustment.size()) {
-                // Switch the tool.
-                line.type = CoolingLine::TYPE_SET_TOOL;
-                line.new_tool = new_extruder;
-                if (new_extruder != current_extruder) {
-                    current_extruder = new_extruder;
+            uint32_t parsed_extruder = 0;
+            auto res = std::from_chars(sline.data() + prefix, sline.data() + sline.size(), parsed_extruder);
+            if (res.ec == std::errc() &&
+                parsed_extruder <= uint32_t(std::numeric_limits<extruder_index_t>::max())) {
+                const extruder_index_t new_extruder = static_cast<extruder_index_t>(parsed_extruder);
+                // Only change extruder in case the number is meaningful. User could provide an out-of-range index through custom gcodes - those shall be ignored.
+                if (size_t(new_extruder) < map_extruder_to_per_extruder_adjustment.size()) {
+                    // Switch the tool.
+                    line.type = CoolingLine::TYPE_SET_TOOL;
+                    line.new_tool = new_extruder;
+                    if (new_extruder != current_extruder) {
+                        current_extruder = new_extruder;
                         adjustment         = &per_extruder_adjustments[map_extruder_to_per_extruder_adjustment[current_extruder]];
+                    }
+                } else {
+                    // Only log the error in case of MM printer. Single extruder printers likely ignore any T anyway.
+                    if (map_extruder_to_per_extruder_adjustment.size() > 1)
+                        BOOST_LOG_TRIVIAL(error) << "CoolingBuffer encountered an invalid toolchange, maybe from a custom gcode: " << sline;
                 }
-            } else {
-                // Only log the error in case of MM printer. Single extruder printers likely ignore any T anyway.
-                if (map_extruder_to_per_extruder_adjustment.size() > 1)
-                    BOOST_LOG_TRIVIAL(error) << "CoolingBuffer encountered an invalid toolchange, maybe from a custom gcode: " << sline;
-            }
             }
         } else if (boost::starts_with(sline, ";_EXTRUDETYPE_") && sline.size() > 14) {
             //set the extrusiontype

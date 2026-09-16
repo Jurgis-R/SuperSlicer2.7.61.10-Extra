@@ -70,7 +70,7 @@ are rejected instead of being silently inserted into the extrusion tree.
 using TravelPathPlanner = std::function<std::vector<c_point>(
     const TravelEndpoint &source,
     const TravelEndpoint &target,
-    uint16_t extruder_id)>;
+    extruder_index_t extruder_id)>;
 
 /*
 Shared lifecycle and tree editor used by one travel provider instance.
@@ -130,7 +130,7 @@ private:
 /* Build the direct two-point path used by the simple provider and fallbacks. */
 std::vector<c_point> straight_path(const TravelEndpoint &source,
                                    const TravelEndpoint &target,
-                                   uint16_t extruder_id);
+                                   extruder_index_t extruder_id);
 
 }}} // namespace slic3r_api::LayerExtrusionEdit::TravelConnection
 

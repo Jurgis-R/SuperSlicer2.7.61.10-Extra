@@ -54,7 +54,7 @@ const char *const k_region_setting_keys[] = {
 struct RouterKey
 {
     const Slic3r::Layer *layer = nullptr;
-    uint16_t extruder_id = uint16_t(-1);
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
 
     bool operator<(const RouterKey &rhs) const
     {
@@ -77,7 +77,7 @@ public:
 
     std::vector<c_point> path(const TravelEndpoint &source,
                               const TravelEndpoint &target,
-                              uint16_t extruder_id);
+                              extruder_index_t extruder_id);
 
 private:
     /* Resolve one endpoint's regional setting, probing inside on a boundary. */
@@ -88,12 +88,12 @@ private:
 
     /* Find or construct the router dedicated to one layer and extruder. */
     Slic3r::AvoidCrossingPerimeters &router_for(const Slic3r::Layer &layer,
-                                                uint16_t extruder_id);
+                                                extruder_index_t extruder_id);
 
     /* Return a straight path whenever the advanced provider cannot be used. */
     std::vector<c_point> straight(const TravelEndpoint &source,
                                   const TravelEndpoint &target,
-                                  uint16_t extruder_id) const;
+                                  extruder_index_t extruder_id) const;
 
     Config m_print_config;
     const PrintingPlan &m_plan;
@@ -176,7 +176,7 @@ bool LayerTravelPlanner::endpoint_enables_avoidance(const TravelEndpoint &endpoi
 
 Slic3r::AvoidCrossingPerimeters &LayerTravelPlanner::router_for(
     const Slic3r::Layer &layer,
-    const uint16_t extruder_id)
+    const extruder_index_t extruder_id)
 {
     const RouterKey key{&layer, extruder_id};
     std::map<RouterKey, std::unique_ptr<Slic3r::AvoidCrossingPerimeters>>::iterator found =
@@ -194,14 +194,14 @@ Slic3r::AvoidCrossingPerimeters &LayerTravelPlanner::router_for(
 
 std::vector<c_point> LayerTravelPlanner::straight(const TravelEndpoint &source,
                                                    const TravelEndpoint &target,
-                                                   const uint16_t extruder_id) const
+                                                   const extruder_index_t extruder_id) const
 {
     return straight_path(source, target, extruder_id);
 }
 
 std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
                                               const TravelEndpoint &target,
-                                              const uint16_t extruder_id)
+                                              const extruder_index_t extruder_id)
 {
     // Missing regional provenance is normal for support and print-level
     // auxiliary paths. Those gaps deliberately retain the direct travel.
@@ -403,7 +403,7 @@ void AvoidCrossingPerimetersTravel::run_impl(const plugin_run_context *run_ctx) 
     LayerTravelPlanner planner(Print(ctx->print), plan, run_ctx);
     const TravelPathPlanner route = [&planner](const TravelEndpoint &source,
                                                const TravelEndpoint &target,
-                                               const uint16_t extruder_id) {
+                                               const extruder_index_t extruder_id) {
         return planner.path(source, target, extruder_id);
     };
     m_connector.run(PrintingLayerGroup(ctx->layer_group),

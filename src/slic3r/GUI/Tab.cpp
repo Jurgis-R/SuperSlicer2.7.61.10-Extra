@@ -1436,7 +1436,8 @@ void Tab::toggle_option(const std::string& opt_key, bool toggle, int32_t opt_ind
 // update the preset selection boxes (the dirty flags)
 // If value is saved before calling this function, put saved_value = true,
 // and value can be some random value because in this case it will not been used
-void Tab::load_key_value(const t_config_option_key& opt_key, const boost::any& value, bool saved_value /*= false*/, int16_t extruder_id /*-1*/)
+void Tab::load_key_value(const t_config_option_key& opt_key, const boost::any& value, bool saved_value /*= false*/,
+                         extruder_index_t extruder_id /*= EXTRUDER_ID_UNKNOWN*/)
 {
     if (!saved_value)
         m_config_base->option(opt_key)->set_any(value, extruder_id); // change_opt_value(*m_config, opt_key, value);
@@ -3450,7 +3451,10 @@ void TabFilament::create_extruder_combobox()
     m_extruders_cb->Hide();
 
     m_extruders_cb->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
-        set_active_extruder(m_extruders_cb->GetSelection());
+        const int selected = m_extruders_cb->GetSelection();
+        if (selected < 0 || selected > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("Selected extruder does not fit in extruder_index_t.");
+        set_active_extruder(static_cast<extruder_index_t>(selected));
     });
 
     m_h_buttons_sizer->AddSpacer(3*em_unit(this));
@@ -3489,12 +3493,14 @@ void TabFilament::update_extruder_combobox()
     m_extruders_cb->Show(extruder_cnt > 1);
 }
 
-bool TabFilament::set_active_extruder(int new_selected_extruder)
+bool TabFilament::set_active_extruder(const extruder_index_t new_selected_extruder)
 {
+    if (new_selected_extruder < EXTRUDER_ID_UNKNOWN)
+        throw std::out_of_range("Active extruder is below EXTRUDER_ID_UNKNOWN.");
     if (m_active_extruder == new_selected_extruder)
         return true;
 
-    const int old_extruder_id = m_active_extruder;
+    const extruder_index_t old_extruder_id = m_active_extruder;
     m_active_extruder = new_selected_extruder;
     m_presets_choice->set_active_extruder(m_active_extruder);
 
@@ -3657,27 +3663,30 @@ void TabFilament::sys_color_changed()
 void TabFilament::load_current_preset()
 {
     const std::string& selected_filament_name = m_presets->get_selected_preset_name();
-    if (m_active_extruder < 0) {
+    if (m_active_extruder == EXTRUDER_ID_UNKNOWN) {
         // active extruder was invalidated before load new project file or configuration,
         // so we have to update active extruder selection from selected filament
         const std::string& edited_filament_name = m_presets->get_edited_preset().name;
         assert(!selected_filament_name.empty() && selected_filament_name == edited_filament_name);
 
-        for (int i = 0; i < int(m_preset_bundle->extruders_filaments.size()); i++) {
+        for (size_t i = 0; i < m_preset_bundle->extruders_filaments.size(); ++i) {
             const std::string& selected_extr_filament_name = m_preset_bundle->extruders_filaments[i].get_selected_preset_name();
             if (selected_extr_filament_name == edited_filament_name) {
-                m_active_extruder = i;
+                if (i > size_t((std::numeric_limits<extruder_index_t>::max)()))
+                    throw std::out_of_range("Active extruder does not fit in extruder_index_t.");
+                m_active_extruder = static_cast<extruder_index_t>(i);
                 break;
             }
         }
-        assert(m_active_extruder >= 0);
+        assert(m_active_extruder != EXTRUDER_ID_UNKNOWN);
 
         m_presets_choice->set_active_extruder(m_active_extruder);
         if (m_active_extruder != m_extruders_cb->GetSelection())
             m_extruders_cb->Select(m_active_extruder);
     }
 
-    assert(m_active_extruder >= 0 && size_t(m_active_extruder) < m_preset_bundle->extruders_filaments.size());
+    assert(m_active_extruder != EXTRUDER_ID_UNKNOWN &&
+           size_t(m_active_extruder) < m_preset_bundle->extruders_filaments.size());
     const std::string& selected_extr_filament_name = m_preset_bundle->extruders_filaments[m_active_extruder].get_selected_preset_name();
     if (selected_extr_filament_name != selected_filament_name) {
         m_presets->select_preset_by_name(selected_extr_filament_name, false);
@@ -4657,7 +4666,8 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
                 bool force_update_edited_preset = false;
                 if (pu.tab_type == Preset::TYPE_FFF_FILAMENT && pu.new_preset_compatible) {
                     // check if edited preset will be still correct after selection new printer 
-                    const int active_extruder    = dynamic_cast<const TabFilament*>(wxGetApp().get_tab(Preset::TYPE_FFF_FILAMENT))->get_active_extruder();
+                    const extruder_index_t active_extruder =
+                        dynamic_cast<const TabFilament *>(wxGetApp().get_tab(Preset::TYPE_FFF_FILAMENT))->get_active_extruder();
                     const int extruder_count_new = int(dynamic_cast<const ConfigOptionFloats*>(new_printer_preset.config.option("nozzle_diameter"))->size());
                     // if active_extruder is bigger than extruders_count,
                     // then it means that edited filament preset will be changed and we have to check this changes

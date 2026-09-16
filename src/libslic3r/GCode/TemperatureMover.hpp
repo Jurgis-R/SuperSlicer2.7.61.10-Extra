@@ -36,13 +36,13 @@ class TemperatureMover
         // time to go from start to end
         float   time;
         int16_t temperature = -1;
-        uint16_t temperature_extruder_idx = uint16_t(0);
+        extruder_index_t temperature_extruder_idx = 0;
         // start position
         float x = 0, y = 0, z = 0, e = 0;
         // delta to go to end position
         float dx = 0, dy = 0, dz = 0, de = 0;
         char e_axis_char = 'E';
-        BufferData(std::string line, char e_axis, float time, int16_t temperature, uint16_t extruder_idx)
+        BufferData(std::string line, char e_axis, float time, int16_t temperature, extruder_index_t extruder_idx)
             : raw(line), time(time), temperature(temperature), temperature_extruder_idx(extruder_idx), e_axis_char(e_axis)
         {
             // avoid double \n
@@ -65,7 +65,7 @@ private:
     // in unit/second
     double m_current_speed = 1000 / 60.0;
     bool m_is_custom_gcode = false;
-    uint16_t m_current_extruder = 0;
+    extruder_index_t m_current_extruder = 0;
 
     // variable for when you add a line (front of the buffer)
     int m_front_buffer_temperatures[256];
@@ -127,8 +127,8 @@ private:
     void _process_T(const std::string_view command);
     //void _print_in_middle_G1(BufferData& line_to_split, float nb_sec, const std::string& line_to_write);
     void _put_in_middle_G1(std::list<BufferData>::reverse_iterator item_to_split, float nb_sec_since_itemtosplit_start, BufferData &&line_to_write, float max_time);
-    void _remove_low_heat(int16_t min_temp, uint16_t extr_idx, float past_sec);
-    std::tuple<int16_t, uint16_t> _get_temperature_with_extruder_idx(const std::string &line, GCodeFlavor flavor);
+    void _remove_low_heat(int16_t min_temp, extruder_index_t extr_idx, float past_sec);
+    std::tuple<int16_t, extruder_index_t> _get_temperature_with_extruder_idx(const std::string &line, GCodeFlavor flavor);
     void write_buffer_data();
 };
 

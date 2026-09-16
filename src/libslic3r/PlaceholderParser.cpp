@@ -820,7 +820,7 @@ namespace client
         mutable DynamicConfig   *config_outputs         = nullptr;
         // Local variables, read / write
         mutable DynamicConfig    config_local;
-        size_t                   current_extruder_id    = 0;
+        extruder_index_t         current_extruder_id    = 0;
         // Random number generator and optionally global variables.
         PlaceholderParser::ContextData *context_data    = nullptr;
         // If false, the macro_processor will evaluate a full macro.
@@ -2702,8 +2702,10 @@ static std::string process_macro(const std::string &templ, client::MyContext &co
     return output;
 }
 
-std::string PlaceholderParser::process(const std::string &templ, unsigned int current_extruder_id, const DynamicConfig *config_override, DynamicConfig *config_outputs, ContextData *context_data) const
+std::string PlaceholderParser::process(const std::string &templ, const extruder_index_t current_extruder_id, const DynamicConfig *config_override, DynamicConfig *config_outputs, ContextData *context_data) const
 {
+    if (current_extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw PlaceholderParserError("Invalid current extruder index");
     client::MyContext context;
     context.external_config 	= this->external_config();
     context.config              = &this->config();

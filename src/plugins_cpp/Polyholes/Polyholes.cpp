@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -57,7 +58,7 @@ struct HoleData
 {
     c_point center;
     distf_t max_diameter;
-    int16_t extruder_id;
+    extruder_index_t extruder_id;
     coord_t max_deviation;
     bool is_twist;
     Polygon hole_polygon;
@@ -71,6 +72,23 @@ struct LayerHole
     uint32_t layer_idx;
     uint32_t lregion_idx;
 };
+
+/* Resolve a raw one-based setting before materializing the zero-based identity
+   stored in HoleData. This follows the host's default-extruder fallback while
+   refusing an index that cannot be represented by extruder_index_t. */
+std::optional<extruder_index_t> normalized_perimeter_extruder(int32_t one_based_id,
+                                                              uint32_t extruder_count)
+{
+    if (extruder_count == 0)
+        return std::nullopt;
+    const int64_t requested = int64_t(one_based_id);
+    const int64_t candidate = requested > 0 ? requested - 1 : 0;
+    const uint64_t normalized = candidate >= 0 && uint64_t(candidate) < extruder_count ?
+        uint64_t(candidate) : 0;
+    if (normalized > uint64_t((std::numeric_limits<extruder_index_t>::max)()))
+        return std::nullopt;
+    return static_cast<extruder_index_t>(normalized);
+}
 
 
 // A vertical group of matching LayerHole entries. One StoredPolygon replacement
@@ -147,9 +165,11 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
     struct ThreadData {
         const run_ctx_post_slicing *ctx;
         Object object;
+        uint32_t extruder_count;
         std::vector<std::vector<HoleData>> layerid2center;
         PluginProgress *progress;
-    } thread_data{ctx, Object(ctx->object), {}, &progress()};
+    } thread_data{ctx, Object(ctx->object),
+                  Print(ctx->print).config().get("nozzle_diameter").size(), {}, &progress()};
 
     thread_data.layerid2center.resize(thread_data.object.layer_count());
 
@@ -164,6 +184,11 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
             Config region_config = lregion.print_region().config();
             ConfigOption setting_hole_to_polyhole = region_config.get("hole_to_polyhole");
             if (setting_hole_to_polyhole.get_bool()) {
+                const std::optional<extruder_index_t> perimeter_extruder =
+                    normalized_perimeter_extruder(
+                        region_config.get("perimeter_extruder").get_int(), data->extruder_count);
+                if (!perimeter_extruder)
+                    continue;
                 bool twist = region_config.get("hole_to_polyhole_twisted").get_bool();
                 ExPolygonCollection region_slices = lregion.slices();
                 for (ExPolygon surf_expoly : region_slices) {
@@ -202,7 +227,7 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
                                 diameter_line_max - diameter_line_min < max_variation * 2) {
                                 layer_center_data.push_back(
                                     HoleData{center, diameter_max,
-                                             int16_t(region_config.get("perimeter_extruder").get_int() - 1),
+                                             *perimeter_extruder,
                                              max_variation, twist, hole, region_idx});
                             }
                         }
@@ -263,6 +288,9 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
     std::set<uint32_t> modified_layer_idx;
     for (ThroughHole &through_hole : id2layers2hole) {
         ConfigOption setting_nozzle_diameter = Print(ctx->print).config().get("nozzle_diameter");
+        if (through_hole.hole_data.extruder_id < 0 ||
+            uint32_t(through_hole.hole_data.extruder_id) >= setting_nozzle_diameter.size())
+            continue;
         std::vector<StoredPolygon> polyholes = create_polyholes(run_ctx->plugin_storage, through_hole.hole_data.center,
                                                                 through_hole.hole_data.max_diameter,
                                                                 scale_i(setting_nozzle_diameter.get_float(through_hole.hole_data.extruder_id)),

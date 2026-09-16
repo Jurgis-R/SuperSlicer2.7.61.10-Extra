@@ -118,7 +118,7 @@ ExtrusionSettingsContext settings_context(const Print &print,
     const LayerRegionIsland region_island = extrusion.region_island();
     if (!region_island.valid() || region_island.region_count() == 0)
         throw std::runtime_error("Printing extrusion has no source LayerRegionIsland region.");
-    if (tool_group.extruder_id() == uint16_t(-1))
+    if (tool_group.extruder_id() == EXTRUDER_ID_UNKNOWN)
         throw std::runtime_error("Printable extrusion has no concrete extruder id.");
 
     const LayerRegion layer_region = region_island.region(0);

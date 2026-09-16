@@ -34,7 +34,7 @@ public:
 
     Wipe() = default;
 
-    void            init(const PrintConfig &config, const GCodeWriter &writer, const std::vector<uint16_t> &extruders);
+    void            init(const PrintConfig &config, const GCodeWriter &writer, const std::vector<extruder_index_t> &extruders);
     void            enable(double wipe_len_max) { m_enabled = true; m_wipe_len_max = wipe_len_max; }
     void            disable() { m_enabled = false; }
     bool            is_enabled() const { return m_enabled; }
@@ -55,7 +55,7 @@ public:
     static std::pair<double, bool>   calc_wipe_speed(const GCodeWriter &writer);
     // Reduce retraction length a bit to avoid effective retraction speed to be greater than the configured one
     // due to rounding (TODO: test and/or better math for this).
-    static double calc_xy_to_e_ratio(const GCodeWriter &writer, unsigned int extruder_id) 
+    static double calc_xy_to_e_ratio(const GCodeWriter &writer, extruder_index_t extruder_id)
         { return 0.95 * floor(writer.gcode_config().retract_speed.get_at(extruder_id) + 0.5) / calc_wipe_speed(writer).first; }
     
     //superslicer method to update the wipe 

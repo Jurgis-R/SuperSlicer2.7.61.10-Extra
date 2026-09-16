@@ -14,6 +14,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <limits>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
@@ -26,6 +27,27 @@
 #include "PrintRegion.hpp"
 
 namespace Slic3r {
+
+namespace {
+
+extruder_index_t configured_extruder_index(const int one_based)
+{
+    if (one_based <= 0)
+        return EXTRUDER_ID_UNKNOWN;
+    const int64_t zero_based = int64_t(one_based) - 1;
+    if (zero_based > int64_t((std::numeric_limits<extruder_index_t>::max)()))
+        throw Slic3r::InvalidArgument("Configured extruder ID exceeds extruder_index_t range");
+    return static_cast<extruder_index_t>(zero_based);
+}
+
+size_t extruder_config_index(const extruder_index_t extruder_id)
+{
+    if (extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Invalid negative extruder index");
+    return extruder_id == EXTRUDER_ID_UNKNOWN ? 0 : static_cast<size_t>(extruder_id);
+}
+
+}
 
 FlowErrorNegativeSpacing::FlowErrorNegativeSpacing() : 
 	FlowError("Flow::spacing() produced negative spacing. Did you set some extrusion width too small, or the (maximum) layer height too high?") {}
@@ -84,9 +106,13 @@ static inline void throw_on_missing_variable(const std::string &opt_key, const c
 }
 
 // Used to provide hints to the user on default extrusion width values, and to provide reasonable values to the PlaceholderParser.
-double Flow::extrusion_width(const std::string& opt_key, const ConfigOptionFloatOrPercent* opt, const ConfigOptionResolver& config, const unsigned int first_printing_extruder)
+double Flow::extrusion_width(const std::string& opt_key, const ConfigOptionFloatOrPercent* opt, const ConfigOptionResolver& config, const extruder_index_t first_printing_extruder)
 {
     assert(opt != nullptr);
+    if (first_printing_extruder == EXTRUDER_ID_UNKNOWN)
+        throw InvalidArgument("Flow::extrusion_width requires a known extruder index");
+    if (first_printing_extruder < EXTRUDER_ID_UNKNOWN)
+        throw InvalidArgument("Flow::extrusion_width received an invalid negative extruder index");
 
     bool first_layer = boost::starts_with(opt_key, "first_layer_") || boost::starts_with(opt_key, "brim_");
     if (!first_layer && boost::starts_with(opt_key, "skirt_")) {
@@ -304,7 +330,7 @@ const ConfigOptionFloatOrPercent* Flow::extrusion_spacing_option(std::string opt
 }
 
 // Used to provide hints to the user on default extrusion width values, and to provide reasonable values to the PlaceholderParser.
-double Flow::extrusion_width(const std::string& opt_key, const ConfigOptionResolver &config, const unsigned int first_printing_extruder)
+double Flow::extrusion_width(const std::string& opt_key, const ConfigOptionResolver &config, const extruder_index_t first_printing_extruder)
 {
     return extrusion_width(opt_key, config.option<ConfigOptionFloatOrPercent>(opt_key), config, first_printing_extruder);
 }
@@ -608,18 +634,18 @@ double Flow::mm3_per_mm() const
 
 Flow support_material_flow(const PrintObject* object, float layer_height)
 {
-    int extruder_id = object->config().support_material_extruder.value - 1;
-    if (extruder_id < 0) {
+    extruder_index_t extruder_id = configured_extruder_index(object->config().support_material_extruder.value);
+    if (extruder_id == EXTRUDER_ID_UNKNOWN) {
         if (!object->layers().empty()) {
-            extruder_id = object->layers().front().region(0).region().config().infill_extruder - 1;
+            extruder_id = configured_extruder_index(object->layers().front().region(0).region().config().infill_extruder);
         } else {
-            extruder_id = object->default_region_config(object->print()->default_region_config()).infill_extruder - 1;
+            extruder_id = configured_extruder_index(object->default_region_config(object->print()->default_region_config()).infill_extruder);
         }
     }
-    if (extruder_id < 0) {
+    if (extruder_id == EXTRUDER_ID_UNKNOWN) {
         // get biggest used for the print.
         double biggest_nzl= 0 ;
-        for (uint16_t extr_id : object->object_extruders()) {
+        for (extruder_index_t extr_id : object->object_extruders()) {
             double new_nzl = object->print()->config().nozzle_diameter.get_at(extr_id);
             if (new_nzl > biggest_nzl) {
                 extruder_id = extr_id;
@@ -627,7 +653,7 @@ Flow support_material_flow(const PrintObject* object, float layer_height)
             }
         }
     }
-    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_id);
+    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_config_index(extruder_id));
     const ConfigOptionFloatOrPercent& width = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_width;
     const ConfigOptionFloatOrPercent& spacing = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_spacing;
     float max_height = 0.f;
@@ -641,7 +667,7 @@ Flow support_material_flow(const PrintObject* object, float layer_height)
     if (layer_height <= 0) { // get default layer height for material interface
         layer_height = object->config().support_material_layer_height.get_effective_value(nzd);
         if (layer_height == 0) {
-            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_id);
+            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_config_index(extruder_id));
             if (layer_height == 0 || !object->print()->config().max_layer_height.is_enabled()) {
                 layer_height = nzd * 0.75;
             }
@@ -656,7 +682,7 @@ Flow support_material_flow(const PrintObject* object, float layer_height)
         // if object->config().support_material_extruder == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
         float(nzd),
         layer_height,
-        extruder_id < 0 ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_id), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
+        extruder_id == EXTRUDER_ID_UNKNOWN ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_config_index(extruder_id)), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
         // bridge_flow_ratio
         0.f);
 }
@@ -675,12 +701,12 @@ Flow support_material_1st_layer_flow(const PrintObject *object, float layer_heig
     if (layer_height <= 0.f && !object->print()->config().nozzle_diameter.empty()){
         slice_height = (float)object->get_first_layer_height();
     }
-    int extruder_id = object->config().support_material_extruder.value -1;
-    if (extruder_id < 0) {
+    extruder_index_t extruder_id = configured_extruder_index(object->config().support_material_extruder.value);
+    if (extruder_id == EXTRUDER_ID_UNKNOWN) {
         if (!object->layers().empty()) {
-            extruder_id = object->layers().front().region(0).region().config().infill_extruder - 1;
+            extruder_id = configured_extruder_index(object->layers().front().region(0).region().config().infill_extruder);
         } else {
-            extruder_id = object->default_region_config(object->print()->default_region_config()).infill_extruder - 1;
+            extruder_id = configured_extruder_index(object->default_region_config(object->print()->default_region_config()).infill_extruder);
         }
     }
     return Flow::new_from_config_width(
@@ -688,25 +714,25 @@ Flow support_material_1st_layer_flow(const PrintObject *object, float layer_heig
         // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
         (width.value > 0) ? width : object->config().extrusion_width,
         (spacing.value > 0) ? spacing : object->config().extrusion_spacing, // can be used if first_layer_extrusion_width is phony
-        float(print_config.nozzle_diameter.get_at(extruder_id)),
+        float(print_config.nozzle_diameter.get_at(extruder_config_index(extruder_id))),
         slice_height,
-        extruder_id < 0 ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_id), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
+        extruder_id == EXTRUDER_ID_UNKNOWN ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_config_index(extruder_id)), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
         // bridge_flow_ratio
         0.f);
 }
 
 Flow support_material_interface_flow(const PrintObject* object, float layer_height)
 {
-    int extruder_id = object->config().support_material_interface_extruder.value - 1;
-    if (extruder_id < 0) {
+    extruder_index_t extruder_id = configured_extruder_index(object->config().support_material_interface_extruder.value);
+    if (extruder_id == EXTRUDER_ID_UNKNOWN) {
         assert(!object->layers().empty() || object->num_printing_regions() > 0);
         if (!object->layers().empty()) {
-            extruder_id = object->layers().front().region(0).region().config().infill_extruder - 1;
+            extruder_id = configured_extruder_index(object->layers().front().region(0).region().config().infill_extruder);
         } else {
-            extruder_id = object->default_region_config(object->print()->default_region_config()).infill_extruder - 1;
+            extruder_id = configured_extruder_index(object->default_region_config(object->print()->default_region_config()).infill_extruder);
         }
     }
-    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_id);
+    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_config_index(extruder_id));
     const ConfigOptionFloatOrPercent& width = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_width;
     const ConfigOptionFloatOrPercent& spacing = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_spacing;
     float max_height = 0.f;
@@ -720,7 +746,7 @@ Flow support_material_interface_flow(const PrintObject* object, float layer_heig
     if (layer_height <= 0) { // get default layer height for material interface
         layer_height = object->config().support_material_interface_layer_height.get_effective_value(nzd);
         if (layer_height == 0) {
-            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_id);
+            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_config_index(extruder_id));
             if (layer_height == 0 || !object->print()->config().max_layer_height.is_enabled()) {
                 layer_height = nzd * 0.75;
             }
@@ -735,18 +761,18 @@ Flow support_material_interface_flow(const PrintObject* object, float layer_heig
         // if object->config().support_material_interface_extruder == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
         float(nzd),
         layer_height,
-        extruder_id < 0 ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_id), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
+        extruder_id == EXTRUDER_ID_UNKNOWN ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_config_index(extruder_id)), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
         // bridge_flow_ratio
         0.f);
 }
 
 Flow raft_flow(const PrintObject* object, float layer_height)
 {
-    int extruder_id = object->config().support_material_interface_extruder.value - 1;
-    if (extruder_id < 0) {
-        extruder_id = object->layers().front().region(0).region().config().perimeter_extruder - 1;
+    extruder_index_t extruder_id = configured_extruder_index(object->config().support_material_interface_extruder.value);
+    if (extruder_id == EXTRUDER_ID_UNKNOWN) {
+        extruder_id = configured_extruder_index(object->layers().front().region(0).region().config().perimeter_extruder);
     }
-    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_id);
+    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_config_index(extruder_id));
     const ConfigOptionFloatOrPercent& width = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_width;
     const ConfigOptionFloatOrPercent& spacing = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_spacing;
     float max_height = 0.f;
@@ -760,7 +786,7 @@ Flow raft_flow(const PrintObject* object, float layer_height)
     if (layer_height <= 0) { // get default layer height for material interface
         layer_height = object->config().raft_interface_layer_height.get_effective_value(nzd);
         if (layer_height == 0) {
-            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_id);
+            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_config_index(extruder_id));
             if (layer_height == 0 || !object->print()->config().max_layer_height.is_enabled()) {
                 layer_height = nzd * 0.75;
             }
@@ -775,18 +801,18 @@ Flow raft_flow(const PrintObject* object, float layer_height)
         // if object->config().support_material_interface_extruder == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
         float(nzd),
         layer_height,
-        extruder_id < 0 ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_id), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
+        extruder_id == EXTRUDER_ID_UNKNOWN ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_config_index(extruder_id)), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
         // bridge_flow_ratio
         0.f);
 }
 
 Flow raft_interface_flow(const PrintObject* object, float layer_height)
 {
-    int extruder_id = object->config().support_material_interface_extruder.value - 1;
-    if (extruder_id < 0) {
-        extruder_id = object->layers().front().region(0).region().config().infill_extruder - 1;
+    extruder_index_t extruder_id = configured_extruder_index(object->config().support_material_interface_extruder.value);
+    if (extruder_id == EXTRUDER_ID_UNKNOWN) {
+        extruder_id = configured_extruder_index(object->layers().front().region(0).region().config().infill_extruder);
     }
-    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_id);
+    double nzd = object->print()->config().nozzle_diameter.get_at(extruder_config_index(extruder_id));
     const ConfigOptionFloatOrPercent& width = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_width;
     const ConfigOptionFloatOrPercent& spacing = (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_spacing;
     float max_height = 0.f;
@@ -800,7 +826,7 @@ Flow raft_interface_flow(const PrintObject* object, float layer_height)
     if (layer_height <= 0) { // get default layer height for material interface
         layer_height = object->config().raft_interface_layer_height.get_effective_value(nzd);
         if (layer_height == 0) {
-            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_id);
+            layer_height = object->print()->config().max_layer_height.get_effective_value(nzd, extruder_config_index(extruder_id));
             if (layer_height == 0 || !object->print()->config().max_layer_height.is_enabled()) {
                 layer_height = nzd * 0.75;
             }
@@ -815,7 +841,7 @@ Flow raft_interface_flow(const PrintObject* object, float layer_height)
         // if object->config().support_material_interface_extruder == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
         float(nzd),
         layer_height,
-        extruder_id < 0 ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_id), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
+        extruder_id == EXTRUDER_ID_UNKNOWN ? 1 : object->config().get_computed_value("filament_max_overlap", extruder_config_index(extruder_id)), //if can get an extruder, then use its param, or use full overlap if we don't know the extruder id.
         // bridge_flow_ratio
         0.f);
 }

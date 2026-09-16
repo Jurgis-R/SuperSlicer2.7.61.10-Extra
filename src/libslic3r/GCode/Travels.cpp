@@ -404,7 +404,7 @@ struct SmoothingParams
 SmoothingParams get_smoothing_params(
     const double lift_height,
     const double slope_end,
-    unsigned extruder_id,
+    extruder_index_t extruder_id,
     const double travel_length,
     const FullPrintConfig &config
 ) {
@@ -466,7 +466,10 @@ ElevatedTravelParams get_elevated_traval_params(
 ) {
     ElevatedTravelParams elevation_params{};
     assert(writer.tool());
-    uint16_t extruder_id  = writer.tool()->id();
+    if (!writer.tool_is_extruder() ||
+        writer.tool()->id() > static_cast<uint16_t>((std::numeric_limits<extruder_index_t>::max)()))
+        throw std::invalid_argument("Elevated travel requires a representable extruder index.");
+    const extruder_index_t extruder_id = static_cast<extruder_index_t>(writer.tool()->id());
     if (!config.travel_ramping_lift.get_at(extruder_id)) {
         elevation_params.slope_end = 0;
         writer.lift(layer_id);

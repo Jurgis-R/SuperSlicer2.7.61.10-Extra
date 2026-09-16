@@ -81,7 +81,7 @@ struct SourceLiftState
     bool retracted = false;
     bool disable_lift = false;
     bool source_is_top = false;
-    uint16_t extruder_id = UINT16_MAX;
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     double requested_lift_mm = 0.0;
     coord_t unlifted_end_z = 0;
     coord_t lifted_end_z = 0;
@@ -222,7 +222,7 @@ void lift_wipe(MutableExtrusionEntity entity,
 
 /* Raise only Wipe plus Retract leaves in one outgoing phase. */
 void prepare_wipe_lifts(MutableExtrusionEntity entity,
-                        uint16_t extruder_id,
+                        extruder_index_t extruder_id,
                         coord_t layer_height,
                         const Config &print_config,
                         std::optional<EPropertyAttributes> inherited_attributes);
@@ -403,7 +403,7 @@ double source_lift(const ScopeEntity &source,
                    const SourceEndpoint &endpoint,
                    const Config &print_config)
 {
-    const uint16_t extruder_id = source.tool_group.extruder_id();
+    const extruder_index_t extruder_id = source.tool_group.extruder_id();
     const double printer_lift = print_config.vector_float_or_default(
         "retract_lift", extruder_id, 0.0);
     const LayerRegionIsland region_island =
@@ -631,7 +631,7 @@ void lift_wipe(MutableExtrusionEntity entity,
 
 void prepare_wipe_lifts(
     MutableExtrusionEntity entity,
-    const uint16_t extruder_id,
+    const extruder_index_t extruder_id,
     const coord_t layer_height,
     const Config &print_config,
     std::optional<EPropertyAttributes> inherited_attributes)
@@ -726,7 +726,7 @@ void apply_transition_lift(
         return;
 
     const coord_t initial_travel_z = travel_start_z(target, target_scope);
-    const uint16_t extruder_id = source.extruder_id == UINT16_MAX ?
+    const extruder_index_t extruder_id = source.extruder_id == EXTRUDER_ID_UNKNOWN ?
         target.tool_group.extruder_id() : source.extruder_id;
     double lift_mm = source.requested_lift_mm;
     const bool first_layer_override = layer_group_idx == 0 &&

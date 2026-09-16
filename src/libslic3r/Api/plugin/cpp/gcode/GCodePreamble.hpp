@@ -24,12 +24,12 @@ public:
     std::string pre_start(const std::string &resolved);
     std::string post_start();
     std::string process_script(gcode_script_type type, const std::string &script,
-        const Config *producer_config, uint16_t processing_tool);
+        const Config *producer_config, extruder_index_t processing_tool);
 private:
     DefaultGCodeFirmwareSession &m_session;
     const Config *m_config = nullptr;
-    std::vector<uint16_t> m_initial_tools;
-    uint16_t m_initial_tool = UINT16_MAX;
+    std::vector<extruder_index_t> m_initial_tools;
+    extruder_index_t m_initial_tool = EXTRUDER_ID_UNKNOWN;
     bool m_in_preamble = false;
     bool m_start_written = false;
     std::string m_trailing_thumbnails;

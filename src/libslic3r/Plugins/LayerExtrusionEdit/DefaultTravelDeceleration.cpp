@@ -299,7 +299,7 @@ std::vector<OrderedLeaf> ordered_tool_leaves(
     PluginProgress &progress)
 {
     std::vector<OrderedLeaf> leaves;
-    if (tool.extruder_id() == uint16_t(-1))
+    if (tool.extruder_id() == EXTRUDER_ID_UNKNOWN)
         throw std::runtime_error("Travel deceleration encountered a tool group without an extruder.");
     for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
         const PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);

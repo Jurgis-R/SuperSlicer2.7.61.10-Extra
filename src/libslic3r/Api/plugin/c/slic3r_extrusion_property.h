@@ -5,7 +5,7 @@
 #ifndef slic3r_extrusion_property_h_
 #define slic3r_extrusion_property_h_
 
-#define SLIC3R_PLUGIN_API_EXTRUSION_PROPERTY_MAJOR 1u
+#define SLIC3R_PLUGIN_API_EXTRUSION_PROPERTY_MAJOR 2u
 #define SLIC3R_PLUGIN_API_EXTRUSION_PROPERTY_MINOR 0u
 
 #include <stdint.h>
@@ -270,8 +270,6 @@ typedef enum c_extrusion_custom_gcode_kind {
     C_EXTRUSION_CUSTOM_GCODE_SCRIPT = 2
 } c_extrusion_custom_gcode_kind;
 
-#define GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID UINT16_MAX
-
 /* Property type: EXTRUSION_PROPERTY_TYPE_CUSTOM_GCODE. */
 typedef struct c_extrusion_property_custom_gcode {
     c_extrusion_custom_gcode_kind kind;
@@ -279,8 +277,8 @@ typedef struct c_extrusion_property_custom_gcode {
     extrusion_data_id text_id;
     /* Serialized Config snapshot containing immutable producer inputs. */
     extrusion_data_id config_id;
-    /* Tool whose runtime E state is exposed, or the invalid value for the current tool. */
-    uint16_t processing_extruder_id;
+    /* Extruder whose runtime E state is exposed, or EXTRUDER_ID_UNKNOWN for the current one. */
+    extruder_index_t processing_extruder_id;
 } c_extrusion_property_custom_gcode;
 
 /*

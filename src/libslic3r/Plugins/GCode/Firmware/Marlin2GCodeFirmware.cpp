@@ -138,7 +138,7 @@ void Marlin2GCodeFirmwareSession::synchronize_selected_extruder_state(
 }
 
 std::string Marlin2GCodeFirmwareSession::encode_tool_temperature(
-    uint16_t tool_id,
+    extruder_index_t tool_id,
     int16_t temperature,
     bool wait) const
 {

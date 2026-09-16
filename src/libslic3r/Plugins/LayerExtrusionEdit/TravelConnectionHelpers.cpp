@@ -654,7 +654,7 @@ void ScopeTravelConnector::run(const PrintingLayerGroup &layer,
 
 /* Return the direct path used by the simple provider and advanced fallbacks. */
 std::vector<c_point> straight_path(const TravelEndpoint &source,
-                                   const TravelEndpoint &target, uint16_t)
+                                   const TravelEndpoint &target, extruder_index_t)
 {
     return {c_point{source.position.x, source.position.y},
             c_point{target.position.x, target.position.y}};

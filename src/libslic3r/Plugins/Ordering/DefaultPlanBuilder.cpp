@@ -134,7 +134,7 @@ PrintingLayerGroup layer_group_for_print_z(const PrintingGroup &group,
 void append_layer_once(const PrintingLayerGroup &layer_group, const Layer &layer);
 
 /* Find or create the tool bucket for one extruder inside one layer group. */
-PrintingToolGroup tool_group_for_extruder(const PrintingLayerGroup &layer_group, uint16_t extruder_id);
+PrintingToolGroup tool_group_for_extruder(const PrintingLayerGroup &layer_group, extruder_index_t extruder_id);
 
 /* Store each source LayerRegionIsland pointer once in a tool group. */
 void append_region_island_once(const PrintingToolGroup &tool_group, const LayerRegionIsland &region_island);
@@ -359,7 +359,7 @@ void append_layer_once(const PrintingLayerGroup &layer_group, const Layer &layer
     layer_group.append_layer(layer);
 }
 
-PrintingToolGroup tool_group_for_extruder(const PrintingLayerGroup &layer_group, const uint16_t extruder_id)
+PrintingToolGroup tool_group_for_extruder(const PrintingLayerGroup &layer_group, const extruder_index_t extruder_id)
 {
     /*
     Tool groups are local to one print Z. Reusing the existing group keeps all
@@ -412,13 +412,7 @@ void append_region_island_instance_extrusions(const PrintingPlan &plan,
     if (!region_island_has_printable_extrusions(region_island))
         return;
 
-    const int32_t raw_extruder_id = region_island.extruder_id();
-    /*
-    A negative id means the source island has no meaningful extruder. Keep it as
-    uint16_t(-1) rather than silently folding it into extruder 0; this makes bad
-    source data visible to later debug/ordering code.
-    */
-    const uint16_t extruder_id = raw_extruder_id < 0 ? uint16_t(-1) : uint16_t(raw_extruder_id);
+    const extruder_index_t extruder_id = region_island.extruder_id();
     PrintingToolGroup tool_group = tool_group_for_extruder(layer_group, extruder_id);
 
     for (const raw_extrusion_role role : k_region_island_roles) {

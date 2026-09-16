@@ -80,6 +80,7 @@ Developer guides:
 #include <cassert>
 #include <cstddef>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -277,7 +278,7 @@ class LayerRegionIsland : public ConstDataTreeHandleView<layer_region_island_han
 public:
     using ConstDataTreeHandleView<layer_region_island_handle>::ConstDataTreeHandleView;
 
-    int32_t extruder_id() const { return layer_region_island_extruder_id(handle()); }
+    extruder_index_t extruder_id() const { return layer_region_island_extruder_id(handle()); }
     bool has_extrusions() const { return layer_region_island_has_extrusions(handle()) != 0; }
     bool has_extrusion(raw_extrusion_role role) const { return layer_region_island_has_extrusion(handle(), role) != 0; }
 
@@ -352,7 +353,10 @@ public:
     }
 
     LayerRegionIsland get_or_create_region_island(const std::vector<LayerRegion> &regions,
-                                                  int32_t extruder_id = -1) const {
+                                                  int64_t extruder_id = EXTRUDER_ID_UNKNOWN) const {
+        if (extruder_id < EXTRUDER_ID_UNKNOWN ||
+            extruder_id > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The extruder id does not fit in extruder_index_t.");
         std::vector<const layer_region_handle *> handles;
         handles.reserve(regions.size());
         for (const LayerRegion &region : regions)
@@ -366,17 +370,21 @@ public:
                 const_cast<layer_island_handle *>(handle()),
                 handles.empty() ? nullptr : handles.data(),
                 uint32_t(handles.size()),
-                extruder_id);
+                static_cast<extruder_index_t>(extruder_id));
         return LayerRegionIsland(region_island);
     }
 
-    LayerRegionIsland get_or_create_full_region_island(int32_t extruder_id = -1) const {
+    LayerRegionIsland get_or_create_full_region_island(
+        int64_t extruder_id = EXTRUDER_ID_UNKNOWN) const {
+        if (extruder_id < EXTRUDER_ID_UNKNOWN ||
+            extruder_id > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The extruder id does not fit in extruder_index_t.");
         layer_region_island_handle *region_island =
             layer_island_get_or_create_region_island(
                 const_cast<layer_island_handle *>(handle()),
                 nullptr,
                 0,
-                extruder_id);
+                static_cast<extruder_index_t>(extruder_id));
         return LayerRegionIsland(region_island);
     }
 

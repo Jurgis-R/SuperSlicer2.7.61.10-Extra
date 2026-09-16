@@ -23,7 +23,7 @@ Input requirements
 
 - PrintingGroup, PrintingLayerGroup and PrintingToolGroup order must already
   be final.
-- Tool-group extruder IDs identify real tools or UINT16_MAX (-1) for any tool.
+- Tool-group extruder IDs identify real tools or EXTRUDER_ID_UNKNOWN (-1) for any tool.
 - Tool-group event roots must still accept ordered additions.
 
 Output contract

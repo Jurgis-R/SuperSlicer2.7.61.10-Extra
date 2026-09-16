@@ -91,12 +91,13 @@ Return the zero-based tool associated with a color-change script, including a
 converted ToolChange, or no value when the row has no color action in this
 printer mode.
 */
-std::optional<uint16_t> color_event_tool(const CustomGCodeRow &row,
+std::optional<extruder_index_t> color_event_tool(const CustomGCodeRow &row,
                                          Slic3r::CustomGCode::Mode print_mode,
-                                         Slic3r::CustomGCode::Mode record_mode);
+                                         Slic3r::CustomGCode::Mode record_mode,
+                                         uint32_t extruder_count);
 
 /* Build the GCodeProcessor marker that identifies the row in generated output. */
-std::string processor_tag(const CustomGCodeRow &row, uint16_t color_tool);
+std::string processor_tag(const CustomGCodeRow &row, extruder_index_t color_tool);
 
 /*
 Append one indivisible tag-plus-script event to a scope. A non-sortable wrapper
@@ -106,10 +107,10 @@ clones the producer Config into the extrusion property for later execution.
 void append_tagged_script(storage_handle *storage,
                           const PrintingScopeEvents &events,
                           const std::string &tag,
-                          const std::string &script,
-                          gcode_script_type script_type,
-                          const Config &arguments,
-                          uint16_t processing_extruder);
+                           const std::string &script,
+                           gcode_script_type script_type,
+                           const Config &arguments,
+                           extruder_index_t processing_extruder);
 
 /*
 Append one indivisible tag-plus-raw-G-code event. This path is used for Custom
@@ -147,21 +148,23 @@ bool row_is_converted_tool_change(const CustomGCodeRow &row,
            record_mode == Slic3r::CustomGCode::MultiAsSingle;
 }
 
-std::optional<uint16_t> color_event_tool(const CustomGCodeRow &row,
+std::optional<extruder_index_t> color_event_tool(const CustomGCodeRow &row,
                                          Slic3r::CustomGCode::Mode print_mode,
-                                         Slic3r::CustomGCode::Mode record_mode)
+                                         Slic3r::CustomGCode::Mode record_mode,
+                                         uint32_t extruder_count)
 {
     if (!tool_and_color_modes_are_compatible(print_mode, record_mode))
         return std::nullopt;
     if (row.type == Slic3r::CustomGCode::ColorChange)
         return print_mode == Slic3r::CustomGCode::SingleExtruder ?
-            std::optional<uint16_t>(0) : std::optional<uint16_t>(uint16_t(row.extruder - 1));
+            std::optional<extruder_index_t>(0) :
+            std::optional<extruder_index_t>(custom_gcode_row_extruder_index(row, extruder_count));
     if (row_is_converted_tool_change(row, print_mode, record_mode))
-        return uint16_t(0);
+        return extruder_index_t(0);
     return std::nullopt;
 }
 
-std::string processor_tag(const CustomGCodeRow &row, uint16_t color_tool)
+std::string processor_tag(const CustomGCodeRow &row, extruder_index_t color_tool)
 {
     if (row.type == Slic3r::CustomGCode::ColorChange ||
         row.type == Slic3r::CustomGCode::ToolChange)
@@ -178,10 +181,10 @@ std::string processor_tag(const CustomGCodeRow &row, uint16_t color_tool)
 void append_tagged_script(storage_handle *storage,
                           const PrintingScopeEvents &events,
                           const std::string &tag,
-                          const std::string &script,
-                          gcode_script_type script_type,
-                          const Config &arguments,
-                          uint16_t processing_extruder)
+                           const std::string &script,
+                           gcode_script_type script_type,
+                           const Config &arguments,
+                           extruder_index_t processing_extruder)
 {
     /* One non-sortable event root keeps the processor tag immediately before
        the script while still allowing each child to own its custom property. */
@@ -259,10 +262,11 @@ private:
 
         const CustomGCodeTable &table = *table_optional;
         const Config config = print.config();
+        const uint32_t extruder_count = config.get("nozzle_diameter").size();
         const Slic3r::CustomGCode::Mode print_mode = printing_plan_mode(print, plan);
         const Slic3r::CustomGCode::Mode record_mode = effective_record_mode(table);
         std::vector<bool> mapped_rows(table.rows.size(), false);
-        std::optional<uint16_t> last_tool;
+        std::optional<extruder_index_t> last_tool;
 
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
             const PrintingGroup group = plan.group(group_idx);
@@ -278,14 +282,14 @@ private:
                 const bool has_tool_group = layer.tool_group_count() > 0;
                 const PrintingScopeEvents destination_events = has_tool_group ?
                     layer.tool_group(0).events() : layer.events();
-                const uint16_t current_tool = has_tool_group ?
+                const extruder_index_t current_tool = has_tool_group ?
                     layer.tool_group(0).extruder_id() :
-                    last_tool.value_or(GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID);
+                    last_tool.value_or(EXTRUDER_ID_UNKNOWN);
 
                 for (const CustomGCodeRow *row : layer_rows[layer_idx]) {
                     mapped_rows[row->source_row] = true;
-                    const std::optional<uint16_t> color_tool =
-                        color_event_tool(*row, print_mode, record_mode);
+                    const std::optional<extruder_index_t> color_tool =
+                        color_event_tool(*row, print_mode, record_mode, extruder_count);
                     if (color_tool) {
                         if (!has_tool_group)
                             throw std::runtime_error("A color change has no tool group on its target layer.");
@@ -306,7 +310,7 @@ private:
                     if (row->type == Slic3r::CustomGCode::PausePrint) {
                         StoredConfig arguments(run_context->plugin_storage);
                         set_int_argument(arguments, "color_change_extruder",
-                                         current_tool == GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID ?
+                                         current_tool == EXTRUDER_ID_UNKNOWN ?
                                              0 : int32_t(current_tool));
                         set_string_argument(arguments, "next_color", std::string());
                         set_string_argument(arguments, "next_colour", std::string());

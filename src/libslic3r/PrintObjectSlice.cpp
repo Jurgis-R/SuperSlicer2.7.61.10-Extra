@@ -7,7 +7,9 @@
 #include <boost/log/trivial.hpp>
 #include "PrintRegion.hpp"
 
+#include <limits>
 #include <oneapi/tbb/parallel_for.h>
+#include <stdexcept>
 
 #include "Api/internal/LayerAccess.hpp"
 #include "Api/internal/LayerIslandAccess.hpp"
@@ -26,6 +28,17 @@
 #include "TriangleMeshSlicer.hpp"
 
 namespace Slic3r {
+
+/* Convert a mandatory one-based region setting before using it as an extruder identity. */
+static extruder_index_t checked_region_extruder_index(int64_t one_based_id);
+
+static extruder_index_t checked_region_extruder_index(const int64_t one_based_id)
+{
+    if (one_based_id <= 0 ||
+        one_based_id > int64_t((std::numeric_limits<extruder_index_t>::max)()) + 1)
+        throw std::out_of_range("Configured region extruder does not fit in extruder_index_t.");
+    return static_cast<extruder_index_t>(one_based_id - 1);
+}
 
 LayerUPtrs new_layers(
     PrintObject                 *print_object,
@@ -780,7 +793,7 @@ void PrintObject::_max_overhang_threshold() {
     bool has_enlargment = false;
 
     coord_t max_nz_diam = 0;
-    for (int16_t extr_id : this->object_extruders()) {
+    for (extruder_index_t extr_id : this->object_extruders()) {
         max_nz_diam = std::max(max_nz_diam, scale_i(print()->config().nozzle_diameter.get_at(extr_id)));
     }
     if (max_nz_diam == 0)
@@ -1061,7 +1074,7 @@ void PrintObject::_transform_hole_to_polyholes()
     {
         Point center;
         double max_diameter;
-        int16_t extruder_id;
+        extruder_index_t extruder_id;
         coord_t max_deviation;
         bool is_twist;
 
@@ -1117,7 +1130,8 @@ void PrintObject::_transform_hole_to_polyholes()
                                 bool twist = this->m_layers[layer_idx]->m_regions[region_idx]->region().config().option("hole_to_polyhole_twisted")->get_bool();
                                 if (diameter_max - diameter_min < max_variation * 2 && diameter_line_max - diameter_line_min < max_variation * 2) {
                                     LayerData ldata{center, diameter_max,
-                                                    int16_t(layer.m_regions[region_idx]->region().config().perimeter_extruder.value - 1),
+                                                    checked_region_extruder_index(
+                                                        layer.m_regions[region_idx]->region().config().perimeter_extruder.value),
                                                     max_variation, twist};
                                     layerid2center[layer_idx].emplace_back(ldata, &hole);
                                 }

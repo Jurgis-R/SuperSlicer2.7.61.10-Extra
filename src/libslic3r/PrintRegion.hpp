@@ -59,8 +59,8 @@ public:
     coordf_t                    nozzle_dmr_avg(const PrintConfig &print_config) const;
 
     // Collect 0-based extruder indices used to print this region's object.
-	void                        collect_object_printing_extruders(const Print& print, std::set<uint16_t> &object_extruders) const;
-	static void                 collect_object_printing_extruders(const PrintConfig &print_config, const PrintObjectConfig &object_config, const PrintRegionConfig &region_config, std::set<uint16_t> &object_extruders);
+	void                        collect_object_printing_extruders(const Print& print, std::set<extruder_index_t> &object_extruders) const;
+	static void                 collect_object_printing_extruders(const PrintConfig &print_config, const PrintObjectConfig &object_config, const PrintRegionConfig &region_config, std::set<extruder_index_t> &object_extruders);
 
 private:
     // Immutable snapshot: copies belong to this region, never to its caller.

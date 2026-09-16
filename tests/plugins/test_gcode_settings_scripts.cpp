@@ -154,7 +154,7 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
     const slic3r_api::EPropertyCustomGcode *second_layer_payload =
         second_layer_event.get(slic3r_api::EPropertyCustomGcode::key);
     REQUIRE(second_layer_payload != nullptr);
-    CHECK(second_layer_payload->processing_extruder_id == GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID);
+    CHECK(second_layer_payload->processing_extruder_id == EXTRUDER_ID_UNKNOWN);
     CHECK(stored_script_int(second_layer_entity, *second_layer_script, "layer_num") == 1);
     CHECK(stored_script_float(second_layer_entity, *second_layer_script, "layer_z") == Approx(0.4));
     CHECK(stored_script_float(second_layer_entity, *second_layer_script, "previous_layer_z") == Approx(0.2));

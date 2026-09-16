@@ -6,7 +6,7 @@
 #define slic3r_def_h_
 
 #define SLIC3R_PLUGIN_API_DEF_MAJOR 1u
-#define SLIC3R_PLUGIN_API_DEF_MINOR 0u
+#define SLIC3R_PLUGIN_API_DEF_MINOR 1u
 
 #include <assert.h>
 #include <stdint.h>
@@ -75,14 +75,18 @@ SLIC3R_CONSTEXPR_INLINE coord_t scale_i(coordf_t val) { return (coord_t) (val * 
 // Equivalent to val * 2^SCALING_POWER. <==> SLIC3R_CONSTEXPR_INLINE coordf_t scale_d(coordf_t val) { return (coordf_t) (std::scalbn(val, SCALING_POWER)); }
 SLIC3R_CONSTEXPR_INLINE coordf_t scale_d(coordf_t val) { return (coordf_t) (val * UNSCALING_FACTOR); }
 //Equivalent to val * 2^-SCALING_POWER. <==> SLIC3R_CONSTEXPR_INLINE coordf_t unscaled(coord_t val) { return (coordf_t) (std::scalbn(coordf_t(val), -SCALING_POWER)); }
+#ifdef __cplusplus
 SLIC3R_CONSTEXPR_INLINE double unscaled(coord_t val) { return ((double)val) * SCALING_FACTOR; }
 SLIC3R_CONSTEXPR_INLINE double unscaled(coordf_t val) { return val * SCALING_FACTOR; }
-SLIC3R_CONSTEXPR_INLINE distsqrf_t coord_sqr(coord_t length) { return distf_t(length) * distf_t(length); }
+#else
+SLIC3R_CONSTEXPR_INLINE double unscaled(coordf_t val) { return val * SCALING_FACTOR; }
+#endif
+SLIC3R_CONSTEXPR_INLINE distsqrf_t coord_sqr(coord_t length) { return (distf_t)(length) * (distf_t)(length); }
 SLIC3R_CONSTEXPR_INLINE coord_index_t coord_index(coord_t coord) { 
     return coord;
 }
-SLIC3R_CONSTEXPR_INLINE lengthsqr_t coord_int_sqr(coord_t length) { 
-    return lengthsqr_t(length) * lengthsqr_t(length);
+SLIC3R_CONSTEXPR_INLINE lengthsqr_t coord_int_sqr(coord_t length) {
+    return (lengthsqr_t)(length) * (lengthsqr_t)(length);
 }
 #else
 typedef int64_t coord_t;
@@ -105,9 +109,13 @@ SLIC3R_CONSTEXPR_STATIC coord_t SCALED_EPSILON = 100; // coord_t(EPSILON/ SCALIN
 
 SLIC3R_CONSTEXPR_INLINE coord_t scale_i(coordf_t val) { return (coord_t) (val * UNSCALING_FACTOR); }
 SLIC3R_CONSTEXPR_INLINE coordf_t scale_d(coordf_t val) { return (coordf_t) (val * UNSCALING_FACTOR); }
+#ifdef __cplusplus
 SLIC3R_CONSTEXPR_INLINE double unscaled(coord_t val) { return ((double) val) * SCALING_FACTOR; }
 SLIC3R_CONSTEXPR_INLINE double unscaled(coordf_t val) { return val * SCALING_FACTOR; }
-SLIC3R_CONSTEXPR_INLINE distsqrf_t coord_sqr(coord_t length) { return distf_t(length) * distf_t(length); }
+#else
+SLIC3R_CONSTEXPR_INLINE double unscaled(coordf_t val) { return val * SCALING_FACTOR; }
+#endif
+SLIC3R_CONSTEXPR_INLINE distsqrf_t coord_sqr(coord_t length) { return (distf_t)(length) * (distf_t)(length); }
 #define SLIC3R_SQUARE_BIT_REDUCTION 7
 #define SLIC3R_SQUARE_BIT_FACTOR (1u << SLIC3R_SQUARE_BIT_REDUCTION)
 // lossy square (works only for 2^38 length), by dividing by 128 to remove epsilon (and a bit more)
@@ -115,7 +123,7 @@ SLIC3R_CONSTEXPR_INLINE coord_index_t coord_index(coord_t coord) {
     // <==> assert(abs(coord) < std::pow(2,38));
     assert((int64_t)coord < (1LL << 38) && (int64_t)coord > -(1LL << 38));
     // remove epsilon (/SLIC3R_SQUARE_BIT_FACTOR)
-    return coord_index_t(coord / SLIC3R_SQUARE_BIT_FACTOR);
+    return (coord_index_t)(coord / SLIC3R_SQUARE_BIT_FACTOR);
 }
 SLIC3R_CONSTEXPR_INLINE lengthsqr_t coord_int_sqr(coord_t length) { 
     // <==> assert(abs(length) < std::pow(2,38));
@@ -138,5 +146,17 @@ SLIC3R_CONSTEXPR_INLINE coord_t scale_to_layer_coord(double z) {
     coord_z *= SCALED_EPSILON;
     return coord_z;
 }
+
+/*
+Zero-based identity of one physical extruder throughout the host and plugin
+APIs. Values from 0 through INT16_MAX identify extruders. -1 is the only
+public sentinel and means that no concrete extruder is known or selected;
+other negative values are invalid and must not be normalized to the sentinel.
+
+This type does not represent one-based configuration options where zero means
+"automatic/current", container positions, palette entries or mill/tool ids.
+*/
+typedef int16_t extruder_index_t;
+#define EXTRUDER_ID_UNKNOWN ((extruder_index_t)-1)
 
 #endif // slic3r_def_h_

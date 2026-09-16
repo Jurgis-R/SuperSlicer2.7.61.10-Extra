@@ -127,7 +127,7 @@ std::vector<std::vector<LayerEntryState>> collect_layer_entry_states(const Print
     std::vector<std::vector<LayerEntryState>> states(plan.group_count());
     LayerEntryState current = {};
     current.position.state = RAW_PRINTING_LAYER_ENTRY_POSITION_UNKNOWN;
-    current.tool.extruder_id = UINT16_MAX;
+    current.tool.extruder_id = EXTRUDER_ID_UNKNOWN;
 
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         const PrintingGroup group = plan.group(group_idx);

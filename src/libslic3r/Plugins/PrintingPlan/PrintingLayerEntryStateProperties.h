@@ -45,7 +45,7 @@ typedef struct c_printing_layer_entry_position_property {
 
 /* Tool selected before begin_tool_group() visits this layer-group. */
 typedef struct c_printing_layer_entry_tool_property {
-    uint16_t extruder_id;
+    extruder_index_t extruder_id;
 } c_printing_layer_entry_tool_property;
 
 /* Register the position payload for one orchestrator and return its runtime id. */
@@ -94,7 +94,7 @@ struct PrintingLayerEntryPositionProperty : c_printing_layer_entry_position_prop
 /* C++ view over the tool which was active before the layer-group began. */
 struct PrintingLayerEntryToolProperty : c_printing_layer_entry_tool_property
 {
-    bool has_active_tool() const { return extruder_id != UINT16_MAX; }
+    bool has_active_tool() const { return extruder_id != EXTRUDER_ID_UNKNOWN; }
 };
 
 /* Register and return the typed position key owned by this orchestrator. */

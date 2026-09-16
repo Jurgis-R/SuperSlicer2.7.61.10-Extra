@@ -20,11 +20,11 @@ static inline Point wipe_tower_point_to_object_point(GCodeGenerator &gcodegen, c
     return Point(scale_i(wipe_tower_pt.x() - gcodegen.origin()(0)), scale_i(wipe_tower_pt.y() - gcodegen.origin()(1)));
 }
 
-std::string WipeTowerIntegration::deretraction_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, int new_extruder_id) const {
+std::string WipeTowerIntegration::deretraction_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, extruder_index_t new_extruder_id) const {
     std::string deretraction_str;
     const bool is_ramming = (gcodegen.config().single_extruder_multi_material)
                          || (! gcodegen.config().single_extruder_multi_material && gcodegen.config().filament_multitool_ramming.get_at(tcr.initial_tool));
-    if (tcr.priming || (new_extruder_id >= 0)) {
+    if (tcr.priming || new_extruder_id != EXTRUDER_ID_UNKNOWN) {
         if (is_ramming)
             gcodegen.m_wipe->reset_path(); // We don't want wiping on the ramming lines.
         if (gcodegen.config().wipe_tower) {
@@ -36,11 +36,11 @@ std::string WipeTowerIntegration::deretraction_from_wipe_tower_generator(GCodeGe
     assert(deretraction_str.empty() || deretraction_str.back() == '\n');
     return deretraction_str;
 }
-std::string WipeTowerIntegration::toolchange_gcode_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, int new_extruder_id) const {
+std::string WipeTowerIntegration::toolchange_gcode_from_wipe_tower_generator(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, extruder_index_t new_extruder_id) const {
     const bool is_ramming = (gcodegen.config().single_extruder_multi_material)
                          || (! gcodegen.config().single_extruder_multi_material && gcodegen.config().filament_multitool_ramming.get_at(tcr.initial_tool));
     std::string toolchange_gcode_str;
-    if (tcr.priming || (new_extruder_id >= 0)) {
+    if (tcr.priming || new_extruder_id != EXTRUDER_ID_UNKNOWN) {
         if (is_ramming)
             gcodegen.m_wipe->reset_path(); // We don't want wiping on the ramming lines.
         toolchange_gcode_str = gcodegen.set_extruder(new_extruder_id,
@@ -50,12 +50,12 @@ std::string WipeTowerIntegration::toolchange_gcode_from_wipe_tower_generator(GCo
     return toolchange_gcode_str;
 }
 
-std::string WipeTowerIntegration::append_tcr(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, int new_extruder_id, double wipe_tower_z, bool need_ensure_z) const
+std::string WipeTowerIntegration::append_tcr(GCodeGenerator &gcodegen, const WipeTower::ToolChangeResult& tcr, extruder_index_t new_extruder_id, double wipe_tower_z, bool need_ensure_z) const
 {
     // has previous pos, or it's first layer.
     assert(gcodegen.last_pos_defined() || gcodegen.layer() == nullptr || gcodegen.layer()->lower_layer == nullptr);
 
-    if (new_extruder_id != -1 && new_extruder_id != tcr.new_tool)
+    if (new_extruder_id != EXTRUDER_ID_UNKNOWN && new_extruder_id != tcr.new_tool)
         throw Slic3r::InvalidArgument("Error: WipeTowerIntegration::append_tcr was asked to do a toolchange it didn't expect.");
 
     std::string gcode;
@@ -194,7 +194,7 @@ std::string WipeTowerIntegration::post_process_wipe_tower_moves(const WipeTower:
                                                                 float angle,
                                                                 //const GCodeFlavor gcode_flavor,
                                                                 GCodeGenerator &gcodegen,
-                                                                int new_extruder_id
+                                                                extruder_index_t new_extruder_id
                                                                 ) const {
     Vec2f extruder_offset = m_extruder_offsets[tcr.initial_tool].cast<float>();
 
@@ -333,7 +333,7 @@ std::string WipeTowerIntegration::prime(GCodeGenerator &gcodegen)
     return gcode;
 }
 
-std::string WipeTowerIntegration::tool_change(GCodeGenerator &gcodegen, int extruder_id, bool finish_layer)
+std::string WipeTowerIntegration::tool_change(GCodeGenerator &gcodegen, extruder_index_t extruder_id, bool finish_layer)
 {
     std::string gcode;
     assert(m_layer_idx >= 0);

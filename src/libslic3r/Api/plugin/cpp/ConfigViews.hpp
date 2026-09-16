@@ -7,6 +7,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -265,6 +266,11 @@ public:
         return out;
     }
 
+    uint32_t size(const char *key, uint32_t fallback) const {
+        const config_option_handle *option = option_if_enabled(key, 0);
+        return option == nullptr ? fallback : config_option_size(option);
+    }
+
     bool bool_or_default(const char *key, bool fallback) const {
         const config_option_handle *option = option_if_enabled(key, 0);
         return option == nullptr ? fallback : config_option_get_bool(option, 0) != 0;
@@ -342,9 +348,14 @@ public:
         return c_float_or_percent_get_effective_value(&value, ratio);
     }
 
-    double computed_float_or_default(const char *key, int32_t extruder_id, double fallback) const {
+    double computed_float_or_default(const char *key, int64_t extruder_id, double fallback) const {
+        if (extruder_id < EXTRUDER_ID_UNKNOWN ||
+            extruder_id > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The extruder id does not fit in extruder_index_t.");
         double value = fallback;
-        return config_get_computed_value(handle(), key, extruder_id, &value) != 0 ? value : fallback;
+        return config_get_computed_value(
+                   handle(), key, static_cast<extruder_index_t>(extruder_id), &value) != 0 ?
+                   value : fallback;
     }
 
     std::string string_or_default(const char *key, std::string fallback) const {

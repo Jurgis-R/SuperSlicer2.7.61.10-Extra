@@ -215,7 +215,7 @@ std::string RepRapGCodeFirmwareSession::encode_machine_envelope(
 }
 
 std::string RepRapGCodeFirmwareSession::encode_tool_temperature(
-    uint16_t tool_id,
+    extruder_index_t tool_id,
     int16_t temperature,
     bool wait) const
 {
@@ -231,13 +231,13 @@ std::string RepRapGCodeFirmwareSession::encode_tool_temperature(
     return output;
 }
 
-std::string RepRapGCodeFirmwareSession::encode_fan(uint16_t tool_id,
+std::string RepRapGCodeFirmwareSession::encode_fan(extruder_index_t tool_id,
                                                     double speed_percent) const
 {
     const double normalized = std::clamp(speed_percent, 0.0, 100.0) / 100.0;
     const std::map<uint32_t, Reader::RepRapToolState>::const_iterator tool =
         m_reader_state.tools.find(tool_id);
-    const std::vector<uint32_t> fallback{tool_id};
+    const std::vector<uint32_t> fallback{static_cast<uint32_t>(tool_id)};
     const std::vector<uint32_t> &fans = tool != m_reader_state.tools.end() &&
                                                !tool->second.fans.empty() ?
         tool->second.fans : fallback;
@@ -249,14 +249,14 @@ std::string RepRapGCodeFirmwareSession::encode_fan(uint16_t tool_id,
 }
 
 std::string RepRapGCodeFirmwareSession::encode_pressure_advance(
-    uint16_t tool_id,
+    extruder_index_t tool_id,
     double pressure_advance) const
 {
     // [2026-08-25] RepRapFirmware assigns pressure advance per drive with
     // M572: https://docs.duet3d.com/User_manual/Reference/Gcodes
     const std::map<uint32_t, Reader::RepRapToolState>::const_iterator tool =
         m_reader_state.tools.find(tool_id);
-    const std::vector<uint32_t> fallback{tool_id};
+    const std::vector<uint32_t> fallback{static_cast<uint32_t>(tool_id)};
     const std::vector<uint32_t> &drives = tool != m_reader_state.tools.end() &&
                                                  !tool->second.drives.empty() ?
         tool->second.drives : fallback;
@@ -281,7 +281,7 @@ std::string RepRapGCodeFirmwareSession::encode_acceleration(
 
 std::string RepRapGCodeFirmwareSession::encode_firmware_retraction(bool retract) const
 {
-    if (const std::optional<uint16_t> tool_id = current_extruder_id())
+    if (const std::optional<extruder_index_t> tool_id = current_extruder_id())
         m_reader_state.tools[*tool_id].retracted = retract;
     return DefaultGCodeFirmwareSession::encode_firmware_retraction(retract);
 }

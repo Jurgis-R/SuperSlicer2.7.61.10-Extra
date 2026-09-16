@@ -100,7 +100,7 @@ std::string SprinterGCodeFirmwareSession::encode_chamber_temperature(int16_t, bo
 }
 
 std::string SprinterGCodeFirmwareSession::encode_pressure_advance(
-    uint16_t tool_id,
+    extruder_index_t tool_id,
     double pressure_advance) const
 {
     return "M572 D" + std::to_string(tool_id) +
@@ -112,7 +112,7 @@ std::string SprinterGCodeFirmwareSession::encode_acceleration(uint32_t accelerat
     return "M204 P" + std::to_string(acceleration) + "\n";
 }
 
-std::string SprinterGCodeFirmwareSession::encode_extruder_current(uint16_t, double) const
+std::string SprinterGCodeFirmwareSession::encode_extruder_current(extruder_index_t, double) const
 {
     return encode_unsupported_operation("extruder current");
 }

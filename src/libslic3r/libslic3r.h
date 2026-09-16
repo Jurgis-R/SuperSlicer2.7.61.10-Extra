@@ -68,6 +68,7 @@ using ::distf_t;
 using ::distsqrf_t;
 using ::coord_index_t;
 using ::lengthsqr_t;
+using ::extruder_index_t;
 
 using ::EPSILON;
 using ::SCALED_EPSILON;

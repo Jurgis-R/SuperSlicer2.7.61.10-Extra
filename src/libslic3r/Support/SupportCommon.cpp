@@ -9,6 +9,8 @@
 
 #include <cassert>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 
 #include <boost/container/static_vector.hpp>
 #include <oneapi/tbb/parallel_for.h>
@@ -45,6 +47,17 @@
 #endif
 
 namespace Slic3r::FFFSupport {
+
+/* Convert a mandatory one-based support extruder setting before storing it in a layer island. */
+static extruder_index_t checked_support_extruder_index(int64_t one_based_id);
+
+static extruder_index_t checked_support_extruder_index(const int64_t one_based_id)
+{
+    if (one_based_id <= 0 ||
+        one_based_id > int64_t((std::numeric_limits<extruder_index_t>::max)()) + 1)
+        throw std::out_of_range("Configured support extruder does not fit in extruder_index_t.");
+    return static_cast<extruder_index_t>(one_based_id - 1);
+}
 
 // how much we extend support around the actual contact area
 //FIXME this should be dependent on the nozzle diameter!
@@ -1705,8 +1718,10 @@ void generate_support_toolpaths(
         }
     }
 
-    const int16_t support_extruder = int16_t(config.support_material_extruder.value - 1);
-    const int16_t support_interface_extruder = int16_t(config.support_material_interface_extruder.value - 1);
+    const extruder_index_t support_extruder =
+        checked_support_extruder_index(config.support_material_extruder.value);
+    const extruder_index_t support_interface_extruder =
+        checked_support_extruder_index(config.support_material_interface_extruder.value);
 
     // loop_interface_processor with a given circle radius.
     LoopInterfaceProcessor loop_interface_processor(1.5 * support_params.support_material_interface_flow.scaled_width());

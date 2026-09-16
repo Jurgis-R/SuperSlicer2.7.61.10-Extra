@@ -82,7 +82,7 @@ public:
 protected:
     void complete_script_context(
         gcode_script_type script_type,
-        uint16_t,
+        extruder_index_t,
         slic3r_api::GCodeGeneration::GCodeScriptConfig &config) override
     {
         ++m_completion_count;
@@ -617,7 +617,7 @@ TEST_CASE("G-code script processing tool survives stored entity copies moves and
     copied.custom_gcode("M117 raw", C_EXTRUSION_CUSTOM_GCODE_GCODE);
     copied_property = copied.get(slic3r_api::EPropertyCustomGcode::key);
     REQUIRE(copied_property != nullptr);
-    CHECK(copied_property->processing_extruder_id == GCODE_SCRIPT_PROCESSING_EXTRUDER_INVALID);
+    CHECK(copied_property->processing_extruder_id == EXTRUDER_ID_UNKNOWN);
     CHECK(copied_property->config_id == EXTRUSION_DATA_ID_INVALID);
 
     slic3r_api::StoredExtrusionEntity moved(std::move(source));
@@ -776,14 +776,14 @@ TEST_CASE("Legacy custom scripts substitute and update machine state",
     // This is the same parser entry point and diagnostic name used by the
     // SCRIPT branch of GCodeGenerator::apply_property().
     const std::string move = generator.placeholder_parser_process(
-        "extrusion_custom_gcode_script", "G1 X123 Y45", uint16_t(-1));
+        "extrusion_custom_gcode_script", "G1 X123 Y45", EXTRUDER_ID_UNKNOWN);
     CHECK(move.find("G1 X123 Y45") != std::string::npos);
     CHECK(is_approx(generator.writer().get_position().x(), 123.));
     CHECK(is_approx(generator.writer().get_position().y(), 45.));
 
     const std::string state = generator.placeholder_parser_process(
         "extrusion_custom_gcode_script",
-        "M117 X{current_position[0]} Y{current_position[1]}", uint16_t(-1));
+        "M117 X{current_position[0]} Y{current_position[1]}", EXTRUDER_ID_UNKNOWN);
     CHECK(state.find("M117 X123 Y45") != std::string::npos);
     CHECK(state.find("{current_position") == std::string::npos);
 }

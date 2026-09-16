@@ -80,7 +80,7 @@ struct BoundaryState
     bool valid = false;
     PlannedPosition position;
     EPropertyModifier modifier{};
-    uint16_t extruder_id = UINT16_MAX;
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
     double normal_retract_target = 0.0;
 };
 
@@ -429,7 +429,7 @@ double normal_retract_target(const Config &print_config,
                              const ScopeEntity &source,
                              const GeometricEndpoint &endpoint)
 {
-    const uint16_t extruder_id = source.tool_group.extruder_id();
+    const extruder_index_t extruder_id = source.tool_group.extruder_id();
     const double printer_target = print_config.vector_float_or_default(
         "retract_length", extruder_id, 0.0);
     const LayerRegionIsland region_island = source.printing_extrusion.region_island();
@@ -514,7 +514,7 @@ RetractionDecision decide_boundary(const Config &print_config,
     decision.toolchange_retraction = actual_toolchange ||
         source.modifier.toolchange_retraction != 0 ||
         target.modifier.toolchange_retraction != 0;
-    const uint16_t retracting_extruder = source.extruder_id != UINT16_MAX ?
+    const extruder_index_t retracting_extruder = source.extruder_id != EXTRUDER_ID_UNKNOWN ?
         source.extruder_id : target.extruder_id;
     const double gap = planar_gap_mm(source, target);
     const double minimum_gap = print_config.vector_float_or_default(

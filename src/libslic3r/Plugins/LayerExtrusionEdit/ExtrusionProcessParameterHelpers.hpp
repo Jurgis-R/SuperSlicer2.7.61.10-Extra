@@ -64,7 +64,7 @@ struct ExtrusionSettingsContext
     Config object_config;
     Config region_config;
     bool first_layer = false;
-    uint16_t extruder_id = uint16_t(-1);
+    extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
 };
 
 // Resolve one positive override against a caller-provided base. Missing,

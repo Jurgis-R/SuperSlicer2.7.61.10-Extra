@@ -171,10 +171,10 @@ class LayerRegionIsland : public PluginPropertyContainer
 {
 private:
     friend class Layer;
-    //// 0-based extruder, -1 => not set yet (any).
+    //// 0-based extruder, EXTRUDER_ID_UNKNOWN => not set yet (any).
     //// when the LayerRegionIsland will be sorted, if one has infill & peri extrusion with != extruder,
     ////  then it will split into two.
-    uint16_t m_extruder_id = uint16_t(-1);
+    extruder_index_t m_extruder_id = EXTRUDER_ID_UNKNOWN;
 
     std::map<ExtrusionRole, ExtrusionEntityCollection> m_extrusion_regions;
     // my regions
@@ -186,7 +186,7 @@ private:
 public:
 
     //LayerRegionIsland(const LayerRegionSetCPtrs &regions) : m_regions(regions) {}
-    LayerRegionIsland(const LayerRegionSetCPtrs &regions, uint16_t extruder_id) : m_regions(regions), m_extruder_id(extruder_id) {}
+    LayerRegionIsland(const LayerRegionSetCPtrs &regions, extruder_index_t extruder_id) : m_regions(regions), m_extruder_id(extruder_id) {}
 
     static inline ExtrusionRole PERIMETERS = ExtrusionRole::Perimeter;
     static inline ExtrusionRole GAP_FILLS = ExtrusionRole::GapFill;
@@ -213,7 +213,7 @@ public:
     // @Deprecated this is an algorithm, it should use the LayerRegionIsland, not be inside.
     void simplify_extrusion_entity(const Layer& layer);
 
-    uint16_t extruder_id() const { return m_extruder_id; };
+    extruder_index_t extruder_id() const { return m_extruder_id; };
 
 };
 

@@ -36,22 +36,22 @@ protected:
     void setup_firmware(const Config &config) override;
     void synchronize_selected_extruder_state(const DefaultExtruder *previous,
                                               DefaultExtruder &selected) override;
-    std::string encode_tool_change(uint16_t tool_id) const override;
-    std::string encode_tool_temperature(uint16_t tool_id,
+    std::string encode_tool_change(extruder_index_t tool_id) const override;
+    std::string encode_tool_temperature(extruder_index_t tool_id,
                                         int16_t temperature,
                                         bool wait) const override;
     std::string encode_chamber_temperature(int16_t temperature, bool wait) const override;
-    std::string encode_pressure_advance(uint16_t tool_id,
+    std::string encode_pressure_advance(extruder_index_t tool_id,
                                         double pressure_advance) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;
     std::string encode_move(const PreparedMove &move, bool include_speed) const override;
-    std::string encode_extruder_current(uint16_t tool_id, double current) const override;
+    std::string encode_extruder_current(extruder_index_t tool_id, double current) const override;
     std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const override;
     std::string encode_object_start(const ObjectLabel &object) const override;
     std::string encode_object_end(const ObjectLabel &object) const override;
 
 private:
-    const std::string &tool_name(uint16_t tool_id) const;
+    const std::string &tool_name(extruder_index_t tool_id) const;
 
     std::vector<std::string> m_tool_names;
 };

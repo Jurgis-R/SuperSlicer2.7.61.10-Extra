@@ -82,10 +82,10 @@ void KlipperGCodeFirmwareSession::setup_firmware(const Config &config)
     SingleAccelerationRegisterGCodeFirmwareSession::setup_firmware(config);
     m_tool_names.clear();
     m_tool_names.reserve(extruders().size());
-    for (uint32_t tool_id = 0; tool_id < extruders().size(); ++tool_id) {
-        std::string name = config.vector_string_or_default("tool_name", tool_id, std::string());
+    for (size_t tool_idx = 0; tool_idx < extruders().size(); ++tool_idx) {
+        std::string name = config.vector_string_or_default("tool_name", tool_idx, std::string());
         if (name.empty())
-            name = tool_id == 0 ? "extruder" : "extruder" + std::to_string(tool_id);
+            name = tool_idx == 0 ? "extruder" : "extruder" + std::to_string(tool_idx);
         m_tool_names.push_back(std::move(name));
     }
 }
@@ -100,20 +100,21 @@ void KlipperGCodeFirmwareSession::synchronize_selected_extruder_state(
         selected.fan().synchronize_runtime_from(previous->fan());
 }
 
-const std::string &KlipperGCodeFirmwareSession::tool_name(uint16_t tool_id) const
+const std::string &KlipperGCodeFirmwareSession::tool_name(extruder_index_t tool_id) const
 {
-    if (tool_id >= m_tool_names.size())
+    if (tool_id == EXTRUDER_ID_UNKNOWN || tool_id < EXTRUDER_ID_UNKNOWN ||
+        static_cast<size_t>(tool_id) >= m_tool_names.size())
         throw std::out_of_range("Klipper has no configured name for the selected extruder.");
-    return m_tool_names[tool_id];
+    return m_tool_names[static_cast<size_t>(tool_id)];
 }
 
-std::string KlipperGCodeFirmwareSession::encode_tool_change(uint16_t tool_id) const
+std::string KlipperGCodeFirmwareSession::encode_tool_change(extruder_index_t tool_id) const
 {
     return "ACTIVATE_EXTRUDER EXTRUDER=" + tool_name(tool_id) + "\n";
 }
 
 std::string KlipperGCodeFirmwareSession::encode_tool_temperature(
-    uint16_t,
+    extruder_index_t,
     int16_t temperature,
     bool wait) const
 {
@@ -126,7 +127,7 @@ std::string KlipperGCodeFirmwareSession::encode_chamber_temperature(int16_t, boo
 }
 
 std::string KlipperGCodeFirmwareSession::encode_pressure_advance(
-    uint16_t tool_id,
+    extruder_index_t tool_id,
     double pressure_advance) const
 {
     return "SET_PRESSURE_ADVANCE ADVANCE=" + format_number(pressure_advance) +
@@ -183,7 +184,7 @@ std::string KlipperGCodeFirmwareSession::encode_move(const PreparedMove &move,
     return formatter.string();
 }
 
-std::string KlipperGCodeFirmwareSession::encode_extruder_current(uint16_t, double) const
+std::string KlipperGCodeFirmwareSession::encode_extruder_current(extruder_index_t, double) const
 {
     return encode_unsupported_operation("extruder current");
 }

@@ -23,6 +23,8 @@ Entity guide: [Using Unified Extrusion Entities](/doc/plugins/extrusions.md)
 */
 
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_property.h"
 #include "libslic3r/Api/plugin/cpp/PluginPropertyKey.hpp"
@@ -83,7 +85,13 @@ struct EPropertyCustomGcode :
         return *this;
     }
     EPropertyCustomGcode &text(extrusion_data_id value) { text_id = value; return *this; }
-    EPropertyCustomGcode &processing_extruder(uint16_t value) { processing_extruder_id = value; return *this; }
+    EPropertyCustomGcode &processing_extruder(int64_t value) {
+        if (value < EXTRUDER_ID_UNKNOWN ||
+            value > (std::numeric_limits<extruder_index_t>::max)())
+            throw std::out_of_range("The script processing extruder does not fit in extruder_index_t.");
+        processing_extruder_id = static_cast<extruder_index_t>(value);
+        return *this;
+    }
 };
 
 /* A non-geometric command embedded in the ordered extrusion stream. */

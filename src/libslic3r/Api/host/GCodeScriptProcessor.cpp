@@ -162,12 +162,12 @@ private:
                                         const config_handle *producer_config) noexcept;
     static void process_thunk(void *context,
                               const char *script,
-                              uint16_t current_extruder,
+                              extruder_index_t current_extruder,
                               raw_gcode_script_result *result) noexcept;
 
     config_handle *prepare(gcode_script_type script_type,
                            const ConfigBase *producer_config);
-    std::string process(const std::string &script, uint16_t current_extruder);
+    std::string process(const std::string &script, extruder_index_t current_extruder);
     void create_machine_options();
     void create_specific_options(const std::string &script_name);
     void merge_producer_config(const ConfigBase *producer_config);
@@ -269,7 +269,7 @@ config_handle *GCodeScriptProcessor::Impl::prepare_thunk(
 void GCodeScriptProcessor::Impl::process_thunk(
     void *context,
     const char *script,
-    uint16_t current_extruder,
+    extruder_index_t current_extruder,
     raw_gcode_script_result *result) noexcept
 {
     if (result == nullptr || result->struct_size < sizeof(raw_gcode_script_result))
@@ -358,12 +358,15 @@ void GCodeScriptProcessor::Impl::resolve_object_names()
 
 std::string GCodeScriptProcessor::Impl::process(
     const std::string &script,
-    uint16_t current_extruder)
+    extruder_index_t current_extruder)
 {
     if (!m_prepared)
         throw std::logic_error("A G-code script must be prepared before it is processed.");
     if (m_processing)
         throw std::logic_error("The G-code script processor is not reentrant.");
+    if (current_extruder < EXTRUDER_ID_UNKNOWN)
+        throw std::invalid_argument(
+            "A G-code script received an invalid extruder index.");
 
     m_processing = true;
     try {

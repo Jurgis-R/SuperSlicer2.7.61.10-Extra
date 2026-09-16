@@ -89,7 +89,7 @@ public:
     // general info about a filament, computed from config.
     struct FilamentToolchangeInfo
     {
-        uint16_t tool_id = -1;
+        extruder_index_t tool_id = EXTRUDER_ID_UNKNOWN;
         // purge the nozzle before retracting
         double purge_volume; // mm3
         double purge_flow_mm3_sec;
@@ -130,7 +130,7 @@ public:
     struct ZLayerData
     {
         coord_t real_z;
-        std::vector<uint16_t> extruders; // from Toolordering (should be ordered correctly)
+        std::vector<extruder_index_t> extruders; // from Toolordering (should be ordered correctly)
         coord_t estimated_wipe_tower_length; // from extruder toolchange
     };
 
@@ -162,7 +162,7 @@ public:
 
     static coord_t floatz_tolayer_coord(double z);
 
-    ExtrusionEntityCollection prime(const std::vector<uint16_t> &tools, coord_t first_layer_height);
+    ExtrusionEntityCollection prime(const std::vector<extruder_index_t> &tools, coord_t first_layer_height);
 
     bool has_toolchange() const;
 
@@ -171,34 +171,34 @@ public:
                                                               double depth,
                                                               double angle_deg);
 
-    Flow get_ramming_flow(const uint16_t tool_id, const bool first_layer, const double layer_height);
+    Flow get_ramming_flow(extruder_index_t tool_id, bool first_layer, double layer_height);
     //TODO
     // in mm3
-    double get_loading_volume(uint16_t tool_idx) {
+    double get_loading_volume(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_loading_speed(uint16_t tool_idx) {
+    double get_loading_speed(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_prime_volume(uint16_t tool_idx) {
+    double get_prime_volume(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_prime_speed(uint16_t tool_idx) {
+    double get_prime_speed(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_unloading_volume(uint16_t tool_idx) {
+    double get_unloading_volume(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_unloading_speed(uint16_t tool_idx) {
+    double get_unloading_speed(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_first_layer_acceleration(uint16_t tool_idx) {
+    double get_first_layer_acceleration(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_first_layer_pa(uint16_t tool_idx) {
+    double get_first_layer_pa(extruder_index_t tool_idx) {
         return 1;
     }
-    double get_first_layer_fan_speed(uint16_t tool_idx) {
+    double get_first_layer_fan_speed(extruder_index_t tool_idx) {
         return 1;
     }
     friend class WipeTowerLayer;
@@ -239,7 +239,7 @@ public:
     bool brim_done = false;
     Flow tower_perimeter_flow;
     Polylines tower_perimeters;
-    uint16_t perimeter_tool_idx = uint16_t(-1);
+    extruder_index_t perimeter_tool_idx = EXTRUDER_ID_UNKNOWN;
     bool perimeter_done = false;
 
     bool y_down = true;
@@ -248,20 +248,20 @@ public:
     struct Toolchange
     {
         const Layer *layer;
-        uint16_t from_tool_id;
+        extruder_index_t from_tool_id;
         Flow purge_flow;
         Polyline purge_lines;
-        uint16_t to_tool_id;
+        extruder_index_t to_tool_id;
         Flow wipe_flow;
         Polyline wipe_lines;
         bool done = false;
     };
     // print_z & old_tool & new_tool => toolchange
-    std::map<std::tuple<coord_t, uint16_t, uint16_t>, Toolchange> m_toolchanges;
+    std::map<std::tuple<coord_t, extruder_index_t, extruder_index_t>, Toolchange> m_toolchanges;
 
     struct Purge
     {
-        uint16_t tool_id;
+        extruder_index_t tool_id;
         Flow purge_flow;
         Polyline purge_lines;
         bool done = false;
@@ -280,30 +280,30 @@ public:
 
     // plan the whole layer toolchanges & purges.
     void init(const std::vector<const Layer *> layers,
-                    const std::vector<uint16_t> &ordered_extruders,
-                    const std::vector<uint16_t> &purges);
+                    const std::vector<extruder_index_t> &ordered_extruders,
+                    const std::vector<extruder_index_t> &purges);
 
     // ask to create the next extrusions
     //ExtrusionEntityCollection create_toolchange(uint16_t from, uint16_t to, Point current_pos);
     //ExtrusionEntityCollection create_purge(uint16_t toolid, Point current_pos);
 
-    ExtrusionEntityCollection tool_change(const Layer *layer, uint16_t old_tool, uint16_t new_tool, double de_retraction_new_tool = 0);
-    bool finish_layer(ExtrusionEntityCollection &collection, uint16_t current_extruder, bool force = false);
+    ExtrusionEntityCollection tool_change(const Layer *layer, extruder_index_t old_tool, extruder_index_t new_tool, double de_retraction_new_tool = 0);
+    bool finish_layer(ExtrusionEntityCollection &collection, extruder_index_t current_extruder, bool force = false);
 
 protected:
     void toolchange_load(ExtrusionEntityCollection &collection,
                             const Polyline &loading_lines,
-                            const uint16_t tool_id);
+                            extruder_index_t tool_id);
     bool toolchange_Unload(ExtrusionEntityCollection &collection,
                             const Polyline &ramming_lines,
-                            const uint16_t tool_id,
+                            extruder_index_t tool_id,
                             const Flow &ramming_flow);
     void toolchange_Wipe(ExtrusionEntityCollection &collection,
                          Polyline wipe_lines,
                          const Flow wipe_flow,
-                         const uint16_t tool_id,
+                         extruder_index_t tool_id,
                          const double de_retraction_new_tool);
-    void toolchange_Change(ExtrusionEntityCollection &collection, const uint16_t new_tool);
+    void toolchange_Change(ExtrusionEntityCollection &collection, extruder_index_t new_tool);
 
     bool print_perimeter(ExtrusionEntityCollection &collection, bool for_toolchange = false);
 

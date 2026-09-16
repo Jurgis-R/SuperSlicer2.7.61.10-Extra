@@ -255,8 +255,13 @@ ExtrusionEntityCollection calculate_and_split_overhanging_extrusions(const Extru
 
 std::pair<float,float> calculate_overhang_speed(const ExtrusionPath &path,
                               const FullPrintConfig     &config,
-                              size_t                     extruder_id)
+                              const extruder_index_t     extruder_id)
 {
+    if (extruder_id == EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Overhang speed requires a concrete extruder index");
+    if (extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Overhang speed received an invalid negative extruder index");
+    const size_t extruder_idx = static_cast<size_t>(extruder_id);
     const ExtrusionPropertyOverhang *overhang_attributes = path.overhang_attributes();
     assert(overhang_attributes);
     if(!overhang_attributes)
@@ -271,8 +276,8 @@ std::pair<float,float> calculate_overhang_speed(const ExtrusionPath &path,
             assert(config.overhangs);
             float max_dynamic_distance =
                 (float) (config.overhangs_width_speed.is_enabled() ?
-                             config.overhangs_width_speed.get_effective_value(config.nozzle_diameter.get_at(extruder_id)) :
-                             config.overhangs_width.get_effective_value(config.nozzle_diameter.get_at(extruder_id)));
+                             config.overhangs_width_speed.get_effective_value(config.nozzle_diameter.get_at(extruder_idx)) :
+                             config.overhangs_width.get_effective_value(config.nozzle_diameter.get_at(extruder_idx)));
             GraphData graph = config.overhangs_dynamic_speed.value;
             // ensure it start at 0%, and ensure it ends at 100%
             if (graph.graph_points[graph.begin_idx].x() != 0) {
@@ -301,10 +306,10 @@ std::pair<float,float> calculate_overhang_speed(const ExtrusionPath &path,
 
 
     std::vector<std::pair<int, ConfigOptionInts>> overhang_with_fan_speeds = {{100, ConfigOptionInts{0}}};
-    if (config.overhangs_dynamic_fan_speed.is_enabled(extruder_id) &&
+    if (config.overhangs_dynamic_fan_speed.is_enabled(extruder_idx) &&
         overhang_attributes->start_distance_from_prev_layer > 0 &&
         overhang_attributes->end_distance_from_prev_layer > 0) {
-        GraphData graph = config.overhangs_dynamic_fan_speed.get_at(extruder_id);
+        GraphData graph = config.overhangs_dynamic_fan_speed.get_at(extruder_idx);
         //interpolate
         assert((overhang_attributes->start_distance_from_prev_layer >= 0 &&
                 overhang_attributes->start_distance_from_prev_layer <= 1) ||
@@ -324,14 +329,19 @@ std::pair<float,float> calculate_overhang_speed(const ExtrusionPath &path,
 void apply_overhang_flow(ExtrusionPath &path,
                          const PrintConfig &print_config,
                          const LayerRegion &layer_region,
-                         size_t extruder_id) {
+                         const extruder_index_t extruder_id) {
+    if (extruder_id == EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Overhang flow requires a concrete extruder index");
+    if (extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Overhang flow received an invalid negative extruder index");
+    const size_t extruder_idx = static_cast<size_t>(extruder_id);
     ExtrusionAttributes &attributes = path.attributes_mutable();
     const PrintRegionConfig &region_config = layer_region.region().config();
     const ExtrusionPropertyOverhang *overhang_attributes = path.overhang_attributes();
     if (overhang_attributes == nullptr || overhang_attributes->has_full_overhangs_flow ||
         !region_config.overhangs_flow_ratio.is_enabled() || !region_config.overhangs_dynamic_flow.is_enabled())
         return;
-    const double nzl_diam_mm = print_config.nozzle_diameter.get_at(extruder_id);
+    const double nzl_diam_mm = print_config.nozzle_diameter.get_at(extruder_idx);
 
     GraphData graph = region_config.overhangs_dynamic_flow.value;
     double max_dynamic_distance_mm = region_config.overhangs_width.get_effective_value(nzl_diam_mm);

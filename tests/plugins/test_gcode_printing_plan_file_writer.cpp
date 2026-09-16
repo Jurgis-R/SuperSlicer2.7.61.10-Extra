@@ -21,6 +21,7 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_gcode.h"
+#include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/DefaultGCodeFirmwareSession.hpp"
 #include "libslic3r/Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp"
@@ -784,4 +785,61 @@ TEST_CASE("Orchestrator export_gcode still routes through ordering and STEP_GCOD
         throw;
     }
     remove_output_pair(output_path);
+}
+
+TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
+          "[plugins][gcode][seam-placer][cost]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Plugin *cost_plugin = orchestrator.get_plugin("seam_placer.cost");
+    REQUIRE(cost_plugin != nullptr);
+    const bool cost_was_active = orchestrator.is_plugin_active(cost_plugin);
+    REQUIRE(orchestrator.set_plugin_active(cost_plugin, true));
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict("step_gcode_plugin", "gcode.printing_plan_file_writer");
+    config.set_deserialize_strict("gcode_firmware_plugin", "gcode.firmware.marlin2");
+    const std::string seam_selector =
+        Steps::plugin_exclusive_group_option_key(orchestrator, SEAM_PLACER, "seam_placer_plugin");
+    REQUIRE_FALSE(seam_selector.empty());
+    config.set_deserialize_strict(seam_selector, "seam_placer.cost");
+    const std::string ordering_selector =
+        Steps::plugin_exclusive_group_option_key(orchestrator, STEP_ORDERING, "ordering.extrusion_tree");
+    REQUIRE_FALSE(ordering_selector.empty());
+    config.set_deserialize_strict(ordering_selector, "ordering.extrusion_tree.advanced");
+
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+
+    const boost::filesystem::path output_path = temporary_gcode_path();
+    remove_output_pair(output_path);
+    try {
+        print.process();
+        const std::string generated_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(generated_path == output_path.string());
+        REQUIRE(boost::filesystem::exists(output_path));
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        remove_output_pair(output_path);
+
+        // A selector change can invalidate STEP_ORDERING after the downstream
+        // layer extrusion edits were already marked done. Rebuilding the plan
+        // must force those edits again so STEP_GCODE never sees speedless roots.
+        print.mark_step_for_execution(STEP_ORDERING);
+        print.mark_step_for_execution(STEP_GCODE);
+        const std::string regenerated_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(regenerated_path == output_path.string());
+        REQUIRE(boost::filesystem::exists(output_path));
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+    } catch (...) {
+        remove_output_pair(output_path);
+        orchestrator.set_plugin_active(cost_plugin, cost_was_active);
+        throw;
+    }
+    remove_output_pair(output_path);
+    orchestrator.set_plugin_active(cost_plugin, cost_was_active);
 }

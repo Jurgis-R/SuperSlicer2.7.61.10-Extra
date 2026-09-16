@@ -110,7 +110,7 @@ public:
     ~Sidebar();
 
     void init_freq_params();
-    void init_filament_combo(PlaterPresetComboBox **combo, const int extr_idx);
+    void init_filament_combo(PlaterPresetComboBox **combo, extruder_index_t extr_idx);
     void remove_unused_filament_combos(const size_t current_extruder_count);
     void update_all_preset_comboboxes();
     void update_presets(Slic3r::Preset::Type preset_type);

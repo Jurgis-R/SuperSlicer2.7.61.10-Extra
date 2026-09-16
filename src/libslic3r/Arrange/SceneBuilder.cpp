@@ -27,7 +27,7 @@ coord_t get_skirt_inset(const Print &fffprint)
     if (!fffprint.objects().empty() && fffprint.has_skirt()) {
         float max_skirt_width = 0;
         float max_skirt_spacing = 0;
-        for (unsigned int extruder_id : fffprint.object_extruders()) {
+        for (extruder_index_t extruder_id : fffprint.object_extruders()) {
             Flow   flow = fffprint.skirt_flow(extruder_id);
             max_skirt_width = std::max(max_skirt_width, flow.width());
             max_skirt_spacing = std::max(max_skirt_spacing, flow.spacing());

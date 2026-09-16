@@ -56,6 +56,26 @@ static const std::vector<std::string> DEFAULT_EXTRUDER_COLORS = { "#FF8000", "#D
 
 namespace Slic3r {
 
+// G-code tool selectors arrive as wider parser values. Keep invalid values
+// out of the signed public identity before converting them to extruder_index_t.
+static std::optional<extruder_index_t> checked_extruder_index(const int64_t value)
+{
+    if (value == EXTRUDER_ID_UNKNOWN || value < EXTRUDER_ID_UNKNOWN ||
+        value > static_cast<int64_t>(std::numeric_limits<extruder_index_t>::max()))
+        return std::nullopt;
+    return static_cast<extruder_index_t>(value);
+}
+
+static std::optional<extruder_index_t> checked_extruder_index(const double value)
+{
+    if (!std::isfinite(value) || value == double(EXTRUDER_ID_UNKNOWN) ||
+        value < double(EXTRUDER_ID_UNKNOWN) ||
+        value > static_cast<double>(std::numeric_limits<extruder_index_t>::max()) ||
+        std::trunc(value) != value)
+        return std::nullopt;
+    return static_cast<extruder_index_t>(value);
+}
+
 const std::vector<std::string> GCodeProcessor::Reserved_Tags = {
     "TYPE:",
     "WIPE_START",
@@ -409,7 +429,7 @@ void GCodeProcessor::UsedFilaments::reset()
     this->extruder_retracted_volume.clear();
 }
 
-void GCodeProcessor::UsedFilaments::increase_caches(double extruded_volume, uint16_t extruder_id, double parking_volume, double extra_loading_volume)
+void GCodeProcessor::UsedFilaments::increase_caches(double extruded_volume, extruder_index_t extruder_id, double parking_volume, double extra_loading_volume)
 {
     if (extruder_id >= this->extruder_retracted_volume.size())
         this->extruder_retracted_volume.resize(extruder_id + 1, parking_volume);
@@ -440,7 +460,7 @@ void GCodeProcessor::UsedFilaments::process_color_change_cache()
     }
 }
 
-void GCodeProcessor::UsedFilaments::process_extruder_cache(uint16_t extruder_id, size_t object_id, GCodeExtrusionRole role)
+void GCodeProcessor::UsedFilaments::process_extruder_cache(extruder_index_t extruder_id, size_t object_id, GCodeExtrusionRole role)
  {
     if (this->tool_change_cache != 0.0) {
         this->volumes_per_extruder[extruder_id] += this->tool_change_cache;
@@ -452,7 +472,7 @@ void GCodeProcessor::UsedFilaments::process_extruder_cache(uint16_t extruder_id,
     this->recent_toolchange = true;
 }
 
-void GCodeProcessor::UsedFilaments::process_object_cache(uint16_t extruder_id, size_t object_id, GCodeExtrusionRole role) {
+void GCodeProcessor::UsedFilaments::process_object_cache(extruder_index_t extruder_id, size_t object_id, GCodeExtrusionRole role) {
     if (object_id != OBJECT_INSTANCE_ID_NONE)
         this->volumes_per_role_per_extruder_per_object[object_id][extruder_id][role] += this->object_change_cache;
     this->object_change_cache = 0;
@@ -1710,22 +1730,40 @@ std::string get_klipper_param(std::string key, std::string line) {
 }
 
 void GCodeProcessor::process_klipper_ACTIVATE_EXTRUDER(const GCodeReader::GCodeLine& line) {
-    uint8_t extruder_id = 0;
     //check the config
     std::string raw_value = get_klipper_param(" EXTRUDER", line.raw());
+    if (raw_value.empty()) {
+        BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid Klipper extruder activation.";
+        return;
+    }
     auto it = std::find(m_extruder_names.begin(), m_extruder_names.end(), raw_value);
     if ( it != m_extruder_names.end()) {
-        process_toolchange(uint16_t(it - m_extruder_names.begin()));
+        const int64_t raw_id = static_cast<int64_t>(it - m_extruder_names.begin());
+        const std::optional<extruder_index_t> extruder_id = checked_extruder_index(raw_id);
+        if (extruder_id)
+            process_toolchange(*extruder_id);
         return;
     }
     std::string trsf;
-    while (raw_value.back() >= '0' && raw_value.back() <= '9') {
+    while (!raw_value.empty() && raw_value.back() >= '0' && raw_value.back() <= '9') {
         trsf = raw_value.back() + trsf;
         raw_value.resize(raw_value.size() - 1);
     }
     if (trsf.empty())
         trsf = "0";
-    process_toolchange(uint16_t(std::stoi(trsf)));
+    try {
+        std::size_t parsed_size = 0;
+        const long long raw_id = std::stoll(trsf, &parsed_size);
+        const std::optional<extruder_index_t> extruder_id =
+            parsed_size == trsf.size() ? checked_extruder_index(static_cast<int64_t>(raw_id)) : std::nullopt;
+        if (extruder_id)
+            process_toolchange(*extruder_id);
+        else
+            BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid Klipper extruder activation.";
+    }
+    catch (const std::exception&) {
+        BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid Klipper extruder activation.";
+    }
 }
 
 void GCodeProcessor::apply_config_simplify3d(const std::string& filename)
@@ -1824,15 +1862,17 @@ void GCodeProcessor::apply_config_simplify3d(const std::string& filename)
     }
 }
 
-void GCodeProcessor::set_extruder_temp(float temp, size_t extruder_id) {
+void GCodeProcessor::set_extruder_temp(float temp, extruder_index_t extruder_id) {
     if (m_single_extruder_multi_material) {
         for (int i = 0; i < m_extruder_temps.size(); i++) {
             m_extruder_temps[i] = temp;
         }
     } else {
-        assert(extruder_id < m_extruder_temps.size());
-        if (extruder_id < m_extruder_temps.size())
-            m_extruder_temps[extruder_id] = temp;
+        assert(extruder_id != EXTRUDER_ID_UNKNOWN);
+        const size_t index = static_cast<size_t>(extruder_id);
+        assert(index < m_extruder_temps.size());
+        if (index < m_extruder_temps.size())
+            m_extruder_temps[index] = temp;
     }
 }
 
@@ -2164,7 +2204,7 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
 
     // color change tag
     if (boost::starts_with(comment, reserved_tag(ETags::Color_Change))) {
-        unsigned char extruder_id = 0;
+        extruder_index_t extruder_id = 0;
         static std::vector<std::string> Default_Colors = {
             "#0B2C7A", // { 0.043f, 0.173f, 0.478f }, // bluish
             "#1C8891", // { 0.110f, 0.533f, 0.569f },
@@ -2196,11 +2236,13 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
         if (tokens.size() > 1) {
             if (tokens[1][0] == 'T') {
                 int eid;
-                if (!parse_number(tokens[1].substr(1), eid) || eid < 0 || eid > 255) {
+                const std::optional<extruder_index_t> parsed_id = parse_number(tokens[1].substr(1), eid) ?
+                    checked_extruder_index(static_cast<int64_t>(eid)) : std::nullopt;
+                if (!parsed_id) {
                     BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid value for Color_Change (" << comment << ").";
                     return;
                 }
-                extruder_id = static_cast<unsigned char>(eid);
+                extruder_id = *parsed_id;
             }
         }
         if (tokens.size() > 2) {
@@ -2214,14 +2256,14 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
                 m_last_default_color_id = 0;
         }
 
-        if (extruder_id < m_extruder_colors.size())
-            m_extruder_colors[extruder_id] = static_cast<unsigned char>(m_extruder_offsets.size()) + m_cp_color.counter; // color_change position in list of color for preview
+        if (static_cast<size_t>(extruder_id) < m_extruder_colors.size())
+            m_extruder_colors[static_cast<size_t>(extruder_id)] = static_cast<unsigned char>(m_extruder_offsets.size()) + m_cp_color.counter; // color_change position in list of color for preview
         ++m_cp_color.counter;
         if (m_cp_color.counter == UCHAR_MAX)
             m_cp_color.counter = 0;
 
         if (m_extruder_id == extruder_id) {
-            m_cp_color.current = m_extruder_colors[extruder_id];
+            m_cp_color.current = m_extruder_colors[static_cast<size_t>(extruder_id)];
             store_move_vertex(EMoveType::Color_change);
             CustomGCode::Item item = { scale_to_layer_coord(m_end_position[2]), CustomGCode::ColorChange, extruder_id + 1, color, "" };
             m_result.custom_gcode_per_print_z.emplace_back(item);
@@ -3479,12 +3521,12 @@ void GCodeProcessor::process_G10(const GCodeReader::GCodeLine& line)
         // similar to M104/M109
         float new_temp;
         if (line.has_value('S', new_temp)) {
-            size_t id = m_extruder_id;
+            extruder_index_t id = m_extruder_id;
             float val;
             if (line.has_value('P', val)) {
-                const size_t eid = static_cast<size_t>(val);
-                if (eid < m_extruder_temps.size())
-                    id = eid;
+                const std::optional<extruder_index_t> eid = checked_extruder_index(val);
+                if (eid && static_cast<size_t>(*eid) < m_extruder_temps.size())
+                    id = *eid;
             }
 
             set_extruder_temp(new_temp, id);
@@ -3657,12 +3699,12 @@ void GCodeProcessor::process_M104(const GCodeReader::GCodeLine& line)
 {
     float new_temp;
     if (line.has_value('S', new_temp)) {
-        size_t id = m_extruder_id;
+        extruder_index_t id = m_extruder_id;
         float val;
         if (line.has_value('T', val)) {
-            const size_t eid = static_cast<size_t>(val);
-            if (eid < m_extruder_temps.size())
-                id = eid;
+            const std::optional<extruder_index_t> eid = checked_extruder_index(val);
+            if (eid && static_cast<size_t>(*eid) < m_extruder_temps.size())
+                id = *eid;
         }
 
         set_extruder_temp(new_temp, id);
@@ -3704,13 +3746,13 @@ void GCodeProcessor::process_M108(const GCodeReader::GCodeLine& line)
 void GCodeProcessor::process_M109(const GCodeReader::GCodeLine& line)
 {
     float new_temp;
-    size_t id = (size_t)-1;
+    extruder_index_t id = EXTRUDER_ID_UNKNOWN;
     if (line.has_value('R', new_temp)) {
         float val;
         if (line.has_value('T', val)) {
-            const size_t eid = static_cast<size_t>(val);
-            if (eid < m_extruder_temps.size())
-                id = eid;
+            const std::optional<extruder_index_t> eid = checked_extruder_index(val);
+            if (eid && static_cast<size_t>(*eid) < m_extruder_temps.size())
+                id = *eid;
         }
         else
             id = m_extruder_id;
@@ -3718,7 +3760,7 @@ void GCodeProcessor::process_M109(const GCodeReader::GCodeLine& line)
     else if (line.has_value('S', new_temp))
         id = m_extruder_id;
 
-    if (id != (size_t)-1)
+    if (id != EXTRUDER_ID_UNKNOWN)
         set_extruder_temp(new_temp, id);
 }
 
@@ -3873,40 +3915,46 @@ void GCodeProcessor::process_M220(const GCodeReader::GCodeLine& line)
 
     // get extruder id if any
 
-    uint16_t extruder_id = m_extruder_id;
-    {
-        if (line.has_value('T', value_temp))
-            extruder_id = std::min(uint16_t(1000), std::max(uint16_t(0), uint16_t(value_temp)));
-        else if (line.has_value('D', value_temp))
-            extruder_id = std::min(uint16_t(1000), std::max(uint16_t(0), uint16_t(value_temp)));
+    extruder_index_t extruder_id = m_extruder_id;
+    if (line.has_value('T', value_temp) || line.has_value('D', value_temp)) {
+        const std::optional<extruder_index_t> parsed_id = checked_extruder_index(value_temp);
+        if (!parsed_id) {
+            BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid M220 extruder id.";
+            return;
+        }
+        extruder_id = *parsed_id;
     }
+    const size_t extruder_index = static_cast<size_t>(extruder_id);
 
     // ensure that there is enough m_feed_multiply for our needs
-    while (m_feed_multiply.size() <= extruder_id)
+    while (m_feed_multiply.size() <= extruder_index)
         m_feed_multiply.emplace_back(1.0f, 1.0f);
 
     if (line.has('B'))
-        m_feed_multiply[extruder_id].saved = m_feed_multiply[extruder_id].current;
+        m_feed_multiply[extruder_index].saved = m_feed_multiply[extruder_index].current;
     if (line.has_value('S', value_temp))
-        m_feed_multiply[extruder_id].current = value_temp * 0.01f;;
+        m_feed_multiply[extruder_index].current = value_temp * 0.01f;;
     if (line.has('R'))
-        m_feed_multiply[extruder_id].current = m_feed_multiply[extruder_id].saved;
+        m_feed_multiply[extruder_index].current = m_feed_multiply[extruder_index].saved;
 }
 
 void GCodeProcessor::process_M221(const GCodeReader::GCodeLine& line)
 {
     float value_s;
     if (line.has_value('S', value_s)) {
-        float value_t = 0;
-        if (!line.has_value('T', value_t))
-            if (!line.has_value('D', value_t)) {
-                value_t = (float)m_extruder_id;
-            }
+        float value_t = 0.0f;
+        const bool has_target = line.has_value('T', value_t) || line.has_value('D', value_t);
+        const std::optional<extruder_index_t> parsed_id = has_target ?
+            checked_extruder_index(value_t) : std::optional<extruder_index_t>(m_extruder_id);
+        if (!parsed_id) {
+            BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid M221 extruder id.";
+            return;
+        }
+        const size_t extruder_index = static_cast<size_t>(*parsed_id);
         value_s *= 0.01f;
-        uint16_t extruder = std::min(uint16_t(1000), std::max(uint16_t(0), uint16_t(value_t)));
-        while (m_extrude_multiply.size() <= extruder)
+        while (m_extrude_multiply.size() <= extruder_index)
             m_extrude_multiply.push_back(1.0f);
-        m_extrude_multiply[extruder] = value_s;
+        m_extrude_multiply[extruder_index] = value_s;
         //not sure of what it does...
         for (size_t i = 0; i < static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count); ++i) {
             m_time_processor.machines[i].extrude_factor_override_percentage = value_s;
@@ -4025,7 +4073,8 @@ void GCodeProcessor::process_T(const std::string_view command)
 {
     if (command.length() > 1) {
         int eid = 0;
-        if (!parse_number(command.substr(1), eid) || eid < 0 || eid > 255) {
+        if (!parse_number(command.substr(1), eid) ||
+            eid == EXTRUDER_ID_UNKNOWN || eid < EXTRUDER_ID_UNKNOWN) {
             // Specific to the MMU2 V2 (see https://www.help.prusa3d.com/en/article/prusa-specific-g-codes_112173):
             if ((m_flavor == gcfMarlinLegacy || m_flavor == gcfMarlinFirmware) && (command == "Tx" || command == "Tc" || command == "T?"))
                 return;
@@ -4035,31 +4084,39 @@ void GCodeProcessor::process_T(const std::string_view command)
                 BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid toolchange (" << command << ").";
         }
         else {
-            uint16_t id = static_cast<uint16_t>(eid);
-            if (m_extruder_id != id) {
-                if (((m_producer == EProducer::PrusaSlicer || m_producer == EProducer::Slic3rPE || m_producer == EProducer::Slic3r) && id >= m_result.extruders_count) ||
-                    ((m_producer != EProducer::PrusaSlicer && m_producer != EProducer::Slic3rPE && m_producer != EProducer::Slic3r) && id >= m_result.extruder_colors.size()))
+            const std::optional<extruder_index_t> id = checked_extruder_index(static_cast<int64_t>(eid));
+            if (!id) {
+                BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid toolchange (" << command << ").";
+                return;
+            }
+            if (m_extruder_id != *id) {
+                if (((m_producer == EProducer::PrusaSlicer || m_producer == EProducer::Slic3rPE || m_producer == EProducer::Slic3r) && static_cast<size_t>(*id) >= m_result.extruders_count) ||
+                    ((m_producer != EProducer::PrusaSlicer && m_producer != EProducer::Slic3rPE && m_producer != EProducer::Slic3r) && static_cast<size_t>(*id) >= m_result.extruder_colors.size()))
                     BOOST_LOG_TRIVIAL(error) << "GCodeProcessor encountered an invalid toolchange, maybe from a custom gcode (" << command << ").";
                 else
-                   process_toolchange(id);
+                   process_toolchange(*id);
             }
         }
     }
 }
 
-void GCodeProcessor::process_toolchange(uint16_t new_id)
+void GCodeProcessor::process_toolchange(extruder_index_t new_id)
 {
+    if (new_id == EXTRUDER_ID_UNKNOWN)
+        return;
+    if (new_id < EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("GCodeProcessor received an invalid negative extruder ID.");
     if (m_extruder_id != new_id) {
-        unsigned char old_extruder_id = m_extruder_id;
+        const extruder_index_t old_extruder_id = m_extruder_id;
         process_filaments(CustomGCode::ToolChange);
         m_extruder_id = new_id;
-        m_cp_color.current = m_extruder_colors[new_id];
+        m_cp_color.current = m_extruder_colors[static_cast<size_t>(new_id)];
         // Specific to the MK3 MMU2:
         // The initial value of extruder_unloaded is set to true indicating
         // that the filament is parked in the MMU2 unit and there is nothing to be unloaded yet.
-        float extra_time = get_filament_unload_time(static_cast<size_t>(old_extruder_id));
+        float extra_time = get_filament_unload_time(old_extruder_id);
         m_time_processor.extruder_unloaded = false;
-        extra_time += get_filament_load_time(static_cast<size_t>(m_extruder_id));
+        extra_time += get_filament_load_time(m_extruder_id);
         extra_time += m_time_processor.time_toolchange;
         if (m_producer == EProducer::KissSlicer && m_flavor == gcfMarlinLegacy)
             extra_time += m_kissslicer_toolchange_time_correction;
@@ -4890,19 +4947,19 @@ void GCodeProcessor::store_move_vertex(EMoveType type, bool internal_only)
         m_last_line_id,
         type,
         m_extrusion_role,
-        uint8_t(m_extruder_id),
+        m_extruder_id,
         uint8_t(m_cp_color.current),
         m_current_object_id == OBJECT_INSTANCE_ID_NONE ?
             GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE :
             static_cast<uint16_t>(m_current_object_id),
-        Vec3f(m_end_position[X], m_end_position[Y], m_end_position[Z] - m_z_offset) + m_extruder_offsets[m_extruder_id],
+        Vec3f(m_end_position[X], m_end_position[Y], m_end_position[Z] - m_z_offset) + m_extruder_offsets[static_cast<size_t>(m_extruder_id)],
         float(m_end_position[E] - m_start_position[E]), // delta_extruder
         m_feedrate,
         m_width,
         (m_height == 0 && m_forced_height > 0) ? m_forced_height : m_height,
         m_mm3_per_mm,
         m_fan_speed,
-        m_extruder_temps[m_extruder_id],
+        m_extruder_temps[static_cast<size_t>(m_extruder_id)],
         m_current_time[0], // note: m_time_processor.machines[0].time, is too slow to recompute. it will be updated when recomputed.
         m_layer_id,
         internal_only
@@ -5033,24 +5090,28 @@ void GCodeProcessor::set_travel_acceleration(PrintEstimatedStatistics::ETimeMode
     }
 }
 
-float GCodeProcessor::get_filament_load_time(size_t extruder_id)
+float GCodeProcessor::get_filament_load_time(extruder_index_t extruder_id)
 {
     if (m_is_XL_printer)
         return 4.5f; // FIXME
+    assert(extruder_id != EXTRUDER_ID_UNKNOWN);
+    const size_t index = static_cast<size_t>(extruder_id);
     return (m_time_processor.filament_load_times.empty() || m_time_processor.extruder_unloaded) ?
         0.0f :
-        ((extruder_id < m_time_processor.filament_load_times.size()) ?
-            m_time_processor.filament_load_times[extruder_id] : m_time_processor.filament_load_times.front());
+        ((index < m_time_processor.filament_load_times.size()) ?
+            m_time_processor.filament_load_times[index] : m_time_processor.filament_load_times.front());
 }
 
-float GCodeProcessor::get_filament_unload_time(size_t extruder_id)
+float GCodeProcessor::get_filament_unload_time(extruder_index_t extruder_id)
 {
     if (m_is_XL_printer)
         return 0.f; // FIXME
+    assert(extruder_id != EXTRUDER_ID_UNKNOWN);
+    const size_t index = static_cast<size_t>(extruder_id);
     return (m_time_processor.filament_unload_times.empty() || m_time_processor.extruder_unloaded) ?
         0.0f :
-        ((extruder_id < m_time_processor.filament_unload_times.size()) ?
-            m_time_processor.filament_unload_times[extruder_id] : m_time_processor.filament_unload_times.front());
+        ((index < m_time_processor.filament_unload_times.size()) ?
+            m_time_processor.filament_unload_times[index] : m_time_processor.filament_unload_times.front());
 }
 
 void GCodeProcessor::process_custom_gcode_time(CustomGCode::Type code)

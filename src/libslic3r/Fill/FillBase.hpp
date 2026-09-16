@@ -102,7 +102,7 @@ struct FillParams
     //full configuration for the region, to avoid copying every bit that is needed. Use this for process-specific parameters.
     PrintRegionConfig const *config{ nullptr };
 
-    // Zero based extruder ID.
+    // One-based extruder configuration value; zero keeps the configured default.
     unsigned int    extruder = 0;
 
     // For Concentric infill, to switch between Classic and Arachne.

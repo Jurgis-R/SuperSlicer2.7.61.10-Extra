@@ -137,7 +137,7 @@ c_flow make_skirt_flow_from_options(c_float_or_percent width_option,
                                     c_float_or_percent spacing_option,
                                     double nozzle_diameter,
                                     double height);
-c_flow skirt_flow(const Print &print, uint16_t extruder_id);
+c_flow skirt_flow(const Print &print, extruder_index_t extruder_id);
 
 // Copy one point range into a normal std::vector used as the plugin point cloud.
 void append_points_from_polygon(std::vector<c_point> &points, const Polygon &polygon);
@@ -286,7 +286,7 @@ c_flow make_skirt_flow_from_options(const c_float_or_percent width_option,
     return out;
 }
 
-c_flow skirt_flow(const Print &print, const uint16_t extruder_id)
+c_flow skirt_flow(const Print &print, const extruder_index_t extruder_id)
 {
     const Config print_config = print.config();
 
@@ -299,8 +299,8 @@ c_flow skirt_flow(const Print &print, const uint16_t extruder_id)
     double max_nozzle_diameter = 0.0;
     for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx) {
         const Object object = print.object(object_idx);
-        const std::set<uint16_t> extruders = object_extruders(print, object);
-        for (uint16_t object_extruder : extruders)
+        const std::set<extruder_index_t> extruders = object_extruders(print, object);
+        for (extruder_index_t object_extruder : extruders)
             max_nozzle_diameter = std::max(
                 max_nozzle_diameter,
                 print_config.vector_float_or_default("nozzle_diameter", object_extruder, 0.4));
@@ -539,8 +539,8 @@ SkirtOutput make_skirt(storage_handle *storage,
     if (convex_hull_polygon.size() < 3)
         return output;
 
-    std::vector<uint16_t> extruders;
-    const std::set<uint16_t> extruder_set = collect_print_extruders_for_skirt(print, objects);
+    std::vector<extruder_index_t> extruders;
+    const std::set<extruder_index_t> extruder_set = collect_print_extruders_for_skirt(print, objects);
     extruders.insert(extruders.end(), extruder_set.begin(), extruder_set.end());
     if (extruders.empty())
         extruders.push_back(0);
@@ -573,7 +573,7 @@ SkirtOutput make_skirt(storage_handle *storage,
     */
     for (uint32_t remaining = max_loop_count, extruder_idx = 0, nb_skirts = 1; remaining > 0; --remaining) {
         const bool first_layer_only = remaining <= (n_skirts_first_layer - n_skirts);
-        const uint16_t extruder_id = extruders[extruders.size() - (1 + extruder_idx)];
+        const extruder_index_t extruder_id = extruders[extruders.size() - (1 + extruder_idx)];
         const c_flow flow = skirt_flow(print, extruder_id);
         distance += flow.spacing / 2;
 

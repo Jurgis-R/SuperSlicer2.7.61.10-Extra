@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -122,6 +123,43 @@ using namespace std::literals::string_view_literals;
 
 namespace Slic3r {
 
+namespace {
+
+extruder_index_t checked_extruder_index(const size_t id)
+{
+    if (id > static_cast<size_t>((std::numeric_limits<extruder_index_t>::max)()))
+        throw Slic3r::InvalidArgument("Extruder ID exceeds extruder_index_t range");
+    return static_cast<extruder_index_t>(id);
+}
+
+extruder_index_t configured_extruder_index(const int one_based)
+{
+    if (one_based <= 0)
+        return EXTRUDER_ID_UNKNOWN;
+    return checked_extruder_index(static_cast<size_t>(one_based - 1));
+}
+
+extruder_index_t extruder_index_from_tool(const GCodeWriter &writer, const extruder_index_t fallback = EXTRUDER_ID_UNKNOWN)
+{
+    if (!writer.tool_is_extruder())
+        return fallback;
+    const uint16_t tool_id = writer.tool()->id();
+    if (tool_id > static_cast<uint16_t>((std::numeric_limits<extruder_index_t>::max)()))
+        throw Slic3r::InvalidArgument("Tool ID exceeds extruder_index_t range");
+    return static_cast<extruder_index_t>(tool_id);
+}
+
+uint16_t tool_id_from_extruder(const extruder_index_t extruder_id)
+{
+    if (extruder_id == EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Cannot select an unknown extruder");
+    if (extruder_id < EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Cannot select an invalid negative extruder");
+    return static_cast<uint16_t>(extruder_id);
+}
+
+}
+
 // Only add a newline in case the current G-code does not end with a newline.
     static inline void check_add_eol(std::string& gcode)
     {
@@ -131,7 +169,7 @@ namespace Slic3r {
     
 
     // Return true if tch_prefix is found in custom_gcode
-    static bool custom_gcode_changes_tool(const std::string& custom_gcode, const std::string& tch_prefix, unsigned next_extruder)
+    static bool custom_gcode_changes_tool(const std::string& custom_gcode, const std::string& tch_prefix, extruder_index_t next_extruder)
     {
         bool ok = false;
         size_t from_pos = 0;
@@ -149,8 +187,8 @@ namespace Slic3r {
                 // we should also check that the extruder changes to what was expected
                 std::istringstream ss(custom_gcode.substr(from_pos, std::string::npos));
                 unsigned num = 0;
-                if (ss >> num)
-                    ok = (num == next_extruder);
+                if (ss >> num && num <= static_cast<unsigned>((std::numeric_limits<extruder_index_t>::max)()))
+                    ok = (static_cast<extruder_index_t>(num) == next_extruder);
             }
         NEXT:;
         }
@@ -196,7 +234,7 @@ namespace Slic3r {
         //        of the destination point must not be transformed by origin nor current extruder offset.  */
         //        gcode += gcodegen.writer().travel_to_xy(unscale_p(standby_point), 0.0, "move to standby position");
         //}
-        unsigned int extruder_id = gcodegen.writer().tool()->id();
+        const extruder_index_t extruder_id = extruder_index_from_tool(gcodegen.writer());
         const ConfigOptionInts& filament_idle_temp = gcodegen.config().idle_temperature;
         bool cooldown = false;
         if (!filament_idle_temp.is_enabled(extruder_id)) {
@@ -491,9 +529,9 @@ GCodeGenerator::ObjectsLayerToPrint GCodeGenerator::collect_layers_to_print(cons
 
     //check for max nozzle diameter
     const std::vector<double>& nozzle_diameters = object.print()->config().nozzle_diameter.get_values();
-    std::set<uint16_t> exctruder_ids = object.object_extruders();
+    std::set<extruder_index_t> exctruder_ids = object.object_extruders();
     double max_nozzle = 0;
-    for (uint16_t id : exctruder_ids) {
+    for (extruder_index_t id : exctruder_ids) {
         max_nozzle = std::max(max_nozzle, nozzle_diameters[id]);
     }
     if (max_nozzle == 0)
@@ -664,7 +702,10 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                 const coord_t start_z,
                 const coord_t max_height,
                 const std::vector<GraphData> &extruder_min_dist,
-                const uint16_t initial_extruder_id) {
+                const extruder_index_t initial_extruder_id) {
+    // This private state is not a public extruder identity: it marks a group
+    // containing several extruders before the group is split for emission.
+    constexpr extruder_index_t MULTIPLE_EXTRUDERS = -2;
     std::vector<ObjectsLayerToPrint> ordered_layers_islands_to_print;
     if (object_layers.empty())
         return ordered_layers_islands_to_print;
@@ -675,14 +716,14 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
         std::vector<const LayerSliceIsland *> islands;
         std::vector<bool> is_support;
         // extruder of the group.(-1: any; -2: multiple)
-        uint16_t extruder_id = uint16_t(-1);
-        std::set<uint16_t> extruders_id;
+        extruder_index_t extruder_id = EXTRUDER_ID_UNKNOWN;
+        std::set<extruder_index_t> extruders_id;
     };
 
     std::set<const LayerSliceIsland *> all_islands;
     std::vector<bool> finished(ordered_layers_islands_to_print.size());
-    std::vector<uint16_t> extruder(ordered_layers_islands_to_print.size());
-    uint16_t previous_extruder_id = initial_extruder_id;
+    std::vector<extruder_index_t> extruder(ordered_layers_islands_to_print.size(), EXTRUDER_ID_UNKNOWN);
+    extruder_index_t previous_extruder_id = initial_extruder_id;
     auto set_finished = [&ordered_layers_islands_to_print, &finished, &all_islands](size_t idx) {
         finished[idx] = true;
         // now tht this group of layers is finished, all next groups are after these layer-islands, so we
@@ -719,20 +760,22 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
             size_t added = size_t(-1);
             size_t group_idx = 0;
             // check if the island has multiple nozzle, if true don't merge it.
-            uint16_t my_extruder_id = uint16_t(-1);
-            std::set<uint16_t> my_extruders_id;
+            extruder_index_t my_extruder_id = EXTRUDER_ID_UNKNOWN;
+            std::set<extruder_index_t> my_extruders_id;
             for (const LayerRegionIsland &lri : island.regions_islands()) {
-                if (lri.extruder_id() < uint16_t(-2)) {
-                    my_extruders_id.insert(lri.extruder_id());
-                }
-                if (my_extruder_id == uint16_t(-1)) {
-                    my_extruder_id = lri.extruder_id();
+                const extruder_index_t region_extruder = lri.extruder_id();
+                if (region_extruder < EXTRUDER_ID_UNKNOWN)
+                    throw Slic3r::InvalidArgument("LayerRegionIsland contains an invalid negative extruder ID");
+                if (region_extruder != EXTRUDER_ID_UNKNOWN)
+                    my_extruders_id.insert(region_extruder);
+                if (my_extruder_id == EXTRUDER_ID_UNKNOWN) {
+                    my_extruder_id = region_extruder;
                 } else {
-                    if (lri.extruder_id() != uint16_t(-1) && my_extruder_id != lri.extruder_id()) {
+                    if (region_extruder != EXTRUDER_ID_UNKNOWN && my_extruder_id != region_extruder) {
                         // multiple extruder in same island -> can't be printed in parallel
                         // skip the search loop, go to add it in a new group.
                         group_idx = grouped_islands.size();
-                        my_extruder_id = uint16_t(-2);
+                        my_extruder_id = MULTIPLE_EXTRUDERS;
                     }
                 }
             }
@@ -741,7 +784,8 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                 GroupedIslands &group = grouped_islands[group_idx];
                 BoundingBox inflated = group.bb;
                 // check if extruder is compatible
-                if (my_extruder_id != -1 && group.extruder_id != -1) {
+                if (my_extruder_id != EXTRUDER_ID_UNKNOWN &&
+                    group.extruder_id != EXTRUDER_ID_UNKNOWN) {
                     if (my_extruder_id != group.extruder_id) {
                         // extruder is incompatible, don't add it inside.
                         continue;
@@ -752,8 +796,8 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                 bool no_clearance = false;
                 for (const LayerRegionIsland &region_island : island.regions_islands()) {
                     assert(region_island.extruder_id() < extruder_min_dist.size() ||
-                           region_island.extruder_id() == uint16_t(-1));
-                    if (region_island.extruder_id() != uint16_t(-1)) {
+                           region_island.extruder_id() == EXTRUDER_ID_UNKNOWN);
+                    if (region_island.extruder_id() != EXTRUDER_ID_UNKNOWN) {
                         // check if in the usable part of the clearance
                         if (extruder_min_dist[region_island.extruder_id()].data().back().y() <
                             unscaled(max_height)) {
@@ -785,7 +829,7 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                                 island.get_slice()); // note: as they are islands, they shouldn't touch each other.
                             group.islands.push_back(&island);
                             group.is_support.push_back(is_support);
-                            if (group.extruder_id == uint16_t(-1)) {
+                            if (group.extruder_id == EXTRUDER_ID_UNKNOWN) {
                                 group.extruder_id = my_extruder_id;
                             }
                             group.extruders_id.insert(my_extruders_id.begin(), my_extruders_id.end());
@@ -794,14 +838,14 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                             // merge the groups, sorry
                             GroupedIslands &main_group = grouped_islands[added];
                             assert(main_group.extruder_id == group.extruder_id ||
-                                   main_group.extruder_id == uint16_t(-1) || group.extruder_id == uint16_t(-1));
+                                   main_group.extruder_id == EXTRUDER_ID_UNKNOWN || group.extruder_id == EXTRUDER_ID_UNKNOWN);
                             main_group.bb.merge(group.bb);
                             for (size_t gr_i = 0; gr_i < group.islands.size(); gr_i++) {
                                 main_group.slices.push_back(std::move(group.slices[gr_i]));
                                 main_group.islands.push_back(std::move(group.islands[gr_i]));
                                 main_group.is_support.push_back(std::move(group.is_support[gr_i]));
                             }
-                            if (main_group.extruder_id == uint16_t(-1) && group.extruder_id != uint16_t(-1)) {
+                            if (main_group.extruder_id == EXTRUDER_ID_UNKNOWN && group.extruder_id != EXTRUDER_ID_UNKNOWN) {
                                 main_group.extruder_id = group.extruder_id;
                                 main_group.extruders_id.insert(group.extruders_id.begin(), group.extruders_id.end());
                             }
@@ -882,13 +926,13 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
         //ObjectsLayerToPrint mmu_layers;
         size_t mmu_layers_idx = size_t(-1);
         // extruder available after the end of the current group
-        uint16_t current_extruder_id = previous_extruder_id; // -1 == any, -2 == multiple (there is toolchange) 
+        extruder_index_t current_extruder_id = previous_extruder_id; // -1 == any, -2 == multiple (there is toolchange)
         //for (const GroupedIslands &group : grouped_islands) {
-        //    if (current_extruder_id == uint16_t(-1)) {
+        //    if (current_extruder_id == EXTRUDER_ID_UNKNOWN) {
         //        current_extruder_id = group.extruder_id;
-        //    } else if (group.extruder_id != uint16_t(-1) && current_extruder_id != group.extruder_id) {
+        //    } else if (group.extruder_id != EXTRUDER_ID_UNKNOWN && current_extruder_id != group.extruder_id) {
         //        has_extruder_swap = true;
-        //        current_extruder_id = uint16_t(-2);
+        //        current_extruder_id = MULTIPLE_EXTRUDERS;
         //        break;
         //    }
         //}
@@ -921,20 +965,22 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
             container_to_fill.allow_wipe_tower = false;
         };
         std::vector<std::optional<ObjectLayerToPrint>> to_add(ordered_layers_islands_to_print.size());
-        uint16_t mmu_layers_extruder_id = uint16_t(-1);
+        extruder_index_t mmu_layers_extruder_id = EXTRUDER_ID_UNKNOWN;
         // find the extruder after mmu if there is a mmu layer.
-        std::set<uint16_t> mmu_layers_extruders_id;
+        std::set<extruder_index_t> mmu_layers_extruders_id;
         for (GroupedIslands &group : grouped_islands) {
-            if (group.extruder_id == uint16_t(-2)) {
+            if (group.extruder_id == MULTIPLE_EXTRUDERS) {
                 mmu_layers_extruders_id.insert(group.extruders_id.begin(), group.extruders_id.end());
             }
         }
         if (!mmu_layers_extruders_id.empty()) {
-            std::unordered_map<uint16_t, size_t> extruder_count;
+            std::unordered_map<extruder_index_t, size_t> extruder_count;
             // Count occurrences
             for (GroupedIslands &group : grouped_islands) {
-                if (group.extruder_id != previous_extruder_id && group.extruder_id < uint16_t(-2)) {
-                    for (uint16_t extr_id : group.extruders_id) {
+                if (group.extruder_id != previous_extruder_id &&
+                    group.extruder_id != EXTRUDER_ID_UNKNOWN &&
+                    group.extruder_id != MULTIPLE_EXTRUDERS) {
+                    for (extruder_index_t extr_id : group.extruders_id) {
                         extruder_count[extr_id]++;
                     }
                 }
@@ -958,17 +1004,17 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                 return false;
             }
             // second: groups than can still use the current extruder
-            if (g1.extruder_id == uint16_t(-1) && g2.extruder_id != uint16_t(-1)) {
+            if (g1.extruder_id == EXTRUDER_ID_UNKNOWN && g2.extruder_id != EXTRUDER_ID_UNKNOWN) {
                 return true;
             }
-            if (g1.extruder_id != uint16_t(-1) && g2.extruder_id == uint16_t(-1)) {
+            if (g1.extruder_id != EXTRUDER_ID_UNKNOWN && g2.extruder_id == EXTRUDER_ID_UNKNOWN) {
                 return false;
             }
             //thrid: mmu groups, so it can start to prnt the wipetower with as much toolchange as needed
-            if (g1.extruder_id == uint16_t(-2) && g2.extruder_id != uint16_t(-2)) {
+            if (g1.extruder_id == MULTIPLE_EXTRUDERS && g2.extruder_id != MULTIPLE_EXTRUDERS) {
                 return true;
             }
-            if (g1.extruder_id != uint16_t(-2) && g2.extruder_id == uint16_t(-2)) {
+            if (g1.extruder_id != MULTIPLE_EXTRUDERS && g2.extruder_id == MULTIPLE_EXTRUDERS) {
                 return false;
             }
             // then extruder in simple sequence (don't reuse tool_oerdering, too complex)
@@ -981,10 +1027,12 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
             return g1.islands.size() > g2.islands.size();
         });
         for (GroupedIslands &group : grouped_islands) {
-            assert(group.extruder_id != uint16_t(-2) || group.extruders_id.size() > 1);
+            assert(group.extruder_id != MULTIPLE_EXTRUDERS || group.extruders_id.size() > 1);
             // need to be in mmu?
-            bool need_mmu = group.extruder_id == uint16_t(-2);
-            if (!need_mmu && mmu_layers_idx != size_t(-1) && group.extruder_id < uint16_t(-2)) {
+            bool need_mmu = group.extruder_id == MULTIPLE_EXTRUDERS;
+            if (!need_mmu && mmu_layers_idx != size_t(-1) &&
+                group.extruder_id != EXTRUDER_ID_UNKNOWN &&
+                group.extruder_id != MULTIPLE_EXTRUDERS) {
                 // add this group to muu if use an extruder 
                 auto mmu_extruders = ordered_layers_islands_to_print[mmu_layers_idx].front().extruders_order;
                 if (mmu_extruders.front() != group.extruder_id && mmu_extruders.back() != group.extruder_id) {
@@ -999,7 +1047,7 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                     fn_add_group_into(mmu_layers.back(), group);
                     mmu_layers.back().allow_wipe_tower = true;
                     // add to extruder order
-                    for(uint16_t extr_id : group.extruders_id) {
+                    for(extruder_index_t extr_id : group.extruders_id) {
                         if (std::find(mmu_layers.front().extruders_order.begin(),
                                       mmu_layers.front().extruders_order.end(),
                                       extr_id) == mmu_layers.front().extruders_order.end()) {
@@ -1024,7 +1072,7 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                     mmu_layers.back().allow_wipe_tower = true;
                     assert(group.extruders_id.size() > 1);
                     // get the next value after current_extruder_id
-                    if (mmu_layers_extruder_id == uint16_t(-1)) {
+                    if (mmu_layers_extruder_id == EXTRUDER_ID_UNKNOWN) {
                         auto it_extr = group.extruders_id.upper_bound(current_extruder_id);
                         if (it_extr == group.extruders_id.end()) {
                             // all values are lower or equal to current_extruder_id, so get the previous one from
@@ -1068,7 +1116,7 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
 
                     // set this mmu as finished, as it really uses the colors, it can't continue with only one.
                     set_finished(ordered_layers_islands_to_print.size() - 1);
-                    assert(mmu_layers_extruder_id != uint16_t(-1));
+                    assert(mmu_layers_extruder_id != EXTRUDER_ID_UNKNOWN);
                     current_extruder_id = mmu_layers_extruder_id;
                 }
                 continue;
@@ -1093,7 +1141,7 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                 finished.push_back(false);
                 extruder.push_back(group.extruder_id);
                 fn_add_group_into(to_add.back().value(), group);
-                if (group.extruder_id != uint16_t(-1) && group.extruder_id != current_extruder_id) {
+                if (group.extruder_id != EXTRUDER_ID_UNKNOWN && group.extruder_id != current_extruder_id) {
                     // create a new group with extruder change.
                     to_add.back().value().allow_wipe_tower = true;
                     to_add.back().value().extruders_order = {current_extruder_id, group.extruder_id};
@@ -1137,13 +1185,13 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
 
                     //found! add it after!
                     if (still_needed.empty()) {
-                        assert(extruder[i] != uint16_t(-2) && group.extruder_id != uint16_t(-2));
+                        assert(extruder[i] != MULTIPLE_EXTRUDERS && group.extruder_id != MULTIPLE_EXTRUDERS);
                         // if continuation of the current group or need toolchange, go here
                         if ((/*!already_in_another &&*/ !to_add[i].has_value()) ||
-                            (extruder[i] != group.extruder_id && group.extruder_id != uint16_t(-1))) {
+                            (extruder[i] != group.extruder_id && group.extruder_id != EXTRUDER_ID_UNKNOWN)) {
                             assert(!parent_not_last);
                             // if toolchange, then need to create a new one now.
-                            if ((extruder[i] != group.extruder_id && group.extruder_id != uint16_t(-1))) {
+                            if ((extruder[i] != group.extruder_id && group.extruder_id != EXTRUDER_ID_UNKNOWN)) {
                                 // change of extruder, create new stack with the new extruder
                                 // put at the end
                                 ordered_layers_islands_to_print.emplace_back();
@@ -1151,7 +1199,7 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                                 finished.push_back(false);
                                 extruder.push_back(group.extruder_id);
                                 fn_add_group_into(to_add.back().value(), group);
-                                if (group.extruder_id != uint16_t(-1) && group.extruder_id != current_extruder_id) {
+                                if (group.extruder_id != EXTRUDER_ID_UNKNOWN && group.extruder_id != current_extruder_id) {
                                     // create a new group with extruder change.
                                     to_add.back().value().allow_wipe_tower = true;
                                     to_add.back().value().extruders_order = {current_extruder_id, group.extruder_id};
@@ -1162,9 +1210,9 @@ std::vector<GCodeGenerator::ObjectsLayerToPrint> GCodeGenerator::separate_island
                             } else {
                                 // put inside the current one
                                 to_add[i] = ObjectLayerToPrint();
-                                assert(extruder[i] == uint16_t(-1) || group.extruder_id == uint16_t(-1) ||
+                                assert(extruder[i] == EXTRUDER_ID_UNKNOWN || group.extruder_id == EXTRUDER_ID_UNKNOWN ||
                                        extruder[i] == group.extruder_id);
-                                if (extruder[i] == uint16_t(-1)) {
+                                if (extruder[i] == EXTRUDER_ID_UNKNOWN) {
                                     extruder[i] = group.extruder_id;
                                 }
                                 fn_add_group_into(to_add[i].value(), group);
@@ -1256,7 +1304,7 @@ namespace DoExport {
         for (auto volume : result.print_statistics.volumes_per_extruder) {
             total_extruded_volume += volume.second;
 
-            size_t extruder_id = volume.first;
+            const extruder_index_t extruder_id = volume.first;
             auto extruder = std::find_if(extruders.begin(), extruders.end(), [extruder_id](const Extruder& extr) { return extr.id() == extruder_id; });
             if (extruder == extruders.end())
                 continue;
@@ -1632,7 +1680,8 @@ namespace DoExport {
 
         ExtrusionMinMM compute_min_mm3_per_mm(&print.config());
         // per extruder
-        for (uint16_t extruder_id = 0; extruder_id < print.config().nozzle_diameter.size(); ++extruder_id) {
+        for (size_t extruder_idx = 0; extruder_idx < print.config().nozzle_diameter.size(); ++extruder_idx) {
+            const extruder_index_t extruder_id = checked_extruder_index(extruder_idx);
             double min_mm3_per_mm = 0;
             if (print.config().autospeed_min_thin_flow.is_enabled()) {
                 if (print.config().autospeed_min_thin_flow > 0) {
@@ -1693,12 +1742,14 @@ namespace DoExport {
                         const LayerTools *layer_tools = tool_ordering.tools_for_layer(layer.scaled_print_z());
                         // Soluble?
                         bool soluble = print.config().filament_soluble.get_at(extruder_id);
-                        uint16_t support_extruder = object->config().support_material_extruder;
-                        support_extruder = support_extruder == 0 ? soluble ? -1 : layer_tools->extruders.front() :
-                                                                   (support_extruder - 1);
-                        uint16_t interface_extruder = object->config().support_material_extruder;
-                        interface_extruder = interface_extruder == 0 ? soluble ? -1 : layer_tools->extruders.front() :
-                                                                   (interface_extruder - 1);
+                        extruder_index_t support_extruder = EXTRUDER_ID_UNKNOWN;
+                        const int support_extruder_setting = object->config().support_material_extruder.value;
+                        support_extruder = support_extruder_setting == 0 ? soluble ? EXTRUDER_ID_UNKNOWN : layer_tools->extruders.front() :
+                                                                   configured_extruder_index(support_extruder_setting);
+                        extruder_index_t interface_extruder = EXTRUDER_ID_UNKNOWN;
+                        const int interface_extruder_setting = object->config().support_material_extruder.value;
+                        interface_extruder = interface_extruder_setting == 0 ? soluble ? EXTRUDER_ID_UNKNOWN : layer_tools->extruders.front() :
+                                                                   configured_extruder_index(interface_extruder_setting);
                         for (const LayerSliceIsland &layer_island : layer.islands()) {
                             for (const LayerRegionIsland &region_island : layer_island.regions_islands()) {
                                 if (support_extruder == extruder_id &&
@@ -1745,7 +1796,7 @@ namespace DoExport {
                 if (print.config().max_volumetric_speed.value > 0)
                     volumetric_speed_mm3_per_s = std::min(volumetric_speed_mm3_per_s,
                                                           print.config().max_volumetric_speed.value);
-                ret[extruder_id] = volumetric_speed_mm3_per_s;
+                ret[extruder_idx] = volumetric_speed_mm3_per_s;
             }
         }
         return ret;
@@ -1763,7 +1814,7 @@ namespace DoExport {
         const WipeTowerData         &wipe_tower_data,
         const FullPrintConfig       &config,
         const std::vector<Extruder> &extruders,
-        unsigned int                 initial_extruder_id,
+        extruder_index_t             initial_extruder_id,
         int                          total_toolchanges,
         PrintStatistics              &print_statistics,
         bool                         export_binary_data,
@@ -1781,7 +1832,7 @@ namespace DoExport {
             std::pair<std::string, unsigned int> out_filament_used_g(PrintStatistics::FilamentUsedGMask + " ", 0);
             std::pair<std::string, unsigned int> out_filament_cost(PrintStatistics::FilamentCostMask + " ", 0);
             for (const Extruder &extruder : extruders) {
-                print_statistics.printing_extruders.emplace_back(extruder.id());
+                print_statistics.printing_extruders.emplace_back(checked_extruder_index(extruder.id()));
                 filament_types.emplace_back(config.filament_type.get_at(extruder.id()));
 
                 double used_filament   = extruder.used_filament() + 0.f;//(has_wipe_tower ? wipe_tower_data.used_filament_until_layer.back().second[extruder.id()] : 0.f);
@@ -1853,13 +1904,13 @@ void GCodeGenerator::_init_multiextruders(const Print &print,
 
     //set standby temp for reprap
     if (std::set<uint8_t>{gcfRepRap}.count(print.config().gcode_flavor.value) > 0) {
-        std::set<uint16_t> extruders;
+        std::set<extruder_index_t> extruders;
         for (const ToolOrdering &tool_ordering : tool_orderings) {
-            for (uint16_t tool_id : tool_ordering.all_extruders()) {
+            for (extruder_index_t tool_id : tool_ordering.all_extruders()) {
                 extruders.insert(tool_id);
             }
         }
-        for (uint16_t tool_id : extruders) {
+        for (extruder_index_t tool_id : extruders) {
             int printing_temp = int(print.config().temperature.get_at(tool_id));
             if (printing_temp > 0) {
                 int standby_temp = printing_temp;
@@ -2165,8 +2216,8 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     // Get optimal tool ordering to minimize tool switches of a multi-exruder print.
     // For a print by objects, find the 1st printing object.
     //ToolOrdering tool_ordering;
-    uint16_t initial_extruder_id     = (uint16_t)-1;
-    //uint16_t final_extruder_id       = (uint16_t)-1;
+    extruder_index_t initial_extruder_id = EXTRUDER_ID_UNKNOWN;
+    //extruder_index_t final_extruder_id = EXTRUDER_ID_UNKNOWN;
     bool         has_wipe_tower      = false;
     std::vector<const PrintInstance*> 					print_object_instances_ordering;
     std::vector<const PrintInstance*>::const_iterator 	print_object_instance_sequential_active;
@@ -2203,16 +2254,16 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
         // Find the 1st printing object, find its tool ordering and the initial extruder ID.
         print_object_instance_sequential_active = print_object_instances_ordering.begin();
         assert(!print.tool_orderings().empty());
-        for(size_t i=0; i< print.tool_orderings().size() && initial_extruder_id == uint16_t(-1); ++i)
+        for(size_t i=0; i< print.tool_orderings().size() && initial_extruder_id == EXTRUDER_ID_UNKNOWN; ++i)
             initial_extruder_id = print.tool_orderings()[i].first_extruder();
         has_wipe_tower = print.has_wipe_tower() && print.wipe_tower2()->has_toolchange();
-        if (initial_extruder_id == static_cast<unsigned int>(-1))
+        if (initial_extruder_id == EXTRUDER_ID_UNKNOWN)
             // No object to print was found, cancel the G-code export.
             throw Slic3r::SlicingError(_u8L("No extrusions were generated for objects."));
         // We don't allow switching of extruders per layer by Model::custom_gcode_per_print_z in sequential mode.
         // Use the extruder IDs collected from Regions.
-        std::set<uint16_t> extruder_set = print.extruders();
-    	this->set_extruders(std::vector<uint16_t>(extruder_set.begin(), extruder_set.end()));
+        std::set<extruder_index_t> extruder_set = print.extruders();
+	    this->set_extruders(std::vector<extruder_index_t>(extruder_set.begin(), extruder_set.end()));
         if(has_milling)
             m_writer.set_mills(std::vector<uint16_t>() = { 0 });
     } else {
@@ -2381,7 +2432,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
         // vector elements for filament parameters.
         std::vector<unsigned char> is_extruder_used(std::max(size_t(255), print.config().nozzle_diameter.size()), 0);
         for (auto &tool_ordering : print.tool_orderings())
-        for (unsigned int extruder_id : tool_ordering.all_extruders())
+        for (extruder_index_t extruder_id : tool_ordering.all_extruders())
             is_extruder_used[extruder_id] = true;
         this->placeholder_parser().set("is_extruder_used", new ConfigOptionBools(is_extruder_used));
     }
@@ -2412,11 +2463,11 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     std::string start_all_gcode = start_gcode + "\"n" + start_filament_gcode;
 
     // Set chamber temperature
-    if((initial_extruder_id != (uint16_t)-1) && !this->config().start_gcode_manual && print.config().chamber_temperature.get_at(initial_extruder_id) != 0)
+    if(initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && print.config().chamber_temperature.get_at(initial_extruder_id) != 0)
          this->_print_first_layer_chamber_temperature(preamble_to_put_start_layer, print, start_all_gcode, initial_extruder_id, false);
 
     // Set bed temperature if the start G-code does not contain any bed temp control G-codes.
-    if((initial_extruder_id != (uint16_t)-1) && !this->config().start_gcode_manual && this->config().gcode_flavor != gcfKlipper && print.config().first_layer_bed_temperature.get_at(initial_extruder_id) != 0)
+    if(initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && this->config().gcode_flavor != gcfKlipper && print.config().first_layer_bed_temperature.get_at(initial_extruder_id) != 0)
          this->_print_first_layer_bed_temperature(preamble_to_put_start_layer, print, start_all_gcode, initial_extruder_id, false);
 
     //init extruders
@@ -2426,7 +2477,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     }
 
     // Set extruder(s) temperature before and after start G-code.
-    if ((initial_extruder_id != (uint16_t)-1) && !this->config().start_gcode_manual && (this->config().gcode_flavor != gcfKlipper || print.config().start_gcode.value.empty()) && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && (this->config().gcode_flavor != gcfKlipper || print.config().start_gcode.value.empty()) && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
         this->_print_first_layer_extruder_temperatures(preamble_to_put_start_layer, print, start_all_gcode, initial_extruder_id, false);
 
     // adds tag for processor
@@ -2439,7 +2490,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
 
 
     // Disable fan.
-    if ((initial_extruder_id != (uint16_t) -1) && !this->config().start_gcode_manual && print.config().disable_fan_first_layers.get_at(initial_extruder_id)) {
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && print.config().disable_fan_first_layers.get_at(initial_extruder_id)) {
         preamble_to_put_start_layer.append(m_writer.set_fan(uint8_t(0), initial_extruder_id));
     }
 
@@ -2459,7 +2510,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     m_seam_placer->init(print, this->m_throw_if_canceled);
 
     //activate first extruder is multi-extruder and not in start-gcode
-    if ((initial_extruder_id != (uint16_t)-1)) {
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN) {
         if (m_writer.multiple_extruders) {
             //if not in gcode
             bool find = false;
@@ -2510,13 +2561,13 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     m_writer.tool()->reset_retract();
 
     //write temps after custom gcodes to ensure the temperature are good. (after tool selection)
-    if ((initial_extruder_id != (uint16_t)-1) && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
         this->_print_first_layer_extruder_temperatures(preamble_to_put_start_layer, print, start_all_gcode, initial_extruder_id, true);
-    if ((initial_extruder_id != (uint16_t)-1) && print.config().first_layer_bed_temperature.get_at(initial_extruder_id) != 0)
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && print.config().first_layer_bed_temperature.get_at(initial_extruder_id) != 0)
         this->_print_first_layer_bed_temperature(preamble_to_put_start_layer, print, start_all_gcode, initial_extruder_id, true);
     
     // Do all objects for each layer.
-    if (initial_extruder_id != (uint16_t)-1) {
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN) {
         if (print.config().complete_objects.value) {
             size_t finished_objects = 0;
             const PrintObject* prev_object = (*print_object_instance_sequential_active)->print_object;
@@ -2528,15 +2579,15 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                 const PrintObject& object = *(*print_object_instance_sequential_active)->print_object;
                 //if (&object != prev_object || tool_ordering.first_extruder() != final_extruder_id) {
                 //    tool_ordering = ToolOrdering(object, final_extruder_id);
-                //    uint16_t new_extruder_id = tool_ordering.first_extruder();
-                //    if (new_extruder_id == (uint16_t)-1)
+                //    extruder_index_t new_extruder_id = tool_ordering.first_extruder();
+                //    if (new_extruder_id == EXTRUDER_ID_UNKNOWN)
                 //        // Skip this object.
                 //        continue;
                 //    initial_extruder_id = new_extruder_id;
                 //    final_extruder_id = tool_ordering.last_extruder();
-                //    assert(final_extruder_id != (uint16_t)-1);
+                //    assert(final_extruder_id != EXTRUDER_ID_UNKNOWN);
                 //}
-                if (it_tool_ordering->first_extruder() == (uint16_t) -1)
+                if (it_tool_ordering->first_extruder() == EXTRUDER_ID_UNKNOWN)
                     // Skip this object instance.
                         continue;
 
@@ -2646,7 +2697,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                     print_object_instances_ordering = chain_print_object_instances(print);
                 }
                 bool first_layers = true;
-                //uint16_t extruder = uint16_t(-1);
+                //extruder_index_t extruder = EXTRUDER_ID_UNKNOWN;
                 //final_extruder_id = initial_extruder_id;
                 coord_t z_start = 0, z_end = height_step_range;
                 std::set<const PrintObject*> separate_islands_done;
@@ -2682,7 +2733,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                             }
                             double max_nzl_diam_mm = 0;
                             for (const ToolOrdering &tool : print.tool_orderings()) {
-                                for (uint16_t extr_id : tool.all_extruders()) {
+                                for (const extruder_index_t extr_id : tool.all_extruders()) {
                                     max_nzl_diam_mm = std::max(max_nzl_diam_mm, print.config().nozzle_diameter.get_at(extr_id));
                                 }
                             }
@@ -2690,9 +2741,9 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                             layers_to_print_range = separate_islands(object_and_support_layers, z_start,
                                                                      height_step_range,
                                                                      print.config().extruder_clearance.get_values(),
-                                                                     uint16_t(m_writer.tool() != nullptr ?
-                                                                                  m_writer.tool()->id() :
-                                                                                  -1));
+                                                                     m_writer.tool() != nullptr ?
+                                                                         extruder_index_from_tool(m_writer) :
+                                                                         EXTRUDER_ID_UNKNOWN);
                             separate_islands_done.insert(&object);
                         } else {
                             // keep only layers that are i  our current printing range
@@ -2717,14 +2768,14 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                         // complete the tool ordering for this sequence.
                         m_volumetric_speed_mm3_per_s = DoExport::autospeed_volumetric_limit(print, *it_tool_ordering);
 
-                        if (!layers_to_print_range.empty() && it_tool_ordering->first_extruder() != uint16_t(-1)) {
+                        if (!layers_to_print_range.empty() && it_tool_ordering->first_extruder() != EXTRUDER_ID_UNKNOWN) {
                             for (ObjectsLayerToPrint &layer_group : layers_to_print_range) {
                                 bool print_in_parallel_mode = false;
                                 std::cout<<"\nprinting group with:\n";
                                 for (ObjectLayerToPrint &obj_layer : layer_group) {
                                     std::cout << " - " << obj_layer.layer()->unscaled_print_z() << " ; "
                                               << (obj_layer.allow_wipe_tower ? "withWP" : "")<< " with islands";
-                                    std::set<uint16_t> extruders;
+                                    std::set<extruder_index_t> extruders;
                                     if (obj_layer.object_layer) {
                                         std::cout << " with obj islands";
                                         for (auto lsi_ptr : obj_layer.islands) {
@@ -2765,7 +2816,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                                     }
                                     std::cout << " obj:" << obj_layer.layer()->object()->id().id;
                                     std::cout << " extruders:";
-                                    for (uint16_t extr : extruders) {
+                                    for (const extruder_index_t extr : extruders) {
                                         std::cout << " " << extr;
                                     }
                                     std::cout << ":\n";
@@ -2805,7 +2856,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                                             wt_layers_to_print.back().second.front().islands.insert(nullptr);
                                             wt_layers_to_print.back().second.front().object_layer = wt_layer->layers
                                                                                                         .front();
-                                            wt_layers_to_print.back().second.front().extruders_order = {uint16_t(-1) };
+                                            wt_layers_to_print.back().second.front().extruders_order = {EXTRUDER_ID_UNKNOWN};
                                             for (const Layer *layer : wt_layer->layers) {
                                                 // use the best layer z
                                                 if (std::abs(layer->scaled_print_z() - wt_layer->extrusion_z) <
@@ -2900,7 +2951,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                                             std::cout << " - " << obj_layer.layer()->unscaled_print_z() << " ; "
                                                       << (obj_layer.allow_wipe_tower ? "withWP" : "")
                                                       << " with islands";
-                                            std::set<uint16_t> extruders;
+                                            std::set<extruder_index_t> extruders;
                                             if (obj_layer.islands.size() == 1 &&
                                                 *obj_layer.islands.begin() == nullptr) {
                                                 std::cout << " WT island";
@@ -2948,7 +2999,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                                             }
                                             std::cout << " obj:" << obj_layer.layer()->object()->id().id;
                                             std::cout << " extruders:";
-                                            for (uint16_t extr : extruders) {
+                                            for (const extruder_index_t extr : extruders) {
                                                 std::cout << " " << extr;
                                             }
                                             std::cout << ":\n";
@@ -2985,7 +3036,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                                     for (ObjectLayerToPrint &obj_layer : layer_group) {
                                         std::cout << " - " << obj_layer.layer()->unscaled_print_z() << " ; "
                                                   << (obj_layer.allow_wipe_tower ? "withWP" : "") ;
-                                        std::set<uint16_t> extruders;
+                                        std::set<extruder_index_t> extruders;
                                         if (obj_layer.object_layer) {
                                             std::cout << " with obj islands";
                                             for (auto lsi_ptr : obj_layer.islands) {
@@ -3026,7 +3077,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                                         }
                                         std::cout << " obj:" << obj_layer.layer()->object()->id().id;
                                         std::cout << " extruders:";
-                                        for (uint16_t extr : extruders) {
+                                        for (const extruder_index_t extr : extruders) {
                                             std::cout << " " << extr;
                                         }
                                         std::cout << ":\n";
@@ -3069,7 +3120,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                 //    for (idx = 0; idx < parallel_layers_to_print.size() && parallel_layers_to_print[idx].first + EPSILON < print.config().parallel_objects_step_max_z.value; idx++) {
                 //        //print wipe tower (if here) up to the z
                 //        if (m_wipe_tower && idx > 0) {
-                //            uint16_t extruder_id = print.tool_orderings().back().first_extruder();
+                //            extruder_index_t extruder_id = print.tool_orderings().back().first_extruder();
 
                 //            assert (parallel_ordering
                 //                       .layer_tools()[m_wipe_tower->get_current_layer_idx() + 1]
@@ -3159,8 +3210,8 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     file.write_format(";%s%s\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role).c_str(), gcode_extrusion_role_to_string(GCodeExtrusionRole::Custom).c_str());
 
     // Process filament-specific gcode in extruder order.
-    if (initial_extruder_id != (uint16_t)-1) {
-        uint16_t current_extruder_id = m_writer.tool()->id();
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN) {
+        const extruder_index_t current_extruder_id = static_cast<extruder_index_t>(m_writer.tool()->id());
         DynamicConfig config;
         config.set_key_value("filament_extruder_id", new ConfigOptionInt(current_extruder_id));
         config.set_key_value("previous_extruder", new ConfigOptionInt(current_extruder_id));
@@ -3175,7 +3226,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
         } else {
             // for all extruder used in this print
             for (auto &tool_ordering : print.tool_orderings()) {
-                for (uint16_t extruder_id : tool_ordering.all_extruders()) {
+                for (extruder_index_t extruder_id : tool_ordering.all_extruders()) {
                     // only for extruders
                 auto extr_ids = m_writer.extruder_ids();
                     if (std::find(extr_ids.begin(), extr_ids.end(), extruder_id) != extr_ids.end()) {
@@ -3274,7 +3325,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
      this->m_throw_if_canceled();
 }
 
-void GCodeGenerator::_move_to_print_object(std::string& gcode_out, const Print& print, size_t finished_objects, uint16_t initial_extruder_id)
+void GCodeGenerator::_move_to_print_object(std::string& gcode_out, const Print& print, size_t finished_objects, extruder_index_t initial_extruder_id)
 {
     // Move to the origin position for the copy we're going to print.
     // This happens before Z goes down to layer 0 again, so that no collision happens hopefully.
@@ -3691,11 +3742,11 @@ std::vector<std::optional<double>> compute_new_position(GCodeGenerator &gcodegen
 std::string GCodeGenerator::placeholder_parser_process(
     const std::string   &name,
     const std::string   &templ,
-    uint16_t             current_extruder_id,
+    extruder_index_t     current_extruder_id,
     const DynamicConfig *config_override)
 {
-    if (current_extruder_id == uint16_t(-1)) {
-        current_extruder_id = this->m_writer.tool()->id();
+    if (current_extruder_id == EXTRUDER_ID_UNKNOWN) {
+        current_extruder_id = static_cast<extruder_index_t>(this->m_writer.tool()->id());
     }
 #ifndef NDEBUG // CHECK_CUSTOM_GCODE_PLACEHOLDERS
     if (config_override) {
@@ -3945,7 +3996,7 @@ void GCodeGenerator::print_machine_envelope(GCodeOutputStream &file, const Print
 // Only do that if the start G-code does not already contain any M-code controlling the bed temperature.
 // M140 - Set Bed Temperature
 // M190 - Set Bed Temperature and Wait
-void GCodeGenerator::_print_first_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, uint16_t /*first_printing_extruder_id*/, bool wait)
+void GCodeGenerator::_print_first_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, extruder_index_t /*first_printing_extruder_id*/, bool wait)
 {
     bool autoemit = print.config().autoemit_temperature_commands;
     int32_t temp = print.first_layer_bed_temperature();
@@ -3971,9 +4022,9 @@ int32_t GCodeGenerator::_compute_bed_temperature(const Print &print)
         temp = print.config().print_bed_temperature.value;
     } else {
         // Initial bed temperature based on the first layer extruders
-        std::set<uint16_t> extruders = print.extruders();
+        std::set<extruder_index_t> extruders = print.extruders();
         //get max temp
-        for (uint16_t tool_idx : extruders) {
+        for (extruder_index_t tool_idx : extruders) {
             temp = std::max(temp, print.config().bed_temperature.get_at(tool_idx));
         }
     }
@@ -3983,7 +4034,7 @@ int32_t GCodeGenerator::_compute_bed_temperature(const Print &print)
 // Only do that if the start G-code does not already contain any M-code controlling the bed temperature.
 // M140 - Set Bed Temperature
 // M190 - Set Bed Temperature and Wait
-void GCodeGenerator::_print_second_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, uint16_t /*first_printing_extruder_id*/, bool wait)
+void GCodeGenerator::_print_second_layer_bed_temperature(std::string &out, const Print &print, const std::string &gcode, extruder_index_t /*first_printing_extruder_id*/, bool wait)
 {
     bool autoemit = true; //print.config().autoemit_temperature_commands; // autoemit_temperature_commands only works for start gcode
     int32_t  temp = _compute_bed_temperature(print);
@@ -4006,7 +4057,7 @@ void GCodeGenerator::_print_second_layer_bed_temperature(std::string &out, const
 // Only do that if the start G-code does not already contain any M-code controlling an extruder temperature.
 // M141 - Set chamber Temperature
 // M191 - Set chamber Temperature and Wait
-void GCodeGenerator::_print_first_layer_chamber_temperature(std::string &out, const Print &print, const std::string &gcode, uint16_t first_printing_extruder_id, bool wait)
+void GCodeGenerator::_print_first_layer_chamber_temperature(std::string &out, const Print &print, const std::string &gcode, extruder_index_t first_printing_extruder_id, bool wait)
 {
     bool autoemit = print.config().autoemit_temperature_commands;
     // Initial bed temperature based on the first extruder.
@@ -4030,7 +4081,7 @@ void GCodeGenerator::_print_first_layer_chamber_temperature(std::string &out, co
 // M104 - Set Extruder Temperature
 // M109 - Set Extruder Temperature and Wait
 // RepRapFirmware: G10 Sxx
-void GCodeGenerator::_print_first_layer_extruder_temperatures(std::string &out, const Print &print, const std::string &gcode, uint16_t first_printing_extruder_id, bool wait)
+void GCodeGenerator::_print_first_layer_extruder_temperatures(std::string &out, const Print &print, const std::string &gcode, extruder_index_t first_printing_extruder_id, bool wait)
 {
     bool autoemit = print.config().autoemit_temperature_commands;
     // Is the bed temperature set by the provided custom G-code?
@@ -4120,8 +4171,8 @@ namespace ProcessLayer
     static std::string emit_custom_color_change_gcode_per_print_z(
         GCodeGenerator          &gcodegen,
         const CustomGCode::Item &custom_gcode,
-        unsigned int             current_extruder_id,
-        unsigned int             first_extruder_id, // ID of the first extruder printing this layer.
+        extruder_index_t         current_extruder_id,
+        extruder_index_t         first_extruder_id, // ID of the first extruder printing this layer.
         const Print              &print,
         Print::StatusMonitor     &status_emitter
     ) {
@@ -4131,9 +4182,9 @@ namespace ProcessLayer
 
         std::string gcode;
 
-        int color_change_extruder = -1;
+        extruder_index_t color_change_extruder = EXTRUDER_ID_UNKNOWN;
         if (color_change && custom_gcode.extruder > 0)
-            color_change_extruder = custom_gcode.extruder - 1;
+            color_change_extruder = configured_extruder_index(custom_gcode.extruder);
 
         if (color_change) {
             //update stats : length
@@ -4146,7 +4197,7 @@ namespace ProcessLayer
                 gcodegen.writer().get_tool(color_change_extruder)->used_filament() - previously_extruded);
         }
 
-        assert(color_change_extruder >= 0);
+        assert(color_change_extruder != EXTRUDER_ID_UNKNOWN);
         // Color Change or Tool Change as Color Change.
         // add tag for processor
         gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Color_Change) + ",T" + std::to_string(color_change_extruder) + "," + custom_gcode.color + "\n";
@@ -4156,7 +4207,9 @@ namespace ProcessLayer
         cfg.set_key_value("next_color", new ConfigOptionString(custom_gcode.color));
         cfg.set_key_value("next_colour", new ConfigOptionString(custom_gcode.color));
 
-        if (single_extruder_multi_material && !single_extruder_printer && color_change_extruder >= 0 && first_extruder_id != unsigned(color_change_extruder)) {
+        if (single_extruder_multi_material && !single_extruder_printer &&
+            color_change_extruder != EXTRUDER_ID_UNKNOWN &&
+            first_extruder_id != color_change_extruder) {
             //! FIXME_in_fw show message during print pause
             // FIXME: Why is pause_print_gcode here? Why is it supplied "color_change_extruder"?
             gcode += gcodegen.placeholder_parser_process("pause_print_gcode",
@@ -4191,9 +4244,9 @@ namespace ProcessLayer
     std::string emit_custom_gcode_per_print_z(
         GCodeGenerator                                          &gcodegen,
         const CustomGCode::Item                                 &custom_gcode,
-        uint16_t                                                 current_extruder_id,
+        extruder_index_t                                         current_extruder_id,
         // ID of the first extruder printing this layer.
-        uint16_t                                                 first_extruder_id,
+        extruder_index_t                                         first_extruder_id,
         const Print                                             &print,
         Print::StatusMonitor                                    &status_emitter)
     {
@@ -4293,7 +4346,7 @@ namespace Skirt {
     }
 #endif
 
-	static void skirt_loops_per_extruder_all_printing(const Print &print, const LayerTools &layer_tools, std::map<uint16_t, std::pair<size_t, size_t>> &skirt_loops_per_extruder_out)
+	static void skirt_loops_per_extruder_all_printing(const Print &print, const LayerTools &layer_tools, std::map<extruder_index_t, std::pair<size_t, size_t>> &skirt_loops_per_extruder_out)
 	{
         // Prime all extruders printing over the 1st layer over the skirt lines.
         size_t n_loops = print.skirt().entities().size();
@@ -4303,7 +4356,7 @@ namespace Skirt {
             skirt_loops_per_extruder_out[layer_tools.extruders[i / lines_per_extruder]] = std::pair<size_t, size_t>(i, std::min(i + lines_per_extruder, n_loops));
 	}
 
-    static std::map<uint16_t, std::pair<size_t, size_t>> make_skirt_loops_per_extruder_1st_layer(
+    static std::map<extruder_index_t, std::pair<size_t, size_t>> make_skirt_loops_per_extruder_1st_layer(
         const Print             				&print,
         const LayerTools                		&layer_tools,
         // Heights (print_z) at which the skirt has already been extruded.
@@ -4311,7 +4364,7 @@ namespace Skirt {
     {
         // Extrude skirt at the print_z of the raft layers and normal object layers
         // not at the print_z of the interlaced support material layers.
-        std::map<uint16_t, std::pair<size_t, size_t>> skirt_loops_per_extruder_out;
+        std::map<extruder_index_t, std::pair<size_t, size_t>> skirt_loops_per_extruder_out;
         //For sequential print, the following test may fail when extruding the 2nd and other objects.
         // assert(skirt_done.empty());
         if (skirt_done.empty() && print.has_skirt() && ! print.skirt().entities().empty() && layer_tools.has_skirt) {
@@ -4328,7 +4381,7 @@ namespace Skirt {
         return skirt_loops_per_extruder_out;
     }
 
-    static std::map<uint16_t, std::pair<size_t, size_t>> make_skirt_loops_per_extruder_other_layers(
+    static std::map<extruder_index_t, std::pair<size_t, size_t>> make_skirt_loops_per_extruder_other_layers(
         const Print 							&print,
         const LayerTools                		&layer_tools,
         // Heights (print_z) at which the skirt has already been extruded.
@@ -4336,7 +4389,7 @@ namespace Skirt {
     {
         // Extrude skirt at the print_z of the raft layers and normal object layers
         // not at the print_z of the interlaced support material layers.
-        std::map<uint16_t, std::pair<size_t, size_t>> skirt_loops_per_extruder_out;
+        std::map<extruder_index_t, std::pair<size_t, size_t>> skirt_loops_per_extruder_out;
         if (print.has_skirt() && ! print.skirt().entities().empty() && layer_tools.has_skirt &&
             // infinite or high skirt does not make sense for sequential print here
             //(if it is selected, it's done in the "extrude object-only skirt" in process_layer)
@@ -4365,8 +4418,8 @@ namespace Skirt {
 
 } // namespace Skirt
 
-bool GCodeGenerator::line_distancer_is_required(const std::vector<uint16_t>& extruder_ids) {
-    for (const uint16_t id : extruder_ids) {
+bool GCodeGenerator::line_distancer_is_required(const std::vector<extruder_index_t>& extruder_ids) {
+    for (const extruder_index_t id : extruder_ids) {
         const double travel_slope{this->m_config.travel_slope.get_at(id)};
         if (
             this->m_config.travel_lift_before_obstacle.get_at(id)
@@ -4476,7 +4529,7 @@ LayerResult GCodeGenerator::process_layer(
     // Extract 1st object_layer and support_layer of this set of layers with an equal print_z.
     coord_t              print_z       = layer.scaled_print_z();
     bool                 first_layer   = layer_id == 0;
-    uint16_t             first_extruder_id = layer_tools.extruders.front();
+    extruder_index_t     first_extruder_id = layer_tools.extruders.front();
 
     // Initialize config with the 1st object to be printed at this layer.
     m_config.apply(print.default_region_config(), true);
@@ -4686,7 +4739,7 @@ LayerResult GCodeGenerator::process_layer(
     }
 
     // Map from extruder ID to <begin, end> index of skirt loops to be extruded with that extruder.
-    std::map<uint16_t, std::pair<size_t, size_t>> skirt_loops_per_extruder;
+    std::map<extruder_index_t, std::pair<size_t, size_t>> skirt_loops_per_extruder;
 
     // Extrude skirt at the print_z of the raft layers and normal object layers
     // not at the print_z of the interlaced support material layers.
@@ -4726,16 +4779,16 @@ LayerResult GCodeGenerator::process_layer(
 
     // don't rely only on layer_tools.extruders, that's a max
     // FIXME redo all the gcode workflow, it's a mess
-    std::vector<uint16_t> used_extruders;
-    std::unordered_set<uint16_t> used_extruders_set;
-    uint16_t last_extruder = 0;
+    std::vector<extruder_index_t> used_extruders;
+    std::unordered_set<extruder_index_t> used_extruders_set;
+    extruder_index_t last_extruder = 0;
     // Collect unique extruders
     for (const ObjectLayerToPrint &l : layers) {
         for (auto &lsi_ptr : l.islands) {
             if (lsi_ptr) {
                 for (auto &lri_ptr : lsi_ptr->regions_islands()) {
-                    uint16_t id = lri_ptr.extruder_id();
-                    if (id < uint16_t(-2)) {
+                    const extruder_index_t id = lri_ptr.extruder_id();
+                    if (id >= 0) {
                         used_extruders_set.insert(id);
                     }
                 }
@@ -4748,14 +4801,14 @@ LayerResult GCodeGenerator::process_layer(
         used_extruders = layer_tools.extruders;
     } else {
         // Rebuild in correct order
-        for (uint16_t id : layer_tools.extruders) {
+        for (extruder_index_t id : layer_tools.extruders) {
             if (used_extruders_set.count(id)) {
                 used_extruders.push_back(id);
             }
         }
 
         // Debug check
-        for (uint16_t id : used_extruders) {
+        for (extruder_index_t id : used_extruders) {
             assert(std::find(layer_tools.extruders.begin(),
                              layer_tools.extruders.end(),
                              id) != layer_tools.extruders.end());
@@ -4763,7 +4816,7 @@ LayerResult GCodeGenerator::process_layer(
     }
 
     // Move previous_extruder to front (if present)
-    uint16_t previous_extruder_id = uint16_t(m_writer.tool() != nullptr ? m_writer.tool()->id() : 0);
+    const extruder_index_t previous_extruder_id = extruder_index_from_tool(m_writer, 0);
     auto it = std::find(used_extruders.begin(), used_extruders.end(), previous_extruder_id);
     if (it != used_extruders.end()) {
         std::rotate(used_extruders.begin(), it, it + 1);
@@ -4802,16 +4855,16 @@ LayerResult GCodeGenerator::process_layer(
             assert(!layer_tools.extruders.empty());
             if (layers.front().islands.size() == 1 && *layers.front().islands.begin() == nullptr) {
                 // empty wieptower layer, you just need to print it and return
-                assert(layers.front().extruders_order.size() == 1 && layers.front().extruders_order.front() == uint16_t(-1));
+                assert(layers.front().extruders_order.size() == 1 && layers.front().extruders_order.front() == EXTRUDER_ID_UNKNOWN);
                 assert(m_writer.tool());
-                last_extruder = uint16_t(m_writer.tool() != nullptr ? m_writer.tool()->id() : 0);
+                last_extruder = static_cast<extruder_index_t>(m_writer.tool() != nullptr ? m_writer.tool()->id() : 0);
                 used_extruders = {last_extruder};
-                m_wipe_tower_current_layer->init(current_layers, used_extruders, std::vector<uint16_t>{});
+                m_wipe_tower_current_layer->init(current_layers, used_extruders, std::vector<extruder_index_t>{});
             } else if (m_writer.tool() && !layer_tools.extruders.empty() &&
                 m_writer.tool()->id() != layer_tools.extruders.front()) {
                 // last extruder don't print anything here, plan to change to another one right away.
                 // note: the extruders may not be used in this layer, and so not present in layer_tools
-                std::vector<uint16_t> extruder_with_empty_first;
+                std::vector<extruder_index_t> extruder_with_empty_first;
                 extruder_with_empty_first.push_back(m_writer.tool()->id());
                 extruder_with_empty_first.insert(extruder_with_empty_first.end(), layer_tools.extruders.begin(),
                                                  layer_tools.extruders.end());
@@ -4820,15 +4873,15 @@ LayerResult GCodeGenerator::process_layer(
                 if (it != extruder_with_empty_first.end()) {
                     extruder_with_empty_first.erase(it);
                 }
-                m_wipe_tower_current_layer->init(current_layers, extruder_with_empty_first, std::vector<uint16_t>{});
+                m_wipe_tower_current_layer->init(current_layers, extruder_with_empty_first, std::vector<extruder_index_t>{});
             } else {
-                m_wipe_tower_current_layer->init(current_layers, layer_tools.extruders, std::vector<uint16_t>{});
+                m_wipe_tower_current_layer->init(current_layers, layer_tools.extruders, std::vector<extruder_index_t>{});
             }
         }
         //if (finish_wipe_tower_until > 0) {
         //    // finish wipetower at this layer
         //    assert(!layer_tools.extruders.empty());
-        //    for (const uint16_t extruder_id : layer_tools.extruders) {
+        //    for (const extruder_index_t extruder_id : layer_tools.extruders) {
         //        m_wipe_tower_current_layer->finish_layer(wt_extrusions, extruder_id, true);
         //    }
         //}
@@ -4836,10 +4889,10 @@ LayerResult GCodeGenerator::process_layer(
 
 
     // Extrude the skirt, brim, support, perimeters, infill ordered by the extruders.
-    for (const uint16_t extruder_id : used_extruders)
+    for (const extruder_index_t extruder_id : used_extruders)
     {
         // set extruder
-        uint16_t old_extruder_id = uint16_t(m_writer.tool() != nullptr ? m_writer.tool()->id() : 0);
+        const extruder_index_t old_extruder_id = extruder_index_from_tool(m_writer, 0);
         if (!ignore_wipetower && m_wipe_tower_current_layer && (old_extruder_id != extruder_id || used_extruders.size() < 2)) {
             assert(m_writer.tool());
             assert(m_writer.get_tool(extruder_id));
@@ -5110,21 +5163,25 @@ void GCodeGenerator::process_layer_single_object(
             bool            has_support        = role.is_mixed() || role.is_support_base();
             bool            has_interface      = role.is_mixed() || role.is_support_interface();
             // Extruder ID of the support base. -1 if "don't care".
-            unsigned int    support_extruder   = print_object.config().support_material_extruder.value - 1;
+            extruder_index_t support_extruder =
+                configured_extruder_index(print_object.config().support_material_extruder.value);
             // Shall the support be printed with the active extruder, preferably with non-soluble, to avoid tool changes?
-            bool            support_dontcare   = support_extruder == std::numeric_limits<unsigned int>::max();
+            const bool support_dontcare = support_extruder == EXTRUDER_ID_UNKNOWN;
             // Extruder ID of the support interface. -1 if "don't care".
-            unsigned int    interface_extruder = print_object.config().support_material_interface_extruder.value - 1;
+            extruder_index_t interface_extruder =
+                configured_extruder_index(print_object.config().support_material_interface_extruder.value);
             // Shall the support interface be printed with the active extruder, preferably with non-soluble, to avoid tool changes?
-            bool            interface_dontcare = interface_extruder == std::numeric_limits<unsigned int>::max();
+            const bool interface_dontcare = interface_extruder == EXTRUDER_ID_UNKNOWN;
             if (support_dontcare || interface_dontcare) {
                 // Some support will be printed with "don't care" material, preferably non-soluble.
                 // Is the current extruder assigned a soluble filament?
                 auto it_nonsoluble = std::find_if(print_args.layer_tools.extruders.begin(), print_args.layer_tools.extruders.end(), 
-                    [&soluble = std::as_const(print.config().filament_soluble), &print_args](unsigned int extruder_id) { return ! soluble.get_at(print_args.extruder_id); });
+                    [&soluble = std::as_const(print.config().filament_soluble)](extruder_index_t extruder_id) { return ! soluble.get_at(extruder_id); });
                 // There should be a non-soluble extruder available.
                 assert(it_nonsoluble != print_args.layer_tools.extruders.end());
-                unsigned int dontcare_extruder = it_nonsoluble == print_args.layer_tools.extruders.end() ? print_args.layer_tools.extruders.front() : *it_nonsoluble;
+                const extruder_index_t dontcare_extruder =
+                    it_nonsoluble == print_args.layer_tools.extruders.end() ?
+                        print_args.layer_tools.extruders.front() : *it_nonsoluble;
                 if (support_dontcare)
                     support_extruder = dontcare_extruder;
                 if (interface_dontcare)
@@ -5421,16 +5478,18 @@ bool GCodeGenerator::shall_print_this_extrusion_collection(const ExtrudeArgs &pr
         return false;
     }
     // This extrusion is part of certain Region, which tells us which extruder should be used for it:
-    int correct_extruder_id = print_args.layer_tools.extruder(*eec, region);
+    extruder_index_t correct_extruder_id = print_args.layer_tools.extruder(*eec, region);
     if (! print_args.layer_tools.has_extruder(correct_extruder_id)) {
         // this entity is not overridden, but its extruder is not in layer_tools - we'll print it
         // by last extruder on this layer (could happen e.g. when a wiping object is taller than others - dontcare extruders are eradicated from layer_tools)
         correct_extruder_id = print_args.layer_tools.extruders.back();
     }
-    int extruder_override_id = print_args.is_anything_overridden ? print_args.layer_tools.wiping_extrusions().get_extruder_override(eec, print_args.print_instance.instance_id) : -1;
+    const extruder_index_t extruder_override_id = print_args.is_anything_overridden ?
+        print_args.layer_tools.wiping_extrusions().get_extruder_override(eec, print_args.print_instance.instance_id) :
+        EXTRUDER_ID_UNKNOWN;
     return print_args.print_wipe_extrusions ?
-        extruder_override_id == int(print_args.extruder_id) :
-        extruder_override_id < 0 && int(print_args.extruder_id) == correct_extruder_id;
+        extruder_override_id == print_args.extruder_id :
+        extruder_override_id == EXTRUDER_ID_UNKNOWN && print_args.extruder_id == correct_extruder_id;
 }
 
 void GCodeGenerator::apply_print_configs(const Print &print)
@@ -5480,7 +5539,7 @@ void GCodeGenerator::encode_full_config(const Print& print, std::vector<std::pai
     config.shrink_to_fit();
 }
 
-void GCodeGenerator::set_extruders(const std::vector<uint16_t>& extruder_ids)
+void GCodeGenerator::set_extruders(const std::vector<extruder_index_t>& extruder_ids)
 {
     m_writer.set_extruders(extruder_ids);
 
@@ -6646,8 +6705,8 @@ std::string GCodeGenerator::extrude_loop(const ExtrusionLoop &original_loop, con
         {
             // check for max nozzle diameter
             const std::vector<double> &nozzle_diameters = m_layer->object()->print()->config().nozzle_diameter.get_values();
-            std::set<uint16_t> exctruder_ids = m_layer->object()->object_extruders();
-            for (uint16_t id : exctruder_ids) {
+            std::set<extruder_index_t> exctruder_ids = m_layer->object()->object_extruders();
+            for (extruder_index_t id : exctruder_ids) {
                 max_nozzle = std::max(max_nozzle, nozzle_diameters[id]);
             }
             if (max_nozzle == 0)
@@ -7484,7 +7543,7 @@ void GCodeGenerator::apply_property(const ExtrusionEntity &entity, const Extrusi
         // current tool and machine state. The parser also feeds any resulting
         // position, E and retraction changes back into that writer.
         const std::string processed = this->placeholder_parser_process(
-            "extrusion_custom_gcode_script", gcode, uint16_t(-1));
+            "extrusion_custom_gcode_script", gcode, EXTRUDER_ID_UNKNOWN);
         visitor_gcode += processed;
         if (!processed.empty() && visitor_gcode.back() != '\n') {
             visitor_gcode += "\n";
@@ -7500,8 +7559,13 @@ void GCodeGenerator::apply_property(const ExtrusionPropertySpecialCommand& comma
     //TODO move into new firware-specific gcode writer
     assert(visitor_in_use);
     switch (command.command_code()) {
-    case ExtrusionPropertySpecialCommand::Code::TOOLCHANGE: // to tool 'extra_data' (uint16_t)
-        visitor_gcode += this->set_extruder(uint16_t(command.extra_data), m_layer->scaled_print_z());
+    case ExtrusionPropertySpecialCommand::Code::TOOLCHANGE: // to tool 'extra_data'
+        if (!std::isfinite(command.extra_data) || command.extra_data < 0.0 ||
+            command.extra_data != std::trunc(command.extra_data) ||
+            command.extra_data > double(std::numeric_limits<extruder_index_t>::max()))
+            throw Slic3r::InvalidArgument("Tool-change property contains an invalid extruder index");
+        visitor_gcode += this->set_extruder(
+            static_cast<extruder_index_t>(command.extra_data), m_layer->scaled_print_z());
         break;
     case ExtrusionPropertySpecialCommand::Code::SAVE_AND_RESET_SPEED_RATIO: // also set new speed ratio to extra_data
                                                                             // (1 = 100%)
@@ -7554,7 +7618,8 @@ void GCodeGenerator::apply_property(const ExtrusionPropertySpecialCommand& comma
             visitor_gcode += std::to_string(int(command.extra_data));
 
         } else {
-            uint16_t current_extruder_id = uint16_t(m_writer.tool() != nullptr ? m_writer.tool()->id() : -1);
+            const extruder_index_t current_extruder_id = m_writer.tool() != nullptr ?
+                static_cast<extruder_index_t>(m_writer.tool()->id()) : EXTRUDER_ID_UNKNOWN;
             DynamicConfig cfg;
             cfg.set_key_value("color_change_extruder", new ConfigOptionInt(int(current_extruder_id)));
             visitor_gcode += this->placeholder_parser_process("pause_print_gcode",
@@ -8685,7 +8750,8 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
         assert(this->layer()->id() > 0);
         double my_speed = speed;
         if(comment) *comment = "overhangs_speed";
-        auto [speed_ratio, over_fan_speed] = ExtrusionProcessor::calculate_overhang_speed(path, this->m_config, m_writer.tool()->id());
+        auto [speed_ratio, over_fan_speed] = ExtrusionProcessor::calculate_overhang_speed(
+            path, this->m_config, extruder_index_from_tool(m_writer));
         assert(speed_ratio == -1 || (speed_ratio >= 0 && speed_ratio <= 1));
         assert(over_fan_speed == -1 || (over_fan_speed >= 0 && over_fan_speed <= 100));
         if (speed_ratio >= 0) {
@@ -10023,7 +10089,9 @@ std::string GCodeGenerator::travel_to(
 
     this->m_avoid_crossing_perimeters->reset_once_modifiers();
 
-    const unsigned extruder_id = this->m_writer.extruder()->id();
+    const extruder_index_t extruder_id = extruder_index_from_tool(this->m_writer);
+    if (extruder_id == EXTRUDER_ID_UNKNOWN)
+        throw Slic3r::InvalidArgument("Elevated travel requires a concrete extruder.");
     const double retract_length = this->m_config.retract_length.get_at(extruder_id);
     bool can_be_flat{!needs_retraction || retract_length == 0};
     const double initial_elevation = this->m_last_layer_z;
@@ -10125,7 +10193,7 @@ bool GCodeGenerator::can_cross_perimeter(const Polyline& travel, bool offset)
         *m_layer,
         m_last_object_layers,
         m_print_object_instance_id,
-        m_writer.tool()->id(),
+        checked_extruder_index(m_writer.tool()->id()),
         scale_i(EXTRUDER_CONFIG_WITH_DEFAULT(nozzle_diameter, 0.4)) / 2,
         m_throw_if_canceled
     };
@@ -10193,7 +10261,7 @@ std::string GCodeGenerator::retract_and_wipe(bool toolchange, bool inhibit_lift)
 }
 
 //if first layer, ask for a bigger lift for travel to object, to be on the safe side
-void GCodeGenerator::set_extra_lift(const coord_t previous_print_z, const int layer_id, const PrintConfig& print_config, GCodeWriter & writer, int extruder_id) {
+void GCodeGenerator::set_extra_lift(const coord_t previous_print_z, const int layer_id, const PrintConfig& print_config, GCodeWriter & writer, extruder_index_t extruder_id) {
     //if first layer, ask for a bigger lift for travel to object, to be on the safe side
     coord_t extra_lift_value = 0;
     if (print_config.lift_min.value > 0) {
@@ -10215,8 +10283,9 @@ void GCodeGenerator::set_extra_lift(const coord_t previous_print_z, const int la
 }
 
 // note: maybe you want to call set_extruder instead. Set_extruder calls toolchange after wipe & retraction.
-std::string GCodeGenerator::toolchange(uint16_t extruder_id, coord_t print_z) {
+std::string GCodeGenerator::toolchange(extruder_index_t extruder_id, coord_t print_z) {
     assert( (print_z == 0 && m_max_layer_z_ == 0) || (print_z != 0 && m_max_layer_z_ != 0));
+    const uint16_t tool_id = tool_id_from_extruder(extruder_id);
 
     std::string gcode;
 
@@ -10235,7 +10304,7 @@ std::string GCodeGenerator::toolchange(uint16_t extruder_id, coord_t print_z) {
     }
 
     // We inform the writer about what is happening, but we may not use the resulting gcode.
-    std::string toolchange_command = m_writer.toolchange(extruder_id);
+    std::string toolchange_command = m_writer.toolchange(tool_id);
     if (toolchange_gcode.empty() && m_writer.multiple_extruders) { // !custom_gcode_changes_tool(toolchange_gcode_parsed, m_writer.toolchange_prefix(), extruder_id) && !no_toolchange)
         gcode += toolchange_command;
     } else {
@@ -10250,11 +10319,12 @@ std::string GCodeGenerator::toolchange(uint16_t extruder_id, coord_t print_z) {
     return gcode;
 }
 
-std::string GCodeGenerator::set_extruder(uint16_t extruder_id, coord_t print_z, bool no_toolchange /*=false*/)
+std::string GCodeGenerator::set_extruder(extruder_index_t extruder_id, coord_t print_z, bool no_toolchange /*=false*/)
 {
     assert( (print_z == 0 && m_max_layer_z_ == 0) || (print_z != 0 && m_max_layer_z_ != 0));
+    const uint16_t tool_id = tool_id_from_extruder(extruder_id);
 
-    if (!m_writer.need_toolchange(extruder_id))
+    if (!m_writer.need_toolchange(tool_id))
         return "";
 
     std::string gcode;
@@ -10286,13 +10356,13 @@ std::string GCodeGenerator::set_extruder(uint16_t extruder_id, coord_t print_z, 
         if (!no_toolchange) {
             gcode += toolchange(extruder_id, print_z);
         } else {
-            m_writer.toolchange(extruder_id);
+            m_writer.toolchange(tool_id);
         }
         return gcode;
     }
 
     // get current extruder id
-    uint16_t old_extruder_id = uint16_t(m_writer.tool() != nullptr ? m_writer.tool()->id() : -1);
+    const extruder_index_t old_extruder_id = extruder_index_from_tool(m_writer);
 
     // prepend retraction on the current extruder
     gcode += this->retract_and_wipe(true);
@@ -10310,7 +10380,9 @@ std::string GCodeGenerator::set_extruder(uint16_t extruder_id, coord_t print_z, 
             config.set_key_value("filament_extruder_id", new ConfigOptionInt(int(old_extruder_id)));
             config.set_key_value("previous_extruder", new ConfigOptionInt((int)old_extruder_id));
             config.set_key_value("next_extruder", new ConfigOptionInt((int)extruder_id));
-            gcode += placeholder_parser_process("end_filament_gcode", end_filament_gcode, old_extruder_id >= 0 ? old_extruder_id : extruder_id, &config);
+            gcode += placeholder_parser_process(
+                "end_filament_gcode", end_filament_gcode,
+                old_extruder_id != EXTRUDER_ID_UNKNOWN ? old_extruder_id : extruder_id, &config);
             check_add_eol(gcode);
         }
     }
@@ -10323,7 +10395,7 @@ std::string GCodeGenerator::set_extruder(uint16_t extruder_id, coord_t print_z, 
 
     if (!no_toolchange) {
         gcode += toolchange(extruder_id, print_z);
-    }else m_writer.toolchange(extruder_id);
+    }else m_writer.toolchange(tool_id);
 
     // Set the temperature if the wipe tower didn't (not needed for non-single extruder MM)
     // supermerill change: try to set the good temp, because the wipe tower don't use the gcode writer and so can write wrong stuff.

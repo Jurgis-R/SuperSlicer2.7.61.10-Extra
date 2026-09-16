@@ -463,7 +463,7 @@ class GCodeViewer
         float temperature{ 0.0f };
         float volumetric_rate{ 0.0f };
         float volumetric_flow{ 0.0f };
-        unsigned char extruder_id{ 0 };
+        extruder_index_t extruder_id{ 0 };
         unsigned char cp_color_id{ 0 };
         uint16_t object_id {0};
         std::vector<Sub_Path> sub_paths;
@@ -908,7 +908,7 @@ private:
     std::array<unsigned int, 2> m_layers_z_range;
     std::vector<GCodeExtrusionRole> m_roles;
     size_t m_extruders_count;
-    std::vector<unsigned char> m_extruder_ids;
+    std::vector<extruder_index_t> m_extruder_ids;
     size_t m_objects_count;
     std::vector<std::string> m_objects_ids;
     std::vector<float> m_filament_diameters;

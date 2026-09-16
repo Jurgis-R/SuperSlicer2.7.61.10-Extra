@@ -5,8 +5,8 @@
 #ifndef slic3r_data_tree_h_
 #define slic3r_data_tree_h_
 
-#define SLIC3R_PLUGIN_API_DATA_TREE_MAJOR 2u
-#define SLIC3R_PLUGIN_API_DATA_TREE_MINOR 1u
+#define SLIC3R_PLUGIN_API_DATA_TREE_MAJOR 3u
+#define SLIC3R_PLUGIN_API_DATA_TREE_MINOR 0u
 
 /*
 Data-tree access for a sliced Print.
@@ -542,8 +542,8 @@ should use.
 
 regions must contain LayerRegion handles that belong to island. Passing
 regions == NULL or region_count == 0 means "all regions of the island".
-extruder_id is a zero-based extruder index. Passing a negative value stores the
-generic "no single extruder" value uint16_t(-1), matching existing host data.
+extruder_id is a zero-based extruder index. EXTRUDER_ID_UNKNOWN stores the
+generic "no single extruder" value. Any other negative value is rejected.
 
 Returns NULL when island is invalid, when any region is invalid or belongs to a
 different island, or when the final region set is empty.
@@ -552,7 +552,7 @@ SLIC3R_HOST_API layer_region_island_handle *layer_island_get_or_create_region_is
     layer_island_handle *island,
     const layer_region_handle *const *regions,
     uint32_t region_count,
-    int32_t extruder_id);
+    extruder_index_t extruder_id);
 
 /* Borrow the Layer that owns this island; null input returns null. */
 SLIC3R_HOST_API const layer_handle *layer_island_get_layer(const layer_island_handle *me);
@@ -569,8 +569,8 @@ SLIC3R_HOST_API const layer_island_handle *layer_island_get_upper_island(const l
 
 /* ========================= LAYER REGION ISLAND ========================= */
 
-/* Return the zero-based extruder id, or -1 for null/no single extruder. */
-SLIC3R_HOST_API int32_t layer_region_island_extruder_id(const layer_region_island_handle *me);
+/* Return the zero-based extruder id, or EXTRUDER_ID_UNKNOWN for null/no single extruder. */
+SLIC3R_HOST_API extruder_index_t layer_region_island_extruder_id(const layer_region_island_handle *me);
 /* Null handles report no extrusions. */
 SLIC3R_HOST_API int32_t layer_region_island_has_extrusions(const layer_region_island_handle *me);
 /* Report whether this bucket contains an extrusion root for role. */

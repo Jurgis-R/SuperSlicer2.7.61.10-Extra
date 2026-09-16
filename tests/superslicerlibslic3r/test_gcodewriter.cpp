@@ -23,7 +23,7 @@ SCENARIO("lift() and unlift() behavior with large values of Z", "[!shouldfail]")
         config.load(std::string{ TEST_DATA_DIR PATH_SEPARATOR } +"fff_print_tests/test_gcodewriter/config_lift_unlift.ini"s, Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
         assert(!config.retract_lift.values.empty() && config.retract_lift.values.front() > 0);
 
-        std::vector<uint16_t> extruder_ids {0};
+        std::vector<extruder_index_t> extruder_ids {0};
         writer.set_extruders(extruder_ids);
         writer.set_tool(0);
         int lift_layer_id = 1; // not first layer, as lift is deactivated on it by default
@@ -58,7 +58,7 @@ SCENARIO("lift() is not ignored after unlift() at normal values of Z") {
         config.set_defaults();
         config.load(std::string{ TEST_DATA_DIR PATH_SEPARATOR } +"fff_print_tests/test_gcodewriter/config_lift_unlift.ini"s, Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
 
-        std::vector<uint16_t> extruder_ids {0};
+        std::vector<extruder_index_t> extruder_ids {0};
         writer.set_extruders(extruder_ids);
         writer.set_tool(0);
         int lift_layer_id = 1;

@@ -190,10 +190,10 @@ TEST_CASE("Unconstrained tool visits inherit the ordered tool across layers and 
     plan.groups[0].layers[0].tool_groups[0].extruder_id = 1;
     // Empty wildcard visits must keep the selection, just like printable ones.
     plan.groups[0].layers[0].tool_groups.emplace_back();
-    plan.groups[0].layers[0].tool_groups.back().extruder_id = UINT16_MAX;
+    plan.groups[0].layers[0].tool_groups.back().extruder_id = EXTRUDER_ID_UNKNOWN;
     plan.groups[0].layers.emplace_back();
     plan.groups[0].layers[1].print_z = scale_i(0.4);
-    for (const uint16_t tool : {uint16_t(UINT16_MAX), uint16_t(0), uint16_t(UINT16_MAX)}) {
+    for (const extruder_index_t tool : {EXTRUDER_ID_UNKNOWN, extruder_index_t(0), EXTRUDER_ID_UNKNOWN}) {
         plan.groups[0].layers[1].tool_groups.emplace_back();
         plan.groups[0].layers[1].tool_groups.back().extruder_id = tool;
     }
@@ -201,7 +201,7 @@ TEST_CASE("Unconstrained tool visits inherit the ordered tool across layers and 
     plan.groups[1].layers.emplace_back();
     plan.groups[1].layers[0].print_z = scale_i(0.6);
     plan.groups[1].layers[0].tool_groups.emplace_back();
-    plan.groups[1].layers[0].tool_groups[0].extruder_id = UINT16_MAX;
+    plan.groups[1].layers[0].tool_groups[0].extruder_id = EXTRUDER_ID_UNKNOWN;
     append_printing_extrusion(plan.groups[1].layers[0].tool_groups[0], make_print_path(40., 50.));
 
     run_layer_plugins(print, {TOOLCHANGE_PLUGIN, TRANSITION_SCOPE_PLUGIN});
@@ -243,10 +243,10 @@ TEST_CASE("Leading unconstrained visits use the first explicit tool or zero",
     Print print;
     Model model;
     prepare_print(print, model);
-    const uint16_t explicit_tool = GENERATE(uint16_t(1), uint16_t(UINT16_MAX));
-    const uint16_t expected = explicit_tool == UINT16_MAX ? 0 : explicit_tool;
+    const extruder_index_t explicit_tool = GENERATE(extruder_index_t(1), EXTRUDER_ID_UNKNOWN);
+    const extruder_index_t expected = explicit_tool == EXTRUDER_ID_UNKNOWN ? 0 : explicit_tool;
     PrintingPlan &plan = print.mutable_printing_plan();
-    plan.groups[0].layers[0].tool_groups[0].extruder_id = UINT16_MAX;
+    plan.groups[0].layers[0].tool_groups[0].extruder_id = EXTRUDER_ID_UNKNOWN;
     // The initial concrete tool may be in a later group, beyond an empty layer.
     plan.groups[0].layers.emplace_back();
     plan.groups.emplace_back();

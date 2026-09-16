@@ -9,7 +9,9 @@
 
 #include <cfloat>
 #include <cstring>
+#include <limits>
 #include <memory.h>
+#include <stdexcept>
 
 #include <fast_float/fast_float.h>
 
@@ -38,6 +40,10 @@ static constexpr int max_look_back_limit = 128;
 
 PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_relative_e_distances(config.use_relative_e_distances.value)
 {
+    if (config.filament_diameter.size() > size_t(std::numeric_limits<extruder_index_t>::max()) + 1 ||
+        config.tool_name.size() > size_t(std::numeric_limits<extruder_index_t>::max()) + 1)
+        throw std::out_of_range("PressureEqualizer extruder count exceeds extruder_index_t");
+
     // Preallocate some data, so that output_buffer.data() will return an empty string.
     output_buffer.assign(32, 0);
     output_buffer_length    = 0;
@@ -312,7 +318,7 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
                         diff[i] = new_pos[i] - m_current_pos[i];
                     // volumetric extrusion rate = A_filament * F_xyz * L_e / L_xyz [mm^3/min]
                     float len2 = diff[0]*diff[0]+diff[1]*diff[1]+diff[2]*diff[2];
-                    float rate = m_filament_crossections[m_current_extruder] * new_pos[4] * sqrt((diff[3]*diff[3])/len2);
+                    float rate = m_filament_crossections[size_t(m_current_extruder)] * new_pos[4] * sqrt((diff[3]*diff[3])/len2);
                     buf.volumetric_extrusion_rate       = rate;
                     buf.volumetric_extrusion_rate_start = rate;
                     buf.volumetric_extrusion_rate_end   = rate;
@@ -388,7 +394,7 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
     case 'T':
     {
         // Activate an extruder head.
-        int new_extruder = -1;
+        int new_extruder = EXTRUDER_ID_UNKNOWN;
         try {
             new_extruder = parse_int(line);
         } catch (Slic3r::InvalidArgument &) {
@@ -396,10 +402,13 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
             eatws(line);
             break;
         }
-        assert(new_extruder != -1);
+        if (new_extruder == EXTRUDER_ID_UNKNOWN || new_extruder < EXTRUDER_ID_UNKNOWN ||
+            new_extruder > std::numeric_limits<extruder_index_t>::max())
+            break;
 
-        if (new_extruder != int(m_current_extruder)) {
-            m_current_extruder = new_extruder;
+        const extruder_index_t parsed_extruder = static_cast<extruder_index_t>(new_extruder);
+        if (parsed_extruder != m_current_extruder) {
+            m_current_extruder = parsed_extruder;
             //m_retracted = true; // merill: why?
             buf.type = GCODELINETYPE_TOOL_CHANGE;
         } else {
@@ -441,7 +450,7 @@ void PressureEqualizer::parse_activate_extruder(const std::string &line_str)
             // we have a "name". It may be whatever or "extruder" + X
             for (size_t extruder_idx = 0; extruder_idx < m_extruder_names.size(); ++extruder_idx) {
                 if (m_extruder_names[extruder_idx] == extruder_name) {
-                    m_current_extruder = extruder_idx;
+                    m_current_extruder = static_cast<extruder_index_t>(extruder_idx);
                 return;
                 }
             }
@@ -452,7 +461,7 @@ void PressureEqualizer::parse_activate_extruder(const std::string &line_str)
             }
             for (size_t extruder_idx = 0; extruder_idx < m_extruder_names.size(); ++extruder_idx) {
                 if (extruder_str + std::to_string(extruder_idx) == extruder_name) {
-                    m_current_extruder = extruder_idx;
+                    m_current_extruder = static_cast<extruder_index_t>(extruder_idx);
                 return;
                 }
             }

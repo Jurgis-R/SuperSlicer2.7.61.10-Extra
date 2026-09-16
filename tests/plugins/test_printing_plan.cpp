@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -17,6 +19,7 @@
 #include "libslic3r/Api/plugin/c/slic3r_printing_plan.h"
 #include "libslic3r/Api/plugin/c/slic3r_volume.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"
+#include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
 #include "libslic3r/Api/plugin/cpp/AuxiliaryLayerHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
@@ -40,6 +43,10 @@ using namespace Slic3r;
 using namespace Slic3r::Printing;
 using slic3r_api::PluginPropertyKey;
 
+static_assert(sizeof(extruder_index_t) == sizeof(int16_t));
+static_assert(std::is_signed<extruder_index_t>::value);
+static_assert(EXTRUDER_ID_UNKNOWN == extruder_index_t(-1));
+
 /* Small typed marker used to verify every PrintingPlan scope property view. */
 struct TestPrintingScopePayload
 {
@@ -53,7 +60,7 @@ PluginPropertyKey<TestPrintingScopePayload> printing_scope_property_key(
         orchestrator, "tests.printing-plan.scope-properties");
 }
 
-PrintingToolGroup test_tool_group(const uint16_t extruder_id, const uint16_t marker)
+PrintingToolGroup test_tool_group(const extruder_index_t extruder_id, const uint16_t marker)
 {
     PrintingToolGroup group;
     group.extruder_id = extruder_id;
@@ -70,18 +77,18 @@ PrintingToolGroup test_tool_group(const uint16_t extruder_id, const uint16_t mar
     return group;
 }
 
-PrintingLayerGroup test_layer(std::initializer_list<uint16_t> extruders)
+PrintingLayerGroup test_layer(std::initializer_list<extruder_index_t> extruders)
 {
     PrintingLayerGroup layer;
     uint16_t marker = 1;
-    for (const uint16_t extruder_id : extruders)
+    for (const extruder_index_t extruder_id : extruders)
         layer.tool_groups.push_back(test_tool_group(extruder_id, marker++));
     return layer;
 }
 
-std::vector<uint16_t> extruder_order(const PrintingLayerGroup &layer)
+std::vector<extruder_index_t> extruder_order(const PrintingLayerGroup &layer)
 {
-    std::vector<uint16_t> out;
+    std::vector<extruder_index_t> out;
     out.reserve(layer.tool_groups.size());
     for (const PrintingToolGroup &tool_group : layer.tool_groups)
         out.push_back(tool_group.extruder_id);
@@ -358,6 +365,65 @@ void reset_plan_event_editor(PlanEventEditorState &state)
     state.payload_valid = true;
 }
 
+void append_test_layer(slic3r_api::PrintingGroup group,
+                       const std::vector<extruder_index_t> &extruder_ids,
+                       const coord_t print_z)
+{
+    slic3r_api::PrintingLayerGroup layer = group.append_layer_group(print_z);
+    for (const extruder_index_t extruder_id : extruder_ids)
+        layer.append_tool_group(extruder_id);
+}
+
+void run_default_tool_group_ordering_plugin(Print &print)
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Plugin *plugin = orchestrator.get_plugin("ordering.tool_groups.default");
+    REQUIRE(plugin != nullptr);
+
+    PrintingPlan &native_plan = print.mutable_printing_plan();
+    run_ctx_extrusion_ordering payload = {};
+    payload.print = reinterpret_cast<const print_handle *>(&print);
+    payload.plan = reinterpret_cast<printing_plan_handle *>(&native_plan);
+
+    plugin_host_context host_context =
+        orchestrator.prepare_plugin_host_context(STEP_ORDERING, plugin, &print);
+    plugin_run_context run_context =
+        orchestrator.prepare_plugin_run_context(STEP_ORDERING, plugin, &host_context);
+    run_context.data = &payload;
+
+    plugin->setup(run_context, 1);
+    plugin->setup_run(run_context);
+    plugin->run(run_context);
+}
+
+std::vector<std::vector<extruder_index_t>> default_plugin_extruder_order(
+    const std::vector<std::vector<extruder_index_t>> &layers)
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingPlan &native_plan = print.mutable_printing_plan();
+    slic3r_api::PrintingPlan plan_view(reinterpret_cast<printing_plan_handle *>(&native_plan));
+    slic3r_api::PrintingGroup group = plan_view.append_group();
+
+    coord_t print_z = 0;
+    for (const std::vector<extruder_index_t> &layer : layers) {
+        append_test_layer(group, layer, print_z);
+        ++print_z;
+    }
+
+    run_default_tool_group_ordering_plugin(print);
+
+    REQUIRE(native_plan.groups.size() == 1);
+    std::vector<std::vector<extruder_index_t>> out;
+    out.reserve(native_plan.groups.front().layers.size());
+    for (const PrintingLayerGroup &layer : native_plan.groups.front().layers)
+        out.push_back(extruder_order(layer));
+    return out;
+}
+
 } // namespace
 
 TEST_CASE("PrintingPlan scopes carry mutable plugin properties",
@@ -445,7 +511,7 @@ TEST_CASE("PrintingPlan tool ordering keeps one-extruder layers stable", "[print
 
     order_printing_tool_groups(group);
 
-    CHECK(extruder_order(group.layers.front()) == std::vector<uint16_t>({2, 2}));
+    CHECK(extruder_order(group.layers.front()) == std::vector<extruder_index_t>({2, 2}));
     CHECK(marker_order(group.layers.front()) == std::vector<uint16_t>({1, 2}));
 }
 
@@ -459,7 +525,7 @@ TEST_CASE("PrintingPlan tool ordering starts with requested first extruder", "[p
 
     order_printing_tool_groups(group, 1);
 
-    CHECK(extruder_order(group.layers.front()) == std::vector<uint16_t>({1, 2, 3}));
+    CHECK(extruder_order(group.layers.front()) == std::vector<extruder_index_t>({1, 2, 3}));
 }
 
 TEST_CASE("PrintingPlan tool ordering uses smallest extruder as default start", "[printing][plan]")
@@ -470,9 +536,9 @@ TEST_CASE("PrintingPlan tool ordering uses smallest extruder as default start", 
     PrintingGroup group;
     group.layers.push_back(test_layer({2, 3, 1}));
 
-    order_printing_tool_groups(group, uint16_t(-1));
+    order_printing_tool_groups(group, EXTRUDER_ID_UNKNOWN);
 
-    CHECK(extruder_order(group.layers.front()) == std::vector<uint16_t>({1, 2, 3}));
+    CHECK(extruder_order(group.layers.front()) == std::vector<extruder_index_t>({1, 2, 3}));
 }
 
 TEST_CASE("PrintingPlan tool ordering connects consecutive layers through shared tools", "[printing][plan]")
@@ -484,10 +550,10 @@ TEST_CASE("PrintingPlan tool ordering connects consecutive layers through shared
     group.layers.push_back(test_layer({1, 2}));
     group.layers.push_back(test_layer({2, 3}));
 
-    order_printing_tool_groups(group, uint16_t(-1));
+    order_printing_tool_groups(group, EXTRUDER_ID_UNKNOWN);
 
-    CHECK(extruder_order(group.layers[0]) == std::vector<uint16_t>({1, 2}));
-    CHECK(extruder_order(group.layers[1]) == std::vector<uint16_t>({2, 3}));
+    CHECK(extruder_order(group.layers[0]) == std::vector<extruder_index_t>({1, 2}));
+    CHECK(extruder_order(group.layers[1]) == std::vector<extruder_index_t>({2, 3}));
 }
 
 TEST_CASE("PrintingPlan tool ordering minimizes transitions over several layers", "[printing][plan]")
@@ -500,11 +566,11 @@ TEST_CASE("PrintingPlan tool ordering minimizes transitions over several layers"
     group.layers.push_back(test_layer({2, 3}));
     group.layers.push_back(test_layer({1, 3}));
 
-    order_printing_tool_groups(group, uint16_t(-1));
+    order_printing_tool_groups(group, EXTRUDER_ID_UNKNOWN);
 
-    CHECK(extruder_order(group.layers[0]) == std::vector<uint16_t>({1, 2}));
-    CHECK(extruder_order(group.layers[1]) == std::vector<uint16_t>({2, 3}));
-    CHECK(extruder_order(group.layers[2]) == std::vector<uint16_t>({3, 1}));
+    CHECK(extruder_order(group.layers[0]) == std::vector<extruder_index_t>({1, 2}));
+    CHECK(extruder_order(group.layers[1]) == std::vector<extruder_index_t>({2, 3}));
+    CHECK(extruder_order(group.layers[2]) == std::vector<extruder_index_t>({3, 1}));
 }
 
 TEST_CASE("PrintingPlan tool ordering preserves duplicate tool group order", "[printing][plan]")
@@ -518,7 +584,7 @@ TEST_CASE("PrintingPlan tool ordering preserves duplicate tool group order", "[p
 
     order_printing_tool_groups(group, 1);
 
-    CHECK(extruder_order(group.layers.front()) == std::vector<uint16_t>({1, 1, 2, 2, 3}));
+    CHECK(extruder_order(group.layers.front()) == std::vector<extruder_index_t>({1, 1, 2, 2, 3}));
     CHECK(marker_order(group.layers.front()) == std::vector<uint16_t>({2, 5, 1, 3, 4}));
 }
 
@@ -534,7 +600,40 @@ TEST_CASE("PrintingPlan tool ordering skips empty layers in transition search", 
     order_printing_tool_groups(group, 1);
 
     CHECK(group.layers.front().tool_groups.empty());
-    CHECK(extruder_order(group.layers[1]) == std::vector<uint16_t>({1, 2}));
+    CHECK(extruder_order(group.layers[1]) == std::vector<extruder_index_t>({1, 2}));
+}
+
+TEST_CASE("Default tool group ordering resolves unassigned tool groups",
+          "[printing][plan][step-ordering]")
+{
+    CHECK(default_plugin_extruder_order({{EXTRUDER_ID_UNKNOWN, 2}}) ==
+          std::vector<std::vector<extruder_index_t>>({{2, 2}}));
+
+    CHECK(default_plugin_extruder_order({{1, EXTRUDER_ID_UNKNOWN, 2}}) ==
+          std::vector<std::vector<extruder_index_t>>({{1, 1, 2}}));
+
+    CHECK(default_plugin_extruder_order({{EXTRUDER_ID_UNKNOWN, EXTRUDER_ID_UNKNOWN}}) ==
+          std::vector<std::vector<extruder_index_t>>({{0, 0}}));
+
+    CHECK(default_plugin_extruder_order({{3}, {EXTRUDER_ID_UNKNOWN, 2}}) ==
+          std::vector<std::vector<extruder_index_t>>({{3}, {3, 2}}));
+}
+
+TEST_CASE("STEP_ORDERING post validation rejects unresolved tool groups",
+          "[printing][plan][step-ordering]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingPlan &native_plan = print.mutable_printing_plan();
+    slic3r_api::PrintingPlan plan_view(reinterpret_cast<printing_plan_handle *>(&native_plan));
+    slic3r_api::PrintingGroup group = plan_view.append_group();
+    append_test_layer(group, std::vector<extruder_index_t>({EXTRUDER_ID_UNKNOWN}), 0);
+
+    std::string error;
+    CHECK_FALSE(Steps::StepExtrusionOrdering::validate_post(print, &error));
+    CHECK(error.find("group[0].layer[0].tool[0]") != std::string::npos);
+    CHECK(error.find("no concrete extruder") != std::string::npos);
 }
 
 TEST_CASE("PrintingPlan extrusion ordering leaves non-sortable nodes unchanged", "[printing][plan]")
@@ -823,6 +922,46 @@ TEST_CASE("PrintingPlan C API builds and mutates plan objects", "[printing][plan
     CHECK(clone_root != source_handle);
     CHECK(extrusion_child_count(clone_root) == 1);
     CHECK(source.child_count() == 1);
+}
+
+TEST_CASE("Extruder index boundaries stay explicit across PrintingPlan APIs",
+          "[printing][plan][api][extruder-index]")
+{
+    PrintingPlan native_plan;
+    printing_plan_handle *plan_handle = reinterpret_cast<printing_plan_handle *>(&native_plan);
+    printing_group_handle *group_handle = printing_plan_append_group(plan_handle);
+    REQUIRE(group_handle != nullptr);
+    printing_layer_group_handle *layer_handle = printing_group_append_layer_group(group_handle, 0);
+    REQUIRE(layer_handle != nullptr);
+
+    const extruder_index_t maximum = (std::numeric_limits<extruder_index_t>::max)();
+    for (const extruder_index_t extruder_id : {
+             EXTRUDER_ID_UNKNOWN, extruder_index_t(0), maximum}) {
+        printing_tool_group_handle *tool_handle =
+            printing_layer_group_append_tool_group(layer_handle, extruder_id);
+        REQUIRE(tool_handle != nullptr);
+        CHECK(printing_tool_group_get_extruder_id(tool_handle) == extruder_id);
+    }
+    CHECK(printing_layer_group_append_tool_group(layer_handle, extruder_index_t(-2)) == nullptr);
+
+    printing_tool_group_handle *setter_handle =
+        printing_layer_group_append_tool_group(layer_handle, maximum);
+    REQUIRE(setter_handle != nullptr);
+    printing_tool_group_set_extruder_id(setter_handle, extruder_index_t(-2));
+    CHECK(printing_tool_group_get_extruder_id(setter_handle) == maximum);
+    printing_tool_group_set_extruder_id(setter_handle, EXTRUDER_ID_UNKNOWN);
+    CHECK(printing_tool_group_get_extruder_id(setter_handle) == EXTRUDER_ID_UNKNOWN);
+
+    slic3r_api::PrintingLayerGroup layer(layer_handle);
+    slic3r_api::PrintingToolGroup tool = layer.append_tool_group(0);
+    REQUIRE(tool.valid());
+    tool.set_extruder_id(EXTRUDER_ID_UNKNOWN);
+    CHECK(tool.extruder_id() == EXTRUDER_ID_UNKNOWN);
+    tool.set_extruder_id(maximum);
+    CHECK(tool.extruder_id() == maximum);
+    CHECK_THROWS_AS(tool.set_extruder_id(-2), std::out_of_range);
+    CHECK_THROWS_AS(tool.set_extruder_id(int64_t(maximum) + 1), std::out_of_range);
+    CHECK(tool.extruder_id() == maximum);
 }
 
 TEST_CASE("Plugin object names and mesh projections distinguish empty results from errors",
@@ -1220,4 +1359,48 @@ TEST_CASE("STEP_ORDERING includes print-level auxiliary layers", "[printing][pla
     REQUIRE(group.layers.front().tool_groups.front().extrusions.size() == 1);
     CHECK(group.layers.front().tool_groups.front().extrusions.front().printing_catalog_id ==
           PRINTING_OBJECT_INSTANCE_ID_NONE);
+}
+
+TEST_CASE("DataTree extruder index boundaries validate before narrowing",
+          "[printing][datatree][extruder-index]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PluginStorage plugin_storage;
+    const ExPolygons subject{ rectangle_expolygon(0., 0., 20., 20.) };
+    const slic3r_api::AuxiliaryLayerBuildResult built =
+        slic3r_api::build_auxiliary_layer_regions_from_subject(
+            reinterpret_cast<storage_handle *>(&plugin_storage),
+            print_view(print),
+            print_view(print).auxiliary_object(),
+            expolygons_view(subject),
+            scale_i(1.),
+            scale_i(1.),
+            scale_i(0.5));
+    REQUIRE(built.created);
+    REQUIRE(built.layer.island_count() == 1);
+    const slic3r_api::Layer layer = built.layer;
+    const slic3r_api::LayerIsland island = layer.island(0);
+    const extruder_index_t maximum = (std::numeric_limits<extruder_index_t>::max)();
+
+    for (const int64_t extruder_id : {
+             int64_t(EXTRUDER_ID_UNKNOWN), int64_t(0), int64_t(maximum)}) {
+        const slic3r_api::LayerRegionIsland region_island =
+            island.get_or_create_full_region_island(extruder_id);
+        REQUIRE(region_island.valid());
+        CHECK(region_island.extruder_id() == extruder_index_t(extruder_id));
+    }
+    CHECK_THROWS_AS(island.get_or_create_full_region_island(-2), std::out_of_range);
+    CHECK_THROWS_AS(
+        island.get_or_create_full_region_island(int64_t(maximum) + 1),
+        std::out_of_range);
+
+    layer_region_island_handle *c_region_island =
+        layer_island_get_or_create_region_island(
+            const_cast<layer_island_handle *>(island.handle()), nullptr, 0, maximum);
+    REQUIRE(c_region_island != nullptr);
+    CHECK(layer_island_get_or_create_region_island(
+              const_cast<layer_island_handle *>(island.handle()),
+              nullptr, 0, extruder_index_t(-2)) == nullptr);
 }

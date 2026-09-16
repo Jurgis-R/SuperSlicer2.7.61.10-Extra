@@ -13,6 +13,7 @@
 #define slic3r_Extruder_hpp_
 
 #include <optional>
+#include <stdexcept>
 
 #include "GCode/GCodeFormatter.hpp"
 #include "libslic3r.h"
@@ -136,7 +137,7 @@ protected:
 class Extruder : public Tool
 {
 public:
-    Extruder(uint16_t id, GCodeConfig &config);
+    Extruder(extruder_index_t id, GCodeConfig &config);
     virtual ~Extruder() {}
 
     double filament_diameter() const override;
@@ -156,8 +157,17 @@ public:
     int8_t fan_offset() const override;
 
 protected:
+    static uint16_t checked_tool_id(extruder_index_t id)
+    {
+        if (id == EXTRUDER_ID_UNKNOWN)
+            throw std::invalid_argument("An Extruder needs a concrete extruder index");
+        if (id < EXTRUDER_ID_UNKNOWN)
+            throw std::invalid_argument("An Extruder cannot use an invalid negative extruder index");
+        return static_cast<uint16_t>(id);
+    }
+
     // Private constructor to create a key for a search in std::set.
-    Extruder(uint16_t id) : Tool(id) {}
+    Extruder(extruder_index_t id) : Tool(checked_tool_id(id)) {}
 };
 
 // Sort Extruder objects by the extruder id by default.

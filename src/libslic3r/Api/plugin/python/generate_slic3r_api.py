@@ -46,6 +46,7 @@ PYTHON_EXCLUDED_HEADERS = set()
 
 TYPE_ALIASES = {
     "mesh_query_status": "int32_t",
+    "extruder_index_t": "int16_t",
     "coord_t": "int64_t",
     "coordf_t": "double",
     "distf_t": "double",

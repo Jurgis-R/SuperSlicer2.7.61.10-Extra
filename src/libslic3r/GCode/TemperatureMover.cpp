@@ -108,13 +108,13 @@ bool parse_number(const std::string_view sv, int& out)
 }
 } // namespace TemperatureMover_func
 
-std::tuple<int16_t, uint16_t> TemperatureMover::_get_temperature_with_extruder_idx(const std::string &line,
-                                                                                   GCodeFlavor flavor) {
+std::tuple<int16_t, extruder_index_t> TemperatureMover::_get_temperature_with_extruder_idx(const std::string &line,
+                                                                                             GCodeFlavor flavor) {
     if (line.compare(0, 4, "M104") == 0 || line.compare(0, 4, "M109") == 0) {
-        return std::tuple<int16_t, uint16_t>((int16_t) TemperatureMover_func::get_nematx_axis_value(line),
-                                                m_current_extruder);
+        return std::tuple<int16_t, extruder_index_t>((int16_t) TemperatureMover_func::get_nematx_axis_value(line),
+                                                     m_current_extruder);
     }
-    return std::tuple<int16_t, uint16_t>(int16_t(-1), uint16_t(0));
+    return std::tuple<int16_t, extruder_index_t>(int16_t(-1), 0);
 }
 
 void TemperatureMover::_put_in_middle_G1(std::list<BufferData>::reverse_iterator item_to_split, float nb_sec_since_itemtosplit_start, BufferData &&line_to_write, float max_time) {
@@ -182,7 +182,7 @@ void TemperatureMover::_put_in_middle_G1(std::list<BufferData>::reverse_iterator
     }
 }
 
-void TemperatureMover::_remove_low_heat(int16_t min_temp, uint16_t extr_idx, float past_sec) {
+void TemperatureMover::_remove_low_heat(int16_t min_temp, extruder_index_t extr_idx, float past_sec) {
     // erase in the buffer -> don't cooldown if you are in the process of heating.
     // we began at the "recent" side , and remove as long as we don't push past_sec to 
     auto it = m_buffer.begin();
@@ -204,7 +204,9 @@ void TemperatureMover::_process_T(const std::string_view command)
 {
     if (command.length() > 1 && command[1] >= '0' && command[1] <= '9') {
         int eid = 0;
-        if (!TemperatureMover_func::parse_number(command.substr(1), eid) || eid < 0 || eid > 255) {
+        if (!TemperatureMover_func::parse_number(command.substr(1), eid) ||
+            eid == EXTRUDER_ID_UNKNOWN || eid < EXTRUDER_ID_UNKNOWN ||
+            eid > (std::numeric_limits<extruder_index_t>::max)()) {
             GCodeFlavor flavor = m_writer.config.gcode_flavor;
             // Specific to the MMU2 V2 (see https://www.help.prusa3d.com/en/article/prusa-specific-g-codes_112173):
             if ((flavor == gcfMarlinLegacy || flavor == gcfMarlinFirmware) && (command == "Tx" || command == "Tc" || command == "T?"))
@@ -212,9 +214,9 @@ void TemperatureMover::_process_T(const std::string_view command)
 
             // T-1 is a valid gcode line for RepRap Firmwares (used to deselects all tools) see https://github.com/prusa3d/PrusaSlicer/issues/5677
             if ((flavor != gcfRepRap && flavor != gcfSprinter) || eid != -1)
-                m_current_extruder = static_cast<uint16_t>(0);
+            m_current_extruder = 0;
         } else {
-            m_current_extruder = static_cast<uint16_t>(eid);
+            m_current_extruder = static_cast<extruder_index_t>(eid);
         }
     }
 }
@@ -236,18 +238,18 @@ void TemperatureMover::_process_ACTIVATE_EXTRUDER(const std::string_view cmd)
             // we have a "name". It may be whatever or "extruder" + X
             for (const Extruder &extruder : m_writer.extruders()) {
                 if (m_writer.config.tool_name.get_at(extruder.id()) == extruder_name) {
-                    m_current_extruder = static_cast<uint16_t>(extruder.id());
+                    m_current_extruder = static_cast<extruder_index_t>(extruder.id());
                     return;
                 }
             }
             std::string extruder_str("extruder");
             if (extruder_str == extruder_name) {
-                m_current_extruder = static_cast<uint16_t>(0);
+                m_current_extruder = 0;
                 return;
             }
             for (const Extruder &extruder : m_writer.extruders()) {
                 if (extruder_str + std::to_string(extruder.id()) == extruder_name) {
-                    m_current_extruder = static_cast<uint16_t>(extruder.id());
+                    m_current_extruder = static_cast<extruder_index_t>(extruder.id());
                     return;
                 }
             }
@@ -263,7 +265,7 @@ void TemperatureMover::_process_gcode_line(GCodeReader& reader, const GCodeReade
     std::string cmd(line.cmd());
     double time = 0;
     int16_t new_temperature = -1;
-    uint16_t temperature_extruder_idx = 0;
+    extruder_index_t temperature_extruder_idx = 0;
     if (cmd.length() > 1) {
         if (::toupper(cmd[0]) == 'G') {
             assert(!line.has_f() || line.f() > 0);

@@ -5,11 +5,12 @@
 #ifndef slic3r_gcode_script_h_
 #define slic3r_gcode_script_h_
 
-#define SLIC3R_PLUGIN_API_GCODE_SCRIPT_MAJOR 2u
+#define SLIC3R_PLUGIN_API_GCODE_SCRIPT_MAJOR 3u
 #define SLIC3R_PLUGIN_API_GCODE_SCRIPT_MINOR 0u
 
 #include <stdint.h>
 
+#include "slic3r_def.h"
 #include "slic3r_utils.h"
 
 #ifdef __cplusplus
@@ -88,10 +89,15 @@ typedef config_handle *(*gcode_script_prepare_fn)(void *context,
                                                   gcode_script_type script_type,
                                                   const config_handle *producer_config);
 
+/*
+Process one script using the current zero-based extruder identity.
+EXTRUDER_ID_UNKNOWN means that the caller has no concrete current extruder.
+The caller rejects every other negative value before invoking this callback.
+*/
 typedef void (*gcode_script_process_fn)(
     void *context,
     const char *script,
-    uint16_t current_extruder,
+    extruder_index_t current_extruder,
     raw_gcode_script_result *result);
 
 typedef struct raw_gcode_script_processor {
