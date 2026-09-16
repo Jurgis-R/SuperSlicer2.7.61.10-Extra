@@ -805,7 +805,6 @@ void init_categories(PrintConfigDef &definition)
         "seam_notch_inner",
         "seam_notch_outer",
         "seam_travel_cost",
-        "seam_visibility",
         "staggered_inner_seams",
         // external_perimeters
         "external_perimeters_first",
@@ -6791,19 +6790,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comSimpleAE | comPrusa | comSuSi;
     def->set_default_value(new ConfigOptionEnum<SeamPosition>(spCost));
 
-    def = definition.add("seam_angle_cost", coPercent, ptFFF);
-    def->label = L("Angle cost");
-    def->full_label = L("Seam angle cost");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("Cost of placing the seam at a bad angle. The worst angle (max penalty) is when it's flat."
-        "\n100% is the default penalty");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 1000;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionPercent(60));
-
     def = definition.add("seam_gap", coFloatsOrPercents, ptFFF);
     def->label = L("Seam gap");
     def->category = OptionCategory::extruders;
@@ -6890,28 +6876,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->max_literal = { 5, false };
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
-
-    def = definition.add("seam_travel_cost", coPercent, ptFFF);
-    def->label = L("Travel cost");
-    def->full_label = L("Seam travel cost");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("Cost of moving the extruder. The highest penalty is when the point is the furthest from the position of the extruder before extruding the external perimeter");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 1000;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionPercent(100));
-
-    def = definition.add("seam_visibility", coBool, ptFFF);
-    def->label = L("use visibility check");
-    def->full_label = L("Seam visibility check");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("Check and penalize seams that are the most visible. launch rays to check from how many direction a point is visible."
-        "\nThis is a compute-intensive option.");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(true));
 
     def = definition.add("staggered_inner_seams", coBool, ptFFF);
     def->label = L("Staggered inner seams");

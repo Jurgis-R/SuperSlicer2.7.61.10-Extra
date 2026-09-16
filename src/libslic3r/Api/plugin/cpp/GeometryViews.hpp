@@ -267,6 +267,10 @@ read naturally.
 
 inline c_point make_point(coord_t x, coord_t y) { return c_point{x, y}; }
 
+inline bool operator==(c_point lhs, c_point rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
+
+inline bool operator!=(c_point lhs, c_point rhs) { return !(lhs == rhs); }
+
 inline c_point operator+(c_point lhs, c_point rhs) { return c_point{lhs.x + rhs.x, lhs.y + rhs.y}; }
 
 inline c_point operator-(c_point lhs, c_point rhs) { return c_point{lhs.x - rhs.x, lhs.y - rhs.y}; }
@@ -282,6 +286,65 @@ inline distsqrf_t norm_square(c_point point) {
 }
 
 inline distf_t norm(c_point point) { return std::sqrt(norm_square(point)); }
+
+/*
+Return true when the closed polygon described by `points` is clockwise.
+
+The function uses the standard shoelace formula and reads the input as an
+implicit closed ring: the last point is connected back to the first one. The
+returned orientation follows the usual slicer XY convention where a positive
+signed area is counter-clockwise and a negative signed area is clockwise.
+
+Degenerate inputs with fewer than three points, or with zero signed area, are
+reported as not clockwise because they do not define a stable orientation.
+*/
+inline bool is_clockwise(const c_point *points, size_t size)
+{
+    if (points == nullptr || size < 3)
+        return false;
+
+    long double area2 = 0.0;
+    for (size_t idx = 0, prev = size - 1; idx < size; prev = idx++) {
+        area2 += static_cast<long double>(points[prev].x) * static_cast<long double>(points[idx].y)
+               - static_cast<long double>(points[idx].x) * static_cast<long double>(points[prev].y);
+    }
+    return area2 < 0.0;
+}
+
+inline bool is_clockwise(const std::vector<c_point> &points)
+{
+    return is_clockwise(points.data(), points.size());
+}
+
+/*
+Return the same orientation test as is_clockwise(), using an algebraically
+equivalent edge-sum formula:
+
+    sum((x2 - x1) * (y2 + y1))
+
+This form is slightly cheaper in tight loops because each edge needs one
+multiplication instead of the two cross-product multiplications used by the
+shoelace formula. Its drawback is readability: the sign convention is less
+obvious to most readers, so prefer is_clockwise() unless profiling shows this
+helper is on a hot path.
+*/
+inline bool is_clockwise_fast(const c_point *points, size_t size)
+{
+    if (points == nullptr || size < 3)
+        return false;
+
+    long double sum = 0.0;
+    for (size_t idx = 0, prev = size - 1; idx < size; prev = idx++) {
+        sum += (static_cast<long double>(points[idx].x) - static_cast<long double>(points[prev].x))
+             * (static_cast<long double>(points[idx].y) + static_cast<long double>(points[prev].y));
+    }
+    return sum > 0.0;
+}
+
+inline bool is_clockwise_fast(const std::vector<c_point> &points)
+{
+    return is_clockwise_fast(points.data(), points.size());
+}
 
 inline c_point point_at(c_point p1, c_point p2, distf_t distance) {
     const c_point direction = p2 - p1;

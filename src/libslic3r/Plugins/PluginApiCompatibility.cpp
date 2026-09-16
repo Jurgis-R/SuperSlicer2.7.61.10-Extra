@@ -36,6 +36,7 @@
 #include "libslic3r/Api/plugin/c/slic3r_slicing_step.h"
 #include "libslic3r/Api/plugin/c/slic3r_utils.h"
 #include "libslic3r/Api/plugin/c/slic3r_volume.h"
+#include "libslic3r/Api/plugin/c/slic3r_mesh_queries.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_bridge_detector.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_common.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"

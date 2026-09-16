@@ -18,6 +18,7 @@ DEFAULT_OUTPUT = Path(__file__).resolve().with_name("slic3r_api_generated.py")
 HEADER_ORDER = [
     "slic3r_def.h",
     "slic3r_utils.h",
+    "slic3r_geometry_types.h",
     "slic3r_geometry.h",
     "slic3r_config_option_type.h",
     "slic3r_config_types.h",
@@ -44,6 +45,7 @@ PYTHON_EXCLUDED_HEADERS = set()
 
 
 TYPE_ALIASES = {
+    "mesh_query_status": "int32_t",
     "coord_t": "int64_t",
     "coordf_t": "double",
     "distf_t": "double",
@@ -530,6 +532,7 @@ def ctype_expr(c_type: str, class_names: set[str], callback_names: dict[str, str
 
 
 PRIMITIVE_CTYPES = {
+    "char": "ctypes.c_char",
     "void": "None",
     "int": "ctypes.c_int",
     "int32_t": "ctypes.c_int32",

@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "SeamPlacementConstraints.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
 #include "libslic3r/Api/plugin/cpp/LineDistancer.hpp"
@@ -23,6 +24,7 @@
 #include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 #include "libslic3r/Api/plugin/cpp/properties/ExtrusionProperties.hpp"
 #include "libslic3r/Plugins/SeamPlacer/SeamCostModel.hpp"
+#include "libslic3r/Api/plugin/cpp/MeshQueryViews.hpp"
 
 /*
 Cost-based seam placement
@@ -59,7 +61,7 @@ mutates these maps; this does not freeze host geometry between placement calls.
 class CostSession final : public SeamPlacerSession
 {
 public:
-    explicit CostSession(storage_handle *storage) : m_storage(storage) {}
+    explicit CostSession(storage_handle *storage, const mesh_query_cancel *cancel = nullptr) : m_storage(storage), m_cancel(cancel) {}
     void initialize(const PrintingPlan &plan, const std::vector<PrintRegion> &regions) override;
     // Cost has no regional preference; the router keeps the first region on equal priorities.
     float get_priority(const ExtrusionEntity &, const LayerRegion &) const override { return 50.f; }
@@ -68,6 +70,7 @@ public:
 
 private:
     storage_handle *m_storage;
+    const mesh_query_cancel *m_cancel;
     bool m_initialization_started = false;
     std::set<const print_region_handle *> m_regions;
     std::map<RegionIslandKey, std::vector<SeamCandidate>> m_candidates;
@@ -79,11 +82,20 @@ namespace {
 const char *const k_plugin_id = "seam_placer.cost";
 const char *const k_group_id = "seam_placer_plugin";
 const char *const k_dependencies[] = { nullptr };
+const char *const k_seam_angle_cost_key = "seam_angle_cost";
+const char *const k_seam_travel_cost_key = "seam_travel_cost";
+const char *const k_seam_visibility_key = "seam_visibility";
 const raw_used_config_key k_used_config_keys[] = {
-    { "seam_angle_cost", RAW_CO_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
-    { "seam_travel_cost", RAW_CO_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
-    { "seam_visibility", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
+    { k_seam_angle_cost_key, RAW_CO_PERCENT, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
+    { k_seam_travel_cost_key, RAW_CO_PERCENT, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
+    { k_seam_visibility_key, RAW_CO_BOOL, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT }
 };
+const char *const k_defined_config_keys[] = {
+    k_seam_angle_cost_key,
+    k_seam_travel_cost_key,
+    k_seam_visibility_key
+};
+constexpr int32_t k_defined_config_key_count = 3;
 
 /* Mutable preparation data: point is scaled object-local XY; width, overhang
    and embedded are millimetres. Filtering reduces these records to SeamCandidate. */
@@ -124,10 +136,42 @@ private:
     const char *const *dependencies_impl() const noexcept override { return k_dependencies; }
     int32_t priority_impl() const noexcept override { return 900; }
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
-    int32_t defined_config_keys(const char **) const noexcept override { return 0; }
-    void inilialize_impl(storage_handle *) const override {}
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     void run_impl(const plugin_run_context *run_context) const override;
 };
+
+/* Register a percentage setting owned by this provider. */
+void register_cost_option(orchestrator_handle *orchestrator,
+                          const raw_used_config_key &config_key,
+                          const char *label,
+                          const char *full_label,
+                          const char *tooltip,
+                          const char *default_serialized_value)
+{
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = config_key.key;
+    def.type = config_key.type;
+    def.container_type = config_key.container_type;
+    def.option_preset_type = config_key.option_preset_type;
+    def.printer_technology = RAW_PT_FFF;
+    def.label = label;
+    def.full_label = full_label;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.invalidates_step = STEP_ORDERING;
+    def.tooltip = tooltip;
+    if (def.type == RAW_CO_PERCENT) {
+        def.sidetext = "%";
+        def.has_min = 1;
+        def.min_value = 0;
+        def.has_max = 1;
+        def.max_value = 1000;
+    }
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = default_serialized_value;
+    if (orchestrator_create_option_def(orchestrator, &def) != OPTION_DEF_ERROR_OK)
+        throw std::runtime_error("Cannot register seam cost configuration.");
+}
 
 /* Return scaled distance; only travel scoring converts this result to millimetres. */
 double point_distance(c_point a, c_point b)
@@ -599,9 +643,19 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         filter_candidates(island_work.candidates);
         const Layer layer = island_work.island.region(0).layer();
         const Object object = layer.object();
-        const double angle_weight = object.config().effective_float_or_percent_or_default(
-            "seam_angle_cost", 1.0, 0.0);
-        const double visibility_weight = object.config().bool_or_default("seam_visibility", false) ? 1.0 : 0.0;
+        // get mean angle_weight from the regions
+        double angle_weight = 0.0;
+        // use visibility_weight if at least one is active. (TODO: NICETOHAVE: only launch rays in active area)
+        double visibility_weight = 0.0;
+        //TODO: also make the travel disatnace compute here, and save it for later, so it uses all regions.
+        for (const LayerRegion &lr : island_work.island.regions()) {
+            const Config &region_config = lr.print_region().config();
+            angle_weight += region_config.effective_float_or_percent_or_default(k_seam_angle_cost_key,
+                                                                                             1.0, 0.0);
+            if(visibility_weight == 0.0)
+                visibility_weight = region_config.bool_or_default("seam_visibility", false) ? 1.0 : 0.0;
+        }
+        angle_weight = angle_weight / island_work.island.region_count();
         // Visibility samples use object-local XY and the legacy slice-Z convention
         // in millimetres; the resulting values are captured once, after filtering.
         if (visibility_weight != 0) {
@@ -610,7 +664,7 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
             for (const CandidateWork &candidate : island_work.candidates)
                 points.push_back({float(unscaled(candidate.point.x)), float(unscaled(candidate.point.y)),
                                   float(unscaled(layer.slice_z()))});
-            const std::vector<float> visibility = Slic3r::SeamCostModel::calculate_cost_visibility(object, points);
+            const std::vector<float> visibility = Slic3r::SeamCostModel::calculate_cost_visibility(object, points, m_cancel);
             for (size_t index = 0; index < visibility.size(); ++index)
                 island_work.candidates[index].visibility = visibility[index];
         }
@@ -633,6 +687,7 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         m_candidates.emplace(key, std::move(prepared));
     }
     m_storage = nullptr;
+    m_cancel = nullptr;
 }
 
 c_point CostSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &region,
@@ -660,8 +715,8 @@ c_point CostSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &
     const Object object = region.layer().object();
     // Unlike static costs, this weight is read per request from borrowed host
     // configuration, which must not change concurrently with these reads.
-    const double travel_weight = object.config().effective_float_or_percent_or_default(
-        "seam_travel_cost", 1.0, 0.0);
+    const double travel_weight = region.print_region().config().effective_float_or_percent_or_default(
+        k_seam_travel_cost_key, 1.0, 0.0);
     c_point best{};
     double best_cost = std::numeric_limits<double>::infinity();
     /*
@@ -700,6 +755,39 @@ int32_t CostSeamPlacer::used_config_keys(raw_used_config_key *keys) const noexce
     return int32_t(std::size(k_used_config_keys));
 }
 
+int32_t CostSeamPlacer::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t index = 0; index < std::size(k_defined_config_keys); ++index)
+            keys[index] = k_defined_config_keys[index];
+    return k_defined_config_key_count;
+}
+
+void CostSeamPlacer::inilialize_impl(storage_handle *) const
+{
+    register_cost_option(
+        m_orchestrator,
+        k_used_config_keys[0],
+        "Angle cost",
+        "Seam angle cost",
+        "Cost of placing the seam at a bad angle. The worst angle is flat.\n100% is the default penalty.",
+        "60");
+    register_cost_option(
+        m_orchestrator,
+        k_used_config_keys[1],
+        "Travel cost",
+        "Seam travel cost",
+        "Cost of moving the extruder. The highest penalty is assigned when the seam is furthest from the approach position.",
+        "100");
+    register_cost_option(
+        m_orchestrator,
+        k_used_config_keys[2],
+        "use visibility check",
+        "Seam visibility check",
+        "Check and penalize seams that are the most visible. Launch rays to check from how many directions a point is visible.\nThis is a compute-intensive option.",
+        "1");
+}
+
 void CostSeamPlacer::run_impl(const plugin_run_context *run_context) const
 {
     /*
@@ -716,8 +804,18 @@ void CostSeamPlacer::run_impl(const plugin_run_context *run_context) const
         throw std::invalid_argument("Cost-based seam placement received an invalid run context.");
     std::vector<PrintRegion> regions;
     for (uint32_t index = 0; index < context->region_count; ++index) regions.emplace_back(context->regions[index]);
-    context->instance = make_seam_placer_instance(make_cost_seam_session(run_context->plugin_storage),
-                                                  PrintingPlan(context->plan), regions);
+    const mesh_query_cancel cancel{const_cast<plugin_run_context *>(run_context), [](void *opaque) -> int32_t {
+        const plugin_run_context *ctx=static_cast<const plugin_run_context *>(opaque);
+        return ctx->is_cancelled && ctx->is_cancelled(ctx->host_context);
+    }};
+    try {
+        context->instance = make_seam_placer_instance(
+            std::unique_ptr<SeamPlacerSession>(new CostSession(run_context->plugin_storage, &cancel)),
+            PrintingPlan(context->plan), regions);
+    } catch (const MeshQueryError &error) {
+        if (error.status == MESH_QUERY_CANCELLED) throw PluginCancelled();
+        throw;
+    }
 }
 
 } // namespace

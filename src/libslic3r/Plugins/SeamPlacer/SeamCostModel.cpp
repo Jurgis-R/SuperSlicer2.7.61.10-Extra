@@ -13,24 +13,21 @@
 
 #include <boost/log/trivial.hpp>
 
-#include <tbb/blocked_range.h>
-#include <tbb/parallel_for.h>
-
-#include "libslic3r/AABBTreeIndirect.hpp"
+#include <array>
+#include <limits>
+#include "libslic3r/Api/plugin/cpp/KDTreeIndirect.hpp"
+#include "libslic3r/Api/plugin/cpp/MeshQueryViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 #include "libslic3r/Api/plugin/cpp/VolumeViews.hpp"
-#include "libslic3r/KDTreeIndirect.hpp"
-#include "libslic3r/PointUtils.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/ShortEdgeCollapse.hpp"
-#include "libslic3r/TriangleMesh.hpp"
-#include "libslic3r/TriangleSetSampling.hpp"
-#include "libslic3r/Utils.hpp"
 
 namespace Slic3r {
 namespace SeamCostModel {
 
-// These values match the legacy cost path so moving the model does not change
-// the density of visibility samples, mesh decimation, or hemispherical rays.
+using namespace slic3r_api;
+
+// Keep the legacy visibility density in every configuration. Changing the
+// sample count changes the selected seam, so Debug must use the same cost
+// policy as Release while preserving the legacy mesh and ray density.
 constexpr size_t kVisibilitySamplesCount = 30000;
 constexpr size_t kDecimationTriangleCountTarget = 16000;
 constexpr size_t kRaysPerSampleAxis = 5;
@@ -41,257 +38,153 @@ float gauss(float value, float mean_x_coord, float mean_value, float falloff_spe
 /* Convert a signed corner angle into the legacy asymmetric corner penalty. */
 float compute_angle_penalty(float ccw_angle);
 
-/* Reproduce the legacy arm-length angle sampling for Cost candidates. */
-std::vector<float> calculate_cost_angles_internal(const Points &points, float min_arm_length);
 
 /* Compute Cost visibility with an object-local mesh and the legacy ray model. */
 std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
-                                             const std::vector<c_vec3f> &points);
+                                             const std::vector<c_vec3f> &points, const mesh_query_cancel *cancel);
 
 namespace {
 
+// Small public-value vector operations keep the visibility policy independent
+// of Eigen and host mesh types. Vectors remain unscaled millimetres.
+c_vec3f add(c_vec3f a, c_vec3f b);
+c_vec3f mul(c_vec3f a, float b);
+c_vec3f sub(c_vec3f a, c_vec3f b);
+float dot(c_vec3f a, c_vec3f b);
+c_vec3f cross(c_vec3f a, c_vec3f b);
+float norm(c_vec3f a);
+c_vec3f normalized(c_vec3f a);
+// Wrap the angle-sampling walk around a closed polyline.
+size_t prev_idx_modulo(size_t i, size_t n);
+size_t next_idx_modulo(size_t i, size_t n);
+c_vec3f add(c_vec3f a, c_vec3f b) { return {a.x+b.x,a.y+b.y,a.z+b.z}; }
+c_vec3f mul(c_vec3f a, float b) { return {a.x*b,a.y*b,a.z*b}; }
+c_vec3f sub(c_vec3f a, c_vec3f b) { return add(a,mul(b,-1)); }
+float dot(c_vec3f a,c_vec3f b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
+c_vec3f cross(c_vec3f a,c_vec3f b) { return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; }
+float norm(c_vec3f a) { return std::sqrt(dot(a,a)); }
+c_vec3f normalized(c_vec3f a) { return mul(a,1.f/norm(a)); }
+size_t prev_idx_modulo(size_t i,size_t n) { return i ? i-1 : n-1; }
+size_t next_idx_modulo(size_t i,size_t n) { return i+1 == n ? 0 : i+1; }
 struct CoordinateFunctor {
-    const std::vector<Vec3f> *coordinates = nullptr;
-
-    const float &operator()(size_t index, size_t dimension) const
-    {
-        return (*coordinates)[index][dimension];
+    const std::vector<mesh_query_sample> *samples;
+    float operator()(size_t index, size_t dimension) const {
+        const c_vec3f p = (*samples)[index].position;
+        return dimension == 0 ? p.x : dimension == 1 ? p.y : p.z;
     }
 };
-
-/* Keep only the visibility state needed by Cost; painted seam trees belong to
-   the legacy placer and are intentionally not rebuilt here. */
+// The tree functor points at this object's vector: forbid moves as well as copies.
 struct VisibilityModel {
-    TriangleSetSamples mesh_samples;
-    std::vector<float> mesh_samples_visibility;
-    CoordinateFunctor mesh_samples_coordinate_functor;
-    KDTreeIndirect<3, float, CoordinateFunctor> mesh_samples_tree { CoordinateFunctor{} };
-    float mesh_samples_radius = 0.0f;
+    VisibilityModel() = default;
+    VisibilityModel(const VisibilityModel &) = delete;
+    VisibilityModel &operator=(const VisibilityModel &) = delete;
+    VisibilityModel(VisibilityModel &&) = delete;
+    VisibilityModel &operator=(VisibilityModel &&) = delete;
+    std::vector<mesh_query_sample> samples;
+    std::vector<float> visibility;
+    slic3r_api::KDTreeIndirect<3,float,CoordinateFunctor> tree{CoordinateFunctor{&samples}, size_t(0), double(EPSILON)};
+    float radius = 0;
 };
-
-/* Return one deterministic hemisphere direction for the ray grid. */
-Vec3f sample_hemisphere_uniform(const Vec2f &samples);
-
-/* Transform a local +Z hemisphere direction into the frame of a surface normal. */
-Vec3f direction_in_normal_frame(const Vec3f &normal, const Vec3f &local_direction);
-
-/* Raycast the sampled mesh while preserving negative-volume parity handling. */
-std::vector<float> raycast_visibility(const AABBTreeIndirect::Tree<3, float> &raycasting_tree,
-                                      const indexed_triangle_set &triangles,
-                                      const TriangleSetSamples &samples,
-                                      size_t negative_volumes_start_index);
-
-/* Build the object-local visibility samples and their spatial lookup tree. */
-void build_visibility_model(const slic3r_api::Object &object, VisibilityModel &model);
-
-/* Convert plugin ABI mesh/matrix values to the private geometry algorithm types. */
-Transform3d to_transform(const c_matrix4d &matrix);
-indexed_triangle_set copy_triangle_mesh(const slic3r_api::TriangleMesh &mesh);
-
-/* Interpolate visibility from nearby surface samples at one object-local point. */
-float calculate_point_visibility(const VisibilityModel &model, const Vec3f &position);
-
-/* Calculate the signed corner angle using the same arm-window walk as legacy. */
-std::vector<float> calculate_polyline_angles_at_vertices(const Points &polyline,
-                                                         const std::vector<float> &lengths,
-                                                         float min_arm_length);
-
-Vec3f sample_hemisphere_uniform(const Vec2f &samples)
+// Generate the native hemisphere grid in the local normal frame.
+c_vec3f hemisphere(float x,float y);
+c_vec3f normal_frame(c_vec3f normal,c_vec3f direction);
+// Compute sample costs from public intersection records, preserving signed
+// negative-volume handling. The host does not interpret geometry labels.
+void build_visibility_model(const Object &object, VisibilityModel &model, const mesh_query_cancel *cancel);
+// Interpolate exactly the same plane/distance weights as the native cost model.
+float calculate_point_visibility(const VisibilityModel &model,c_vec3f point);
+c_vec3f hemisphere(float x,float y)
 {
-    const float term1 = 2.0f * float(PI) * samples.x();
-    const float term2 = 2.0f * std::sqrt(samples.y() - samples.y() * samples.y());
-    return {std::cos(term1) * term2, std::sin(term1) * term2,
-        std::abs(1.0f - 2.0f * samples.y())};
+    const float a=2.f*float(PI)*x, r=2.f*std::sqrt(y-y*y);
+    return {std::cos(a)*r,std::sin(a)*r,std::abs(1.f-2.f*y)};
 }
-
-Vec3f direction_in_normal_frame(const Vec3f &normal, const Vec3f &local_direction)
+c_vec3f normal_frame(c_vec3f normal,c_vec3f direction)
 {
-    const Vec3f z_axis = normal.normalized();
-    const Vec3f x_seed = std::abs(z_axis.x()) > 0.99f ? Vec3f(0, 1, 0) : Vec3f(1, 0, 0);
-    const Vec3f y_axis = z_axis.cross(x_seed).normalized();
-    const Vec3f x_axis = y_axis.cross(z_axis);
-    return local_direction.x() * x_axis + local_direction.y() * y_axis + local_direction.z() * z_axis;
+    const c_vec3f z=normalized(normal);
+    const c_vec3f seed=std::abs(z.x)>.99f ? c_vec3f{0,1,0} : c_vec3f{1,0,0};
+    const c_vec3f y=normalized(cross(z,seed)), x=cross(y,z);
+    return add(add(mul(x,direction.x),mul(y,direction.y)),mul(z,direction.z));
 }
-
-Transform3d to_transform(const c_matrix4d &matrix)
+void build_visibility_model(const Object &object, VisibilityModel &model, const mesh_query_cancel *cancel)
 {
-    Transform3d result = Transform3d::Identity();
-    for (size_t row = 0; row < 4; ++row)
-        for (size_t column = 0; column < 4; ++column)
-            result.matrix()(int(row), int(column)) = matrix.value[row * 4 + column];
-    return result;
-}
-
-indexed_triangle_set copy_triangle_mesh(const slic3r_api::TriangleMesh &mesh)
-{
-    indexed_triangle_set result;
-    result.vertices.reserve(mesh.vertex_count());
-    for (uint32_t vertex_index = 0; vertex_index < mesh.vertex_count(); ++vertex_index) {
-        const c_vec3f vertex = mesh.vertex(vertex_index);
-        result.vertices.emplace_back(vertex.x, vertex.y, vertex.z);
-    }
-    result.indices.reserve(mesh.triangle_count());
-    for (uint32_t triangle_index = 0; triangle_index < mesh.triangle_count(); ++triangle_index) {
-        const c_triangle_indices triangle = mesh.triangle(triangle_index);
-        result.indices.emplace_back(triangle.a, triangle.b, triangle.c);
-    }
-    return result;
-}
-
-std::vector<float> raycast_visibility(const AABBTreeIndirect::Tree<3, float> &raycasting_tree,
-                                      const indexed_triangle_set &triangles,
-                                      const TriangleSetSamples &samples,
-                                      size_t negative_volumes_start_index)
-{
-    BOOST_LOG_TRIVIAL(debug)
-        << "SeamCostModel: raycast visibility of " << samples.positions.size()
-        << " samples over " << triangles.indices.size() << " triangles: start";
-
-    const float step_size = 1.0f / float(kRaysPerSampleAxis);
-    std::vector<Vec3f> precomputed_sample_directions(kRaysPerSampleAxis * kRaysPerSampleAxis);
-    for (size_t x_index = 0; x_index < kRaysPerSampleAxis; ++x_index) {
-        const float sample_x = float(x_index) * step_size + step_size / 2.0f;
-        for (size_t y_index = 0; y_index < kRaysPerSampleAxis; ++y_index) {
-            const size_t direction_index = x_index * kRaysPerSampleAxis + y_index;
-            const float sample_y = float(y_index) * step_size + step_size / 2.0f;
-            precomputed_sample_directions[direction_index] = sample_hemisphere_uniform({sample_x, sample_y});
+    // Work meshes die immediately after scene construction; the immutable scene
+    // owns transformed copies and outlives neither initialization nor sampling.
+    const MeshQueryScene scene = [&] {
+        WorkingMesh positives, negatives;
+        for (uint32_t i=0; i<object.volume_count(); ++i) {
+            const Volume volume=object.volume(i);
+            if (volume.is_model_part()) positives.append(volume.mesh().handle(),volume.matrix(),cancel);
+            else if (volume.is_negative()) negatives.append(volume.mesh().handle(),volume.matrix(),cancel);
+        }
+        positives.decimate(kDecimationTriangleCountTarget,cancel);
+        negatives.decimate(kDecimationTriangleCountTarget,cancel);
+        return MeshQueryScene({{positives.handle(),object.transform_centered(),0},
+                               {negatives.handle(),object.transform_centered(),1}},cancel);
+    }();
+    const MeshSurfaceSamples sampled=scene.sample(kVisibilitySamplesCount,cancel);
+    model.samples=sampled.values();
+    if (model.samples.empty()) return;
+    model.tree.build(model.samples.size());
+    const float density=float(kVisibilitySamplesCount)/float(sampled.area());
+    model.radius=std::sqrt(4.f/(-std::log(.9f)*density)/float(PI));
+    model.visibility.assign(model.samples.size(),1.f);
+    // A negative part matters even when random sampling misses its surface.
+    const bool negative=scene.triangle_count(1)!=0;
+    constexpr size_t rays_per_sample=kRaysPerSampleAxis*kRaysPerSampleAxis;
+    const float step=1.f/float(kRaysPerSampleAxis);
+    std::vector<c_vec3f> directions;
+    for (size_t x=0; x<kRaysPerSampleAxis; ++x)
+        for (size_t y=0; y<kRaysPerSampleAxis; ++y)
+            directions.push_back(hemisphere(float(x)*step+step/2,float(y)*step+step/2));
+    for (size_t begin=0; begin<model.samples.size(); begin+=256) {
+        const size_t end=std::min(model.samples.size(),begin+256);
+        std::vector<mesh_query_ray> rays;
+        rays.reserve((end-begin)*rays_per_sample);
+        for (size_t i=begin; i<end; ++i) {
+            const mesh_query_sample &sample=model.samples[i];
+            const float sign=negative && sample.geometry_id==1 ? -1.f : 1.f;
+            const c_vec3f origin=add(sample.position,mul(sample.normal,.01f*sign));
+            for (c_vec3f local:directions) {
+                const c_vec3f direction=mul(normal_frame(sample.normal,local),sign);
+                rays.push_back({{origin.x,origin.y,origin.z},{direction.x,direction.y,direction.z},0,std::numeric_limits<double>::infinity()});
+            }
+        }
+        const MeshRayHits intersections=scene.cast(rays,negative,cancel);
+        for (size_t r=0; r<rays.size(); ++r) {
+            const std::vector<mesh_query_hit> hits=intersections.ray(r);
+            if (hits.empty()) continue;
+            const c_vec3f direction{float(rays[r].direction.x),float(rays[r].direction.y),float(rays[r].direction.z)};
+            bool occluded=false;
+            if (!negative) occluded=dot(hits.front().normal,direction)<=0;
+            else {
+                int counter=0;
+                for (std::vector<mesh_query_hit>::const_reverse_iterator hit=hits.rbegin(); hit!=hits.rend(); ++hit) {
+                    const float orientation=dot(hit->normal,direction);
+                    const int sign=int(orientation>0)-int(orientation<0);
+                    counter += hit->geometry_id==1 ? -sign : sign;
+                }
+                occluded=counter==0;
+            }
+            if (occluded) model.visibility[begin+r/rays_per_sample]-=1.f/float(rays_per_sample);
         }
     }
-
-    const bool model_contains_negative_parts = negative_volumes_start_index < triangles.indices.size();
-    std::vector<float> result(samples.positions.size());
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, result.size()),
-        [&triangles, &precomputed_sample_directions, model_contains_negative_parts,
-         negative_volumes_start_index, &raycasting_tree, &result, &samples](tbb::blocked_range<size_t> range) {
-            // Reuse hit storage for all rays handled by one worker.
-            std::vector<igl::Hit> hits;
-            for (size_t sample_index = range.begin(); sample_index < range.end(); ++sample_index) {
-                result[sample_index] = 1.0f;
-                constexpr float decrease_step = 1.0f /
-                    float(kRaysPerSampleAxis * kRaysPerSampleAxis);
-                const Vec3f &center = samples.positions[sample_index];
-                const Vec3f &normal = samples.normals[sample_index];
-                for (const Vec3f &local_direction : precomputed_sample_directions) {
-                    Vec3f final_ray_direction = direction_in_normal_frame(normal, local_direction);
-                    Vec3d ray_origin = (center + normal * 0.01f).cast<double>();
-                    if (!model_contains_negative_parts) {
-                        igl::Hit hitpoint;
-                        const Vec3d ray_direction = final_ray_direction.cast<double>();
-                        const bool hit = AABBTreeIndirect::intersect_ray_first_hit(
-                            triangles.vertices, triangles.indices, raycasting_tree,
-                            ray_origin, ray_direction, hitpoint);
-                        if (hit && its_face_normal(triangles, hitpoint.id).dot(final_ray_direction) <= 0)
-                            result[sample_index] -= decrease_step;
-                        continue;
-                    }
-
-                    const bool casting_from_negative_volume = samples.triangle_indices[sample_index]
-                        >= negative_volumes_start_index;
-                    if (casting_from_negative_volume) {
-                        final_ray_direction = -final_ray_direction;
-                        ray_origin = (center - normal * 0.01f).cast<double>();
-                    }
-                    const Vec3d ray_direction = final_ray_direction.cast<double>();
-                    const bool some_hit = AABBTreeIndirect::intersect_ray_all_hits(
-                        triangles.vertices, triangles.indices, raycasting_tree,
-                        ray_origin, ray_direction, hits);
-                    if (!some_hit) continue;
-
-                    int counter = 0;
-                    // Reverse hit analysis starts outside every solid and tracks
-                    // ordinary and negative-volume faces with opposite parity.
-                    for (int hit_index = int(hits.size()) - 1; hit_index >= 0; --hit_index) {
-                        const Vec3f face_normal = its_face_normal(triangles, hits[hit_index].id);
-                        const float orientation = face_normal.dot(final_ray_direction);
-                        const int sign = int(orientation > 0.0f) - int(orientation < 0.0f);
-                        if (hits[hit_index].id >= int(negative_volumes_start_index))
-                            counter -= sign;
-                        else
-                            counter += sign;
-                    }
-                    if (counter == 0) result[sample_index] -= decrease_step;
-                }
-            }
-        });
-
-    BOOST_LOG_TRIVIAL(debug)
-        << "SeamCostModel: raycast visibility of " << samples.positions.size()
-        << " samples over " << triangles.indices.size() << " triangles: end";
-    return result;
 }
-
-void build_visibility_model(const slic3r_api::Object &object, VisibilityModel &model)
+float calculate_point_visibility(const VisibilityModel &model,c_vec3f point)
 {
-    BOOST_LOG_TRIVIAL(debug) << "SeamCostModel: gather occlusion meshes: start";
-    const Transform3d object_transform = to_transform(object.transform_centered());
-    indexed_triangle_set triangle_set;
-    indexed_triangle_set negative_volumes_set;
-    for (uint32_t volume_index = 0; volume_index < object.volume_count(); ++volume_index) {
-        const slic3r_api::Volume volume = object.volume(volume_index);
-        if (!volume.is_model_part() && !volume.is_negative())
-            continue;
-        const Transform3d model_transformation = to_transform(volume.matrix());
-        const indexed_triangle_set model_its = copy_triangle_mesh(volume.mesh());
-        indexed_triangle_set transformed_its = model_its;
-        its_transform(transformed_its, model_transformation);
-        if (volume.is_model_part())
-            its_merge(triangle_set, transformed_its);
-        else
-            its_merge(negative_volumes_set, transformed_its);
+    if (model.samples.empty()) return 1.f;
+    const std::array<float,3> query{point.x,point.y,point.z};
+    const std::vector<size_t> nearby=slic3r_api::find_nearby_points(model.tree,query,model.radius);
+    if (nearby.empty()) return 1.f;
+    float weights=0, visibility=0;
+    for (size_t i:nearby) {
+        const c_vec3f delta=sub(point,model.samples[i].position);
+        const float weight=model.radius-std::abs(dot(delta,model.samples[i].normal))+model.radius-norm(delta);
+        visibility+=weight*model.visibility[i]; weights+=weight;
     }
-    BOOST_LOG_TRIVIAL(debug) << "SeamCostModel: gather occlusion meshes: end";
-
-    its_short_edge_collpase(triangle_set, kDecimationTriangleCountTarget);
-    its_short_edge_collpase(negative_volumes_set, kDecimationTriangleCountTarget);
-    const size_t negative_volumes_start_index = triangle_set.indices.size();
-    its_merge(triangle_set, negative_volumes_set);
-    its_transform(triangle_set, object_transform);
-
-    model.mesh_samples = sample_its_uniform_parallel(kVisibilitySamplesCount, triangle_set);
-    model.mesh_samples_coordinate_functor = CoordinateFunctor{&model.mesh_samples.positions};
-    model.mesh_samples_tree = KDTreeIndirect<3, float, CoordinateFunctor>(
-        model.mesh_samples_coordinate_functor, model.mesh_samples.positions.size());
-
-    // The radius is chosen so a neighborhood contains more than four samples
-    // with approximately 90% probability, matching the legacy cost path.
-    const float probability = 0.9f;
-    const float samples = 4.0f;
-    const float density = float(kVisibilitySamplesCount) / model.mesh_samples.total_area;
-    const float search_area = samples / (-std::log(probability) * density);
-    model.mesh_samples_radius = std::sqrt(search_area / float(PI));
-
-    const AABBTreeIndirect::Tree<3, float> raycasting_tree =
-        AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(
-            triangle_set.vertices, triangle_set.indices);
-    model.mesh_samples_visibility = raycast_visibility(
-        raycasting_tree, triangle_set, model.mesh_samples, negative_volumes_start_index);
+    return visibility/weights;
 }
 
-float calculate_point_visibility(const VisibilityModel &model, const Vec3f &position)
-{
-    const std::vector<size_t> nearby_points = find_nearby_points(
-        model.mesh_samples_tree, position, model.mesh_samples_radius);
-    if (nearby_points.empty()) return 1.0f;
-
-    const auto distance_to_plane = [](const Vec3f &point, const Vec3f &plane_origin,
-                                      const Vec3f &plane_normal) {
-        return std::abs((point - plane_origin).dot(plane_normal));
-    };
-    float total_weight = 0.0f;
-    float total_visibility = 0.0f;
-    for (const size_t sample_index : nearby_points) {
-        const Vec3f &sample_point = model.mesh_samples.positions[sample_index];
-        const Vec3f &sample_normal = model.mesh_samples.normals[sample_index];
-        const float weight = model.mesh_samples_radius -
-            distance_to_plane(position, sample_point, sample_normal) +
-            model.mesh_samples_radius - (position - sample_point).norm();
-        total_visibility += weight * model.mesh_samples_visibility[sample_index];
-        total_weight += weight;
-    }
-    return total_visibility / total_weight;
-}
-
-std::vector<float> calculate_polyline_angles_at_vertices(const Points &polyline,
+std::vector<float> calculate_polyline_angles_at_vertices(const std::vector<c_point> &polyline,
                                                          const std::vector<float> &lengths,
                                                          float min_arm_length)
 {
@@ -309,7 +202,7 @@ std::vector<float> calculate_polyline_angles_at_vertices(const Points &polyline,
     size_t index_end = 0;
     float distance_to_previous = 0.0f;
     float distance_to_next = 0.0f;
-    const bool is_polygon = polyline.front() == polyline.back();
+    const bool is_polygon = slic3r_api::operator==(polyline.front(), polyline.back());
     if (is_polygon) {
         index_end = polyline.size() - 1;
         while (distance_to_previous < min_arm_length) {
@@ -334,11 +227,11 @@ std::vector<float> calculate_polyline_angles_at_vertices(const Points &polyline,
             index_next = is_polygon ? next_idx_modulo(index_next, lengths.size()) : index_next + 1;
         }
 
-        const Point &point_previous = polyline[index_previous];
-        const Point &point_current = polyline[index_current];
-        const Point &point_next = polyline[index_next];
-        result[index_current] = float(angle_ccw(
-            point_current - point_previous, point_next - point_current));
+        const c_point &point_previous = polyline[index_previous];
+        const c_point &point_current = polyline[index_current];
+        const c_point &point_next = polyline[index_next];
+        result[index_current] = float(slic3r_api::angle_ccw(
+            slic3r_api::operator-(point_current, point_previous), slic3r_api::operator-(point_next, point_current)));
         const float current_distance = lengths[index_current];
         ++index_current;
         distance_to_previous += current_distance;
@@ -367,20 +260,18 @@ float compute_angle_penalty(float ccw_angle)
            1.0f / (2.0f + std::exp(-ccw_angle));
 }
 
-std::vector<float> calculate_cost_angles_internal(const Points &points, float min_arm_length)
+std::vector<float> calculate_cost_angles(const std::vector<c_point> &points, float min_arm_length)
 {
     if (points.size() < 2) return std::vector<float>(points.size(), 0.0f);
 
-    Points ordered_points = points;
-    const bool reverse = ordered_points.front() == ordered_points.back() &&
-                         Polygon(ordered_points).is_clockwise();
+    std::vector<c_point> ordered_points = points;
+    const bool reverse = is_clockwise(points);
     if (reverse) std::reverse(ordered_points.begin(), ordered_points.end());
 
     std::vector<float> lengths;
     lengths.reserve(ordered_points.size() - 1);
     for (size_t index = 0; index + 1 < ordered_points.size(); ++index)
-        lengths.push_back(float((unscale_p(ordered_points[index]) -
-                                 unscale_p(ordered_points[index + 1])).norm()));
+        lengths.push_back(float(unscaled(c_point_distance_to(ordered_points[index], ordered_points[index + 1]))));
     if (std::none_of(lengths.begin(), lengths.end(), [](float length) { return length > 0.0f; }))
         return std::vector<float>(points.size(), 0.0f);
 
@@ -390,24 +281,15 @@ std::vector<float> calculate_cost_angles_internal(const Points &points, float mi
     return angles;
 }
 
-std::vector<float> calculate_cost_angles(const std::vector<c_point> &points, float min_arm_length)
-{
-    Points internal_points;
-    internal_points.reserve(points.size());
-    for (const c_point point : points)
-        internal_points.emplace_back(point.x, point.y);
-    return calculate_cost_angles_internal(internal_points, min_arm_length);
-}
-
 std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
-                                             const std::vector<c_vec3f> &points)
+                                             const std::vector<c_vec3f> &points, const mesh_query_cancel *cancel)
 {
     VisibilityModel model;
-    build_visibility_model(object, model);
+    build_visibility_model(object, model, cancel);
     std::vector<float> visibility;
     visibility.reserve(points.size());
     for (const c_vec3f point : points)
-        visibility.push_back(calculate_point_visibility(model, Vec3f(point.x, point.y, point.z)));
+        visibility.push_back(calculate_point_visibility(model, point));
     return visibility;
 }
 

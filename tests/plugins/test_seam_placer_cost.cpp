@@ -287,9 +287,20 @@ TEST_CASE("Cost seam metadata is the default regional provider",
     CHECK(used[1].type == RAW_CO_PERCENT);
     CHECK(used[2].key == "seam_visibility");
     CHECK(used[2].type == RAW_CO_BOOL);
-    for (const Plugin::UsedConfigKey &key : used) {
-        CHECK(key.container_type == RAW_CONTAINER_TYPE_NONE);
-        CHECK(key.option_preset_type == RAW_PRESET_TYPE_NONE);
+    CHECK(used[2].container_type == RAW_CONTAINER_TYPE_REGION);
+    CHECK(used[2].option_preset_type == RAW_PRESET_TYPE_FFF_PRINT);
+    const std::vector<Plugin::DefinedConfigKey> defined = cost->get_defined_config_keys();
+    REQUIRE(defined.size() == 3);
+    CHECK(defined[0].key == "seam_angle_cost");
+    CHECK(defined[0].type == RAW_CO_PERCENT);
+    CHECK(defined[1].key == "seam_travel_cost");
+    CHECK(defined[1].type == RAW_CO_PERCENT);
+    CHECK(defined[2].key == "seam_visibility");
+    CHECK(defined[2].type == RAW_CO_BOOL);
+    for (size_t index = 0; index < 3; ++index) {
+        const Plugin::UsedConfigKey &key = used[index];
+        CHECK(key.container_type == RAW_CONTAINER_TYPE_REGION);
+        CHECK(key.option_preset_type == RAW_PRESET_TYPE_FFF_PRINT);
     }
     // The shared runtime disables non-Fixed providers after registration. A
     // default-enabled Cost provider must still activate without dependency

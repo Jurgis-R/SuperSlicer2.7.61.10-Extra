@@ -71,6 +71,7 @@ set(SLIC3R_SOURCES
 	Api/host/slic3r_extrusion_polyline.cpp
 	Api/host/slic3r_extrusion_property.cpp
 	Api/host/slic3r_geometry.cpp
+	Api/host/slic3r_mesh_queries.cpp
 	Api/host/slic3r_orchestrator.cpp
 	Api/host/slic3r_plugin.cpp
 	Api/host/slic3r_printing_plan.cpp
@@ -105,11 +106,13 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/slic3r_extrusion_polyline.h
 	Api/plugin/c/slic3r_extrusion_property.h
 	Api/plugin/c/slic3r_extrusions.h
+	Api/plugin/c/slic3r_geometry_types.h
 	Api/plugin/c/slic3r_geometry.h
 	Api/plugin/c/slic3r_gcode_firmware.h
 	Api/plugin/c/slic3r_gcode_reader.h
 	Api/plugin/c/slic3r_gcode_thumbnail.h
 	Api/plugin/c/slic3r_gcode_script.h
+	Api/plugin/c/slic3r_mesh_queries.h
 	Api/plugin/c/slic3r_orchestrator.h
 	Api/plugin/c/slic3r_plugin.h
 	Api/plugin/c/slic3r_plugin_api_version_entries.inc
@@ -199,7 +202,9 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/gcode/Printer.hpp
 	Api/plugin/cpp/gcode/Tool.cpp
 	Api/plugin/cpp/gcode/Tool.hpp
+	Api/plugin/cpp/KDTreeIndirect.hpp
 	Api/plugin/cpp/LineDistancer.hpp
+	Api/plugin/cpp/MeshQueryViews.hpp
 	Api/plugin/cpp/OrderingEngine.hpp
 	Api/plugin/cpp/OrchestratorViews.hpp
 	Api/plugin/cpp/ParallelFor.hpp

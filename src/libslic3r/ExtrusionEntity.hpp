@@ -949,4 +949,21 @@ inline void extrusion_paths_append(ExtrusionPaths &dst,
 
 }
 
+/** for debug purposes */
+#ifdef _DEBUGINFO
+struct DebugExtrusionProperties
+{
+    bool has_attributes = false;
+    uint16_t role = 0;
+    float width = 0.f;
+    float height = 0.f;
+
+    bool has_perimeter = false;
+    int16_t perimeter_idx = 0;
+    uint16_t perimeter_flags = 0;
+};
+
+const DebugExtrusionProperties *debug_extrusion_properties(const Slic3r::ExtrusionEntity *entity);
+#endif
+
 #endif

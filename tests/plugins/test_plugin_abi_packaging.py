@@ -32,6 +32,23 @@ class AbiPackagingTests(unittest.TestCase):
         cls.generator = load_python_module("abi_generator", generator_path)
         cls.analyzer = load_python_module("python_plugin_abi_generator", analyzer_path)
 
+    def test_mesh_query_plain_types_callbacks_and_diagnostics_are_generated(self):
+        import ctypes
+        namespace = {}
+        exec(self.generator.generate(), namespace)
+        cancel = namespace["MeshQueryCancel"]
+        self.assertEqual([field[0] for field in cancel._fields_],
+                         ["context", "is_cancelled"])
+        self.assertEqual(ctypes.sizeof(cancel), 2 * ctypes.sizeof(ctypes.c_void_p))
+        callback_type = cancel._fields_[1][1]
+        callback = callback_type(lambda context: 1)
+        self.assertEqual(cancel(None, callback).is_cancelled(None), 1)
+        self.assertEqual(ctypes.sizeof(namespace["MeshQueryDiagnostic"]), 512)
+        self.assertEqual(ctypes.sizeof(namespace["MeshQueryRay"]), 64)
+        catalog = self.generator.generate_abi_catalog()
+        self.assertIn("slic3r_mesh_queries.h", catalog)
+        self.assertIn("slic3r_geometry_types.h", catalog)
+
     def test_python_abi_decorator_preserves_and_composes_targets(self):
         def binding():
             return 42

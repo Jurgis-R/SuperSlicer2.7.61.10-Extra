@@ -16,6 +16,7 @@ part of the plugin ABI.
 #define libslic3r_Plugins_SeamPlacer_SeamCostModel_hpp_
 
 #include <vector>
+#include "libslic3r/Api/plugin/c/slic3r_mesh_queries.h"
 
 #include "libslic3r/Api/plugin/c/slic3r_geometry.h"
 
@@ -30,7 +31,7 @@ float gauss(float value, float mean_x_coord, float mean_value, float falloff_spe
 float compute_angle_penalty(float ccw_angle);
 std::vector<float> calculate_cost_angles(const std::vector<c_point> &points, float min_arm_length);
 std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
-                                             const std::vector<c_vec3f> &points);
+                                             const std::vector<c_vec3f> &points, const mesh_query_cancel *cancel = nullptr);
 
 } // namespace SeamCostModel
 } // namespace Slic3r

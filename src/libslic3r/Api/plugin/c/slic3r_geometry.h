@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #include "slic3r_def.h"
+#include "slic3r_geometry_types.h"
 #include "slic3r_utils.h"
 
 #ifdef __cplusplus
@@ -29,35 +30,6 @@ typedef struct c_point
     coord_t x;
     coord_t y;
 } c_point;
-
-typedef struct c_vec3f {
-    float x;
-    float y;
-    float z;
-} c_vec3f;
-
-typedef struct c_vec2d {
-    double x;
-    double y;
-} c_vec2d;
-
-typedef struct c_vec3d {
-    double x;
-    double y;
-    double z;
-} c_vec3d;
-
-/*
-4x4 transform matrix in row-major order:
-    value[row * 4 + column]
-
-It mirrors Eigen::Transform3d::matrix(), but keeps the ABI strictly C.
-The matrix values are unscaled floating-point 3D coordinates. Do not use
-coord_t here: coord_t is for scaled 2D/height coordinates in the slicer space.
-*/
-typedef struct c_matrix4d {
-    double value[16];
-} c_matrix4d;
 
 SLIC3R_HOST_API distf_t c_point_distance_to(c_point lhs, c_point rhs);
 SLIC3R_HOST_API distf_t c_point_distance_to_square(c_point lhs, c_point rhs);

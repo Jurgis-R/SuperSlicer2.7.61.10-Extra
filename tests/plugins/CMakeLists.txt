@@ -10,6 +10,10 @@ add_executable(${_TEST_NAME}_tests
     perimeter_test_helpers.cpp
     plugin_test_helpers.cpp
     test_auxiliary_layer_helpers.cpp
+    mesh_queries_c_fixture.c
+    mesh_query_visibility_reference.cpp
+    test_mesh_queries.cpp
+    test_public_kdtree.cpp
     test_clipper_views.cpp
     test_extrusion_continuity.cpp
     test_extrusion_ordered_leaf.cpp

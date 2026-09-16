@@ -855,7 +855,10 @@ void compute_global_occlusion(GlobalModelInfo &result, const PrintObject *po,
     throw_if_canceled();
     BOOST_LOG_TRIVIAL(debug)
     << "SeamPlacer: build AABB tree: end";
-    bool has_seam_visibility = po->config().seam_visibility.value && po->config().seam_position.value == SeamPosition::spCost;
+    const ConfigOption *visibility_option = po->config().option("seam_visibility");
+    const bool has_seam_visibility = visibility_option != nullptr && visibility_option->is_enabled() &&
+        visibility_option->type() == coBool && visibility_option->get_bool() &&
+        po->config().seam_position.value == SeamPosition::spCost;
     result.mesh_samples_visibility = raycast_visibility(raycasting_tree, triangle_set, result.mesh_samples,
             negative_volumes_start_index, !has_seam_visibility);
     throw_if_canceled();
@@ -895,6 +898,17 @@ void gather_enforcers_blockers(GlobalModelInfo &result, const PrintObject *po) {
     << "SeamPlacer: build AABB trees for raycasting enforcers/blockers: end";
 }
 
+/* Read one plugin-owned percentage from the object configuration. The native
+   seam path can still be reached by legacy callers, so a missing or disabled
+   plugin option must retain the old built-in default. */
+double config_percent_or_default(const PrintObject &object, const char *key, double fallback)
+{
+    const ConfigOption *option = object.config().option(key);
+    if (option == nullptr || !option->is_enabled() || option->type() != coPercent)
+        return fallback;
+    return option->get_effective_value(1.0);
+}
+
 struct SeamComparator {
     SeamPosition setup;
     float angle_importance = 1.f;
@@ -911,10 +925,12 @@ struct SeamComparator {
         } else if (setup == spAligned || setup == spExtremlyAligned) {
             angle_importance = SeamPlacer::angle_importance_aligned;
         } else {
-            travel_importance = (float)po.config().seam_travel_cost.get_effective_value(1.f);
-            angle_importance = (float)po.config().seam_angle_cost.get_effective_value(1.f);
+            travel_importance = (float)config_percent_or_default(po, "seam_travel_cost", 1.0);
+            angle_importance = (float)config_percent_or_default(po, "seam_angle_cost", 0.6);
         }
-        visibility_importance = (po.config().seam_visibility.value &&
+        const ConfigOption *visibility_option = po.config().option("seam_visibility");
+        visibility_importance = (visibility_option != nullptr && visibility_option->is_enabled() &&
+                                 visibility_option->type() == coBool && visibility_option->get_bool() &&
                                  po.config().seam_position.value == SeamPosition::spCost) ?
                                     1.f :
                                     0.f;

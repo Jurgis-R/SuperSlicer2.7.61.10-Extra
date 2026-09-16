@@ -1179,3 +1179,34 @@ void ExtrusionLoop::polygons_covered_by_spacing(Polygons &out, const float spaci
 //}
 
 } // namespace Slic3r
+
+/** for debug purposes */
+#ifdef _DEBUGINFO
+const DebugExtrusionProperties *debug_extrusion_properties(const Slic3r::ExtrusionEntity *entity) {
+    static thread_local DebugExtrusionProperties cache{};
+
+    cache = {};
+
+    if (entity == nullptr)
+        return nullptr;
+
+    const Slic3r::ExtrusionAttributes *attributes = entity->get_property<Slic3r::ExtrusionAttributes>();
+
+    if (attributes != nullptr) {
+        cache.has_attributes = true;
+        cache.role = attributes->role;
+        cache.width = attributes->width;
+        cache.height = attributes->height;
+    }
+
+    const Slic3r::ExtrusionPropertyLoopRole *perimeter = entity->get_property<Slic3r::ExtrusionPropertyLoopRole>();
+
+    if (perimeter != nullptr) {
+        cache.has_perimeter = true;
+        cache.perimeter_idx = perimeter->perimeter_idx;
+        cache.perimeter_flags = perimeter->perimeter_flags;
+    }
+
+    return &cache;
+}
+#endif
