@@ -722,6 +722,40 @@ TEST_CASE("Advanced ordering materializes seams on straight and arc loops",
         REQUIRE(property != nullptr);
         CHECK(property->get() == scale_i(0.3));
     }
+
+    SECTION("a structural wrapper rotates its only geometric loop in place") {
+        g_seam_state.fixed_point = mm_point(5.0, 0.0);
+        Print print;
+        PrintingPlan &plan = print.mutable_printing_plan();
+        plan.groups.emplace_back();
+        PrintingToolGroup &tool = append_tool(append_layer(plan.groups.back()), 0);
+
+        // Empty siblings represent ordered events or structural placeholders.
+        // They do not participate in the closed geometry and must not force
+        // the only real loop to be split into persistent child fragments.
+        ExtrusionEntity::Children children;
+        children.push_back(std::make_unique<ExtrusionEntity>(false));
+        children.push_back(make_rectangular_loop(0.0, 10.0));
+        children.push_back(std::make_unique<ExtrusionEntity>(false));
+        ExtrusionEntityUPtr wrapper = make_collection(std::move(children), false, false);
+        ExtrusionEntity *loop_handle = wrapper->children()[1].get();
+        REQUIRE(wrapper->is_loop());
+        REQUIRE(loop_handle->is_loop());
+
+        append_extrusion(tool, std::move(wrapper), 3);
+        publish_entry_points(
+            tool.extrusions[0], mm_point(0.0, 0.0), mm_point(0.0, 0.0));
+        REQUIRE(run_advanced_ordering(print) == RAW_PLUGIN_EXECUTION_SUCCESS);
+
+        const ExtrusionEntity &result = *tool.extrusions[0].root;
+        REQUIRE(result.child_count() == 3);
+        CHECK(result.children()[0]->empty());
+        CHECK(result.children()[1].get() == loop_handle);
+        CHECK(result.children()[2]->empty());
+        CHECK(result.child(1).first_point() == Point::new_scale(5.0, 0.0));
+        CHECK(result.child(1).last_point() == result.child(1).first_point());
+        CHECK(result.child(1).child_count() == 0);
+    }
 }
 
 TEST_CASE("Advanced ordering rotates a composed loop without replacing its children",

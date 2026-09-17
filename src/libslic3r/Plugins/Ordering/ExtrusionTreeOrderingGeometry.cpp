@@ -242,6 +242,33 @@ void rotate_loop_to_seam(storage_handle *scratch_storage,
     if (loop.child_count() == 0)
         throw std::runtime_error("A seam cannot be materialized on an empty loop.");
 
+    /*
+    Structural wrappers may place property-only events beside one geometric
+    child. When that child is already a complete loop, rotate its local or
+    nested geometry directly. Splitting it at the wrapper level would retain
+    every provisional seam as another persistent child after the final pass.
+
+    A parent with more than one non-empty child remains a genuinely composed
+    loop. Its child boundaries may carry different properties, so the generic
+    reordering and closing-fragment algorithm below must preserve them.
+    */
+    MutableExtrusionEntity nested_loop;
+    bool has_other_geometry = false;
+    for (uint32_t child_idx = 0; child_idx < loop.child_count(); ++child_idx) {
+        MutableExtrusionEntity child = loop.child_mutable(child_idx);
+        if (child.empty())
+            continue;
+        if (nested_loop.valid() || !child.readonly().is_loop()) {
+            has_other_geometry = true;
+            break;
+        }
+        nested_loop = child;
+    }
+    if (nested_loop.valid() && !has_other_geometry) {
+        rotate_loop_to_seam(scratch_storage, nested_loop, seam);
+        return;
+    }
+
     /* Select the direct child nearest to the seam; child order breaks ties. */
     uint32_t containing_idx = EXTRUSION_INDEX_INVALID;
     c_point projected = {};
