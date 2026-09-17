@@ -117,13 +117,6 @@ bool validate_perimeter_entity(const ExtrusionEntity &entity,
                                std::string *error,
                                const bool inherited_loop_property)
 {
-    bool has_direct_loop_child = false;
-    for (size_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        if (entity.child(child_idx).is_loop()) {
-            has_direct_loop_child = true;
-            break;
-        }
-
     const ExtrusionPropertyLoopRole *property =
         entity.get_property<ExtrusionPropertyLoopRole>();
     if (property != nullptr &&
@@ -132,6 +125,13 @@ bool validate_perimeter_entity(const ExtrusionEntity &entity,
         return validation_failure(
             error, path,
             "entity has C_EXTRUSION_PERIMETER_FLAG_LOOP but is_loop() is false");
+
+    bool has_direct_loop_child = false;
+    for (size_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        if (entity.child(child_idx).is_loop()) {
+            has_direct_loop_child = true;
+            break;
+        }
 
     // A loop that directly owns another loop is a structural container. Only
     // terminal ordinary-perimeter loops need their own perimeter property;

@@ -132,6 +132,20 @@ ExtrusionEntityUPtr make_loop_with_open_fragments()
     return owner;
 }
 
+ExtrusionEntityUPtr make_loop_with_flagged_open_fragment()
+{
+    ExtrusionEntity::Children children;
+    ExtrusionEntityUPtr flagged_fragment =
+        make_polyline_entity(Points{Point(0, 0), Point(100, 0)});
+    add_loop_property(*flagged_fragment, true);
+    children.emplace_back(std::move(flagged_fragment));
+    children.emplace_back(make_polyline_entity(Points{Point(100, 0), Point(0, 0)}));
+    ExtrusionEntityUPtr owner =
+        std::make_unique<ExtrusionEntity>(std::move(children), false, true, true);
+    add_loop_property(*owner, true);
+    return owner;
+}
+
 ExtrusionEntityUPtr make_open_wrapper_with_invalid_loop()
 {
     ExtrusionEntity::Children children;
@@ -497,6 +511,17 @@ TEST_CASE("STEP_ORDERING precondition validates perimeter loop metadata",
         std::string error;
         CHECK(Steps::StepExtrusionOrdering::validate_pre(fixture.print(), &error));
         CHECK(error.empty());
+    }
+
+    SECTION("rejects the LOOP flag on an open fragment")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_loop_with_flagged_open_fragment());
+
+        require_precondition_failure(
+            fixture.print(),
+            "C_EXTRUSION_PERIMETER_FLAG_LOOP but is_loop() is false",
+            "object[0].normal_layer[0].island[0].region_island[0].perimeters.root.child[0].child[0]");
     }
 
     SECTION("recurses through an open wrapper to its terminal loop")
