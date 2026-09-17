@@ -15,6 +15,7 @@ source trees before any plugin can consume or reorder the clones.
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
+#include "libslic3r/Exception.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionProperty.hpp"
 #include "libslic3r/Print.hpp"
@@ -345,13 +346,18 @@ void run_step(Orchestrator &orchestrator, Print &print)
             continue;
         last_plugin_id = plugin->get_id();
 
-        plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_ORDERING, plugin, &print);
+        std::atomic_bool execution_error { false };
+        plugin_host_context host_context =
+            Detail::prepare_guarded_plugin_host_context(orchestrator, STEP_ORDERING, *plugin, print, execution_error);
         plugin_run_context run_context = orchestrator.prepare_plugin_run_context(STEP_ORDERING, plugin, &host_context);
         run_context.data = &payload;
 
         plugin->setup(run_context, 1);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_ORDERING, *plugin, execution_error, "setup");
         plugin->setup_run(run_context);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_ORDERING, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_ORDERING, *plugin, execution_error, "run");
     }
 
     std::string validation_error;

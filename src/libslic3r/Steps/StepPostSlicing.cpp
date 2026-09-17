@@ -5,6 +5,7 @@
 
 #include "StepPostSlicing.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <sstream>
 
@@ -209,11 +210,15 @@ void run_step(Orchestrator &orchestrator, Print &print)
 
     for (Plugin *plugin : plugins) {
         const size_t run_count = print.objects().size();
-        plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_POST_SLICING, plugin, &print);
+        std::atomic_bool execution_error { false };
+        plugin_host_context host_context =
+            Detail::prepare_guarded_plugin_host_context(
+                orchestrator, STEP_POST_SLICING, *plugin, print, execution_error);
         plugin_run_context run_context = orchestrator.prepare_plugin_run_context(STEP_POST_SLICING,
                                                                                 plugin,
                                                                                 &host_context);
         plugin->setup(run_context, uint32_t(run_count));
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_POST_SLICING, *plugin, execution_error, "setup");
 
         // Each worker gets its own plugin_run_context copy and step payload. The
         // shared run_context only carries stable host/plugin callbacks.
@@ -226,6 +231,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
             context_copy.data = &context_step;
             plugin->setup_run(context_copy);
         });
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_POST_SLICING, *plugin, execution_error, "setup_run");
 
         parallel_for(size_t(0), run_count, [&print, plugin, &run_context](const size_t idx) {
             plugin_run_context context_copy = run_context;
@@ -236,6 +242,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
             context_copy.data = &context_step;
             plugin->run(context_copy);
         });
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_POST_SLICING, *plugin, execution_error, "run");
 
         Detail::validate_or_report(validate_post, print, "Post-slicing post-plugin validation");
     }

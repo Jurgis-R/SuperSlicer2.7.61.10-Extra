@@ -6,6 +6,7 @@
 
 #include "StepSkirtBrim.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <vector>
@@ -19,6 +20,7 @@
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepRunner.hpp"
 
 namespace Slic3r::Steps::StepSkirtBrim {
 namespace {
@@ -68,18 +70,21 @@ void run_step(Orchestrator &orchestrator, Print &print)
         needs per-object behavior can iterate print.objects() itself; this
         keeps global-vs-object brim decisions inside the generator.
         */
-        plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_SKIRT_BRIM, plugin, &print);
+        std::atomic_bool execution_error { false };
+        plugin_host_context host_context =
+            Detail::prepare_guarded_plugin_host_context(
+                orchestrator, STEP_SKIRT_BRIM, *plugin, print, execution_error);
         host_context.object_count = print.objects().size();
         plugin_run_context run_context =
             orchestrator.prepare_plugin_run_context(STEP_SKIRT_BRIM, plugin, &host_context);
         run_context.data = &payload;
 
         plugin->setup(run_context, 1);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_SKIRT_BRIM, *plugin, execution_error, "setup");
         plugin->setup_run(run_context);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_SKIRT_BRIM, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
-
-        if (run_context.is_cancelled != nullptr && run_context.is_cancelled(run_context.host_context))
-            throw RuntimeError("Skirt/brim plugin failed.");
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_SKIRT_BRIM, *plugin, execution_error, "run");
     }
 
     ApiInternal::PrintAccess::normalize_skirt_brim_direction(print);

@@ -8,6 +8,7 @@
 #include "libslic3r/Api/internal/LayerAccess.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Exception.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/PrintObject.hpp"
@@ -461,10 +462,20 @@ TEST_CASE("SolidShells refuses to run before typed surfaces exist",
         {"solid_over_perimeters", "0"}
     }));
 
-    {
+    bool stopped = false;
+    std::string stop_message;
+    try {
         ScopedActivePlugins active({SIMPLE_PERIMETER_GENERATOR, SOLID_SHELLS});
         run_perimeter_and_surface_steps(prepared.print, false);
+    } catch (const RuntimeError &error) {
+        stopped = true;
+        stop_message = error.what();
     }
+
+    CHECK(stopped);
+    CHECK(stop_message.find(
+              "STEP_SURFACE_GENERATION stopped after plugin 'surface.solid_shells' reported an error during run.") !=
+          std::string::npos);
 
     const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
     bool found_error = false;

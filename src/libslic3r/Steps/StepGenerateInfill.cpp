@@ -5,8 +5,10 @@
 
 #include "StepGenerateInfill.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,6 +22,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepRunner.hpp"
 #include "libslic3r/Surface.hpp"
 
 namespace Slic3r::Steps::StepGenerateInfill {
@@ -51,7 +54,18 @@ struct InfillStepHostContext
     // modifier sees the changes made by the previous one.
     std::vector<Plugin *> recipe_modifier_plugins;
     std::map<Plugin *, plugin_host_context> recipe_modifier_host_contexts;
+    std::map<Plugin *, std::unique_ptr<std::atomic_bool>> pattern_execution_errors;
+    std::map<Plugin *, std::unique_ptr<std::atomic_bool>> recipe_modifier_execution_errors;
 };
+
+std::atomic_bool &execution_error_for(std::map<Plugin *, std::unique_ptr<std::atomic_bool>> &errors,
+                                      Plugin &plugin)
+{
+    std::unique_ptr<std::atomic_bool> &error = errors[&plugin];
+    if (error == nullptr)
+        error = std::make_unique<std::atomic_bool>(false);
+    return *error;
+}
 
 // All callbacks stored in run_ctx_generate_infill use this helper to recover
 // the C++ state that cannot be captured by a plain C function pointer.
@@ -188,7 +202,13 @@ int32_t generate_pattern_callback(const run_ctx_generate_infill *ctx,
     run_context.data = &payload;
 
     plugin->setup_run(run_context);
+    Detail::throw_if_plugin_stopped(
+        *host.orchestrator, INFILL_PATTERN, *plugin,
+        execution_error_for(host.pattern_execution_errors, *plugin), "setup_run");
     plugin->run(run_context);
+    Detail::throw_if_plugin_stopped(
+        *host.orchestrator, INFILL_PATTERN, *plugin,
+        execution_error_for(host.pattern_execution_errors, *plugin), "run");
     return 1;
 }
 
@@ -247,7 +267,13 @@ int32_t modify_surface_recipe_callback(const run_ctx_generate_infill *ctx,
         run_context.data = &payload;
 
         plugin->setup_run(run_context);
+        Detail::throw_if_plugin_stopped(
+            *host.orchestrator, INFILL_SURFACE_RECIPE_MODIFIER, *plugin,
+            execution_error_for(host.recipe_modifier_execution_errors, *plugin), "setup_run");
         plugin->run(run_context);
+        Detail::throw_if_plugin_stopped(
+            *host.orchestrator, INFILL_SURFACE_RECIPE_MODIFIER, *plugin,
+            execution_error_for(host.recipe_modifier_execution_errors, *plugin), "run");
     }
 
     return 1;
@@ -357,14 +383,17 @@ void prepare_pattern_plugins(InfillStepHostContext &host)
         const infill_pattern_runtime_id runtime_id = next_runtime_id++;
         host.pattern_runtime_ids_by_plugin_id.emplace(plugin->get_id(), runtime_id);
         host.pattern_plugins_by_runtime_id.emplace(runtime_id, plugin);
+        std::atomic_bool &execution_error = execution_error_for(host.pattern_execution_errors, *plugin);
         plugin_host_context plugin_host =
-            host.orchestrator->prepare_plugin_host_context(INFILL_PATTERN, plugin, host.print);
+            Detail::prepare_guarded_plugin_host_context(
+                *host.orchestrator, INFILL_PATTERN, *plugin, *host.print, execution_error);
         plugin_host.object_count = run_count;
         host.pattern_host_contexts.emplace(plugin, plugin_host);
 
         plugin_run_context setup_context =
             host.orchestrator->prepare_plugin_run_context(INFILL_PATTERN, plugin, &host.pattern_host_contexts.find(plugin)->second);
         plugin->setup(setup_context, uint32_t(run_count));
+        Detail::throw_if_plugin_stopped(*host.orchestrator, INFILL_PATTERN, *plugin, execution_error, "setup");
     }
 }
 
@@ -388,9 +417,10 @@ void prepare_recipe_modifier_plugins(InfillStepHostContext &host)
         // Use the number of candidate surfaces as the advertised run count
         // because each modifier can be called once for every fillable surface.
         // The actual call order still follows the generator traversal.
+        std::atomic_bool &execution_error = execution_error_for(host.recipe_modifier_execution_errors, *plugin);
         plugin_host_context plugin_host =
-            host.orchestrator->prepare_plugin_host_context(
-                INFILL_SURFACE_RECIPE_MODIFIER, plugin, host.print);
+            Detail::prepare_guarded_plugin_host_context(
+                *host.orchestrator, INFILL_SURFACE_RECIPE_MODIFIER, *plugin, *host.print, execution_error);
         plugin_host.object_count = run_count;
         host.recipe_modifier_host_contexts.emplace(plugin, plugin_host);
 
@@ -400,6 +430,8 @@ void prepare_recipe_modifier_plugins(InfillStepHostContext &host)
                 plugin,
                 &host.recipe_modifier_host_contexts.find(plugin)->second);
         plugin->setup(setup_context, uint32_t(run_count));
+        Detail::throw_if_plugin_stopped(
+            *host.orchestrator, INFILL_SURFACE_RECIPE_MODIFIER, *plugin, execution_error, "setup");
     }
 }
 
@@ -427,7 +459,8 @@ void run_generator_for_object(Orchestrator &orchestrator,
                               Print &print,
                               PrintObject &object,
                               plugin_host_context &host_context,
-                              InfillStepHostContext &infill_context)
+                              InfillStepHostContext &infill_context,
+                              std::atomic_bool &execution_error)
 {
     plugin_run_context run_context =
         orchestrator.prepare_plugin_run_context(STEP_INFILL, &plugin, &host_context);
@@ -447,7 +480,9 @@ void run_generator_for_object(Orchestrator &orchestrator,
     run_context.data = &payload;
 
     plugin.setup_run(run_context);
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, plugin, execution_error, "setup_run");
     plugin.run(run_context);
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, plugin, execution_error, "run");
 }
 
 } // namespace
@@ -494,16 +529,20 @@ void run_step(Orchestrator &orchestrator, Print &print)
         return;
     }
 
-    plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_INFILL, plugin, &print);
+    std::atomic_bool execution_error { false };
+    plugin_host_context host_context =
+        Detail::prepare_guarded_plugin_host_context(orchestrator, STEP_INFILL, *plugin, print, execution_error);
     host_context.object_count = print.objects().size();
     plugin_run_context setup_context = orchestrator.prepare_plugin_run_context(STEP_INFILL, plugin, &host_context);
     plugin->setup(setup_context, uint32_t(print.objects().size()));
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, *plugin, execution_error, "setup");
 
     for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx) {
         host_context.object_idx = object_idx;
         if (setup_context.is_cancelled != nullptr && setup_context.is_cancelled(setup_context.host_context))
-            return;
-        run_generator_for_object(orchestrator, *plugin, print, print.object(object_idx), host_context, infill_context);
+            Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, *plugin, execution_error, "run");
+        run_generator_for_object(
+            orchestrator, *plugin, print, print.object(object_idx), host_context, infill_context, execution_error);
     }
 }
 

@@ -28,6 +28,7 @@
 #include "libslic3r/Api/plugin/cpp/gcode/MachineEnvelope.hpp"
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/Config/ConfigSnapshotSerialization.hpp"
+#include "libslic3r/Exception.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionEntityVisitors.hpp"
 #include "libslic3r/GCode.hpp"
@@ -277,7 +278,7 @@ TEST_CASE("Feature G-code validates and normalizes rich extrusion roles",
         orchestrator.reset_plugin_cancel();
         (void)orchestrator.consume_plugin_messages();
         Steps::StepExtrusionEdition::clean_and_prepare(*print);
-        Steps::StepExtrusionEdition::run_step(orchestrator, *print);
+        CHECK_THROWS_AS(Steps::StepExtrusionEdition::run_step(orchestrator, *print), RuntimeError);
         CHECK(orchestrator.is_plugin_cancelled());
         bool found_role_error = false;
         for (const Orchestrator::PluginMessage &message : orchestrator.consume_plugin_messages())

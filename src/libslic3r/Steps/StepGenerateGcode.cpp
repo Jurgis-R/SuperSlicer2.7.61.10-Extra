@@ -1,6 +1,7 @@
 #include "StepGenerateGcode.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -29,6 +30,7 @@
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepRunner.hpp"
 
 /*
 STEP_GCODE bridge
@@ -825,8 +827,10 @@ void create_firmware_session(Orchestrator &orchestrator,
     if (firmware_plugin == nullptr)
         throw RuntimeError("No active G-code firmware plugin is available.");
 
-    plugin_host_context host_context = orchestrator.prepare_plugin_host_context(
-        GCODE_FIRMWARE, firmware_plugin, &print);
+    std::atomic_bool execution_error { false };
+    plugin_host_context host_context =
+        Detail::prepare_guarded_plugin_host_context(
+            orchestrator, GCODE_FIRMWARE, *firmware_plugin, print, execution_error);
     plugin_run_context run_context = orchestrator.prepare_plugin_run_context(
         GCODE_FIRMWARE, firmware_plugin, &host_context);
     run_ctx_gcode_firmware payload = {};
@@ -836,14 +840,15 @@ void create_firmware_session(Orchestrator &orchestrator,
     run_context.data = &payload;
 
     firmware_plugin->setup(run_context, 1);
+    Detail::throw_if_plugin_stopped(orchestrator, GCODE_FIRMWARE, *firmware_plugin, execution_error, "setup");
     firmware_plugin->setup_run(run_context);
+    Detail::throw_if_plugin_stopped(orchestrator, GCODE_FIRMWARE, *firmware_plugin, execution_error, "setup_run");
     firmware_plugin->run(run_context);
 
     // Transfer ownership before checking cancellation or table completeness;
     // the provider may allocate a session before reporting its error.
     *owner.mutable_instance() = payload.instance;
-    if (run_context.is_cancelled != nullptr && run_context.is_cancelled(run_context.host_context))
-        throw RuntimeError("G-code firmware plugin failed while creating its session.");
+    Detail::throw_if_plugin_stopped(orchestrator, GCODE_FIRMWARE, *firmware_plugin, execution_error, "run");
 
     // Constructing the borrowed view validates struct sizes and every required
     // callback without invoking firmware code.
@@ -1009,19 +1014,18 @@ std::string run_step(Orchestrator &orchestrator, Print &print, const std::string
     payload.reader_source_context = &reader_source;
     payload.publish_reader_source_path = &ReaderSourcePathReceiver::publish_callback;
 
-    plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_GCODE, plugin, &print);
+    std::atomic_bool execution_error { false };
+    plugin_host_context host_context =
+        Detail::prepare_guarded_plugin_host_context(orchestrator, STEP_GCODE, *plugin, print, execution_error);
     plugin_run_context run_context = orchestrator.prepare_plugin_run_context(STEP_GCODE, plugin, &host_context);
     run_context.data = &payload;
 
     plugin->setup(run_context, 1);
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_GCODE, *plugin, execution_error, "setup");
     plugin->setup_run(run_context);
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_GCODE, *plugin, execution_error, "setup_run");
     plugin->run(run_context);
-
-    // PluginBase reports C++ exceptions through report_error() instead of
-    // letting them cross the C ABI. report_error() requests cancellation; the
-    // host step turns that request back into a normal export failure.
-    if (run_context.is_cancelled != nullptr && run_context.is_cancelled(run_context.host_context))
-        throw RuntimeError("G-code generation plugin failed.");
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_GCODE, *plugin, execution_error, "run");
     return reader_plugin_id;
 }
 

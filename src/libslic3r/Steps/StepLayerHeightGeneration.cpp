@@ -5,6 +5,7 @@
 
 #include "StepLayerHeightGeneration.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <memory>
 #include <sstream>
@@ -125,10 +126,13 @@ void run_step(Orchestrator &orchestrator, Print &print) {
         return;
 
     const size_t run_count = print.objects().size();
-    plugin_host_context host_context = orchestrator.prepare_plugin_host_context(STEP_LAYER_HEIGHT, plugin, &print);
+    std::atomic_bool execution_error { false };
+    plugin_host_context host_context =
+        Detail::prepare_guarded_plugin_host_context(orchestrator, STEP_LAYER_HEIGHT, *plugin, print, execution_error);
     plugin_run_context run_context = orchestrator.prepare_plugin_run_context(STEP_LAYER_HEIGHT, plugin,
                                                                                &host_context);
     plugin->setup(run_context, uint32_t(run_count));
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_HEIGHT, *plugin, execution_error, "setup");
 
     std::vector<std::unique_ptr<ApiHost::Steps::LayerHeightRunContext>> layer_contexts;
     layer_contexts.reserve(run_count);
@@ -143,6 +147,7 @@ void run_step(Orchestrator &orchestrator, Print &print) {
         context_copy.data = &layer_contexts[object_idx]->context_step;
         plugin->setup_run(context_copy);
     });
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_HEIGHT, *plugin, execution_error, "setup_run");
 
     parallel_for(size_t(0), run_count, [plugin, &run_context, &layer_contexts](const size_t object_idx) {
         plugin_run_context context_copy = run_context;
@@ -152,6 +157,7 @@ void run_step(Orchestrator &orchestrator, Print &print) {
         context_copy.data = &layer_contexts[object_idx]->context_step;
         plugin->run(context_copy);
     });
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_HEIGHT, *plugin, execution_error, "run");
 
     Detail::validate_or_report(validate_post, print, "Layer-height post-plugin validation");
 }

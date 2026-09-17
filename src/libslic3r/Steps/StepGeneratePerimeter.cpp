@@ -6,6 +6,7 @@
 #include "StepGeneratePerimeter.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <iterator>
@@ -28,6 +29,7 @@
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/PrintRegion.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepRunner.hpp"
 #include "libslic3r/SurfaceCollection.hpp"
 
 namespace Slic3r::Steps::StepGeneratePerimeter {
@@ -171,6 +173,7 @@ struct PerimeterRunContext
     // them. Store them on the island run context instead of on the stack inside
     // create_perimeter_generation_modules().
     std::vector<plugin_host_context> module_host_contexts;
+    std::vector<std::unique_ptr<std::atomic_bool>> module_execution_errors;
 
     // A perimeter generator is expected to call run_region_group(). If it does
     // not, there is nothing safe to publish for this island.
@@ -726,10 +729,15 @@ create_perimeter_generation_modules(PerimeterRunContext &run)
     modules.reserve(plugins.size());
     run.module_host_contexts.clear();
     run.module_host_contexts.reserve(plugins.size());
+    run.module_execution_errors.clear();
+    run.module_execution_errors.reserve(plugins.size());
 
     for (Plugin *plugin : plugins) {
+        run.module_execution_errors.push_back(std::make_unique<std::atomic_bool>(false));
+        std::atomic_bool &execution_error = *run.module_execution_errors.back();
         run.module_host_contexts.push_back(
-            run.orchestrator->prepare_plugin_host_context(PERIMETER_GENERATION_MODULE, plugin, run.print));
+            Detail::prepare_guarded_plugin_host_context(
+                *run.orchestrator, PERIMETER_GENERATION_MODULE, *plugin, *run.print, execution_error));
         plugin_host_context &host_context = run.module_host_contexts.back();
         plugin_run_context run_context =
             run.orchestrator->prepare_plugin_run_context(PERIMETER_GENERATION_MODULE, plugin, &host_context);
@@ -737,8 +745,14 @@ create_perimeter_generation_modules(PerimeterRunContext &run)
         run_context.data = &module_context;
 
         plugin->setup(run_context, 1);
+        Detail::throw_if_plugin_stopped(
+            *run.orchestrator, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "setup");
         plugin->setup_run(run_context);
+        Detail::throw_if_plugin_stopped(
+            *run.orchestrator, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
+        Detail::throw_if_plugin_stopped(
+            *run.orchestrator, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "run");
 
         if (module_context.module.vt != nullptr) {
             PerimeterModuleRun module_run;
@@ -936,7 +950,8 @@ bool run_generator_for_island(Orchestrator &orchestrator,
                               PrintObject &object,
                               Layer &layer,
                               LayerSliceIsland &island,
-                              plugin_host_context &host_context)
+                              plugin_host_context &host_context,
+                              std::atomic_bool &execution_error)
 {
     // Build the STEP_PERIMETER payload for one island. The selected generator
     // should call run_region_group(); if it does not, used_region_group stays
@@ -964,7 +979,9 @@ bool run_generator_for_island(Orchestrator &orchestrator,
     run_context.data = &payload;
 
     plugin.setup_run(run_context);
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, plugin, execution_error, "setup_run");
     plugin.run(run_context);
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, plugin, execution_error, "run");
 
     if (perimeter_context.used_region_group)
         assign_island_outputs(island, perimeter_context);
@@ -1010,12 +1027,14 @@ void run_step(Orchestrator &orchestrator, Print &print)
         return;
 
     const size_t run_count = count_layer_islands(print);
+    std::atomic_bool execution_error { false };
     plugin_host_context host_context =
-        orchestrator.prepare_plugin_host_context(STEP_PERIMETER, plugin, &print);
+        Detail::prepare_guarded_plugin_host_context(orchestrator, STEP_PERIMETER, *plugin, print, execution_error);
     host_context.object_count = run_count;
     plugin_run_context setup_context =
         orchestrator.prepare_plugin_run_context(STEP_PERIMETER, plugin, &host_context);
     plugin->setup(setup_context, uint32_t(run_count));
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, *plugin, execution_error, "setup");
 
     for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx) {
         host_context.object_idx = object_idx;
@@ -1023,8 +1042,9 @@ void run_step(Orchestrator &orchestrator, Print &print)
         for (Layer &layer : object.layers()) {
             for (LayerSliceIsland &island : layer.islands()) {
                 if (setup_context.is_cancelled != nullptr && setup_context.is_cancelled(setup_context.host_context))
-                    return;
-                run_generator_for_island(orchestrator, *plugin, print, object, layer, island, host_context);
+                    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, *plugin, execution_error, "run");
+                run_generator_for_island(
+                    orchestrator, *plugin, print, object, layer, island, host_context, execution_error);
             }
         }
     }

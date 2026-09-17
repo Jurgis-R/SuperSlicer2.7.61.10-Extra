@@ -9,7 +9,9 @@
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Exception.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
@@ -48,6 +50,74 @@ const char *const SLICE_VOLUME = "slice_volume";
 const char *const DEFAULT_BRIM_GENERATOR = "skirt_brim.brim.default";
 const char *const DEFAULT_SKIRT_GENERATOR = "skirt_brim.skirt.default";
 const char *const DEFAULT_BRIM_SKIRT_TRIM = "skirt_brim.brim_skirt_trim.default";
+const char *const FAILING_SKIRT_BRIM_PLUGIN = "skirt_brim.test.report_error";
+
+enum class FailingPluginPhase
+{
+    Setup,
+    SetupRun,
+    Run
+};
+
+void report_test_error(const plugin_run_context *run_context)
+{
+    if (run_context != nullptr && run_context->report_error != nullptr)
+        run_context->report_error(run_context->host_context, "intentional step plugin error");
+}
+
+class FailingSkirtBrimPlugin final : public slic3r_api::PluginBase
+{
+public:
+    explicit FailingSkirtBrimPlugin(orchestrator_handle *orchestrator)
+        : PluginBase(orchestrator)
+    {}
+
+    void set_phase(FailingPluginPhase phase) { m_phase = phase; }
+
+private:
+    const char *id_impl() const noexcept override { return FAILING_SKIRT_BRIM_PLUGIN; }
+    slicing_step_t step_impl() const noexcept override { return STEP_SKIRT_BRIM; }
+    const char *const *dependencies_impl() const noexcept override
+    {
+        static const char *dependencies[] = {nullptr};
+        return dependencies;
+    }
+    int32_t priority_impl() const noexcept override { return 0; }
+
+    void setup_impl(const plugin_run_context *run_context, uint32_t) const override
+    {
+        if (m_phase == FailingPluginPhase::Setup)
+            report_test_error(run_context);
+    }
+
+    void setup_run_impl(const plugin_run_context *run_context) const override
+    {
+        if (m_phase == FailingPluginPhase::SetupRun)
+            report_test_error(run_context);
+    }
+
+    void run_impl(const plugin_run_context *run_context) const override
+    {
+        if (m_phase == FailingPluginPhase::Run)
+            report_test_error(run_context);
+    }
+
+    FailingPluginPhase m_phase = FailingPluginPhase::Setup;
+};
+
+FailingSkirtBrimPlugin &failing_skirt_brim_plugin()
+{
+    static FailingSkirtBrimPlugin plugin(
+        reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()));
+    return plugin;
+}
+
+void register_failing_skirt_brim_plugin()
+{
+    Orchestrator &orchestrator = Orchestrator::instance();
+    if (orchestrator.get_plugin(FAILING_SKIRT_BRIM_PLUGIN) == nullptr)
+        REQUIRE(orchestrator.register_plugin(failing_skirt_brim_plugin().c_instance()));
+}
 
 class ScopedActivePlugins
 {
@@ -75,6 +145,7 @@ public:
         m_orchestrator.clear_active_plugins();
         for (Plugin *plugin : m_previous_active_plugins)
             m_orchestrator.set_plugin_active(plugin, true);
+        m_orchestrator.reset_plugin_cancel();
     }
 
 private:
@@ -218,6 +289,47 @@ std::vector<const Layer *> object_brim_auxiliary_layers(const PrintObject &objec
 }
 
 } // namespace
+
+TEST_CASE("STEP_SKIRT_BRIM stops immediately when a plugin reports an error",
+          "[plugins][steps][errors]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    register_failing_skirt_brim_plugin();
+
+    struct Case {
+        FailingPluginPhase phase;
+        const char *phase_name;
+    };
+
+    const Case cases[] = {
+        {FailingPluginPhase::Setup, "setup"},
+        {FailingPluginPhase::SetupRun, "setup_run"},
+        {FailingPluginPhase::Run, "run"}
+    };
+
+    for (const Case &test_case : cases) {
+        DYNAMIC_SECTION("report_error during " << test_case.phase_name) {
+            Orchestrator &orchestrator = Orchestrator::instance();
+            orchestrator.reset_plugin_cancel();
+            failing_skirt_brim_plugin().set_phase(test_case.phase);
+            ScopedActivePlugins active({FAILING_SKIRT_BRIM_PLUGIN});
+            Print print;
+
+            try {
+                Steps::StepSkirtBrim::run_step(orchestrator, print);
+                FAIL("STEP_SKIRT_BRIM should throw after plugin report_error().");
+            } catch (const RuntimeError &error) {
+                const std::string message = error.what();
+                CHECK(message.find("STEP_SKIRT_BRIM stopped after plugin '") != std::string::npos);
+                CHECK(message.find(FAILING_SKIRT_BRIM_PLUGIN) != std::string::npos);
+                CHECK(message.find("reported an error during " + std::string(test_case.phase_name)) !=
+                      std::string::npos);
+            }
+
+            CHECK(orchestrator.is_plugin_cancelled());
+        }
+    }
+}
 
 TEST_CASE("STEP_SKIRT_BRIM exposes a brim exclusive group but is not exclusive itself",
           "[plugins][skirt-brim]")

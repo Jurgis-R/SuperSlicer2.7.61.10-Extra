@@ -1,6 +1,7 @@
 
 #include "StepLayerExtrusionEdition.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <vector>
@@ -79,8 +80,10 @@ void run_plugin(Orchestrator &orchestrator,
         return;
 
     assert(locations.size() <= UINT32_MAX);
+    std::atomic_bool execution_error { false };
     plugin_host_context host_context =
-        orchestrator.prepare_plugin_host_context(STEP_LAYER_EXTRUSION_EDIT, &plugin, &print);
+        Detail::prepare_guarded_plugin_host_context(
+            orchestrator, STEP_LAYER_EXTRUSION_EDIT, plugin, print, execution_error);
     host_context.object_count = locations.size();
     plugin_run_context run_context =
         orchestrator.prepare_plugin_run_context(STEP_LAYER_EXTRUSION_EDIT, &plugin, &host_context);
@@ -91,6 +94,7 @@ void run_plugin(Orchestrator &orchestrator,
     run_ctx_layer_extrusion_edition setup_payload = make_layer_run_context(print, plan, locations.front());
     run_context.data = &setup_payload;
     plugin.setup(run_context, uint32_t(locations.size()));
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "setup");
 
     parallel_for(size_t(0), locations.size(), [&](const size_t idx) {
         plugin_host_context local_host_context = host_context;
@@ -105,6 +109,7 @@ void run_plugin(Orchestrator &orchestrator,
         local_run_context.data = &payload;
         plugin.setup_run(local_run_context);
     });
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "setup_run");
 
     parallel_for(size_t(0), locations.size(), [&](const size_t idx) {
         plugin_host_context local_host_context = host_context;
@@ -119,6 +124,7 @@ void run_plugin(Orchestrator &orchestrator,
         local_run_context.data = &payload;
         plugin.run(local_run_context);
     });
+    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "run");
 }
 
 } // namespace
@@ -152,9 +158,12 @@ void run_step(Orchestrator &orchestrator, Print &print)
 
     // Plugins are a deterministic edit chain. A plugin finishes all layer runs
     // before the next plugin observes the resulting extrusion properties.
-    for (Plugin *plugin : plugins)
-        if (plugin != nullptr)
-            run_plugin(orchestrator, print, plan, *plugin, locations);
+    for (Plugin *plugin : plugins) {
+        if (plugin == nullptr)
+            continue;
+
+        run_plugin(orchestrator, print, plan, *plugin, locations);
+    }
 }
 
 } // namespace Slic3r::Steps::StepLayerExtrusionEdition

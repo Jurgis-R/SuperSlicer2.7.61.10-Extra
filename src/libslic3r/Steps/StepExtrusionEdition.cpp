@@ -1,5 +1,7 @@
 #include "StepExtrusionEdition.hpp"
 
+#include <atomic>
+#include <string>
 #include <vector>
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
@@ -80,15 +82,20 @@ void run_step(Orchestrator &orchestrator, Print &print)
         if (plugin == nullptr)
             continue;
 
+        std::atomic_bool execution_error { false };
         plugin_host_context host_context =
-            orchestrator.prepare_plugin_host_context(STEP_EXTRUSION_EDIT, plugin, &print);
+            Detail::prepare_guarded_plugin_host_context(
+                orchestrator, STEP_EXTRUSION_EDIT, *plugin, print, execution_error);
         plugin_run_context run_context =
             orchestrator.prepare_plugin_run_context(STEP_EXTRUSION_EDIT, plugin, &host_context);
         run_context.data = &payload;
 
         plugin->setup(run_context, 1);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_EXTRUSION_EDIT, *plugin, execution_error, "setup");
         plugin->setup_run(run_context);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_EXTRUSION_EDIT, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
+        Detail::throw_if_plugin_stopped(orchestrator, STEP_EXTRUSION_EDIT, *plugin, execution_error, "run");
     }
 }
 

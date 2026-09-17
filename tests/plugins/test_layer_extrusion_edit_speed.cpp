@@ -25,6 +25,7 @@
 #include "libslic3r/Api/plugin/cpp/PrintingPlanTimeEstimator.hpp"
 #include "libslic3r/Api/plugin/cpp/RegionSettingsViews.hpp"
 #include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Exception.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/ExtrusionProperty.hpp"
@@ -1531,7 +1532,7 @@ TEST_CASE("Layer extrusion editor reports invalid printable flow before mutation
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator.reset_plugin_cancel();
     (void)orchestrator.consume_plugin_messages();
-    Steps::StepLayerExtrusionEdition::run_step(orchestrator, prepared.print);
+    CHECK_THROWS_AS(Steps::StepLayerExtrusionEdition::run_step(orchestrator, prepared.print), RuntimeError);
 
     CHECK(orchestrator.is_plugin_cancelled());
     CHECK(single_plan_root(prepared.print).get_property<ExtrusionPropertySpeed>() == nullptr);
