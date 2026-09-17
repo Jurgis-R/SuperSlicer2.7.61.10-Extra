@@ -649,9 +649,12 @@ const layer_island_handle *layer_island_get_upper_island(const layer_island_hand
     return reinterpret_cast<const layer_island_handle *>(Slic3r::to_layer_island(me)->overlaps_above[idx].to);
 }
 
-int32_t layer_region_island_extruder_id(const layer_region_island_handle *me)
-{
-    return me == nullptr ? -1 : static_cast<int32_t>(Slic3r::to_layer_region_island(me)->extruder_id());
+int32_t layer_region_island_extruder_id(const layer_region_island_handle *me) {
+    if (me == nullptr)
+        return -1;
+    uint16_t extruder_id = Slic3r::to_layer_region_island(me)->extruder_id();
+    // correctly convert -1
+    return extruder_id == uint16_t(-1) ? int32_t(-1) : static_cast<int32_t>(extruder_id);
 }
 
 int32_t layer_region_island_has_extrusions(const layer_region_island_handle *me)
