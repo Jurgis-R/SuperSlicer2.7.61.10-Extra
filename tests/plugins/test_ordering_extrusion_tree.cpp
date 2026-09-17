@@ -3,15 +3,22 @@
 #include <initializer_list>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
+#include "perimeter_test_helpers.hpp"
 #include "plugin_test_helpers.hpp"
 
+#include "libslic3r/Api/internal/LayerAccess.hpp"
+#include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
+#include "libslic3r/Layer.hpp"
+#include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Plugins/PrintingPlan/EntryPointProperty.h"
 #include "libslic3r/Steps/StepExtrusionOrdering.hpp"
@@ -29,11 +36,131 @@ the remaining plan.
 namespace {
 using namespace Slic3r;
 using namespace Slic3r::Printing;
+using namespace Slic3r::Test::PerimeterPluginTests;
 using slic3r_api::EntryPointProperty;
 using slic3r_api::PluginPropertyKey;
 
 constexpr const char *TREE_ORDERING_PLUGIN =
     "ordering.extrusion_tree.default";
+
+/* Keep one real LayerRegionIsland owner around while each test changes its small source tree. */
+class PerimeterSourceFixture
+{
+public:
+    PerimeterSourceFixture()
+    {
+        prepare_cube_print(m_prepared, perimeter_config({}));
+        PrintObject &object = m_prepared.print.object(0);
+        REQUIRE(object.layer_count() > 0);
+        Layer &layer = object.layer(0);
+        REQUIRE_FALSE(layer.islands().empty());
+        LayerSliceIsland &island = layer.island(0);
+        REQUIRE_FALSE(island.regions().empty());
+        m_region_island = &island.get_or_add_region_island(island.regions(), 0);
+    }
+
+    Print &print() { return m_prepared.print; }
+    LayerRegionIsland &region_island() { return *m_region_island; }
+
+    LayerRegionIsland &add_object_auxiliary_region_island()
+    {
+        return add_auxiliary_region_island(m_prepared.print.object(0));
+    }
+
+    LayerRegionIsland &add_print_auxiliary_region_island()
+    {
+        return add_auxiliary_region_island(m_prepared.print.mutable_auxiliary_object());
+    }
+
+private:
+    LayerRegionIsland &add_auxiliary_region_island(PrintObject &owner)
+    {
+        REQUIRE(owner.num_printing_regions() > 0);
+        const ExPolygon subject = m_prepared.print.object(0).layer(0).island(0).get_slice();
+        Layer &layer = owner.add_auxiliary_layer(0, scale_i(0.2), scale_i(0.2));
+        ApiInternal::LayerAccess::add_region(layer, owner.printing_region(0));
+        ApiInternal::LayerRegionAccess::slices_mutable(layer.region(0)) = ExPolygons{subject};
+        ApiInternal::LayerAccess::set_islands(layer, ExPolygons{subject});
+        layer.island(0).fill_regions(layer);
+        REQUIRE_FALSE(layer.islands().empty());
+        REQUIRE_FALSE(layer.island(0).regions().empty());
+        return layer.island(0).get_or_add_region_island(layer.island(0).regions(), 0);
+    }
+
+    PreparedPerimeterPrint m_prepared;
+    LayerRegionIsland *m_region_island = nullptr;
+};
+
+ExtrusionEntityUPtr make_polyline_entity(const Points &points)
+{
+    return std::make_unique<ExtrusionEntity>(true, ArcPolyline(points));
+}
+
+void add_loop_property(ExtrusionEntity &entity, const bool loop_flag)
+{
+    entity.get_or_add_property<ExtrusionPropertyLoopRole>().set_perimeter_role(
+        loop_flag ? elrDefault : elrNotALoop);
+}
+
+ExtrusionEntityUPtr make_closed_terminal_loop(const bool with_property,
+                                             const bool loop_flag)
+{
+    ExtrusionEntityUPtr loop = make_polyline_entity(
+        Points{Point(0, 0), Point(100, 0), Point(0, 0)});
+    loop->get_or_add_property<ExtrusionAttributes>().set_role(
+        ExtrusionRole::ExternalPerimeter);
+    if (with_property)
+        add_loop_property(*loop, loop_flag);
+    return loop;
+}
+
+ExtrusionEntityUPtr make_closed_loop_container()
+{
+    ExtrusionEntity::Children children;
+    children.emplace_back(make_closed_terminal_loop(true, true));
+    return std::make_unique<ExtrusionEntity>(std::move(children), false, true, true);
+}
+
+ExtrusionEntityUPtr make_loop_with_open_fragments()
+{
+    ExtrusionEntity::Children children;
+    children.emplace_back(make_polyline_entity(Points{Point(0, 0), Point(100, 0)}));
+    children.emplace_back(make_polyline_entity(Points{Point(100, 0), Point(0, 0)}));
+    ExtrusionEntityUPtr owner =
+        std::make_unique<ExtrusionEntity>(std::move(children), false, true, true);
+    add_loop_property(*owner, true);
+    return owner;
+}
+
+ExtrusionEntityUPtr make_open_wrapper_with_invalid_loop()
+{
+    ExtrusionEntity::Children children;
+    children.emplace_back(make_closed_terminal_loop(false, false));
+    return std::make_unique<ExtrusionEntity>(std::move(children), true, true, true);
+}
+
+void publish_perimeter_tree(LayerRegionIsland &region_island, ExtrusionEntityUPtr root)
+{
+    ExtrusionEntityCollection &perimeters =
+        region_island.mutable_extrusion(LayerRegionIsland::PERIMETERS);
+    perimeters.clear();
+    perimeters.append(std::move(root));
+}
+
+void publish_perimeter_tree(PerimeterSourceFixture &fixture, ExtrusionEntityUPtr root)
+{
+    publish_perimeter_tree(fixture.region_island(), std::move(root));
+}
+
+void require_precondition_failure(const Print &print,
+                                  const char *cause,
+                                  const char *path_fragment)
+{
+    std::string error;
+    CHECK_FALSE(Steps::StepExtrusionOrdering::validate_pre(print, &error));
+    CHECK(error.find(cause) != std::string::npos);
+    CHECK(error.find(path_fragment) != std::string::npos);
+}
 
 /* Restore the process-wide active providers after one focused step run. */
 class ScopedActivePlugins
@@ -313,4 +440,115 @@ TEST_CASE("Extrusion-tree ordering uses the first pre-sort estimate",
     REQUIRE(exact != nullptr);
     CHECK(exact->entry.x == 101);
     CHECK(exact->exit.x == 2);
+}
+
+TEST_CASE("STEP_ORDERING precondition validates perimeter loop metadata",
+          "[plugins][ordering][precondition]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("accepts a valid terminal loop")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_closed_terminal_loop(true, true));
+
+        std::string error = "stale diagnostic";
+        CHECK(Steps::StepExtrusionOrdering::validate_pre(fixture.print(), &error));
+        CHECK(error.empty());
+    }
+
+    SECTION("reports a terminal loop without its direct property")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_closed_terminal_loop(false, false));
+
+        require_precondition_failure(
+            fixture.print(),
+            "missing direct ExtrusionPropertyLoopRole/EPropertyPerimeter",
+            "object[0].normal_layer[0].island[0].region_island[0].perimeters.root.child[0]");
+    }
+
+    SECTION("reports a terminal loop whose property lacks the LOOP bit")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_closed_terminal_loop(true, false));
+
+        require_precondition_failure(
+            fixture.print(),
+            "C_EXTRUSION_PERIMETER_FLAG_LOOP",
+            "object[0].normal_layer[0].island[0].region_island[0].perimeters.root.child[0]");
+    }
+
+    SECTION("validates the direct loop child of a closed container")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_closed_loop_container());
+
+        std::string error;
+        CHECK(Steps::StepExtrusionOrdering::validate_pre(fixture.print(), &error));
+        CHECK(error.empty());
+    }
+
+    SECTION("does not require properties on open fragments inside a loop")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_loop_with_open_fragments());
+
+        std::string error;
+        CHECK(Steps::StepExtrusionOrdering::validate_pre(fixture.print(), &error));
+        CHECK(error.empty());
+    }
+
+    SECTION("recurses through an open wrapper to its terminal loop")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_open_wrapper_with_invalid_loop());
+
+        require_precondition_failure(
+            fixture.print(),
+            "missing direct ExtrusionPropertyLoopRole/EPropertyPerimeter",
+            "object[0].normal_layer[0].island[0].region_island[0].perimeters.root.child[0].child[0]");
+    }
+
+    SECTION("checks object auxiliary layers")
+    {
+        PerimeterSourceFixture fixture;
+        LayerRegionIsland &region_island = fixture.add_object_auxiliary_region_island();
+        publish_perimeter_tree(region_island, make_closed_terminal_loop(false, false));
+
+        require_precondition_failure(
+            fixture.print(),
+            "missing direct ExtrusionPropertyLoopRole/EPropertyPerimeter",
+            "object[0].auxiliary_layer[0].island[0].region_island[0].perimeters.root.child[0]");
+    }
+
+    SECTION("checks print auxiliary layers")
+    {
+        PerimeterSourceFixture fixture;
+        LayerRegionIsland &region_island = fixture.add_print_auxiliary_region_island();
+        publish_perimeter_tree(region_island, make_closed_terminal_loop(false, false));
+
+        require_precondition_failure(
+            fixture.print(),
+            "missing direct ExtrusionPropertyLoopRole/EPropertyPerimeter",
+            "print.auxiliary_layer[0].island[0].region_island[0].perimeters.root.child[0]");
+    }
+
+    SECTION("run_step rejects invalid source trees before creating the plan")
+    {
+        PerimeterSourceFixture fixture;
+        publish_perimeter_tree(fixture, make_closed_terminal_loop(false, false));
+
+        std::string thrown_message;
+        try {
+            Steps::StepExtrusionOrdering::run_step(Orchestrator::instance(), fixture.print());
+        } catch (const RuntimeError &error) {
+            thrown_message = error.what();
+        }
+
+        CHECK(thrown_message.find("STEP_ORDERING pre-validation failed") != std::string::npos);
+        CHECK(thrown_message.find("missing direct ExtrusionPropertyLoopRole/EPropertyPerimeter") !=
+              std::string::npos);
+        CHECK(fixture.print().printing_plan() == nullptr);
+    }
 }

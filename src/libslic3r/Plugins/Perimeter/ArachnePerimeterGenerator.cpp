@@ -20,6 +20,7 @@
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
+#include "libslic3r/ExtrusionProperty.hpp"
 #include "libslic3r/Flow.hpp"
 #include "libslic3r/Geometry/MedialAxis.hpp"
 #include "libslic3r/Layer.hpp"
@@ -207,6 +208,14 @@ void append_arachne_line(Slic3r::ExtrusionEntityCollection &dst,
 
     if (is_closed && paths.back().last_point().coincides_with_epsilon(paths.front().first_point())) {
         Slic3r::ExtrusionLoop loop(std::move(paths), loop_role);
+        // STEP_ORDERING validates the direct metadata of terminal loops. The
+        // path annotations above remain useful to path consumers, but the loop
+        // itself must retain the same shell and perimeter classification.
+        Slic3r::ExtrusionPropertyLoopRole &loop_property =
+            loop.get_or_add_property<Slic3r::ExtrusionPropertyLoopRole>();
+        loop_property.perimeter_idx = int16_t(std::min<size_t>(
+            absolute_inset_idx, size_t(std::numeric_limits<int16_t>::max())));
+        loop_property.set_perimeter_role(loop_role);
         const bool ccw_contour = region_config.perimeter_direction.value == Slic3r::PerimeterDirection::pdCCW_CW ||
                                  region_config.perimeter_direction.value == Slic3r::PerimeterDirection::pdCCW_CCW;
         const bool ccw_hole = region_config.perimeter_direction.value == Slic3r::PerimeterDirection::pdCW_CCW ||

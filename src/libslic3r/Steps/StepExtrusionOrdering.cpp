@@ -1,4 +1,11 @@
+/*
+STEP_ORDERING preflight and plugin execution
+=============================================
 
+The source LayerRegionIsland perimeter trees are cloned into PrintingPlan by
+the ordering step. The preflight below checks the loop metadata on those
+source trees before any plugin can consume or reorder the clones.
+*/
 #include "StepExtrusionOrdering.hpp"
 
 #include <algorithm>
@@ -8,6 +15,8 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
+#include "libslic3r/ExtrusionEntity.hpp"
+#include "libslic3r/ExtrusionProperty.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Layer.hpp"
@@ -62,6 +71,103 @@ bool validation_failure(std::string *error,
     return false;
 }
 
+/*
+STEP_ORDERING source validation follows this call flow:
+validate_pre -> validate_layer_perimeters -> validate_perimeter_entity.
+Keep the declarations and definitions in that order so the outer source-layer
+walk is visible before the recursive tree details.
+*/
+bool validate_layer_perimeters(const Layer &layer,
+                               const std::string &layer_path,
+                               std::string *error);
+bool validate_perimeter_entity(const ExtrusionEntity &entity,
+                               const std::string &path,
+                               std::string *error,
+                               bool inherited_loop_property);
+
+/* Validate every perimeter root stored by one source layer. */
+bool validate_layer_perimeters(const Layer &layer,
+                               const std::string &layer_path,
+                               std::string *error)
+{
+    for (size_t island_idx = 0; island_idx < layer.islands().size(); ++island_idx) {
+        const LayerSliceIsland &island = layer.island(island_idx);
+        for (size_t region_island_idx = 0;
+             region_island_idx < island.regions_islands().size();
+             ++region_island_idx) {
+            const LayerRegionIsland &region_island = island.regions_island(region_island_idx);
+            if (!region_island.has_extrusion(LayerRegionIsland::PERIMETERS))
+                continue;
+
+            const std::string path =
+                layer_path + ".island[" + std::to_string(island_idx) + "]"
+                ".region_island[" + std::to_string(region_island_idx) + "]"
+                ".perimeters.root";
+            if (!validate_perimeter_entity(
+                    region_island.extrusion(LayerRegionIsland::PERIMETERS), path, error, false))
+                return false;
+        }
+    }
+    return true;
+}
+
+/* Validate one perimeter tree using the same depth-first order as its source storage. */
+bool validate_perimeter_entity(const ExtrusionEntity &entity,
+                               const std::string &path,
+                               std::string *error,
+                               const bool inherited_loop_property)
+{
+    bool has_direct_loop_child = false;
+    for (size_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        if (entity.child(child_idx).is_loop()) {
+            has_direct_loop_child = true;
+            break;
+        }
+
+    const ExtrusionPropertyLoopRole *property =
+        entity.get_property<ExtrusionPropertyLoopRole>();
+    if (property != nullptr &&
+        (property->perimeter_flags & C_EXTRUSION_PERIMETER_FLAG_LOOP) != 0 &&
+        !entity.is_loop())
+        return validation_failure(
+            error, path,
+            "entity has C_EXTRUSION_PERIMETER_FLAG_LOOP but is_loop() is false");
+
+    // A loop that directly owns another loop is a structural container. Only
+    // terminal ordinary-perimeter loops need their own perimeter property;
+    // thin-wall loops share the PERIMETERS bucket but carry a different role.
+    const ExtrusionRole role = entity.role();
+    const bool is_ordinary_perimeter =
+        role.has(ExtrusionRoleModifier::ERM_Perimeter) &&
+        !role.has(ExtrusionRoleModifier::ERM_Thin);
+    if (entity.is_loop() && !has_direct_loop_child && is_ordinary_perimeter) {
+        if (property == nullptr && !inherited_loop_property)
+            return validation_failure(
+                error, path,
+                "terminal loop is missing direct ExtrusionPropertyLoopRole/EPropertyPerimeter");
+        if (property != nullptr &&
+            (property->perimeter_flags & C_EXTRUSION_PERIMETER_FLAG_LOOP) == 0)
+            return validation_failure(
+                error, path,
+                "terminal loop has direct ExtrusionPropertyLoopRole/EPropertyPerimeter but is missing "
+                "C_EXTRUSION_PERIMETER_FLAG_LOOP");
+    }
+
+    const bool has_valid_loop_property =
+        property != nullptr &&
+        (property->perimeter_flags & C_EXTRUSION_PERIMETER_FLAG_LOOP) != 0;
+    const bool child_inherits_loop_property =
+        inherited_loop_property ||
+        (entity.is_loop() && is_ordinary_perimeter && has_valid_loop_property);
+    for (size_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        const std::string child_path = path + ".child[" + std::to_string(child_idx) + "]";
+        if (!validate_perimeter_entity(
+                entity.child(child_idx), child_path, error, child_inherits_loop_property))
+            return false;
+    }
+    return true;
+}
+
 /* Describe the catalog state used by an extrusion in a diagnostic. */
 const char *instance_kind(const Printing::PrintingObjectInstance *instance,
                           const uint32_t printing_catalog_id)
@@ -78,8 +184,39 @@ void clean_and_prepare(Print &print)
     print.reset_printing_plan();
 }
 
-bool validate_pre(const Print &, std::string *)
+bool validate_pre(const Print &print, std::string *error)
 {
+    if (error != nullptr)
+        error->clear();
+
+    for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx) {
+        const PrintObject &object = print.object(object_idx);
+        for (size_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx) {
+            const std::string layer_path =
+                "object[" + std::to_string(object_idx) + "]"
+                ".normal_layer[" + std::to_string(layer_idx) + "]";
+            if (!validate_layer_perimeters(object.layer(layer_idx), layer_path, error))
+                return false;
+        }
+        for (size_t layer_idx = 0; layer_idx < object.auxiliary_layer_count(); ++layer_idx) {
+            const std::string layer_path =
+                "object[" + std::to_string(object_idx) + "]"
+                ".auxiliary_layer[" + std::to_string(layer_idx) + "]";
+            if (!validate_layer_perimeters(object.auxiliary_layer(layer_idx), layer_path, error))
+                return false;
+        }
+    }
+
+    const PrintObject *auxiliary_object = print.auxiliary_object();
+    if (auxiliary_object != nullptr) {
+        for (size_t layer_idx = 0; layer_idx < auxiliary_object->auxiliary_layer_count(); ++layer_idx) {
+            const std::string layer_path =
+                "print.auxiliary_layer[" + std::to_string(layer_idx) + "]";
+            if (!validate_layer_perimeters(
+                    auxiliary_object->auxiliary_layer(layer_idx), layer_path, error))
+                return false;
+        }
+    }
     return true;
 }
 
@@ -180,6 +317,10 @@ bool validate_post(const Print &print, std::string *error)
 
 void run_step(Orchestrator &orchestrator, Print &print)
 {
+    std::string pre_validation_error;
+    if (!validate_pre(print, &pre_validation_error))
+        throw RuntimeError("STEP_ORDERING pre-validation failed before the plugin pipeline: " + pre_validation_error);
+
     // STEP_ORDERING is a small sequential pipeline. The first plugin normally
     // builds the PrintingPlan, and later plugins refine that same mutable plan.
     // Running these plugins in parallel would make the plan order depend on
