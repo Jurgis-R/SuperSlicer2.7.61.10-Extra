@@ -9,15 +9,14 @@
 #include <cmath>
 #include <limits>
 #include <map>
-#include <set>
 #include <stdexcept>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "SeamCandidatePreparation.hpp"
 #include "SeamPlacementConstraints.hpp"
 #include "SeamCostModel.hpp"
+#include "SeamTrackPreparation.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
@@ -38,6 +37,7 @@ place_seam(), so parallel placement calls are safe while host geometry lives.
 namespace slic3r_api { namespace SeamPlacement { namespace AlignedPlugin {
 
 namespace CP = CandidatePreparation;
+namespace TP = TrackPreparation;
 
 namespace {
 
@@ -49,47 +49,10 @@ const char *const kPluginId = "seam_placer.aligned";
 const char *const kGroupId = "seam_placer_plugin";
 const char *const kDependencies[] = { nullptr };
 
-using RegionIslandKey = const layer_region_island_handle *;
-
-struct StableTrackId {
-    size_t object = 0;
-    size_t instance = 0;
-    size_t layer = 0;
-    size_t island = 0;
-    size_t region_island = 0;
-    size_t perimeter = 0;
-};
-
-struct Track {
-    const extrusion_entity_handle *loop = nullptr;
-    RegionIslandKey region_island = nullptr;
-    const layer_island_handle *layer_island = nullptr;
-    c_point instance_shift{};
-    coord_t slice_z = 0;
-    StableTrackId stable_id;
-    std::vector<CP::Candidate> candidates;
-};
-
-struct LoopBinding {
-    RegionIslandKey region_island = nullptr;
-    c_point instance_shift{};
-    bool distance_only = false;
-    size_t external_track = size_t(-1);
-};
-
-struct LayerIslandNode {
-    StableTrackId stable_id;
-    size_t layer = 0;
-    std::vector<const layer_island_handle *> lower;
-    std::vector<const layer_island_handle *> upper;
-};
-
-struct AlignedData {
-    std::set<const print_region_handle *> regions;
-    std::vector<Track> tracks;
-    std::map<const extrusion_entity_handle *, LoopBinding> bindings;
-    std::map<const layer_island_handle *, LayerIslandNode> islands;
-};
+using Track = TP::Track;
+using LoopBinding = TP::LoopBinding;
+using LayerIslandNode = TP::LayerIslandNode;
+using AlignedData = TP::Data;
 
 struct TrackState {
     size_t local_candidate = size_t(-1);
@@ -109,14 +72,8 @@ struct Continuation {
 class AlignedSession;
 class AlignedSeamPlacer;
 
-/* Find the LayerIsland containing a source LayerRegionIsland. */
-LayerIsland parent_island(const Layer &layer,
-                          const LayerRegionIsland &region_island);
-
 /* Compute the provider's local score without visibility or travel. */
 double local_cost(const CP::Candidate &candidate);
-/* Compare track identities without using borrowed handle values or graph order. */
-bool stable_track_less(const Track &left, const Track &right);
 /* Compare complete candidate identities for deterministic final ties. */
 bool stable_candidate_less(const Track &left_track, const CP::Candidate &left,
                            const Track &right_track, const CP::Candidate &right);
@@ -138,14 +95,8 @@ void smooth_chain(const AlignedData &data,
 /* Seed chains by local quality and stable traversal identity. */
 void build_aligned_targets(const AlignedData &data,
                            std::vector<TrackState> &states);
-/* Prepare Aligned-owned tracks, bindings, and layer-island graph nodes. */
-AlignedData prepare_aligned_data(const PrintingPlan &plan,
-                                 const std::vector<PrintRegion> &regions,
-                                 storage_handle *storage);
 /* Verify that the request is a real non-empty closed geometry loop. */
 void validate_loop(const ExtrusionEntity &loop);
-/* Compare shifts as values so separate object instances never share a track. */
-bool same_shift(c_point left, c_point right);
 
 class AlignedSession final : public SeamPlacerSession
 {
@@ -183,23 +134,6 @@ private:
     void run_impl(const plugin_run_context *run_context) const override;
 };
 
-LayerIsland parent_island(const Layer &layer,
-                          const LayerRegionIsland &region_island)
-{
-    for (uint32_t island_index = 0; island_index < layer.island_count();
-         ++island_index) {
-        const LayerIsland candidate = layer.island(island_index);
-        for (uint32_t region_island_index = 0;
-             region_island_index < candidate.region_island_count();
-             ++region_island_index) {
-            const LayerRegionIsland child =
-                candidate.region_island(region_island_index);
-            if (child.handle() == region_island.handle()) return candidate;
-        }
-    }
-    return LayerIsland();
-}
-
 double local_cost(const CP::Candidate &candidate)
 {
     const double overhang_penalty = candidate.overhang > 0 && candidate.width > 0 ?
@@ -209,21 +143,11 @@ double local_cost(const CP::Candidate &candidate)
         Slic3r::SeamCostModel::compute_angle_penalty(float(candidate.angle));
 }
 
-bool stable_track_less(const Track &left, const Track &right)
-{
-    return std::tie(left.stable_id.object, left.stable_id.instance,
-                    left.stable_id.layer, left.stable_id.island,
-                    left.stable_id.region_island, left.stable_id.perimeter) <
-           std::tie(right.stable_id.object, right.stable_id.instance,
-                    right.stable_id.layer, right.stable_id.island,
-                    right.stable_id.region_island, right.stable_id.perimeter);
-}
-
 bool stable_candidate_less(const Track &left_track, const CP::Candidate &left,
                            const Track &right_track, const CP::Candidate &right)
 {
-    if (stable_track_less(left_track, right_track)) return true;
-    if (stable_track_less(right_track, left_track)) return false;
+    if (TP::stable_track_less(left_track, right_track)) return true;
+    if (TP::stable_track_less(right_track, left_track)) return false;
     return left.stable_order < right.stable_order;
 }
 
@@ -377,7 +301,7 @@ void build_aligned_targets(const AlignedData &data,
     std::sort(seeds.begin(), seeds.end(), [&](size_t left, size_t right) {
         if (states[left].local_cost != states[right].local_cost)
             return states[left].local_cost < states[right].local_cost;
-        return stable_track_less(data.tracks[left], data.tracks[right]);
+        return TP::stable_track_less(data.tracks[left], data.tracks[right]);
     });
     for (const size_t seed : seeds) {
         if (states[seed].assigned) continue;
@@ -398,216 +322,6 @@ void build_aligned_targets(const AlignedData &data,
     }
 }
 
-AlignedData prepare_aligned_data(const PrintingPlan &plan,
-                                 const std::vector<PrintRegion> &regions,
-                                 storage_handle *storage)
-{
-    if (!plan.valid() || storage == nullptr)
-        throw std::invalid_argument(
-            "Aligned seam placement needs a valid plan and temporary storage.");
-    AlignedData data;
-    SeamPlacementConstraints constraints;
-    constraints.initialize_for_regions(plan, storage, regions);
-    for (const PrintRegion &region : regions)
-        if (region.valid()) data.regions.insert(region.handle());
-
-    std::map<const object_handle *, size_t> object_orders;
-    std::set<const object_handle *> indexed_objects;
-    std::map<std::pair<RegionIslandKey, size_t>, size_t> perimeter_orders;
-    std::map<const extrusion_entity_handle *, LoopBinding> raw_bindings;
-    size_t next_object_order = 0;
-
-    for (uint32_t group_index = 0; group_index < plan.group_count();
-         ++group_index) {
-        const PrintingGroup group = plan.group(group_index);
-        for (uint32_t layer_group_index = 0;
-             layer_group_index < group.layer_group_count();
-             ++layer_group_index) {
-            const PrintingLayerGroup layer_group =
-                group.layer_group(layer_group_index);
-            for (uint32_t tool_index = 0;
-                 tool_index < layer_group.tool_group_count(); ++tool_index) {
-                const PrintingToolGroup tool =
-                    layer_group.tool_group(tool_index);
-                for (uint32_t extrusion_index = 0;
-                     extrusion_index < tool.extrusion_count();
-                     ++extrusion_index) {
-                    const PrintingExtrusion extrusion =
-                        tool.extrusion(extrusion_index);
-                    const LayerRegionIsland region_island =
-                        extrusion.region_island();
-                    const std::vector<CP::CollectedLoop> collected =
-                        CP::collect_perimeter_loops(
-                            extrusion.root(), extrusion.role());
-                    const bool has_non_distance_only_loop = std::any_of(
-                        collected.begin(), collected.end(),
-                        [](const CP::CollectedLoop &loop) {
-                            return !loop.distance_only;
-                        });
-                    if (!region_island.valid() ||
-                        region_island.region_count() == 0) {
-                        if (!collected.empty())
-                            throw std::runtime_error(
-                                "Aligned seam placement found a perimeter loop with an invalid source LayerRegionIsland.");
-                        continue;
-                    }
-                    bool assigned = false;
-                    for (uint32_t index = 0;
-                         index < region_island.region_count(); ++index) {
-                        const PrintRegion print_region =
-                            region_island.region(index).print_region();
-                        if (print_region.valid() &&
-                            data.regions.count(print_region.handle()) != 0) {
-                            assigned = true;
-                            break;
-                        }
-                    }
-                    if (!assigned) continue;
-
-                    const c_point shift = plan.object_instance_shift(extrusion);
-                    if (!has_non_distance_only_loop) {
-                        /* Technical-only loops need only a binding and their
-                           own projection; skip parent-island and graph setup. */
-                        for (const CP::CollectedLoop &loop : collected)
-                            raw_bindings.emplace(
-                                loop.loop,
-                                LoopBinding{region_island.handle(), shift,
-                                            loop.distance_only, size_t(-1)});
-                        continue;
-                    }
-
-                    const Layer layer = region_island.region(0).layer();
-                    const Object object = layer.object();
-                    const std::map<const object_handle *, size_t>::iterator
-                        known_object = object_orders.find(object.handle());
-                    const size_t object_order =
-                        known_object == object_orders.end() ?
-                            next_object_order++ : known_object->second;
-                    if (known_object == object_orders.end())
-                        object_orders.emplace(object.handle(), object_order);
-
-                    if (indexed_objects.insert(object.handle()).second) {
-                        for (uint32_t layer_index = 0;
-                             layer_index < object.layer_count(); ++layer_index) {
-                            const Layer object_layer = object.layer(layer_index);
-                            for (uint32_t island_index = 0;
-                                 island_index < object_layer.island_count();
-                                 ++island_index) {
-                                const LayerIsland island =
-                                    object_layer.island(island_index);
-                                LayerIslandNode node;
-                                node.stable_id.object = object_order;
-                                node.stable_id.layer = layer_index;
-                                node.stable_id.island = island_index;
-                                node.layer = layer_index;
-                                for (uint32_t index = 0;
-                                     index < island.lower_island_count();
-                                     ++index)
-                                    if (island.lower_island(index).valid())
-                                        node.lower.push_back(
-                                            island.lower_island(index).handle());
-                                for (uint32_t index = 0;
-                                     index < island.upper_island_count();
-                                     ++index)
-                                    if (island.upper_island(index).valid())
-                                        node.upper.push_back(
-                                            island.upper_island(index).handle());
-                                data.islands.emplace(island.handle(),
-                                                     std::move(node));
-                            }
-                        }
-                    }
-
-                    size_t layer_index = size_t(-1);
-                    size_t island_index = size_t(-1);
-                    size_t region_island_index = size_t(-1);
-                    const LayerIsland parent =
-                        parent_island(layer, region_island);
-                    for (uint32_t index = 0; index < object.layer_count();
-                         ++index)
-                        if (object.layer(index).handle() == layer.handle()) {
-                            layer_index = index;
-                            break;
-                        }
-                    for (uint32_t index = 0; index < layer.island_count();
-                         ++index)
-                        if (layer.island(index).handle() == parent.handle()) {
-                            island_index = index;
-                            break;
-                        }
-                    if (parent.valid())
-                        for (uint32_t index = 0;
-                             index < parent.region_island_count(); ++index)
-                            if (parent.region_island(index).handle() ==
-                                region_island.handle()) {
-                                region_island_index = index;
-                                break;
-                            }
-                    if (!parent.valid() || layer_index == size_t(-1) ||
-                        island_index == size_t(-1) ||
-                        region_island_index == size_t(-1))
-                        throw std::runtime_error(
-                            "Aligned seam placement cannot locate a source LayerRegionIsland in object traversal.");
-
-                    const size_t instance_index =
-                        printing_plan_object_instance_idx(plan, extrusion);
-                    if (instance_index == size_t(-1))
-                        throw std::runtime_error(
-                            "Aligned seam placement found an unknown object instance.");
-                    for (const CP::CollectedLoop &loop : collected)
-                        raw_bindings.emplace(
-                            loop.loop,
-                            LoopBinding{region_island.handle(), shift,
-                                        loop.distance_only, size_t(-1)});
-
-                    const LayerRegion region = region_island.region(0);
-                    const c_flow external_flow = region.flow(
-                        RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
-                    const double fallback_width = unscaled(external_flow.width);
-                    const double nozzle =
-                        unscaled(external_flow.nozzle_diameter);
-                    for (const CP::CollectedLoop &source : collected) {
-                        if (source.distance_only || !source.has_external_geometry)
-                            continue;
-                        const ExtrusionEntity loop(source.loop);
-                        Track track;
-                        track.loop = source.loop;
-                        track.region_island = region_island.handle();
-                        track.layer_island = parent.handle();
-                        track.instance_shift = shift;
-                        track.slice_z = layer.slice_z();
-                        track.stable_id.object = object_order;
-                        track.stable_id.instance = instance_index;
-                        track.stable_id.layer = layer_index;
-                        track.stable_id.island = island_index;
-                        track.stable_id.region_island = region_island_index;
-                        track.stable_id.perimeter = perimeter_orders[
-                            {region_island.handle(), instance_index}]++;
-                        const double width = source.external_width > 0 ?
-                            source.external_width : fallback_width;
-                        track.candidates = CP::prepare_loop_candidates(
-                            storage, constraints, region_island, loop, region,
-                            shift, width, nozzle);
-                        CP::calculate_layer_attributes(region_island,
-                                                       track.candidates);
-                        if (track.candidates.empty())
-                            throw std::runtime_error(
-                                "Aligned seam placement found an external perimeter without candidates.");
-                        const size_t track_index = data.tracks.size();
-                        data.tracks.push_back(std::move(track));
-                        data.bindings[source.loop] = {
-                            region_island.handle(), shift, false, track_index};
-                    }
-                }
-            }
-        }
-    }
-    for (const std::pair<const extrusion_entity_handle *const, LoopBinding>
-             &entry : raw_bindings)
-        data.bindings.emplace(entry.first, entry.second);
-    return data;
-}
-
 void validate_loop(const ExtrusionEntity &loop)
 {
     if (!loop.valid() || !loop.is_loop() || loop.empty())
@@ -620,11 +334,6 @@ void validate_loop(const ExtrusionEntity &loop)
             "Aligned seam placement rejects open or invalid loop geometry.");
 }
 
-bool same_shift(c_point left, c_point right)
-{
-    return left.x == right.x && left.y == right.y;
-}
-
 AlignedSession::AlignedSession(storage_handle *storage) : m_storage(storage) {}
 
 void AlignedSession::initialize(const PrintingPlan &plan,
@@ -634,7 +343,12 @@ void AlignedSession::initialize(const PrintingPlan &plan,
         throw std::logic_error(
             "Aligned seam placement sessions may only be initialized once.");
     m_initialization_started = true;
-    m_data = prepare_aligned_data(plan, regions, m_storage);
+    if (!plan.valid() || m_storage == nullptr)
+        throw std::invalid_argument(
+            "Aligned seam placement needs a valid plan and temporary storage.");
+    SeamPlacementConstraints constraints;
+    constraints.initialize_for_regions(plan, m_storage, regions);
+    m_data = TP::prepare(plan, regions, m_storage, constraints, "Aligned");
     prepare_local_anchors(m_data, m_states);
     build_aligned_targets(m_data, m_states);
     m_storage = nullptr;
@@ -691,7 +405,8 @@ c_point AlignedSession::place_seam(const ExtrusionEntity &loop,
     for (size_t track_index = 0; track_index < m_data.tracks.size(); ++track_index) {
         const Track &track = m_data.tracks[track_index];
         if (track.region_island != binding->second.region_island ||
-            !same_shift(track.instance_shift, binding->second.instance_shift))
+            !TP::same_shift(track.instance_shift,
+                            binding->second.instance_shift))
             continue;
         const c_point local = m_states[track_index].final_point;
         const c_point target = {local.x + binding->second.instance_shift.x,
@@ -700,7 +415,7 @@ c_point AlignedSession::place_seam(const ExtrusionEntity &loop,
             CP::project_onto_loop(loop, target);
         if (projection.second < best_distance ||
             (projection.second == best_distance && best_track != size_t(-1) &&
-             stable_track_less(track, m_data.tracks[best_track]))) {
+             TP::stable_track_less(track, m_data.tracks[best_track]))) {
             best = projection.first;
             best_distance = projection.second;
             best_track = track_index;
@@ -736,7 +451,7 @@ const char *AlignedSeamPlacer::exclusive_group_tooltip_impl() const noexcept
 }
 slicing_step_t AlignedSeamPlacer::step_impl() const noexcept { return SEAM_PLACER; }
 const char *const *AlignedSeamPlacer::dependencies_impl() const noexcept { return kDependencies; }
-int32_t AlignedSeamPlacer::priority_impl() const noexcept { return 950; }
+int32_t AlignedSeamPlacer::priority_impl() const noexcept { return 700; }
 
 void AlignedSeamPlacer::run_impl(const plugin_run_context *run_context) const
 {

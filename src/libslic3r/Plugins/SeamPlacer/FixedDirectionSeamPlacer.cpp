@@ -318,7 +318,7 @@ const char *FixedDirectionSeamPlacer::exclusive_group_tooltip_impl() const noexc
 
 slicing_step_t FixedDirectionSeamPlacer::step_impl() const noexcept { return SEAM_PLACER; }
 const char *const *FixedDirectionSeamPlacer::dependencies_impl() const noexcept { return k_no_dependencies; }
-int32_t FixedDirectionSeamPlacer::priority_impl() const noexcept { return 1000; }
+int32_t FixedDirectionSeamPlacer::priority_impl() const noexcept { return 900; }
 
 int32_t FixedDirectionSeamPlacer::used_config_keys(raw_used_config_key *keys) const noexcept
 {

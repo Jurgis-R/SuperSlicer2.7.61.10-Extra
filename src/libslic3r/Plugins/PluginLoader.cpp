@@ -89,6 +89,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/SeamPlacer/AlignedSeamPlacer.hpp"
+#include "libslic3r/Plugins/SeamPlacer/ContiguousSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/CostSeamPlacer.hpp"
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
@@ -689,6 +690,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins);
     register_builtin_plugin(orchestrator, "seam_placer.aligned",
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin);
+    register_builtin_plugin(orchestrator, "seam_placer.contiguous",
+        slic3r_api::SeamPlacement::ContiguousPlugin::register_contiguous_seam_placer_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.cost",
         slic3r_api::SeamPlacement::CostPlugin::register_cost_seam_placer_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.fixed",

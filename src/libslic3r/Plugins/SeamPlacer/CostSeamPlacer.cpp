@@ -136,7 +136,7 @@ private:
     const char *exclusive_group_tooltip_impl() const noexcept override { return "Selects the service used to choose the starting point of closed extrusion loops."; }
     slicing_step_t step_impl() const noexcept override { return SEAM_PLACER; }
     const char *const *dependencies_impl() const noexcept override { return k_dependencies; }
-    int32_t priority_impl() const noexcept override { return 900; }
+    int32_t priority_impl() const noexcept override { return 600; }
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
     int32_t defined_config_keys(const char **keys) const noexcept override;
     void inilialize_impl(storage_handle *) const override;

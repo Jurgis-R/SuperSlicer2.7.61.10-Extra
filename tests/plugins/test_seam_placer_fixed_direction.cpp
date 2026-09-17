@@ -533,7 +533,7 @@ TEST_CASE("Fixed-direction seam placer registers its regional contract",
     REQUIRE(plugin != nullptr);
     CHECK(plugin->get_name() == "Fixed direction");
     CHECK(plugin->get_step() == SEAM_PLACER);
-    CHECK(plugin->get_priority() == 1000);
+    CHECK(plugin->get_priority() == 900);
     CHECK(plugin->get_exclusive_group() == k_seam_group);
 
     const std::vector<Plugin::UsedConfigKey> used = plugin->get_used_config_keys();

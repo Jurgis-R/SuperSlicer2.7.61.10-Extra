@@ -343,6 +343,8 @@ set(SLIC3R_SOURCES
 	Plugins/PrintingPlan/PrintingLayerTimeProperty.h
 	Plugins/SeamPlacer/AlignedSeamPlacer.cpp
 	Plugins/SeamPlacer/AlignedSeamPlacer.hpp
+	Plugins/SeamPlacer/ContiguousSeamPlacer.cpp
+	Plugins/SeamPlacer/ContiguousSeamPlacer.hpp
 	Plugins/SeamPlacer/CostSeamPlacer.cpp
 	Plugins/SeamPlacer/CostSeamPlacer.hpp
 	Plugins/SeamPlacer/FixedDirectionSeamPlacer.cpp
@@ -357,6 +359,8 @@ set(SLIC3R_SOURCES
 	Plugins/SeamPlacer/SeamPlacementConstraints.hpp
 	Plugins/SeamPlacer/SeamPlacerRouter.cpp
 	Plugins/SeamPlacer/SeamPlacerRouter.hpp
+	Plugins/SeamPlacer/SeamTrackPreparation.cpp
+	Plugins/SeamPlacer/SeamTrackPreparation.hpp
 	Plugins/SkirtBrim/AdhesionLayerHelpers.cpp
 	Plugins/SkirtBrim/AdhesionLayerHelpers.hpp
 	Plugins/SkirtBrim/DefaultBrimGenerator.cpp

@@ -25,6 +25,7 @@
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Plugins/SeamPlacer/AlignedSeamPlacer.hpp"
+#include "libslic3r/Plugins/SeamPlacer/ContiguousSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/CostSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/SeamCandidatePreparation.hpp"
 #include "libslic3r/Plugins/SeamPlacer/SeamCostModel.hpp"
@@ -36,8 +37,8 @@
 #include "libslic3r/TriangleSelector.hpp"
 
 /*
-Cost and Aligned seam provider tests
-====================================
+Cost, Aligned and Contiguous seam provider tests
+================================================
 These focused checks exercise built-in metadata and published immutable
 sessions over real generated PrintingPlans. Functional cases ask the service
 adapter to validate every returned point, so line/arc projection cannot
@@ -52,6 +53,7 @@ using namespace Slic3r::Test::PerimeterPluginTests;
 
 const char *const k_cost_plugin = "seam_placer.cost";
 const char *const k_aligned_plugin = "seam_placer.aligned";
+const char *const k_contiguous_plugin = "seam_placer.contiguous";
 
 bool find_loop(const slic3r_api::ExtrusionEntity &entity,
                slic3r_api::ExtrusionEntity &loop)
@@ -119,6 +121,31 @@ slic3r_api::SeamPlacer create_aligned_session(Print &print)
     return slic3r_api::SeamPlacer(instance);
 }
 
+/* Initialize Contiguous through the ABI holder used by the production router. */
+slic3r_api::SeamPlacer create_contiguous_session(Print &print)
+{
+    PrintingPlan &native_plan = print.mutable_printing_plan();
+    const slic3r_api::PrintingPlan plan(
+        reinterpret_cast<printing_plan_handle *>(&native_plan));
+    const slic3r_api::Print print_view(
+        reinterpret_cast<const print_handle *>(&print));
+    std::vector<slic3r_api::PrintRegion> regions;
+    for (uint32_t object_index = 0;
+         object_index < print_view.object_count(); ++object_index) {
+        const slic3r_api::Object object = print_view.object(object_index);
+        for (uint32_t region_index = 0;
+             region_index < object.print_region_count(); ++region_index)
+            regions.push_back(object.print_region(region_index));
+    }
+    PluginStorage storage;
+    raw_seam_placer_instance instance = slic3r_api::make_seam_placer_instance(
+        slic3r_api::SeamPlacement::ContiguousPlugin::
+            make_contiguous_seam_session(
+                reinterpret_cast<storage_handle *>(&storage)),
+        plan, regions);
+    return slic3r_api::SeamPlacer(instance);
+}
+
 ExtrusionEntity rectangle_loop(double left, double bottom, double right, double top,
                                bool reverse = false)
 {
@@ -156,6 +183,26 @@ ExtrusionEntity arc_loop()
     ArcPolyline polyline(path);
     ApiInternal::ArcPolylineAccess::refresh_after_bulk_replace(polyline);
     return ExtrusionEntity(false, polyline);
+}
+
+/* Add one model-space seam modifier to a generated object's constraint input. */
+ModelVolume *add_seam_constraint_box(
+    PrintObject &object, double x, double y, double sx, double sy,
+    ModelVolumeType type, EnforcerBlockerType painting,
+    double z, double height)
+{
+    TriangleMesh mesh = make_cube(sx, sy, height);
+    mesh.translate(Vec3f(float(x), float(y), float(z)));
+    mesh.transform(object.trafo_centered().inverse());
+    ModelVolume *volume = const_cast<ModelObject *>(object.model_object())->add_volume(
+        std::move(mesh), type, false);
+    if (painting != EnforcerBlockerType::NONE) {
+        TriangleSelector selector(volume->mesh());
+        for (size_t index = 0; index < volume->mesh().its.indices.size(); ++index)
+            selector.set_facet(int(index), painting);
+        volume->facets_annotation_mutable("builtin:seam").set(selector);
+    }
+    return volume;
 }
 
 /* Attach the metadata layout produced by Arachne, where open child paths carry
@@ -203,18 +250,8 @@ struct CostFixture
                      EnforcerBlockerType painting = EnforcerBlockerType::NONE,
                      double z = 0, double height = 30)
     {
-        TriangleMesh mesh = make_cube(sx, sy, height);
-        mesh.translate(Vec3f(float(x), float(y), float(z)));
-        mesh.transform(object->trafo_centered().inverse());
-        ModelVolume *volume = const_cast<ModelObject *>(object->model_object())->add_volume(
-            std::move(mesh), type, false);
-        if (painting != EnforcerBlockerType::NONE) {
-            TriangleSelector selector(volume->mesh());
-            for (size_t index = 0; index < volume->mesh().its.indices.size(); ++index)
-                selector.set_facet(int(index), painting);
-            volume->facets_annotation_mutable("builtin:seam").set(selector);
-        }
-        return volume;
+        return add_seam_constraint_box(
+            *object, x, y, sx, sy, type, painting, z, height);
     }
 
     slic3r_api::PrintingExtrusion add(const ExtrusionEntity &loop, raw_extrusion_role role,
@@ -386,6 +423,14 @@ c_point aligned_seam(const slic3r_api::SeamPlacer &placer,
     return placer.place_seam(extrusion.root(), region, {});
 }
 
+/* Resolve one Contiguous target without adding an approach-position bias. */
+c_point contiguous_seam(const slic3r_api::SeamPlacer &placer,
+                        const slic3r_api::PrintingExtrusion &extrusion)
+{
+    const slic3r_api::LayerRegion region = extrusion.region_island().region(0);
+    return placer.place_seam(extrusion.root(), region, {});
+}
+
 /* Append one translated external loop to a chosen layer and object instance. */
 slic3r_api::PrintingExtrusion append_aligned_loop(
     Print &print, Layer &layer, LayerRegionIsland &source,
@@ -447,20 +492,25 @@ TEST_CASE("Cost seam metadata is the default regional provider",
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
     const Plugin *aligned = orchestrator.get_plugin(k_aligned_plugin);
+    const Plugin *contiguous = orchestrator.get_plugin(k_contiguous_plugin);
     const Plugin *cost = orchestrator.get_plugin(k_cost_plugin);
     const Plugin *fixed = orchestrator.get_plugin("seam_placer.fixed");
     const Plugin *random = orchestrator.get_plugin("seam_placer.random");
     REQUIRE(aligned != nullptr);
+    REQUIRE(contiguous != nullptr);
     REQUIRE(cost != nullptr);
     REQUIRE(fixed != nullptr);
     REQUIRE(random != nullptr);
     CHECK(aligned->get_name() == "Aligned");
-    CHECK(aligned->get_priority() == 950);
+    CHECK(aligned->get_priority() == 700);
     CHECK(aligned->get_dependencies().empty());
+    CHECK(contiguous->get_name() == "Contiguous");
+    CHECK(contiguous->get_priority() == 800);
+    CHECK(contiguous->get_dependencies().empty());
     CHECK(cost->get_name() == "Cost-based");
-    CHECK(cost->get_priority() == 900);
-    CHECK(fixed->get_priority() == 1000);
-    CHECK(random->get_priority() == 1100);
+    CHECK(cost->get_priority() == 600);
+    CHECK(fixed->get_priority() == 900);
+    CHECK(random->get_priority() == 1000);
     CHECK(cost->get_dependencies().empty());
     const std::vector<Plugin::UsedConfigKey> used = cost->get_used_config_keys();
     REQUIRE(used.size() == 3);
@@ -513,6 +563,7 @@ TEST_CASE("Cost seam metadata is the default regional provider",
     contents << stream.rdbuf();
     CHECK(contents.str().find("seam_placer.cost = 1") != std::string::npos);
     CHECK(contents.str().find("seam_placer.aligned = 1") != std::string::npos);
+    CHECK(contents.str().find("seam_placer.contiguous = 1") != std::string::npos);
 }
 
 TEST_CASE("Cost seam projects candidates and supports parallel placement",
@@ -1602,4 +1653,289 @@ TEST_CASE("Aligned graph ignores links that skip a layer",
     const c_point source = aligned_seam(placer, tracks[1]);
     CHECK(source.x == tracks[1].root().front().x);
     CHECK(source.y == tracks[1].root().front().y);
+}
+
+TEST_CASE("Contiguous seam projects a direct lower seam and stops at graph breaks",
+          "[plugins][seam-placer][contiguous][graph]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 2);
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+
+    const slic3r_api::PrintingExtrusion lower = append_aligned_loop(
+        prepared.print, object.layer(0),
+        *native_region_island(object.layer(0)),
+        rectangle_loop(-5, -5, 5, 5), 0);
+    const slic3r_api::PrintingExtrusion upper = append_aligned_loop(
+        prepared.print, object.layer(1),
+        *native_region_island(object.layer(1)),
+        rectangle_loop(-10, -3, 0, 7), 0);
+
+    const slic3r_api::SeamPlacer linked =
+        create_contiguous_session(prepared.print);
+    const c_point lower_seam = contiguous_seam(linked, lower);
+    const c_point expected =
+        slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+            upper.root(), lower_seam).first;
+    const c_point propagated = contiguous_seam(linked, upper);
+    CHECK(propagated.x == expected.x);
+    CHECK(propagated.y == expected.y);
+    CHECK((propagated.x != upper.root().front().x ||
+           propagated.y != upper.root().front().y));
+
+    const c_point far_start = {scale_i(100), scale_i(100)};
+    const c_point repeated = linked.place_seam(
+        upper.root(), upper.region_island().region(0), far_start);
+    CHECK(repeated.x == propagated.x);
+    CHECK(repeated.y == propagated.y);
+
+    object.layer(0).island(0).overlaps_above.clear();
+    object.layer(1).island(0).overlaps_below.clear();
+    const slic3r_api::SeamPlacer broken =
+        create_contiguous_session(prepared.print);
+    const c_point local = contiguous_seam(broken, upper);
+    CHECK(local.x == upper.root().front().x);
+    CHECK(local.y == upper.root().front().y);
+}
+
+TEST_CASE("Contiguous seam lets a local enforcer restart propagation",
+          "[plugins][seam-placer][contiguous][constraints][enforcer]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 2);
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+
+    const slic3r_api::PrintingExtrusion lower = append_aligned_loop(
+        prepared.print, object.layer(0),
+        *native_region_island(object.layer(0)),
+        rectangle_loop(-5, -5, 5, 5), 0);
+    const slic3r_api::PrintingExtrusion upper = append_aligned_loop(
+        prepared.print, object.layer(1),
+        *native_region_island(object.layer(1)),
+        rectangle_loop(-10, -3, 0, 7), 0);
+
+    const slic3r_api::SeamPlacer baseline =
+        create_contiguous_session(prepared.print);
+    const c_point propagated = contiguous_seam(baseline, upper);
+
+    // The modifier spans both layers in Z, but only intersects the upper loop
+    // in XY, so the lower reference seam remains unchanged.
+    add_seam_constraint_box(
+        object, -10.5, -3.5, 1.0, 1.0,
+        ModelVolumeType::SEAM_POSITION_INSIDE,
+        EnforcerBlockerType::NONE, 0, 30);
+    const slic3r_api::SeamPlacer enforced =
+        create_contiguous_session(prepared.print);
+    const c_point reset = contiguous_seam(enforced, upper);
+    CHECK((reset.x != propagated.x || reset.y != propagated.y));
+
+    const Point shift = object.instances().front().shift;
+    const c_point local_reset = {reset.x - shift.x(), reset.y - shift.y()};
+    CHECK(unscaled(local_reset.x) <= -9.49);
+    CHECK(unscaled(local_reset.x) >= -10.01);
+    CHECK(unscaled(local_reset.y) >= -3.51);
+    CHECK(unscaled(local_reset.y) <= -2.49);
+}
+
+TEST_CASE("Contiguous seam uses stable lower-track order at a merge",
+          "[plugins][seam-placer][contiguous][graph][merge][determinism]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 2);
+
+    replace_test_layer_islands(object.layer(0), {
+        rectangle_expolygon(-5, -5, -0.1, 5),
+        rectangle_expolygon(0.1, -5, 5, 5)});
+    replace_test_layer_islands(object.layer(1), {
+        rectangle_expolygon(-5, -5, 5, 5)});
+    rebuild_test_island_graph(object);
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+
+    const slic3r_api::PrintingExtrusion left = append_aligned_loop(
+        prepared.print, object.layer(0),
+        *native_region_island_at(object.layer(0), 0),
+        rectangle_loop(-5, -5, -0.1, 5), 0);
+    const slic3r_api::PrintingExtrusion right = append_aligned_loop(
+        prepared.print, object.layer(0),
+        *native_region_island_at(object.layer(0), 1),
+        rectangle_loop(0.1, -5, 5, 5), 0);
+    const ExtrusionEntity upper_loop(false, ArcPolyline(Points{
+        Point::new_scale(5, 5), Point::new_scale(-5, 5),
+        Point::new_scale(-5, -5), Point::new_scale(5, -5),
+        Point::new_scale(5, 5)}));
+    const slic3r_api::PrintingExtrusion upper = append_aligned_loop(
+        prepared.print, object.layer(1),
+        *native_region_island_at(object.layer(1), 0), upper_loop, 0);
+
+    const slic3r_api::SeamPlacer first =
+        create_contiguous_session(prepared.print);
+    const c_point left_seam = contiguous_seam(first, left);
+    const c_point right_seam = contiguous_seam(first, right);
+    const std::pair<c_point, double> left_projection =
+        slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+            upper.root(), left_seam);
+    const std::pair<c_point, double> right_projection =
+        slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+            upper.root(), right_seam);
+    REQUIRE(left_projection.second == right_projection.second);
+    const c_point merged = contiguous_seam(first, upper);
+    CHECK(merged.x == left_projection.first.x);
+    CHECK(merged.y == left_projection.first.y);
+
+    std::reverse(object.layer(1).island(0).overlaps_below.begin(),
+                 object.layer(1).island(0).overlaps_below.end());
+    const slic3r_api::SeamPlacer reordered =
+        create_contiguous_session(prepared.print);
+    const c_point stable = contiguous_seam(reordered, upper);
+    CHECK(stable.x == merged.x);
+    CHECK(stable.y == merged.y);
+}
+
+TEST_CASE("Contiguous seam lets both graph branches reuse one lower seam",
+          "[plugins][seam-placer][contiguous][graph][branch]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        {"seam_visibility", "0"}, {"seam_angle_cost", "0"},
+        {"seam_travel_cost", "0"}}));
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() >= 2);
+
+    replace_test_layer_islands(object.layer(0), {
+        rectangle_expolygon(-5, -5, 5, 5)});
+    replace_test_layer_islands(object.layer(1), {
+        rectangle_expolygon(-5, -5, -0.1, 5),
+        rectangle_expolygon(0.1, -5, 5, 5)});
+    rebuild_test_island_graph(object);
+    prepared.print.mutable_printing_plan() = PrintingPlan();
+
+    const slic3r_api::PrintingExtrusion lower = append_aligned_loop(
+        prepared.print, object.layer(0),
+        *native_region_island_at(object.layer(0), 0),
+        rectangle_loop(-5, -5, 5, 5), 0);
+    const slic3r_api::PrintingExtrusion left = append_aligned_loop(
+        prepared.print, object.layer(1),
+        *native_region_island_at(object.layer(1), 0),
+        rectangle_loop(-5, -4, -0.1, 6), 0);
+    const slic3r_api::PrintingExtrusion right = append_aligned_loop(
+        prepared.print, object.layer(1),
+        *native_region_island_at(object.layer(1), 1),
+        rectangle_loop(0.1, -4, 5, 6), 0);
+
+    const slic3r_api::SeamPlacer placer =
+        create_contiguous_session(prepared.print);
+    const c_point source = contiguous_seam(placer, lower);
+    for (const slic3r_api::PrintingExtrusion &branch : {left, right}) {
+        const c_point expected =
+            slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+                branch.root(), source).first;
+        const c_point seam = contiguous_seam(placer, branch);
+        CHECK(seam.x == expected.x);
+        CHECK(seam.y == expected.y);
+    }
+}
+
+TEST_CASE("Contiguous seam projects technical and internal loops",
+          "[plugins][seam-placer][contiguous][geometry][instances][parallel]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    CostFixture fixture;
+    fixture.source_ptr = attach_native_source(fixture);
+    PrintInstances &instances =
+        const_cast<PrintInstances &>(fixture.object->instances());
+    instances.push_back(instances.front());
+    instances.back().shift += Point::new_scale(40, -25);
+    fixture.add(rectangle_loop(-5, -5, 5, 5),
+                RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER, 0);
+    fixture.add(arc_loop(), RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER, 1);
+    fixture.add(rectangle_loop(-2, -2, 2, 2),
+                RAW_EXTRUSION_ROLE_PERIMETER, 0);
+    const slic3r_api::PrintingExtrusion skirt = fixture.add(
+        rectangle_loop(0, 0, 10, 10), RAW_EXTRUSION_ROLE_SKIRT);
+
+    const slic3r_api::SeamPlacer placer =
+        create_contiguous_session(fixture.prepared.print);
+    const slic3r_api::PrintingExtrusion line = fixture.extrusion(0);
+    const slic3r_api::PrintingExtrusion arc = fixture.extrusion(1);
+    const slic3r_api::PrintingExtrusion inner = fixture.extrusion(2);
+    REQUIRE(placer.get_priority(line.root(), fixture.region_view()) == 50.0f);
+
+    for (const slic3r_api::PrintingExtrusion &extrusion : {line, arc, inner}) {
+        const c_point seam = placer.place_seam(
+            extrusion.root(), fixture.region_view(), {});
+        CHECK(slic3r_api::SeamPlacement::CandidatePreparation::
+                  project_onto_loop(extrusion.root(), seam).second == 0.0);
+    }
+    const c_point start = {skirt.root().front().x + scale_i(4),
+                           skirt.root().front().y - scale_i(3)};
+    const c_point projected = fixture.local(placer.place_seam(
+        skirt.root(), fixture.region_view(), start));
+    CHECK(projected.x == scale_i(4));
+    CHECK(projected.y == 0);
+
+    const c_point expected = placer.place_seam(
+        inner.root(), fixture.region_view(), {});
+    std::vector<std::future<c_point>> calls;
+    for (size_t index = 0; index < 8; ++index)
+        calls.push_back(std::async(
+            std::launch::async, [&placer, inner, &fixture]() {
+                return placer.place_seam(
+                    inner.root(), fixture.region_view(), {});
+            }));
+    for (std::future<c_point> &call : calls) {
+        const c_point seam = call.get();
+        CHECK(seam.x == expected.x);
+        CHECK(seam.y == expected.y);
+    }
+}
+
+TEST_CASE("Contiguous seam rejects repeated initialization and invalid requests",
+          "[plugins][seam-placer][contiguous][errors]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    CostFixture fixture;
+    fixture.source_ptr = attach_native_source(fixture);
+    fixture.add(rectangle_loop(-5, -5, 5, 5),
+                RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+    PrintingPlan &native_plan = fixture.prepared.print.mutable_printing_plan();
+    const slic3r_api::PrintingPlan plan(
+        reinterpret_cast<printing_plan_handle *>(&native_plan));
+    const std::vector<slic3r_api::PrintRegion> regions = {
+        fixture.region_view().print_region()};
+    PluginStorage storage;
+    std::unique_ptr<slic3r_api::SeamPlacerSession> session =
+        slic3r_api::SeamPlacement::ContiguousPlugin::
+            make_contiguous_seam_session(
+                reinterpret_cast<storage_handle *>(&storage));
+    session->initialize(plan, regions);
+    CHECK_THROWS_WITH(session->initialize(plan, regions),
+        "Contiguous seam placement sessions may only be initialized once.");
+
+    const slic3r_api::PrintingExtrusion extrusion = fixture.extrusion(0);
+    CHECK_THROWS_WITH(session->place_seam(
+        extrusion.root(), slic3r_api::LayerRegion(), {}),
+        "Contiguous seam placement needs a valid LayerRegion.");
+    const ExtrusionEntity open(false, ArcPolyline(Points{
+        Point::new_scale(-1, 0), Point::new_scale(1, 0)}));
+    CHECK_THROWS_WITH(session->place_seam(
+        slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(&open)),
+        fixture.region_view(), {}),
+        "Contiguous seam placement needs a non-empty closed loop.");
 }

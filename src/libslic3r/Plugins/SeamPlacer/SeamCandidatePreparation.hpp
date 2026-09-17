@@ -7,9 +7,9 @@
 Shared seam candidate preparation
 =================================
 This private header describes the object-local candidate material shared by
-the built-in Cost and Aligned seam providers. Cost may merge candidates by
-LayerRegionIsland, while Aligned keeps each external perimeter separate and
-uses stable object/layer/island traversal indices for every tie.
+the built-in Cost, Aligned and Contiguous seam providers. Cost may merge
+candidates by LayerRegionIsland, while the cross-layer providers keep each
+external perimeter separate and use stable traversal identities for ties.
 */
 
 #ifndef slic3r_Plugins_SeamPlacer_SeamCandidatePreparation_hpp_
