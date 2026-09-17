@@ -31,12 +31,14 @@ uses make_seam_placer_instance() to initialize a session from the PrintingPlan
 before publishing it to the extrusion orderer. Preparation follows plan order
 and stores candidates in scaled object-local XY by subtracting the instance
 shift from scaled platter XY. Effective external-perimeter loops supply
-island-wide candidates, and every bound perimeter loop
-is a projection target; a loop may have both roles. Painted constraints and
+loop-owned candidates, and every bound perimeter loop is a projection target;
+a genuine internal perimeter uses the island fallback assembled from finalized
+external-loop sets. A loop may have both roles. Painted constraints and
 neighboring-region boundaries add endpoints and analytically located transition
 points, rounded to scaled integer coordinates and reclassified there.
 
-Initialization filters and snapshots angle, visibility, and overhang costs.
+Initialization filters and snapshots angle, visibility, overhang, and static
+costs independently for every external loop.
 Placement projects those candidates onto the requested loop and combines the
 snapshot with the current travel-cost setting. The orderer queries approach
 probes, then the actual approach position before rotating a loop to its seam.
@@ -50,6 +52,7 @@ struct LoopBinding {
     RegionIslandKey island;
     c_point instance_shift;
     bool distance_only = false;
+    bool has_external_geometry = false;
 };
 
 /*
@@ -76,7 +79,8 @@ private:
     const mesh_query_cancel *m_cancel;
     bool m_initialization_started = false;
     std::set<const print_region_handle *> m_regions;
-    std::map<RegionIslandKey, std::vector<SeamCandidate>> m_candidates;
+    std::map<const extrusion_entity_handle *, std::vector<SeamCandidate>> m_loop_candidates;
+    std::map<RegionIslandKey, std::vector<SeamCandidate>> m_fallback_candidates;
     std::map<const extrusion_entity_handle *, LoopBinding> m_bindings;
 };
 
@@ -102,15 +106,20 @@ constexpr int32_t k_defined_config_key_count = 3;
 
 /* Mutable preparation data: point is scaled object-local XY; width, overhang
    and embedded are millimetres. Filtering reduces these records to SeamCandidate. */
-/* Temporary per-island work owns candidate values and the first instance shift,
-   but only borrows the island handle. It is discarded after preparation. */
+/* Temporary work keeps each external loop's candidates separate and retains
+   only the island handle for shared internal-perimeter fallback assembly. */
+using LoopKey = const extrusion_entity_handle *;
+
+struct ExternalLoopWork {
+    LoopKey loop = nullptr;
+    std::vector<CandidatePreparation::Candidate> candidates;
+};
+
 struct IslandWork {
     LayerRegionIsland island;
-    c_point shift{};
     bool has_perimeter_loop = false;
-    /* Technical-only islands bind loops but do not need candidate finalization. */
-    bool requires_geometric_candidates = false;
-    std::vector<CandidatePreparation::Candidate> candidates;
+    bool requires_island_fallback = false;
+    std::vector<ExternalLoopWork> external_loops;
 };
 
 class CostSeamPlacer final : public PluginBase
@@ -228,29 +237,20 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
                         }
                     }
                     if (!assigned) continue;
-                    /*
-                    The first occurrence fixes this island's preparation shift.
-                    All occurrences still bind their loops and copied shifts, but
-                    only occurrences with that same shift contribute candidates.
-                    Different shifts reuse the shared object-local set, assuming
-                    equivalent source geometry after removing the translation.
-                     */
                     const c_point shift = plan.object_instance_shift(extrusion);
                     const RegionIslandKey key = island.handle();
                     const bool first = work.find(key) == work.end();
                     IslandWork &island_work = work[key];
-                    if (first) { island_work.island = island; island_work.shift = shift; }
+                    if (first) island_work.island = island;
                     for (const CandidatePreparation::CollectedLoop &loop : collected)
                         m_bindings.emplace(
-                            loop.loop, LoopBinding{key, shift, loop.distance_only});
+                            loop.loop, LoopBinding{key, shift, loop.distance_only,
+                                                   loop.has_external_geometry});
                     island_work.has_perimeter_loop = island_work.has_perimeter_loop || !collected.empty();
-                    island_work.requires_geometric_candidates =
-                        island_work.requires_geometric_candidates ||
-                        std::any_of(collected.begin(), collected.end(),
-                            [](const CandidatePreparation::CollectedLoop &loop) {
-                                return !loop.distance_only;
-                            });
-                    if (shift.x != island_work.shift.x || shift.y != island_work.shift.y) continue;
+                    for (const CandidatePreparation::CollectedLoop &source : collected)
+                        if (!source.distance_only && !source.has_external_geometry)
+                            island_work.requires_island_fallback = true;
+                    if (collected.empty()) continue;
                     // Assignment checks all regions, but region(0) supplies the
                     // fallback flow and external-perimeter nozzle parameters.
                     const LayerRegion region = island.region(0);
@@ -261,13 +261,14 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
                         const ExtrusionEntity loop(source.loop);
                         const double width = source.external_width > 0 ?
                             source.external_width : fallback_width;
-                        std::vector<CandidatePreparation::Candidate> candidates =
+                        ExternalLoopWork external_loop;
+                        external_loop.loop = source.loop;
+                        external_loop.candidates =
                             CandidatePreparation::prepare_loop_candidates(
                                 m_storage, constraints, island_work.island,
                                 loop, region, shift, width,
                                 unscaled(external_flow.nozzle_diameter));
-                        island_work.candidates.insert(island_work.candidates.end(),
-                            candidates.begin(), candidates.end());
+                        island_work.external_loops.push_back(std::move(external_loop));
                     }
                 }
             }
@@ -275,67 +276,96 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
     }
 
     /*
-    Finalize each island once: enrich and filter the temporary shared candidate
-    records, snapshot static costs, then deduplicate equal integer points. Equal
-    points retain discovery position and the lowest static cost. After this pass
-    only compact owned SeamCandidate values are published.
+    Finalize each external loop independently: enrich and filter its records,
+    snapshot static costs, then deduplicate equal integer points. Equal points
+    retain discovery position and the lowest static cost within that loop. An
+    internal perimeter receives a simple concatenation of the finalized vectors.
     */
     for (auto &[key, island_work] : work) {
         if (!island_work.has_perimeter_loop) continue;
-        if (!island_work.requires_geometric_candidates) continue;
-        if (island_work.candidates.empty())
-            throw std::runtime_error(
-                "Cost-based seam placement found perimeter loops but no external geometric candidate for LayerRegionIsland.");
-        CandidatePreparation::calculate_layer_attributes(
-            island_work.island, island_work.candidates);
-        CandidatePreparation::filter_candidates(island_work.candidates);
+        if (island_work.external_loops.empty()) {
+            if (island_work.requires_island_fallback)
+                throw std::runtime_error(
+                    "Cost-based seam placement found perimeter loops but no external geometric candidate for LayerRegionIsland.");
+            continue;
+        }
         const Layer layer = island_work.island.region(0).layer();
         const Object object = layer.object();
-        // get mean angle_weight from the regions
+        // Compute shared regional weights once; candidate enrichment and scoring
+        // below still run independently for every external loop.
         double angle_weight = 0.0;
-        // use visibility_weight if at least one is active. (TODO: NICETOHAVE: only launch rays in active area)
         double visibility_weight = 0.0;
-        //TODO: also make the travel disatnace compute here, and save it for later, so it uses all regions.
         for (const LayerRegion &lr : island_work.island.regions()) {
             const Config &region_config = lr.print_region().config();
-            angle_weight += region_config.effective_float_or_percent_or_default(k_seam_angle_cost_key,
-                                                                                             1.0, 0.0);
-            if(visibility_weight == 0.0)
-                visibility_weight = region_config.bool_or_default("seam_visibility", false) ? 1.0 : 0.0;
+            angle_weight += region_config.effective_float_or_percent_or_default(
+                k_seam_angle_cost_key, 1.0, 0.0);
+            if (visibility_weight == 0.0)
+                visibility_weight = region_config.bool_or_default(
+                    "seam_visibility", false) ? 1.0 : 0.0;
         }
         angle_weight = angle_weight / island_work.island.region_count();
-        // Visibility samples use object-local XY and the legacy slice-Z convention
-        // in millimetres; the resulting values are captured once, after filtering.
-        std::vector<float> visibility;
-        if (visibility_weight != 0) {
-            std::vector<c_vec3f> points;
-            points.reserve(island_work.candidates.size());
-            for (const CandidatePreparation::Candidate &candidate : island_work.candidates)
-                points.push_back({float(unscaled(candidate.point.x)), float(unscaled(candidate.point.y)),
-                                  float(unscaled(layer.slice_z()))});
-            visibility = Slic3r::SeamCostModel::calculate_cost_visibility(
-                object, points, m_cancel);
+        std::vector<SeamCandidate> fallback;
+        for (ExternalLoopWork &external_loop : island_work.external_loops) {
+            if (external_loop.candidates.empty())
+                throw std::runtime_error(
+                    "Cost-based seam placement found an external perimeter without candidates.");
+            CandidatePreparation::calculate_layer_attributes(
+                island_work.island, external_loop.candidates);
+            CandidatePreparation::filter_candidates(external_loop.candidates);
+            if (external_loop.candidates.empty())
+                throw std::runtime_error(
+                    "Cost-based seam placement found an external perimeter without candidates.");
+            // Visibility samples use object-local XY and the legacy slice-Z
+            // convention in millimetres; calculate them per loop so each loop's
+            // scores retain the same order as its own candidate records.
+            std::vector<float> visibility;
+            if (visibility_weight != 0) {
+                std::vector<c_vec3f> points;
+                points.reserve(external_loop.candidates.size());
+                for (const CandidatePreparation::Candidate &candidate :
+                         external_loop.candidates)
+                    points.push_back({float(unscaled(candidate.point.x)),
+                                      float(unscaled(candidate.point.y)),
+                                      float(unscaled(layer.slice_z()))});
+                visibility = Slic3r::SeamCostModel::calculate_cost_visibility(
+                    object, points, m_cancel);
+            }
+            std::vector<SeamCandidate> prepared;
+            prepared.reserve(external_loop.candidates.size());
+            for (size_t index = 0; index < external_loop.candidates.size(); ++index) {
+                const CandidatePreparation::Candidate &candidate =
+                    external_loop.candidates[index];
+                const double overhang_penalty = candidate.overhang > 0 && candidate.width > 0 ?
+                    std::clamp(2 * (candidate.overhang - candidate.width / 8) /
+                                   candidate.width, 0.0, 3.0) : 0.0;
+                const double visibility_cost = index < visibility.size() ?
+                    visibility[index] : 0.0;
+                const double static_cost = overhang_penalty +
+                    visibility_weight * visibility_cost + angle_weight *
+                    Slic3r::SeamCostModel::compute_angle_penalty(
+                        float(candidate.angle));
+                std::vector<SeamCandidate>::iterator duplicate =
+                    std::find_if(prepared.begin(), prepared.end(),
+                        [&](const SeamCandidate &entry) {
+                            return entry.point.x == candidate.point.x &&
+                                   entry.point.y == candidate.point.y;
+                        });
+                if (duplicate == prepared.end())
+                    prepared.push_back({candidate.point, static_cost});
+                else
+                    duplicate->static_cost = std::min(
+                        duplicate->static_cost, static_cost);
+            }
+            if (island_work.requires_island_fallback)
+                fallback.insert(fallback.end(), prepared.begin(), prepared.end());
+            m_loop_candidates.emplace(external_loop.loop, std::move(prepared));
         }
-        // The static score combines overhang, optional visibility and weighted
-        // legacy angle penalty. Travel is deferred until the approach is known.
-        std::vector<SeamCandidate> prepared;
-        prepared.reserve(island_work.candidates.size());
-        for (size_t index = 0; index < island_work.candidates.size(); ++index) {
-            const CandidatePreparation::Candidate &candidate = island_work.candidates[index];
-            const double overhang_penalty = candidate.overhang > 0 && candidate.width > 0 ?
-                std::clamp(2 * (candidate.overhang - candidate.width / 8) / candidate.width, 0.0, 3.0) : 0.0;
-            const double visibility_cost = index < visibility.size() ?
-                visibility[index] : 0.0;
-            const double static_cost = overhang_penalty + visibility_weight * visibility_cost +
-                                       angle_weight * Slic3r::SeamCostModel::compute_angle_penalty(float(candidate.angle));
-            std::vector<SeamCandidate>::iterator duplicate = std::find_if(
-                prepared.begin(), prepared.end(), [&](const SeamCandidate &entry) {
-                    return entry.point.x == candidate.point.x && entry.point.y == candidate.point.y;
-                });
-            if (duplicate == prepared.end()) prepared.push_back({candidate.point, static_cost});
-            else duplicate->static_cost = std::min(duplicate->static_cost, static_cost);
+        if (island_work.requires_island_fallback) {
+            if (fallback.empty())
+                throw std::runtime_error(
+                    "Cost-based seam placement found perimeter loops but no external geometric candidate for LayerRegionIsland.");
+            m_fallback_candidates.emplace(key, std::move(fallback));
         }
-        m_candidates.emplace(key, std::move(prepared));
     }
     m_storage = nullptr;
     m_cancel = nullptr;
@@ -367,10 +397,22 @@ c_point CostSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &
                 "Cost-based seam placement could not project the approach position onto a distance-only loop.");
         return projection.first;
     }
-    const std::map<RegionIslandKey, std::vector<SeamCandidate>>::const_iterator candidates =
-        m_candidates.find(binding->second.island);
-    if (candidates == m_candidates.end() || candidates->second.empty())
-        throw std::runtime_error("Cost seam source island has no candidates.");
+    const std::vector<SeamCandidate> *candidates = nullptr;
+    if (binding->second.has_external_geometry) {
+        const std::map<const extrusion_entity_handle *,
+                       std::vector<SeamCandidate>>::const_iterator own =
+            m_loop_candidates.find(loop.handle());
+        if (own == m_loop_candidates.end() || own->second.empty())
+            throw std::runtime_error("Cost seam external loop has no candidates.");
+        candidates = &own->second;
+    } else {
+        const std::map<RegionIslandKey,
+                       std::vector<SeamCandidate>>::const_iterator fallback =
+            m_fallback_candidates.find(binding->second.island);
+        if (fallback == m_fallback_candidates.end() || fallback->second.empty())
+            throw std::runtime_error("Cost seam source island has no candidates.");
+        candidates = &fallback->second;
+    }
     // Unlike static costs, this weight is read per request from borrowed host
     // configuration, which must not change concurrently with these reads.
     const double travel_weight = region.print_region().config().effective_float_or_percent_or_default(
@@ -386,7 +428,7 @@ c_point CostSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &
     The projected point is not reclassified against paint or regional boundaries;
     those preferences describe the source candidate, not necessarily its projection.
     */
-    for (const SeamCandidate &candidate : candidates->second) {
+    for (const SeamCandidate &candidate : *candidates) {
         const c_point target = {candidate.point.x + binding->second.instance_shift.x,
                                 candidate.point.y + binding->second.instance_shift.y};
         const std::pair<c_point, double> projection =

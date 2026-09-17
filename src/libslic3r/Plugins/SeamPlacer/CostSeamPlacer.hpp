@@ -6,13 +6,13 @@
 /*
 CostSeamPlacer: immutable cost-based seam placement
 ==================================================
-The built-in provider prepares one object-coordinate candidate set per source
-LayerRegionIsland and binds every perimeter loop in the PrintingPlan to its
-source island and instance shift. Sessions retain immutable prepared candidate
-tables plus borrowed plan, loop, region and native configuration identities;
-seam_travel_cost is read for each placement call. Requests may run concurrently
-only while those borrowed identities and their native configuration are not
-mutated.
+The built-in provider prepares one object-coordinate candidate set per effective
+external perimeter loop. Genuine internal perimeters bind to an island fallback
+assembled from those finalized loop-owned sets. Sessions retain immutable
+prepared candidate tables plus borrowed plan, loop, region and native
+configuration identities; seam_travel_cost is read for each placement call.
+Requests may run concurrently only while those borrowed identities and their
+native configuration are not mutated.
 */
 
 #ifndef slic3r_Plugins_SeamPlacer_CostSeamPlacer_hpp_

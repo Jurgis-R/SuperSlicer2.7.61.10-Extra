@@ -611,6 +611,34 @@ TEST_CASE("Cost seam takes candidates only from effective external perimeter loo
     CHECK(projected.y == scale_i(-2));
 }
 
+TEST_CASE("Cost seam keeps prepared candidates owned by each external loop",
+          "[plugins][seam-placer][cost][geometry][regression]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    CostFixture fixture;
+    fixture.add(rectangle_loop(5, 9, 6, 10),
+                RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+    fixture.add(rectangle_loop(0, 0, 10, 8),
+                RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+    const slic3r_api::PrintingExtrusion first = fixture.extrusion(0);
+    const slic3r_api::PrintingExtrusion second = fixture.extrusion(1);
+    const slic3r_api::SeamPlacer placer = create_cost_session(fixture.prepared.print);
+
+    const c_point first_seam = placer.place_seam(
+        first.root(), fixture.region_view(), {});
+    const c_point first_local = fixture.local(first_seam);
+    const c_point second_seam = placer.place_seam(
+        second.root(), fixture.region_view(), first_seam);
+    const c_point second_local = fixture.local(second_seam);
+
+    CHECK(first_local.x == scale_i(5));
+    CHECK(first_local.y == scale_i(9));
+    CHECK(second_local.x == scale_i(0));
+    CHECK(second_local.y == scale_i(0));
+    CHECK(slic3r_api::SeamPlacement::CandidatePreparation::project_onto_loop(
+        second.root(), second_seam).second == 0.0);
+}
+
 TEST_CASE("Cost seam places distance-only loops by direct distance projection",
           "[plugins][seam-placer][cost][geometry]")
 {
