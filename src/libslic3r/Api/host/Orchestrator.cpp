@@ -34,6 +34,7 @@
 #include "libslic3r/Plugins/BridgeDetector.hpp"
 #include "libslic3r/Polygon.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/Print.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/SurfaceCollection.hpp"
 #include "libslic3r/Thread.hpp"
@@ -1361,7 +1362,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
         return RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT;
     if (!this->is_plugin_active(&plugin))
         return RAW_PLUGIN_EXECUTION_INACTIVE;
-    if (this->is_plugin_cancelled())
+    if (this->is_plugin_cancelled() ||
+        (print != nullptr && print->canceled()))
         return RAW_PLUGIN_EXECUTION_CANCELLED;
 
     std::atomic_bool execution_error { false };
@@ -1375,7 +1377,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
     plugin.setup(run_context, run_count);
     if (execution_error.load(std::memory_order_relaxed))
         return RAW_PLUGIN_EXECUTION_PLUGIN_ERROR;
-    if (this->is_plugin_cancelled())
+    if (this->is_plugin_cancelled() ||
+        (print != nullptr && print->canceled()))
         return RAW_PLUGIN_EXECUTION_CANCELLED;
 
     parallel_for(size_t(0), size_t(run_count),
@@ -1393,7 +1396,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
 
     if (execution_error.load(std::memory_order_relaxed))
         return RAW_PLUGIN_EXECUTION_PLUGIN_ERROR;
-    if (this->is_plugin_cancelled())
+    if (this->is_plugin_cancelled() ||
+        (print != nullptr && print->canceled()))
         return RAW_PLUGIN_EXECUTION_CANCELLED;
 
     parallel_for(size_t(0), size_t(run_count),
@@ -1411,7 +1415,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
 
     if (execution_error.load(std::memory_order_relaxed))
         return RAW_PLUGIN_EXECUTION_PLUGIN_ERROR;
-    return this->is_plugin_cancelled() ?
+    return this->is_plugin_cancelled() ||
+                   (print != nullptr && print->canceled()) ?
         RAW_PLUGIN_EXECUTION_CANCELLED : RAW_PLUGIN_EXECUTION_SUCCESS;
 }
 

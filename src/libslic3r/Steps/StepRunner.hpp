@@ -19,6 +19,7 @@
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/DataTreeFwd.hpp"
 #include "libslic3r/Exception.hpp"
+#include "libslic3r/Print.hpp"
 #include "libslic3r/Thread.hpp"
 
 namespace Slic3r {
@@ -91,11 +92,17 @@ inline plugin_host_context prepare_guarded_plugin_host_context(Orchestrator &orc
 }
 
 inline void throw_if_plugin_stopped(Orchestrator &orchestrator,
+                                    const Print &print,
                                     slicing_step_t step,
                                     const Plugin &plugin,
                                     const std::atomic_bool &execution_error,
                                     const char *phase)
 {
+    // PluginCancelled is intentionally absorbed by the C++ ABI bridge. The
+    // host therefore restores the public cancellation contract at every phase
+    // boundary before considering plugin-specific failure state.
+    print.throw_if_canceled();
+
     const bool has_error = execution_error.load(std::memory_order_relaxed);
     if (!has_error && !orchestrator.is_plugin_cancelled())
         return;
@@ -145,7 +152,7 @@ void run_object_step_plugin(Orchestrator &orchestrator,
     host_context.object_count = run_count;
     plugin_run_context run_context = orchestrator.prepare_plugin_run_context(step, &plugin, &host_context);
     plugin.setup(run_context, uint32_t(run_count));
-    throw_if_plugin_stopped(orchestrator, step, plugin, execution_error, "setup");
+    throw_if_plugin_stopped(orchestrator, print, step, plugin, execution_error, "setup");
 
     // Prepare every object payload before any object run starts. This gives
     // plugins a deterministic discovery pass even if the host executes the
@@ -162,7 +169,7 @@ void run_object_step_plugin(Orchestrator &orchestrator,
         context_copy.data = &payload;
         plugin.setup_run(context_copy);
     });
-    throw_if_plugin_stopped(orchestrator, step, plugin, execution_error, "setup_run");
+    throw_if_plugin_stopped(orchestrator, print, step, plugin, execution_error, "setup_run");
 
     parallel_for(size_t(0), run_count, [&host_context, &payload_factory, &run_context, &plugin](const size_t idx) {
         plugin_run_context context_copy = run_context;
@@ -176,7 +183,7 @@ void run_object_step_plugin(Orchestrator &orchestrator,
         context_copy.data = &payload;
         plugin.run(context_copy);
     });
-    throw_if_plugin_stopped(orchestrator, step, plugin, execution_error, "run");
+    throw_if_plugin_stopped(orchestrator, print, step, plugin, execution_error, "run");
 }
 
 template<class PayloadFactory>

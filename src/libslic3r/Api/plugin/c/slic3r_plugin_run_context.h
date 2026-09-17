@@ -22,7 +22,8 @@ extern "C" {
 typedef struct plugin_host_context plugin_host_context;
 
 /*
-Return non-zero if the host requested this plugin execution to stop.
+Return non-zero if the current Print was cancelled or the host requested this
+plugin execution to stop for another reason.
 Plugins should check this regularly in long loops and return as soon as
 possible when cancellation is requested.
 */

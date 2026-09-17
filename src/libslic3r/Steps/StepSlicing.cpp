@@ -189,7 +189,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         Detail::prepare_guarded_plugin_host_context(orchestrator, STEP_SLICING, *plugin, print, execution_error);
     plugin_run_context run_context = orchestrator.prepare_plugin_run_context(STEP_SLICING, plugin, &host_context);
     plugin->setup(run_context, uint32_t(run_count));
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_SLICING, *plugin, execution_error, "setup");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SLICING, *plugin, execution_error, "setup");
 
     std::vector<std::unique_ptr<ApiHost::Steps::SlicingRunContext>> run_contexts;
     run_contexts.reserve(run_count);
@@ -204,7 +204,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         context_copy.data = &run_contexts[object_idx]->context_step;
         plugin->setup_run(context_copy);
     });
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_SLICING, *plugin, execution_error, "setup_run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SLICING, *plugin, execution_error, "setup_run");
 
     parallel_for(size_t(0), run_count, [plugin, &run_context, &run_contexts](const size_t object_idx) {
         plugin_run_context context_copy = run_context;
@@ -214,7 +214,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         context_copy.data = &run_contexts[object_idx]->context_step;
         plugin->run(context_copy);
     });
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_SLICING, *plugin, execution_error, "run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SLICING, *plugin, execution_error, "run");
 
     parallel_for(size_t(0), run_count, [&print](const size_t object_idx) {
         PrintObject &object = print.object(object_idx);

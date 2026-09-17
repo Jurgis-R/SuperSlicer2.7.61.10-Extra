@@ -353,11 +353,11 @@ void run_step(Orchestrator &orchestrator, Print &print)
         run_context.data = &payload;
 
         plugin->setup(run_context, 1);
-        Detail::throw_if_plugin_stopped(orchestrator, STEP_ORDERING, *plugin, execution_error, "setup");
+        Detail::throw_if_plugin_stopped(orchestrator, print, STEP_ORDERING, *plugin, execution_error, "setup");
         plugin->setup_run(run_context);
-        Detail::throw_if_plugin_stopped(orchestrator, STEP_ORDERING, *plugin, execution_error, "setup_run");
+        Detail::throw_if_plugin_stopped(orchestrator, print, STEP_ORDERING, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
-        Detail::throw_if_plugin_stopped(orchestrator, STEP_ORDERING, *plugin, execution_error, "run");
+        Detail::throw_if_plugin_stopped(orchestrator, print, STEP_ORDERING, *plugin, execution_error, "run");
     }
 
     std::string validation_error;

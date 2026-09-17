@@ -13,7 +13,9 @@
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Config/ConfigDef.hpp"
+#include "libslic3r/Print.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepRunner.hpp"
 
 namespace {
 
@@ -740,4 +742,44 @@ TEST_CASE("Generic plugin execution reports inactive cancellation and plugin err
               RAW_PLUGIN_EXECUTION_PLUGIN_ERROR);
         CHECK(payload.run_seen);
     }
+}
+
+TEST_CASE("Print cancellation reaches plugins and stops the step pipeline",
+          "[plugins][orchestrator][cancellation][pipeline]")
+{
+    ensure_service_plugins_registered();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    orchestrator.reset_plugin_cancel();
+    ActivePluginGuard active(orchestrator, {g_service_low.id});
+    Plugin *plugin = orchestrator.get_plugin(g_service_low.id);
+    REQUIRE(plugin != nullptr);
+
+    Print print;
+    plugin_host_context host_context =
+        orchestrator.prepare_plugin_host_context(plugin->get_step(), plugin, &print);
+    plugin_run_context run_context = orchestrator.prepare_plugin_run_context(
+        plugin->get_step(), plugin, &host_context);
+    REQUIRE(run_context.is_cancelled != nullptr);
+    CHECK(run_context.is_cancelled(run_context.host_context) == 0);
+
+    print.cancel();
+    CHECK(run_context.is_cancelled(run_context.host_context) == 1);
+
+    TestPayload payload;
+    raw_plugin_run_payload raw_payload { &payload };
+    CHECK(orchestrator.execute_plugin(
+              *plugin, &print, &raw_payload, 1, true) ==
+          RAW_PLUGIN_EXECUTION_CANCELLED);
+    CHECK_FALSE(payload.setup_run_seen);
+    CHECK_FALSE(payload.run_seen);
+
+    const std::atomic_bool execution_error { false };
+    CHECK_THROWS_AS(
+        Slic3r::Steps::Detail::throw_if_plugin_stopped(
+            orchestrator, print, plugin->get_step(), *plugin,
+            execution_error, "test"),
+        CanceledException);
+    CHECK_THROWS_AS(
+        Slic3r::Steps::StepPipeline::run_slice(orchestrator, print),
+        CanceledException);
 }

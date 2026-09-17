@@ -203,11 +203,11 @@ int32_t generate_pattern_callback(const run_ctx_generate_infill *ctx,
 
     plugin->setup_run(run_context);
     Detail::throw_if_plugin_stopped(
-        *host.orchestrator, INFILL_PATTERN, *plugin,
+        *host.orchestrator, *host.print, INFILL_PATTERN, *plugin,
         execution_error_for(host.pattern_execution_errors, *plugin), "setup_run");
     plugin->run(run_context);
     Detail::throw_if_plugin_stopped(
-        *host.orchestrator, INFILL_PATTERN, *plugin,
+        *host.orchestrator, *host.print, INFILL_PATTERN, *plugin,
         execution_error_for(host.pattern_execution_errors, *plugin), "run");
     return 1;
 }
@@ -268,11 +268,11 @@ int32_t modify_surface_recipe_callback(const run_ctx_generate_infill *ctx,
 
         plugin->setup_run(run_context);
         Detail::throw_if_plugin_stopped(
-            *host.orchestrator, INFILL_SURFACE_RECIPE_MODIFIER, *plugin,
+            *host.orchestrator, *host.print, INFILL_SURFACE_RECIPE_MODIFIER, *plugin,
             execution_error_for(host.recipe_modifier_execution_errors, *plugin), "setup_run");
         plugin->run(run_context);
         Detail::throw_if_plugin_stopped(
-            *host.orchestrator, INFILL_SURFACE_RECIPE_MODIFIER, *plugin,
+            *host.orchestrator, *host.print, INFILL_SURFACE_RECIPE_MODIFIER, *plugin,
             execution_error_for(host.recipe_modifier_execution_errors, *plugin), "run");
     }
 
@@ -393,7 +393,7 @@ void prepare_pattern_plugins(InfillStepHostContext &host)
         plugin_run_context setup_context =
             host.orchestrator->prepare_plugin_run_context(INFILL_PATTERN, plugin, &host.pattern_host_contexts.find(plugin)->second);
         plugin->setup(setup_context, uint32_t(run_count));
-        Detail::throw_if_plugin_stopped(*host.orchestrator, INFILL_PATTERN, *plugin, execution_error, "setup");
+        Detail::throw_if_plugin_stopped(*host.orchestrator, *host.print, INFILL_PATTERN, *plugin, execution_error, "setup");
     }
 }
 
@@ -431,7 +431,7 @@ void prepare_recipe_modifier_plugins(InfillStepHostContext &host)
                 &host.recipe_modifier_host_contexts.find(plugin)->second);
         plugin->setup(setup_context, uint32_t(run_count));
         Detail::throw_if_plugin_stopped(
-            *host.orchestrator, INFILL_SURFACE_RECIPE_MODIFIER, *plugin, execution_error, "setup");
+            *host.orchestrator, *host.print, INFILL_SURFACE_RECIPE_MODIFIER, *plugin, execution_error, "setup");
     }
 }
 
@@ -480,9 +480,9 @@ void run_generator_for_object(Orchestrator &orchestrator,
     run_context.data = &payload;
 
     plugin.setup_run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, plugin, execution_error, "setup_run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, plugin, execution_error, "setup_run");
     plugin.run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, plugin, execution_error, "run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, plugin, execution_error, "run");
 }
 
 } // namespace
@@ -535,12 +535,12 @@ void run_step(Orchestrator &orchestrator, Print &print)
     host_context.object_count = print.objects().size();
     plugin_run_context setup_context = orchestrator.prepare_plugin_run_context(STEP_INFILL, plugin, &host_context);
     plugin->setup(setup_context, uint32_t(print.objects().size()));
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, *plugin, execution_error, "setup");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, *plugin, execution_error, "setup");
 
     for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx) {
         host_context.object_idx = object_idx;
         if (setup_context.is_cancelled != nullptr && setup_context.is_cancelled(setup_context.host_context))
-            Detail::throw_if_plugin_stopped(orchestrator, STEP_INFILL, *plugin, execution_error, "run");
+            Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, *plugin, execution_error, "run");
         run_generator_for_object(
             orchestrator, *plugin, print, print.object(object_idx), host_context, infill_context, execution_error);
     }

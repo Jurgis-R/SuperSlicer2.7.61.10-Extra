@@ -840,15 +840,15 @@ void create_firmware_session(Orchestrator &orchestrator,
     run_context.data = &payload;
 
     firmware_plugin->setup(run_context, 1);
-    Detail::throw_if_plugin_stopped(orchestrator, GCODE_FIRMWARE, *firmware_plugin, execution_error, "setup");
+    Detail::throw_if_plugin_stopped(orchestrator, print, GCODE_FIRMWARE, *firmware_plugin, execution_error, "setup");
     firmware_plugin->setup_run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, GCODE_FIRMWARE, *firmware_plugin, execution_error, "setup_run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, GCODE_FIRMWARE, *firmware_plugin, execution_error, "setup_run");
     firmware_plugin->run(run_context);
 
     // Transfer ownership before checking cancellation or table completeness;
     // the provider may allocate a session before reporting its error.
     *owner.mutable_instance() = payload.instance;
-    Detail::throw_if_plugin_stopped(orchestrator, GCODE_FIRMWARE, *firmware_plugin, execution_error, "run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, GCODE_FIRMWARE, *firmware_plugin, execution_error, "run");
 
     // Constructing the borrowed view validates struct sizes and every required
     // callback without invoking firmware code.
@@ -1021,11 +1021,11 @@ std::string run_step(Orchestrator &orchestrator, Print &print, const std::string
     run_context.data = &payload;
 
     plugin->setup(run_context, 1);
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_GCODE, *plugin, execution_error, "setup");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_GCODE, *plugin, execution_error, "setup");
     plugin->setup_run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_GCODE, *plugin, execution_error, "setup_run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_GCODE, *plugin, execution_error, "setup_run");
     plugin->run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_GCODE, *plugin, execution_error, "run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_GCODE, *plugin, execution_error, "run");
     return reader_plugin_id;
 }
 

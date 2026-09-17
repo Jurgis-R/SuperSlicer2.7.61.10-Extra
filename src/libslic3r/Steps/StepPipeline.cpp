@@ -749,10 +749,18 @@ bool stop_after(slicing_step_t current, slicing_step_t until)
 template<class RunFn>
 void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
 {
+    // Cancellation is checked even for an already valid step. This makes each
+    // pipeline entry a stop boundary instead of allowing the runner to visit
+    // later steps after the user has cancelled the operation.
+    print.throw_if_canceled();
     if (!print.should_execute_step(step))
         return;
 
     run_fn();
+
+    // A step may observe cancellation cooperatively and return without
+    // throwing. Do not publish such partial work as a completed step.
+    print.throw_if_canceled();
     print.mark_step_executed(step);
 }
 
@@ -969,6 +977,11 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
             try {
                 StepReadGeneratedGcode::run(
                     orchestrator, print, selected_reader, *gcode_result);
+            } catch (const CanceledException &) {
+                // Preview generation is optional when it fails, but an
+                // explicit slicing cancellation must still unwind the whole
+                // pipeline with the standard host exception.
+                throw;
             } catch (const std::exception &error) {
                 gcode_result->reset();
                 gcode_result->reader_plugin_id = selected_reader;

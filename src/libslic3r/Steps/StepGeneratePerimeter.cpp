@@ -746,13 +746,13 @@ create_perimeter_generation_modules(PerimeterRunContext &run)
 
         plugin->setup(run_context, 1);
         Detail::throw_if_plugin_stopped(
-            *run.orchestrator, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "setup");
+            *run.orchestrator, *run.print, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "setup");
         plugin->setup_run(run_context);
         Detail::throw_if_plugin_stopped(
-            *run.orchestrator, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "setup_run");
+            *run.orchestrator, *run.print, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
         Detail::throw_if_plugin_stopped(
-            *run.orchestrator, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "run");
+            *run.orchestrator, *run.print, PERIMETER_GENERATION_MODULE, *plugin, execution_error, "run");
 
         if (module_context.module.vt != nullptr) {
             PerimeterModuleRun module_run;
@@ -979,9 +979,9 @@ bool run_generator_for_island(Orchestrator &orchestrator,
     run_context.data = &payload;
 
     plugin.setup_run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, plugin, execution_error, "setup_run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_PERIMETER, plugin, execution_error, "setup_run");
     plugin.run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, plugin, execution_error, "run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_PERIMETER, plugin, execution_error, "run");
 
     if (perimeter_context.used_region_group)
         assign_island_outputs(island, perimeter_context);
@@ -1034,7 +1034,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
     plugin_run_context setup_context =
         orchestrator.prepare_plugin_run_context(STEP_PERIMETER, plugin, &host_context);
     plugin->setup(setup_context, uint32_t(run_count));
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, *plugin, execution_error, "setup");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_PERIMETER, *plugin, execution_error, "setup");
 
     for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx) {
         host_context.object_idx = object_idx;
@@ -1042,7 +1042,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         for (Layer &layer : object.layers()) {
             for (LayerSliceIsland &island : layer.islands()) {
                 if (setup_context.is_cancelled != nullptr && setup_context.is_cancelled(setup_context.host_context))
-                    Detail::throw_if_plugin_stopped(orchestrator, STEP_PERIMETER, *plugin, execution_error, "run");
+                    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_PERIMETER, *plugin, execution_error, "run");
                 run_generator_for_island(
                     orchestrator, *plugin, print, object, layer, island, host_context, execution_error);
             }

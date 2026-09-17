@@ -469,10 +469,18 @@ int32_t orchestrator_add_gui_rule(orchestrator_handle *orch, const raw_gui_rule 
 
 int orchestrator_plugin_is_cancelled(plugin_host_context *host_context)
 {
-    return host_context != nullptr && host_context->orchestrator != nullptr &&
-                   host_context->orchestrator->is_plugin_cancelled() ?
-               1 :
-               0;
+    if (host_context == nullptr)
+        return 0;
+
+    // User cancellation belongs to the Print, while plugin failures use the
+    // orchestrator stop flag. Plugins see both through one polling callback so
+    // they do not need to know which host subsystem requested the stop.
+    const bool print_cancelled =
+        host_context->print != nullptr && host_context->print->canceled();
+    const bool plugin_cancelled =
+        host_context->orchestrator != nullptr &&
+        host_context->orchestrator->is_plugin_cancelled();
+    return print_cancelled || plugin_cancelled ? 1 : 0;
 }
 
 void orchestrator_plugin_report_warning(plugin_host_context *host_context, const char *message)

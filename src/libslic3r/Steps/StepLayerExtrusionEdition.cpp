@@ -94,7 +94,7 @@ void run_plugin(Orchestrator &orchestrator,
     run_ctx_layer_extrusion_edition setup_payload = make_layer_run_context(print, plan, locations.front());
     run_context.data = &setup_payload;
     plugin.setup(run_context, uint32_t(locations.size()));
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "setup");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "setup");
 
     parallel_for(size_t(0), locations.size(), [&](const size_t idx) {
         plugin_host_context local_host_context = host_context;
@@ -109,7 +109,7 @@ void run_plugin(Orchestrator &orchestrator,
         local_run_context.data = &payload;
         plugin.setup_run(local_run_context);
     });
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "setup_run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "setup_run");
 
     parallel_for(size_t(0), locations.size(), [&](const size_t idx) {
         plugin_host_context local_host_context = host_context;
@@ -124,7 +124,7 @@ void run_plugin(Orchestrator &orchestrator,
         local_run_context.data = &payload;
         plugin.run(local_run_context);
     });
-    Detail::throw_if_plugin_stopped(orchestrator, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "run");
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_LAYER_EXTRUSION_EDIT, plugin, execution_error, "run");
 }
 
 } // namespace

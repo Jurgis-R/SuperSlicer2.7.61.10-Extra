@@ -90,7 +90,7 @@ void run_step(Orchestrator &orchestrator, Print &print, State &state)
         plugin_run_context run_context =
             orchestrator.prepare_plugin_run_context(STEP_SUPPORT_DEMAND, plugin, &host_context);
         plugin->setup(run_context, uint32_t(run_count));
-        Detail::throw_if_plugin_stopped(orchestrator, STEP_SUPPORT_DEMAND, *plugin, execution_error, "setup");
+        Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SUPPORT_DEMAND, *plugin, execution_error, "setup");
 
         std::vector<std::unique_ptr<ApiHost::Steps::SupportDemandRunContext>> run_contexts;
         run_contexts.reserve(run_count);
@@ -109,7 +109,7 @@ void run_step(Orchestrator &orchestrator, Print &print, State &state)
             context_copy.data = &run_contexts[object_idx]->context_step;
             plugin->setup_run(context_copy);
         });
-        Detail::throw_if_plugin_stopped(orchestrator, STEP_SUPPORT_DEMAND, *plugin, execution_error, "setup_run");
+        Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SUPPORT_DEMAND, *plugin, execution_error, "setup_run");
 
         parallel_for(size_t(0), run_count, [plugin, &run_context, &run_contexts](const size_t object_idx) {
             plugin_run_context context_copy = run_context;
@@ -119,7 +119,7 @@ void run_step(Orchestrator &orchestrator, Print &print, State &state)
             context_copy.data = &run_contexts[object_idx]->context_step;
             plugin->run(context_copy);
         });
-        Detail::throw_if_plugin_stopped(orchestrator, STEP_SUPPORT_DEMAND, *plugin, execution_error, "run");
+        Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SUPPORT_DEMAND, *plugin, execution_error, "run");
 
         Detail::validate_or_report(validate_post, print, "Support-demand post-plugin validation");
     }
