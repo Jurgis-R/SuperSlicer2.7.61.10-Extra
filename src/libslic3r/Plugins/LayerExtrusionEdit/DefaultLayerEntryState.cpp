@@ -23,32 +23,50 @@ namespace {
 Default layer entry-state producer
 ==================================
 
-The host invokes setup() once and then invokes run() concurrently for every
-PrintingLayerGroup. This plugin uses that split deliberately: setup() performs
-the only sequential prefix scan, while each run publishes one independent
-snapshot into its own layer-group.
+This plugin publishes two properties on every PrintingLayerGroup:
 
-The snapshot describes planned PrintingPlan coordinates before begin_layer()
-or any synthetic firmware movement. Later parallel plugins may prepend travel
-or edit internal paths, but they must preserve the final planned position of
-their layer or the already computed state of following layers would be stale.
+- position is the planned machine position immediately before the current
+  layer-group starts. It is the endpoint of the last geometric segment visited
+  earlier in PrintingPlan order. The position is unknown before the first
+  geometric segment has been visited.
+- tool is the extruder selected before the current layer-group is visited.
+  UINT16_MAX means that no tool has been selected yet.
+
+The values are deliberately snapshots of the ordered plan, not the current
+G-code position. Firmware events and synthetic moves added by other plugins
+are not part of the scan. Travel plugins use the snapshot to decide whether
+such a move still needs to be materialized.
+
+The host calls setup() once, then calls setup_run() and run() for each
+PrintingLayerGroup. Because an entry state depends on all preceding groups,
+setup() performs one sequential prefix scan and stores a value copy indexed by
+{group_idx, layer_group_idx}. After the host's setup barrier, each run only
+reads its own cache entry and writes its own layer-group properties. No worker
+needs to inspect or modify a predecessor or successor.
 */
 
 struct LayerEntryState
 {
+    // State immediately before one layer-group in the ordered plan.
     PrintingLayerEntryPositionProperty position = {};
+
+    // Tool selected immediately before that layer-group starts.
     PrintingLayerEntryToolProperty tool = {};
 };
 
+/* This producer reads the ordered plan directly; its consumers declare the dependency. */
 const char *k_no_dependencies[] = { nullptr };
 
-/* Add two scaled coordinates and report overflow instead of wrapping Z. */
+/* Add two scaled coordinates and report overflow instead of allowing Z to wrap. */
 coord_t checked_add(coord_t lhs, coord_t rhs);
 
 /*
-Walk one extrusion tree in execution order and retain its final geometric
-position. Direct Z-offset properties replace inherited offsets, matching the
-firmware visitor and the PrintingPlan time estimator.
+Update the running position with the last geometric segment in one extrusion
+tree. Children are visited in stored execution order, followed by the entity's
+own segment data. A direct Z-offset property replaces the inherited offset for
+the complete subtree; passing the resolved value by copy restores the parent's
+offset automatically for the next sibling. Non-geometric entities do not
+change the running position.
 */
 void update_position_from_entity(const ExtrusionEntity &entity,
                                  coord_t print_z,
@@ -56,13 +74,19 @@ void update_position_from_entity(const ExtrusionEntity &entity,
                                  PrintingLayerEntryPositionProperty &position);
 
 /*
-Compute one immutable entry snapshot per group/layer index. Empty layers simply
-copy the current state, so continuity never requires a parallel worker to read
-its predecessor.
+Build the cache in the same structural order as the plan writer: groups,
+layer-groups, tool-groups, then extrusion roots. Store the current state before
+visiting each layer-group; the following visit updates the state for its
+successor. Empty layers therefore copy the previous state, while an empty
+tool-group still changes the selected tool. The running state intentionally
+continues across group boundaries.
 */
 std::vector<std::vector<LayerEntryState>> collect_layer_entry_states(const PrintingPlan &plan);
 
-/* Built-in producer registered in the layer-extrusion-edit plugin chain. */
+/*
+PluginBase adapter for the default entry-state producer. The cache is rebuilt
+for each setup and is read-only once the host starts parallel run callbacks.
+*/
 class DefaultLayerEntryState : public PluginBase
 {
 public:
@@ -84,9 +108,14 @@ private:
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
     void run_impl(const plugin_run_context *run_ctx) const override;
 
+    // Runtime keys for the two properties consumed by later layer-edit plugins.
     PluginPropertyKey<PrintingLayerEntryPositionProperty> m_position_property;
     PluginPropertyKey<PrintingLayerEntryToolProperty> m_tool_property;
+
+    // Setup is invalid until a complete cache has been built for the current plan.
     mutable bool m_setup_valid = false;
+
+    // [group_idx][layer_group_idx], with one value copy per planned layer-group.
     mutable std::vector<std::vector<LayerEntryState>> m_entry_states;
 };
 
@@ -107,8 +136,8 @@ void update_position_from_entity(const ExtrusionEntity &entity,
     if (const EPropertyZOffset *direct_offset = entity.get(EPropertyZOffset::key))
         z_offset = direct_offset->get();
 
-    // Child order is the final execution order. Passing the resolved offset by
-    // value also restores the parent offset automatically between siblings.
+    // Pass the resolved offset by value so a child cannot change its siblings'
+    // inherited Z offset.
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
         update_position_from_entity(entity.child(child_idx), print_z, z_offset, position);
 
@@ -135,15 +164,15 @@ std::vector<std::vector<LayerEntryState>> collect_layer_entry_states(const Print
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
 
-            // Capture before visiting this layer. An empty layer therefore
-            // republishes the same state and leaves it available to its successor.
+            // The cached value is the state on entry, not the state after this
+            // layer. This also makes empty layers preserve continuity.
             states[group_idx].push_back(current);
 
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 const PrintingToolGroup tool = layer.tool_group(tool_idx);
 
-                // PrintingPlanFileWriter calls begin_tool_group() even for an
-                // empty visit, so the selected tool changes independently of geometry.
+                // Tool selection is part of the serialized order even when this
+                // tool-group contains no extrusion geometry.
                 current.tool.extruder_id = tool.extruder_id();
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx)
                     update_position_from_entity(
@@ -156,6 +185,8 @@ std::vector<std::vector<LayerEntryState>> collect_layer_entry_states(const Print
 
 DefaultLayerEntryState &DefaultLayerEntryState::instance(orchestrator_handle *orchestrator)
 {
+    // The C ABI stores a non-owning pointer, so keep the plugin alive for the
+    // lifetime of the orchestrator and all callbacks made through it.
     static DefaultLayerEntryState plugin(orchestrator);
     return plugin;
 }
@@ -203,11 +234,14 @@ slicing_step_t DefaultLayerEntryState::step_impl() const noexcept
 
 const char *const *DefaultLayerEntryState::dependencies_impl() const noexcept
 {
+    // The plan already exists when this provider runs; only downstream
+    // layer-edit providers depend on the properties published here.
     return k_no_dependencies;
 }
 
 int32_t DefaultLayerEntryState::priority_impl() const noexcept
 {
+    // Publish the entry state before providers that consume it run.
     return -70;
 }
 
@@ -218,6 +252,7 @@ const char *DefaultLayerEntryState::progress_message_format_impl() const noexcep
 
 void DefaultLayerEntryState::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
 {
+    // Discard the previous plan's cache before validating the new context.
     m_setup_valid = false;
     m_entry_states.clear();
 
@@ -225,14 +260,16 @@ void DefaultLayerEntryState::setup_impl(const plugin_run_context *run_ctx, uint3
     if (ctx == nullptr || ctx->plan == nullptr)
         return;
 
-    // Build the complete prefix state before any parallel worker starts. No
-    // pointers into layer vectors are retained; runs address the cache by index.
+    // Build every entry state before any parallel worker starts. Only value
+    // copies are retained, and run callbacks address them by context index.
     m_entry_states = collect_layer_entry_states(PrintingPlan(ctx->plan));
     m_setup_valid = true;
 }
 
 void DefaultLayerEntryState::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    // State computation is already complete. This phase only accounts for one
+    // future run so the progress total matches the number of layer-groups.
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
@@ -242,6 +279,8 @@ void DefaultLayerEntryState::setup_run_impl(const plugin_run_context *run_ctx) c
 
 void DefaultLayerEntryState::run_impl(const plugin_run_context *run_ctx) const
 {
+    // Runs may be concurrent. The cache is immutable after setup, and each
+    // context identifies a distinct layer-group whose property bag it updates.
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
@@ -249,8 +288,6 @@ void DefaultLayerEntryState::run_impl(const plugin_run_context *run_ctx) const
         ctx->layer_group_idx >= m_entry_states[ctx->group_idx].size())
         return;
 
-    // Each worker owns one distinct layer-group, so publishing these two
-    // payloads needs no lock and never touches a predecessor or successor.
     const LayerEntryState &entry = m_entry_states[ctx->group_idx][ctx->layer_group_idx];
     const PrintingLayerGroup layer(ctx->layer_group);
     PluginProperties properties = layer.properties();
