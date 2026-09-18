@@ -2319,6 +2319,9 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     // Register progress callback from the Print class to the Plater.
 
     auto statuscb = [this](const Slic3r::PrintBase::SlicingStatus &status) {
+        BOOST_LOG_TRIVIAL(info) << "[seam-progress] GUI queues slicing status percent="
+                                << status.percent << " flags=" << status.flags
+                                << " message='" << status.main_text << "'";
         wxQueueEvent(this->q, new Slic3r::SlicingStatusEvent(EVT_SLICING_UPDATE, 0, status));
     };
     fff_print.set_status_callback(statuscb);
@@ -4520,6 +4523,11 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
 
 void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
 {
+    const bool worker_idle = m_worker.is_idle();
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] GUI receives slicing status percent="
+                            << evt.status.percent << " flags=" << evt.status.flags
+                            << " worker_idle=" << (worker_idle ? 1 : 0)
+                            << " message='" << evt.status.main_text << "'";
     display_plugin_messages();
 
     //update dirty flags
@@ -4529,12 +4537,17 @@ void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
         notification_manager->set_slicing_progress_ended(Slic3r::GUI::I18N::translate_utf8(evt.status.main_text));
     } else {
         if (evt.status.percent >= -1) {
-            if (!m_worker.is_idle()) {
+            if (!worker_idle) {
                 // Avoid a race condition
+                BOOST_LOG_TRIVIAL(info)
+                    << "[seam-progress] GUI drops slicing status because worker is not idle";
                 return;
             }
 
             if (evt.status.args.empty()) {
+                BOOST_LOG_TRIVIAL(info) << "[seam-progress] GUI forwards slicing status kind="
+                                        << ((evt.status.flags & PrintBase::SlicingStatus::FlagBits::SECONDARY_STATE) != 0 ?
+                                                "secondary" : "main");
                 notification_manager->set_slicing_progress_percentage(evt.status.main_text.empty() ? "" : Slic3r::GUI::I18N::translate_utf8(evt.status.main_text), evt.status.percent / 100.f, 0 == (evt.status.flags & PrintBase::SlicingStatus::FlagBits::SECONDARY_STATE));
             } else {
                 auto formatter = boost::format(Slic3r::GUI::I18N::translate_utf8(evt.status.main_text));

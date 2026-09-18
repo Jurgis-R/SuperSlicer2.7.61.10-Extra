@@ -737,6 +737,9 @@ void begin_step(Print &print, slicing_step_t step, const std::string &message)
     starts; forwarding it here would give boost::format an argument for labels
     such as "Ordering extrusions", which have no placeholder and crash the GUI.
     */
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] pipeline emits main status step="
+                            << int(step) << " percent=" << slicingstep_2_percent[step]
+                            << " message='" << message << "'";
     print.set_status(slicingstep_2_percent[step], message);
     print.secondary_status_counter_reset();
 }

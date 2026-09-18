@@ -116,6 +116,9 @@ c_vec3f normal_frame(c_vec3f normal,c_vec3f direction)
 }
 void build_visibility_model(const Object &object, VisibilityModel &model, const mesh_query_cancel *cancel)
 {
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility model begins mesh assembly samples_target="
+                            << kVisibilitySamplesCount
+                            << " triangle_target=" << kDecimationTriangleCountTarget;
     // Work meshes die immediately after scene construction; the immutable scene
     // owns transformed copies and outlives neither initialization nor sampling.
     const MeshQueryScene scene = [&] {
@@ -130,10 +133,18 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
         return MeshQueryScene({{positives.handle(),object.transform_centered(),0},
                                {negatives.handle(),object.transform_centered(),1}},cancel);
     }();
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility scene ready positive_triangles="
+                            << scene.triangle_count(0) << " negative_triangles="
+                            << scene.triangle_count(1);
     const MeshSurfaceSamples sampled=scene.sample(kVisibilitySamplesCount,cancel);
     throw_if_mesh_cancelled(cancel);
     model.samples=sampled.values();
-    if (model.samples.empty()) return;
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility sampling complete samples="
+                            << model.samples.size() << " area=" << sampled.area();
+    if (model.samples.empty()) {
+        BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility model ends without samples";
+        return;
+    }
     model.tree.build(model.samples.size());
     throw_if_mesh_cancelled(cancel);
     const float density=float(kVisibilitySamplesCount)/float(sampled.area());
@@ -147,9 +158,18 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
     for (size_t x=0; x<kRaysPerSampleAxis; ++x)
         for (size_t y=0; y<kRaysPerSampleAxis; ++y)
             directions.push_back(hemisphere(float(x)*step+step/2,float(y)*step+step/2));
+    const size_t ray_batch_count = (model.samples.size() + 255) / 256;
+    const size_t ray_log_interval = std::max(size_t(1), ray_batch_count / 4);
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility ray casting begins batches="
+                            << ray_batch_count << " rays_per_sample=" << rays_per_sample;
     for (size_t begin=0; begin<model.samples.size(); begin+=256) {
         throw_if_mesh_cancelled(cancel);
         const size_t end=std::min(model.samples.size(),begin+256);
+        const size_t batch_index = begin / 256;
+        if (batch_index == 0 || batch_index + 1 == ray_batch_count ||
+            batch_index % ray_log_interval == 0)
+            BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility ray batch "
+                                    << (batch_index + 1) << "/" << ray_batch_count;
         std::vector<mesh_query_ray> rays;
         rays.reserve((end-begin)*rays_per_sample);
         for (size_t i=begin; i<end; ++i) {
@@ -184,6 +204,8 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
             if (occluded) model.visibility[begin+r/rays_per_sample]-=1.f/float(rays_per_sample);
         }
     }
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility ray casting ends samples="
+                            << model.samples.size();
 }
 float calculate_point_visibility(const VisibilityModel &model,c_vec3f point)
 {

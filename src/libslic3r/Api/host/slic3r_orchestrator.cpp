@@ -523,6 +523,12 @@ void orchestrator_plugin_report_progress(plugin_host_context *host_context, doub
         return;
 
     const int percent = int(std::clamp(progress, 0.0, 1.0) * 100.0 + 0.5);
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] plugin progress callback id='"
+                            << (host_context->plugin != nullptr ?
+                                    host_context->plugin->get_id() : "<unknown>")
+                            << "' step=" << int(host_context->step)
+                            << " percent=" << percent << " message='"
+                            << (message != nullptr ? message : "") << "'";
 
     if (message != nullptr && message[0] != '\0') {
         host_context->print->set_status(percent,

@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <boost/log/trivial.hpp>
+
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
@@ -257,12 +259,18 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
         context.regions = batch.raw_regions.empty() ? nullptr : batch.raw_regions.data();
         context.region_count = uint32_t(batch.raw_regions.size());
 
+        BOOST_LOG_TRIVIAL(info) << "[seam-progress] seam provider initialization begin id='"
+                                << batch.provider.id() << "' regions="
+                                << batch.regions.size();
+
         // execute() calls the provider once for this complete batch. The
         // context and raw_regions remain alive until the call returns; the
         // published instance must own whatever session state it needs after
         // that point.
         const raw_plugin_execution_status status = orchestrator_view.execute(
             batch.provider, print.handle(), context);
+        BOOST_LOG_TRIVIAL(info) << "[seam-progress] seam provider initialization returned id='"
+                                << batch.provider.id() << "' status=" << int(status);
         if (status == RAW_PLUGIN_EXECUTION_CANCELLED)
             throw PluginCancelled();
         if (status != RAW_PLUGIN_EXECUTION_SUCCESS)
@@ -409,9 +417,17 @@ SeamPlacerRouter::SeamPlacerRouter(orchestrator_handle *orchestrator,
     // None of the later phases may run with an incomplete result from an
     // earlier phase.
     const std::vector<PrintRegion> regions = collect_print_regions(print, plan);
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] seam router collected regions="
+                            << regions.size();
     m_impl->batches = group_regions_by_provider(orchestrator, regions);
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] seam router grouped provider batches="
+                            << m_impl->batches.size();
     m_impl->sessions = create_sessions(orchestrator, print, plan, m_impl->batches);
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] seam router initialized sessions="
+                            << m_impl->sessions.size();
     m_impl->routes = build_plan_routes(scratch_storage, plan, m_impl->sessions);
+    BOOST_LOG_TRIVIAL(info) << "[seam-progress] seam router completed routes="
+                            << m_impl->routes.size();
 }
 
 SeamPlacerRouter::~SeamPlacerRouter() = default;

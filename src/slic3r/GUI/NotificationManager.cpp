@@ -2712,12 +2712,20 @@ void NotificationManager::set_slicing_progress_percentage(const std::string& tex
 		if (notification->get_type() == NotificationType::SlicingProgress) {
 			SlicingProgressNotification* spn = dynamic_cast<SlicingProgressNotification*>(notification.get());
 			if (main) {
-				if (spn->set_progress_state(SlicingProgressNotification::SlicingProgressState::SP_PROGRESS, percentage)) {
+				const bool accepted = spn->set_progress_state(
+					SlicingProgressNotification::SlicingProgressState::SP_PROGRESS, percentage);
+				BOOST_LOG_TRIVIAL(info) << "[seam-progress] notification main status percent="
+					<< percentage << " accepted=" << (accepted ? 1 : 0)
+					<< " text='" << text << "'";
+				if (accepted) {
 					spn->set_status_text(text);
 					wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0);
 				}
 			} else {
-				spn->set_secondary_progress(text, percentage);
+				const bool accepted = spn->set_secondary_progress(text, percentage);
+				BOOST_LOG_TRIVIAL(info) << "[seam-progress] notification secondary status percent="
+					<< percentage << " accepted=" << (accepted ? 1 : 0)
+					<< " text='" << text << "'";
 				wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0);
 			}
 			return;
