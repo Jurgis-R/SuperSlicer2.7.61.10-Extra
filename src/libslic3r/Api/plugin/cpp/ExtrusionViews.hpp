@@ -16,7 +16,6 @@ Developer guides:
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
@@ -33,6 +32,7 @@ Developer guides:
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_polyline.h"
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_property.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
+#include "libslic3r/Api/plugin/cpp/DeferredCallbackException.hpp"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginPropertyKey.hpp"
 #include "libslic3r/Api/plugin/cpp/properties/ExtrusionProperties.hpp"
@@ -1367,8 +1367,11 @@ inline std::vector<ExtrusionAreaFragment> MutableExtrusionEntity::split_leaf_by_
 {
     struct CallbackContext
     {
+        // The C API reports each result through a void* callback context. Keep
+        // the published fragments and the first callback failure together until
+        // the C call has returned to a normal C++ frame.
         std::vector<ExtrusionAreaFragment> fragments;
-        std::exception_ptr exception;
+        DeferredCallbackException exception;
     };
 
     std::vector<const expolygon_collection_handle *> area_handles;
@@ -1380,14 +1383,21 @@ inline std::vector<ExtrusionAreaFragment> MutableExtrusionEntity::split_leaf_by_
     const extrusion_split_fragment_fn collect_fragment =
         [](extrusion_entity_handle *fragment, uint32_t area_index, void *user_data) noexcept {
             CallbackContext &callback_context = *static_cast<CallbackContext *>(user_data);
-            if (callback_context.exception != nullptr)
+            // A previous callback may already have failed while growing the
+            // result vector. The C operation cannot receive a C++ exception,
+            // so let it finish while discarding all later results.
+            if (callback_context.exception.captured())
                 return;
             try {
+                // The callback owns no fragment: it stores a borrowed mutable
+                // view and the area index assigned by the splitter. Vector
+                // growth or view construction may still throw in C++ code.
                 callback_context.fragments.push_back({ MutableExtrusionEntity(fragment), area_index });
             } catch (...) {
-                // Never let a C++ allocation exception cross the C callback
-                // boundary. The wrapper rethrows it once host execution ends.
-                callback_context.exception = std::current_exception();
+                // Never let a C++ exception unwind through the C callback
+                // boundary. Retain it so the wrapper can rethrow it after the
+                // host operation has returned to C++.
+                callback_context.exception.capture_current();
             }
         };
 
@@ -1399,8 +1409,7 @@ inline std::vector<ExtrusionAreaFragment> MutableExtrusionEntity::split_leaf_by_
         collect_fragment,
         &context);
 
-    if (context.exception != nullptr)
-        std::rethrow_exception(context.exception);
+    context.exception.rethrow_if_captured();
     if (status == RAW_EXTRUSION_SPLIT_STATUS_SUCCESS)
         return context.fragments;
 

@@ -20,6 +20,7 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
+#include "libslic3r/Api/plugin/cpp/DeferredCallbackException.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/internal/LayerIslandAccess.hpp"
 #include "libslic3r/ClipperUtils.hpp"
@@ -154,14 +155,6 @@ struct PerimeterTree
     }
 };
 
-enum class DeferredPerimeterStop
-{
-    None,
-    PluginCancellation,
-    HostCancellation,
-    Failure
-};
-
 struct PerimeterRunContext
 {
     // Per-island host context carried through the C callbacks. The perimeter
@@ -190,8 +183,8 @@ struct PerimeterRunContext
     bool used_region_group = false;
 
     // Native modules execute inside generator-owned C callbacks. The first
-    // stop reason is retained until Python/ctypes has returned to the runner.
-    DeferredPerimeterStop deferred_stop = DeferredPerimeterStop::None;
+    // exception is retained until Python/ctypes has returned to the runner.
+    slic3r_api::DeferredCallbackException deferred_exception;
 };
 
 struct PerimeterModuleRun
@@ -209,54 +202,38 @@ thread_local PerimeterRunContext *g_active_perimeter_run = nullptr;
 
 bool has_deferred_stop(const PerimeterRunContext &run)
 {
-    return run.deferred_stop != DeferredPerimeterStop::None;
-}
-
-void defer_perimeter_stop(PerimeterRunContext &run,
-                          const DeferredPerimeterStop stop,
-                          const plugin_run_context *report_context,
-                          const char *message) noexcept
-{
-    // Keep the first exception as the primary outcome. Cleanup failures must
-    // not replace the exception that caused stack unwinding.
-    if (has_deferred_stop(run))
-        return;
-    run.deferred_stop = stop;
-
-    if (stop == DeferredPerimeterStop::PluginCancellation ||
-        stop == DeferredPerimeterStop::HostCancellation) {
-        if (run.orchestrator != nullptr)
-            run.orchestrator->request_plugin_cancel();
-        return;
-    }
-
-    try {
-        slic3r_api::report_error(report_context,
-                                 message != nullptr ? message : "Unknown perimeter callback failure");
-    } catch (...) {
-        // Reporting is best-effort here. The private failure state still makes
-        // the runner stop after the foreign callback returns.
-    }
+    return run.deferred_exception.captured();
 }
 
 void defer_current_perimeter_exception(PerimeterRunContext &run,
                                        const plugin_run_context *report_context) noexcept
 {
+    // Cleanup callbacks may fail after the primary operation already stopped.
+    // Only the first exception selects the outcome and triggers side effects.
+    if (!run.deferred_exception.capture_current())
+        return;
+
     try {
         throw;
     } catch (const slic3r_api::PluginCancelled &) {
-        defer_perimeter_stop(
-            run, DeferredPerimeterStop::PluginCancellation, report_context, nullptr);
+        if (run.orchestrator != nullptr)
+            run.orchestrator->request_plugin_cancel();
     } catch (const CanceledException &) {
-        defer_perimeter_stop(
-            run, DeferredPerimeterStop::HostCancellation, report_context, nullptr);
+        if (run.orchestrator != nullptr)
+            run.orchestrator->request_plugin_cancel();
     } catch (const std::exception &error) {
-        defer_perimeter_stop(run, DeferredPerimeterStop::Failure, report_context, error.what());
+        try {
+            slic3r_api::report_error(report_context, error.what());
+        } catch (...) {
+            // Reporting is best-effort. The retained exception still prevents
+            // result publication and supplies a fallback failure below.
+        }
     } catch (...) {
-        defer_perimeter_stop(run,
-                             DeferredPerimeterStop::Failure,
-                             report_context,
-                             "Unknown C++ exception in perimeter callback");
+        try {
+            slic3r_api::report_error(report_context, "Unknown C++ exception in perimeter callback");
+        } catch (...) {
+            // See the ordinary exception branch above.
+        }
     }
 }
 
@@ -290,10 +267,16 @@ void contain_current_perimeter_exception(PerimeterRunContext *run,
 
 void throw_deferred_perimeter_cancellation(const PerimeterRunContext &run)
 {
-    if (run.deferred_stop == DeferredPerimeterStop::PluginCancellation)
-        throw slic3r_api::PluginCancelled();
-    if (run.deferred_stop == DeferredPerimeterStop::HostCancellation)
-        throw CanceledException();
+    // Preserve the two cancellation types expected by their native callers.
+    // Ordinary callback failures stay on the plugin diagnostic path below.
+    try {
+        run.deferred_exception.rethrow_if_captured();
+    } catch (const slic3r_api::PluginCancelled &) {
+        throw;
+    } catch (const CanceledException &) {
+        throw;
+    } catch (...) {
+    }
 }
 
 class ActivePerimeterRunGuard
@@ -1203,7 +1186,7 @@ void throw_if_perimeter_stopped(Orchestrator &orchestrator,
     throw_deferred_perimeter_cancellation(run);
     Detail::throw_if_plugin_stopped(
         orchestrator, print, STEP_PERIMETER, plugin, execution_error, phase);
-    if (run.deferred_stop == DeferredPerimeterStop::Failure)
+    if (run.deferred_exception.captured())
         throw RuntimeError("Perimeter callback failed without a host diagnostic.");
 }
 

@@ -159,6 +159,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/ClipperViews.hpp
 	Api/plugin/cpp/ConfigDefinitionViews.hpp
 	Api/plugin/cpp/DataTreeViews.hpp
+	Api/plugin/cpp/DeferredCallbackException.hpp
 	Api/plugin/cpp/SurfaceViews.hpp
 	Api/plugin/cpp/ExtrusionTreeVisitors.hpp
 	Api/plugin/cpp/ExtrusionViews.hpp
