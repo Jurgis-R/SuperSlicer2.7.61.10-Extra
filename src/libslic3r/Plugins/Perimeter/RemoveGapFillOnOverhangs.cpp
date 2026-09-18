@@ -299,7 +299,6 @@ void remove_gap_fill_on_overhangs(storage_handle *storage,
     // empty; the node area/fill-area data is not changed here.
     throw_if_cancelled(run_ctx);
     const bool moved = extrusion_move_from(extrusions.mutable_handle(), clipped_extrusions.mutable_handle()) != 0;
-    throw_if_cancelled(run_ctx);
     assert(moved);
     (void) moved;
 }

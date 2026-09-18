@@ -444,6 +444,9 @@ class PerimeterContext(PluginRunContextView):
             ))
             if callback_cancellations:
                 _raise_exception_snapshot(callback_cancellations[0])
+            # A native perimeter module may defer cancellation until this
+            # ctypes call has returned. Convert it to Python control flow now.
+            self.throw_if_cancelled()
             return status
         finally:
             self._states.pop(state_key, None)

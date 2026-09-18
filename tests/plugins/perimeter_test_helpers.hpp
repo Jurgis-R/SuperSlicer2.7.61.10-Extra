@@ -61,6 +61,18 @@ struct PerimeterMultiIslandRunCapture
     std::vector<PerimeterRunCapture> islands;
 };
 
+struct PerimeterCancellationCapture
+{
+    bool plugin_cancelled = false;
+    bool host_cancelled = false;
+    bool runtime_error = false;
+    size_t perimeter_output_count = 0;
+    size_t infill_area_count = 0;
+    size_t infill_free_area_count = 0;
+    std::string runtime_error_message;
+    std::vector<std::string> error_messages;
+};
+
 struct VerticalSplitCounts
 {
     size_t left_only = 0;
@@ -110,6 +122,11 @@ PerimeterRunCapture run_perimeter_case(
     size_t layer_idx,
     std::initializer_list<std::pair<std::string, std::string>> region_overrides = {},
     const ExPolygon *region_area = nullptr);
+
+PerimeterCancellationCapture run_perimeter_cancellation_case(
+    const DynamicPrintConfig &config,
+    std::initializer_list<const char *> active_plugins,
+    size_t layer_idx = 0);
 
 PerimeterRunCapture run_perimeter_and_post_case(
     const DynamicPrintConfig &config,

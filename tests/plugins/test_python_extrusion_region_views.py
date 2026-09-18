@@ -454,6 +454,55 @@ class PythonExtrusionRegionViewTests(unittest.TestCase):
         self.assertEqual(context._states, {})
         self.assertEqual(context._callbacks, [])
 
+    def test_perimeter_callback_propagates_native_cancellation_after_return(self):
+        cancelled = False
+        native_events = []
+        generation = self.generated.PerimeterGenerationContext()
+        node = self.generated.PerimeterNode()
+
+        @self.generated.PLUGIN_IS_CANCELLED
+        def is_cancelled(_host_context):
+            return int(cancelled)
+
+        @self.generated.PERIMETER_RUN_REGION_GROUP
+        def run_region_group(
+            _payload,
+            _regions,
+            _region_count,
+            _root_area,
+            generator_state,
+            generate_node,
+        ):
+            nonlocal cancelled
+            result = generate_node(
+                generator_state,
+                ctypes.pointer(generation),
+                ctypes.pointer(node),
+                ctypes.c_void_p(31),
+                ctypes.c_void_p(32),
+            )
+            native_events.append(("callback returned", int(result)))
+            cancelled = True
+            return 0
+
+        common = self.generated.PluginRunContext()
+        common.host_context = ctypes.c_void_p(1)
+        common.is_cancelled = is_cancelled
+        payload = self.generated.RunCtxGeneratePerimeter()
+        payload.run_region_group = run_region_group
+        context = self.perimeter.PerimeterContext(
+            types.SimpleNamespace(host=types.SimpleNamespace()),
+            common,
+            ctypes.pointer(payload),
+        )
+
+        with self.assertRaises(self.run_context.PluginCancelled):
+            context.run_region_group([], None, object(), lambda *_args: True)
+
+        self.assertEqual(native_events, [("callback returned", 1)])
+        self.assertEqual(context._states, {})
+        self.assertEqual(context._callbacks, [])
+
 
 if __name__ == "__main__":
     unittest.main()

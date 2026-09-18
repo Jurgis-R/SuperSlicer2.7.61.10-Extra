@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <exception>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -19,6 +20,7 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/internal/LayerIslandAccess.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/ExPolygon.hpp"
@@ -152,6 +154,14 @@ struct PerimeterTree
     }
 };
 
+enum class DeferredPerimeterStop
+{
+    None,
+    PluginCancellation,
+    HostCancellation,
+    Failure
+};
+
 struct PerimeterRunContext
 {
     // Per-island host context carried through the C callbacks. The perimeter
@@ -178,6 +188,10 @@ struct PerimeterRunContext
     // A perimeter generator is expected to call run_region_group(). If it does
     // not, there is nothing safe to publish for this island.
     bool used_region_group = false;
+
+    // Native modules execute inside generator-owned C callbacks. The first
+    // stop reason is retained until Python/ctypes has returned to the runner.
+    DeferredPerimeterStop deferred_stop = DeferredPerimeterStop::None;
 };
 
 struct PerimeterModuleRun
@@ -186,8 +200,115 @@ struct PerimeterModuleRun
     // start() may return a per-run user_context; the same pointer is passed to
     // before/after/end and is owned by the module.
     perimeter_generation_module_instance module = {};
+    plugin_run_context run_context = {};
     void *user_context = nullptr;
     bool started = false;
+};
+
+thread_local PerimeterRunContext *g_active_perimeter_run = nullptr;
+
+bool has_deferred_stop(const PerimeterRunContext &run)
+{
+    return run.deferred_stop != DeferredPerimeterStop::None;
+}
+
+void defer_perimeter_stop(PerimeterRunContext &run,
+                          const DeferredPerimeterStop stop,
+                          const plugin_run_context *report_context,
+                          const char *message) noexcept
+{
+    // Keep the first exception as the primary outcome. Cleanup failures must
+    // not replace the exception that caused stack unwinding.
+    if (has_deferred_stop(run))
+        return;
+    run.deferred_stop = stop;
+
+    if (stop == DeferredPerimeterStop::PluginCancellation ||
+        stop == DeferredPerimeterStop::HostCancellation) {
+        if (run.orchestrator != nullptr)
+            run.orchestrator->request_plugin_cancel();
+        return;
+    }
+
+    try {
+        slic3r_api::report_error(report_context,
+                                 message != nullptr ? message : "Unknown perimeter callback failure");
+    } catch (...) {
+        // Reporting is best-effort here. The private failure state still makes
+        // the runner stop after the foreign callback returns.
+    }
+}
+
+void defer_current_perimeter_exception(PerimeterRunContext &run,
+                                       const plugin_run_context *report_context) noexcept
+{
+    try {
+        throw;
+    } catch (const slic3r_api::PluginCancelled &) {
+        defer_perimeter_stop(
+            run, DeferredPerimeterStop::PluginCancellation, report_context, nullptr);
+    } catch (const CanceledException &) {
+        defer_perimeter_stop(
+            run, DeferredPerimeterStop::HostCancellation, report_context, nullptr);
+    } catch (const std::exception &error) {
+        defer_perimeter_stop(run, DeferredPerimeterStop::Failure, report_context, error.what());
+    } catch (...) {
+        defer_perimeter_stop(run,
+                             DeferredPerimeterStop::Failure,
+                             report_context,
+                             "Unknown C++ exception in perimeter callback");
+    }
+}
+
+void contain_current_perimeter_exception(PerimeterRunContext *run,
+                                         const plugin_run_context *report_context) noexcept
+{
+    if (run != nullptr) {
+        defer_current_perimeter_exception(*run, report_context);
+        return;
+    }
+
+    // A callback invoked outside the normal runner has no private state to
+    // update. It still must not unwind through C, so report ordinary failures
+    // directly and absorb cancellation.
+    try {
+        throw;
+    } catch (const slic3r_api::PluginCancelled &) {
+    } catch (const CanceledException &) {
+    } catch (const std::exception &error) {
+        try {
+            slic3r_api::report_error(report_context, error.what());
+        } catch (...) {
+        }
+    } catch (...) {
+        try {
+            slic3r_api::report_error(report_context, "Unknown C++ exception in perimeter callback");
+        } catch (...) {
+        }
+    }
+}
+
+void throw_deferred_perimeter_cancellation(const PerimeterRunContext &run)
+{
+    if (run.deferred_stop == DeferredPerimeterStop::PluginCancellation)
+        throw slic3r_api::PluginCancelled();
+    if (run.deferred_stop == DeferredPerimeterStop::HostCancellation)
+        throw CanceledException();
+}
+
+class ActivePerimeterRunGuard
+{
+public:
+    explicit ActivePerimeterRunGuard(PerimeterRunContext &run)
+        : m_previous(g_active_perimeter_run)
+    {
+        g_active_perimeter_run = &run;
+    }
+
+    ~ActivePerimeterRunGuard() { g_active_perimeter_run = m_previous; }
+
+private:
+    PerimeterRunContext *m_previous = nullptr;
 };
 
 LayerRegionIsland *to_region_island(layer_region_island_handle *handle)
@@ -511,10 +632,10 @@ void append_sibling(PerimeterTree &tree, PerimeterTreeNode &node, std::unique_pt
     parent->sync_c_pointers();
 }
 
-void split_node_callback(perimeter_generation_context *context,
-                         perimeter_node *node,
-                         const expolygon_collection_handle *clip,
-                         perimeter_node_span *inside_nodes_out)
+void split_node_impl(perimeter_generation_context *context,
+                     perimeter_node *node,
+                     const expolygon_collection_handle *clip,
+                     perimeter_node_span *inside_nodes_out)
 {
     // Perimeter modules use this callback when a setting applies only to part
     // of a leaf. The callback keeps the inside pieces as the returned span and
@@ -580,10 +701,27 @@ void split_node_callback(perimeter_generation_context *context,
     inside_nodes_out->count = uint32_t(tree->last_span_nodes.size());
 }
 
-void rebuild_children_callback(perimeter_generation_context *context,
-                               perimeter_node *node,
-                               const expolygon_collection_handle *areas,
-                               const expolygon_collection_handle *infill_areas)
+void split_node_callback(perimeter_generation_context *context,
+                         perimeter_node *node,
+                         const expolygon_collection_handle *clip,
+                         perimeter_node_span *inside_nodes_out) noexcept
+{
+    // Geometry helpers are public C callbacks and may be invoked from ctypes.
+    // Always return an empty span when host geometry raises an exception.
+    if (inside_nodes_out != nullptr)
+        *inside_nodes_out = {};
+    try {
+        split_node_impl(context, node, clip, inside_nodes_out);
+    } catch (...) {
+        contain_current_perimeter_exception(
+            g_active_perimeter_run, context != nullptr ? context->run_ctx : nullptr);
+    }
+}
+
+void rebuild_children_impl(perimeter_generation_context *context,
+                           perimeter_node *node,
+                           const expolygon_collection_handle *areas,
+                           const expolygon_collection_handle *infill_areas)
 {
     // Modules that know a better child topology may replace all children of a
     // node at once. This is stronger than split_node(): existing child nodes are
@@ -611,6 +749,19 @@ void rebuild_children_callback(perimeter_generation_context *context,
     tree->sync_c_pointers();
 }
 
+void rebuild_children_callback(perimeter_generation_context *context,
+                               perimeter_node *node,
+                               const expolygon_collection_handle *areas,
+                               const expolygon_collection_handle *infill_areas) noexcept
+{
+    try {
+        rebuild_children_impl(context, node, areas, infill_areas);
+    } catch (...) {
+        contain_current_perimeter_exception(
+            g_active_perimeter_run, context != nullptr ? context->run_ctx : nullptr);
+    }
+}
+
 perimeter_generation_context make_generation_context(plugin_run_context *run_context,
                                                      const run_ctx_generate_perimeter &ctx,
                                                      layer_region_island_handle *region_island,
@@ -634,53 +785,100 @@ perimeter_generation_context make_generation_context(plugin_run_context *run_con
 }
 
 void call_module_start(std::vector<PerimeterModuleRun> &modules,
-                       perimeter_generation_context &context)
+                       perimeter_generation_context &context,
+                       PerimeterRunContext &run) noexcept
 {
     // start() is called once per region group. Modules use it to build caches
     // derived from the island, regions, or settings, and end() receives the
     // returned pointer for cleanup.
     for (PerimeterModuleRun &module_run : modules) {
-        module_run.started = true;
-        if (module_run.module.vt != nullptr && module_run.module.vt->start != nullptr)
+        if (has_deferred_stop(run))
+            return;
+        if (module_run.module.vt == nullptr || module_run.module.vt->start == nullptr) {
+            module_run.started = true;
+            continue;
+        }
+
+        try {
             module_run.user_context = module_run.module.vt->start(module_run.module.ctx, &context);
+            module_run.started = true;
+        } catch (...) {
+            defer_current_perimeter_exception(run, &module_run.run_context);
+            return;
+        }
     }
 }
 
 void call_module_before(const std::vector<PerimeterModuleRun> &modules,
                         perimeter_generation_context &context,
-                        perimeter_node &node)
+                        perimeter_node &node,
+                        PerimeterRunContext &run) noexcept
 {
     // before() runs immediately before the generator emits one perimeter for a
     // node. It may split the node or adjust node metadata such as the requested
     // perimeter count.
-    for (const PerimeterModuleRun &module_run : modules)
-        if (module_run.started && module_run.module.vt != nullptr && module_run.module.vt->before != nullptr)
+    for (const PerimeterModuleRun &module_run : modules) {
+        if (has_deferred_stop(run))
+            return;
+        if (!module_run.started || module_run.module.vt == nullptr || module_run.module.vt->before == nullptr)
+            continue;
+        try {
             module_run.module.vt->before(module_run.module.ctx, module_run.user_context, &context, &node);
+        } catch (...) {
+            defer_current_perimeter_exception(run, &module_run.run_context);
+            return;
+        }
+    }
 }
 
 void call_module_after(const std::vector<PerimeterModuleRun> &modules,
                        perimeter_generation_context &context,
-                       perimeter_node &node)
+                       perimeter_node &node,
+                       PerimeterRunContext &run) noexcept
 {
     // after() runs after the generator emitted extrusion and child areas for
     // this node. Modules commonly refine the newly-created children or move
     // generated material between perimeter and fill domains.
-    for (const PerimeterModuleRun &module_run : modules)
-        if (module_run.started && module_run.module.vt != nullptr && module_run.module.vt->after != nullptr)
+    for (const PerimeterModuleRun &module_run : modules) {
+        if (has_deferred_stop(run))
+            return;
+        if (!module_run.started || module_run.module.vt == nullptr || module_run.module.vt->after == nullptr)
+            continue;
+        try {
             module_run.module.vt->after(module_run.module.ctx, module_run.user_context, &context, &node);
+        } catch (...) {
+            defer_current_perimeter_exception(run, &module_run.run_context);
+            return;
+        }
+    }
 }
 
-void call_module_end(std::vector<PerimeterModuleRun> &modules,
-                     perimeter_generation_context &context)
+void call_module_end_noexcept(std::vector<PerimeterModuleRun> &modules,
+                              perimeter_generation_context &context,
+                              PerimeterRunContext &run,
+                              const bool record_failures) noexcept
 {
     // Always pair a successful start() with end(). The module owns any
     // user_context allocation and must release it here before the region group
     // context goes out of scope.
     for (PerimeterModuleRun &module_run : modules) {
-        if (module_run.started && module_run.module.vt != nullptr && module_run.module.vt->end != nullptr)
-            module_run.module.vt->end(module_run.module.ctx, module_run.user_context, &context);
-        module_run.user_context = nullptr;
+        if (!module_run.started)
+            continue;
+
+        // Mark the hook finished before invoking plugin code. If end() throws,
+        // cleanup cannot call the same hook a second time during unwinding.
         module_run.started = false;
+        void *user_context = module_run.user_context;
+        module_run.user_context = nullptr;
+        if (module_run.module.vt == nullptr || module_run.module.vt->end == nullptr)
+            continue;
+
+        try {
+            module_run.module.vt->end(module_run.module.ctx, user_context, &context);
+        } catch (...) {
+            if (record_failures)
+                defer_current_perimeter_exception(run, &module_run.run_context);
+        }
     }
 }
 
@@ -688,29 +886,44 @@ class PerimeterModuleEndGuard
 {
 public:
     PerimeterModuleEndGuard(std::vector<PerimeterModuleRun> &modules,
-                            perimeter_generation_context &context)
+                            perimeter_generation_context &context,
+                            PerimeterRunContext &run)
         : m_modules(&modules)
         , m_context(&context)
+        , m_run(&run)
+        , m_uncaught_exceptions(std::uncaught_exceptions())
     {}
 
-    ~PerimeterModuleEndGuard()
+    ~PerimeterModuleEndGuard() noexcept
     {
         // The generation callback can return early on cancellation or plugin
-        // failure. RAII keeps module cleanup paired with start() in all exits.
-        this->finish();
+        // failure. A cleanup exception is secondary while another exception is
+        // unwinding, but every started module still receives end() once.
+        this->finish_impl(std::uncaught_exceptions() == m_uncaught_exceptions);
     }
 
-    void finish()
+    void finish() noexcept
     {
-        if (m_modules != nullptr && m_context != nullptr)
-            call_module_end(*m_modules, *m_context);
-        m_modules = nullptr;
-        m_context = nullptr;
+        this->finish_impl(true);
     }
 
 private:
+    void finish_impl(const bool record_failures) noexcept
+    {
+        std::vector<PerimeterModuleRun> *modules = m_modules;
+        perimeter_generation_context *context = m_context;
+        PerimeterRunContext *run = m_run;
+        m_modules = nullptr;
+        m_context = nullptr;
+        m_run = nullptr;
+        if (modules != nullptr && context != nullptr && run != nullptr)
+            call_module_end_noexcept(*modules, *context, *run, record_failures);
+    }
+
     std::vector<PerimeterModuleRun> *m_modules = nullptr;
     perimeter_generation_context *m_context = nullptr;
+    PerimeterRunContext *m_run = nullptr;
+    int m_uncaught_exceptions = 0;
 };
 
 std::vector<PerimeterModuleRun>
@@ -757,6 +970,8 @@ create_perimeter_generation_modules(PerimeterRunContext &run)
         if (module_context.module.vt != nullptr) {
             PerimeterModuleRun module_run;
             module_run.module = module_context.module;
+            module_run.run_context = run_context;
+            module_run.run_context.data = nullptr;
             modules.push_back(module_run);
         }
     }
@@ -789,7 +1004,7 @@ int32_t run_region_group_callback(const run_ctx_generate_perimeter *ctx,
                                   uint32_t region_count,
                                   const expolygon_handle *root_area,
                                   void *generator_context,
-                                  perimeter_generate_node_fn generate_node)
+                                  perimeter_generate_node_fn generate_node) noexcept
 {
     // This is the main host-side execution loop for a generator-selected region
     // group. The plugin supplies generate_node(), while the host owns traversal,
@@ -800,104 +1015,135 @@ int32_t run_region_group_callback(const run_ctx_generate_perimeter *ctx,
     PerimeterRunContext &run = *reinterpret_cast<PerimeterRunContext *>(ctx->host_context);
     if (run.island == nullptr || run.generator_run_context == nullptr)
         return 0;
+    if (has_deferred_stop(run))
+        return 0;
     run.used_region_group = true;
 
-    const ExPolygon *root_expolygon = root_area == nullptr ? &run.island->get_slice() : to_expolygon(root_area);
-    if (root_expolygon == nullptr || root_expolygon->empty())
-        return 1;
+    try {
+        const ExPolygon *root_expolygon = root_area == nullptr ? &run.island->get_slice() : to_expolygon(root_area);
+        if (root_expolygon == nullptr || root_expolygon->empty())
+            return 1;
 
-    LayerRegionSetCPtrs regions = region_set_from_handles(region_handles, region_count, *run.island);
-    if (regions.empty())
-        return 0;
+        LayerRegionSetCPtrs regions = region_set_from_handles(region_handles, region_count, *run.island);
+        if (regions.empty())
+            return 0;
 
-    // One region group maps to one LayerRegionIsland. Generators can call this
-    // callback multiple times with different compatible region sets; each group
-    // then owns independent extrusion and fill surfaces.
-    LayerRegionIsland &region_island =
-        run.island->get_or_add_region_island(regions, perimeter_extruder_id(regions));
-    PerimeterTree tree(*root_expolygon, requested_perimeter_count(regions));
-    std::vector<PerimeterModuleRun> modules = create_perimeter_generation_modules(run);
-    perimeter_generation_context generation_context =
-        make_generation_context(run.generator_run_context,
-                                *ctx,
-                                reinterpret_cast<layer_region_island_handle *>(&region_island),
-                                tree);
+        // One region group maps to one LayerRegionIsland. Generators can call
+        // this callback for several compatible region sets. Publication remains
+        // gated behind a complete traversal for each independent group.
+        LayerRegionIsland &region_island =
+            run.island->get_or_add_region_island(regions, perimeter_extruder_id(regions));
+        PerimeterTree tree(*root_expolygon, requested_perimeter_count(regions));
+        std::vector<PerimeterModuleRun> modules = create_perimeter_generation_modules(run);
+        perimeter_generation_context generation_context =
+            make_generation_context(run.generator_run_context,
+                                    *ctx,
+                                    reinterpret_cast<layer_region_island_handle *>(&region_island),
+                                    tree);
 
-    PerimeterModuleEndGuard module_end_guard(modules, generation_context);
-    call_module_start(modules, generation_context);
+        PerimeterModuleEndGuard module_end_guard(modules, generation_context, run);
+        call_module_start(modules, generation_context, run);
 
-    int32_t result = 1;
-    std::vector<PerimeterTreeNode *> pending_nodes;
-    pending_nodes.push_back(&tree.root);
-    while (!pending_nodes.empty()) {
-        // Depth-first traversal keeps memory small and naturally follows the
-        // onion-shell tree. The order of publication is reconstructed later by
-        // collect_extrusions(), so the pending stack only controls generation.
-        PerimeterTreeNode *node = pending_nodes.back();
-        pending_nodes.pop_back();
-        if (node == nullptr || !node->needs_more_perimeters())
-            continue;
+        int32_t result = 1;
+        std::vector<PerimeterTreeNode *> pending_nodes;
+        pending_nodes.push_back(&tree.root);
+        while (!pending_nodes.empty() && !has_deferred_stop(run)) {
+            // Depth-first traversal keeps memory small and naturally follows the
+            // onion-shell tree. The order of publication is reconstructed later by
+            // collect_extrusions(), so the pending stack only controls generation.
+            PerimeterTreeNode *node = pending_nodes.back();
+            pending_nodes.pop_back();
+            if (node == nullptr || !node->needs_more_perimeters())
+                continue;
 
-        if (run.print != nullptr)
-            run.print->throw_if_canceled();
+            if (run.print != nullptr)
+                run.print->throw_if_canceled();
 
-        tree.sync_c_pointers();
-        call_module_before(modules, generation_context, node->node);
+            tree.sync_c_pointers();
+            call_module_before(modules, generation_context, node->node, run);
+            if (has_deferred_stop(run)) {
+                result = 0;
+                break;
+            }
 
-        node->extrusions.clear_content();
-        node->extrusions.clear_properties();
-        ExPolygons inner_areas;
-        ExPolygons inner_infill_areas;
-        // The generator emits exactly one perimeter depth for this node. It
-        // returns child areas for the next depth instead of mutating host
-        // containers directly.
-        const int32_t ok = generate_node(generator_context,
-                                         &generation_context,
-                                         &node->node,
-                                         reinterpret_cast<expolygon_collection_handle *>(&inner_areas),
-                                         reinterpret_cast<expolygon_collection_handle *>(&inner_infill_areas));
-        if (!ok) {
-            result = 0;
-            break;
+            node->extrusions.clear_content();
+            node->extrusions.clear_properties();
+            ExPolygons inner_areas;
+            ExPolygons inner_infill_areas;
+            // The generator emits exactly one perimeter depth for this node. It
+            // returns child areas for the next depth instead of mutating host
+            // containers directly.
+            const int32_t ok = generate_node(generator_context,
+                                             &generation_context,
+                                             &node->node,
+                                             reinterpret_cast<expolygon_collection_handle *>(&inner_areas),
+                                             reinterpret_cast<expolygon_collection_handle *>(&inner_infill_areas));
+            if (!ok || has_deferred_stop(run)) {
+                result = 0;
+                break;
+            }
+            node->generated_perimeter = true;
+
+            create_children(*node, inner_areas, inner_infill_areas);
+
+            tree.sync_c_pointers();
+            call_module_after(modules, generation_context, node->node, run);
+            if (has_deferred_stop(run)) {
+                result = 0;
+                break;
+            }
+
+            // Modules may have rebuilt or split children during after(), so iterate
+            // over the final child list that exists after all module callbacks.
+            for (std::unique_ptr<PerimeterTreeNode> &child : node->children)
+                pending_nodes.push_back(child.get());
         }
-        node->generated_perimeter = true;
 
-        create_children(*node, inner_areas, inner_infill_areas);
+        module_end_guard.finish();
+        if (!result || has_deferred_stop(run))
+            return 0;
 
-        tree.sync_c_pointers();
-        call_module_after(modules, generation_context, node->node);
-
-        // Modules may have rebuilt or split children during after(), so iterate
-        // over the final child list that exists after all module callbacks.
-        for (std::unique_ptr<PerimeterTreeNode> &child : node->children)
-            pending_nodes.push_back(child.get());
-    }
-
-    module_end_guard.finish();
-    if (!result)
+        publish_region_group(run, region_island, tree);
         return result;
-
-    publish_region_group(run, region_island, tree);
-    return result;
+    } catch (...) {
+        // Returning zero first lets Python/ctypes regain control. Cancellation
+        // or failure is restored only after the generator callback returns.
+        contain_current_perimeter_exception(&run, run.generator_run_context);
+        return 0;
+    }
 }
 
 int32_t set_region_island_extrusion_callback(layer_region_island_handle *region_island_handle,
                                              raw_extrusion_role role,
-                                             extrusion_entity_handle *extrusion_handle)
+                                             extrusion_entity_handle *extrusion_handle) noexcept
 {
     // Direct publication is reserved for generator-owned buckets. The raw role
     // is mapped to the LayerRegionIsland bucket so plugins can use public role
     // flags without knowing the host storage enum.
-    LayerRegionIsland *region_island = to_region_island(region_island_handle);
-    if (region_island == nullptr)
+    PerimeterRunContext *run = g_active_perimeter_run;
+    if (run != nullptr && has_deferred_stop(*run))
         return 0;
 
-    ExtrusionEntityCollection &dst = region_island->mutable_extrusion(bucket_role_from_raw(role));
-    dst.clear();
-    if (extrusion_handle != nullptr)
-        append_extrusion_children(dst, *to_extrusion(extrusion_handle));
-    region_island->remove_empty_extrusions();
-    return 1;
+    try {
+        LayerRegionIsland *region_island = to_region_island(region_island_handle);
+        if (region_island == nullptr)
+            return 0;
+
+        // Prepare the consumed entity in scratch storage before changing the
+        // published bucket. Exceptions during conversion leave output intact.
+        ExtrusionEntityCollection prepared;
+        if (extrusion_handle != nullptr)
+            append_extrusion_children(prepared, *to_extrusion(extrusion_handle));
+
+        ExtrusionEntityCollection &dst = region_island->mutable_extrusion(bucket_role_from_raw(role));
+        dst.swap(prepared);
+        region_island->remove_empty_extrusions();
+        return 1;
+    } catch (...) {
+        contain_current_perimeter_exception(
+            run, run != nullptr ? run->generator_run_context : nullptr);
+        return 0;
+    }
 }
 
 void clear_island_outputs(LayerSliceIsland &island)
@@ -944,6 +1190,23 @@ size_t count_layer_islands(const Print &print)
     return count;
 }
 
+void throw_if_perimeter_stopped(Orchestrator &orchestrator,
+                                const Print &print,
+                                Plugin &plugin,
+                                const std::atomic_bool &execution_error,
+                                const PerimeterRunContext &run,
+                                const char *phase)
+{
+    // Cancellation is restored with its original native type after the plugin
+    // callback returns. Ordinary failures first use the standard diagnostic
+    // channel, with a fallback if that callback itself could not report.
+    throw_deferred_perimeter_cancellation(run);
+    Detail::throw_if_plugin_stopped(
+        orchestrator, print, STEP_PERIMETER, plugin, execution_error, phase);
+    if (run.deferred_stop == DeferredPerimeterStop::Failure)
+        throw RuntimeError("Perimeter callback failed without a host diagnostic.");
+}
+
 bool run_generator_for_island(Orchestrator &orchestrator,
                               Plugin &plugin,
                               Print &print,
@@ -978,10 +1241,13 @@ bool run_generator_for_island(Orchestrator &orchestrator,
     payload.set_region_island_extrusion = &set_region_island_extrusion_callback;
     run_context.data = &payload;
 
+    ActivePerimeterRunGuard active_run(perimeter_context);
     plugin.setup_run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_PERIMETER, plugin, execution_error, "setup_run");
+    throw_if_perimeter_stopped(
+        orchestrator, print, plugin, execution_error, perimeter_context, "setup_run");
     plugin.run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_PERIMETER, plugin, execution_error, "run");
+    throw_if_perimeter_stopped(
+        orchestrator, print, plugin, execution_error, perimeter_context, "run");
 
     if (perimeter_context.used_region_group)
         assign_island_outputs(island, perimeter_context);

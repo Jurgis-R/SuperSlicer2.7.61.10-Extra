@@ -10,6 +10,7 @@
 #include "libslic3r/Api/internal/LayerAccess.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
@@ -607,6 +608,52 @@ PerimeterRunCapture run_perimeter_case(
 
     ScopedActivePlugins active_scope(active_plugins);
     return run_active_perimeter_plugins(prepared.print, layer.island(0));
+}
+
+PerimeterCancellationCapture run_perimeter_cancellation_case(
+    const DynamicPrintConfig &config,
+    std::initializer_list<const char *> active_plugins,
+    const size_t layer_idx)
+{
+    // Preserve the cancelled island long enough to inspect the publication
+    // boundary after the runner has safely rethrown deferred cancellation.
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, config);
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(layer_idx < object.layer_count());
+    LayerSliceIsland &island = object.layer(layer_idx).island(0);
+
+    Orchestrator &orchestrator = Orchestrator::instance();
+    ScopedActivePlugins active_scope(active_plugins);
+    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    orchestrator.reset_plugin_cancel();
+    (void) orchestrator.consume_plugin_messages();
+
+    PerimeterCancellationCapture capture;
+    try {
+        Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
+    } catch (const slic3r_api::PluginCancelled &) {
+        capture.plugin_cancelled = true;
+    } catch (const CanceledException &) {
+        capture.host_cancelled = true;
+    } catch (const RuntimeError &error) {
+        capture.runtime_error = true;
+        capture.runtime_error_message = error.what();
+    } catch (...) {
+        orchestrator.reset_plugin_cancel();
+        throw;
+    }
+    for (const Orchestrator::PluginMessage &message : orchestrator.consume_plugin_messages())
+        if (message.level == Orchestrator::PluginMessageLevel::Error)
+            capture.error_messages.push_back(message.message);
+    orchestrator.reset_plugin_cancel();
+
+    for (const LayerRegionIsland &region_island : island.regions_islands())
+        if (region_island.has_extrusion(LayerRegionIsland::PERIMETERS))
+            capture.perimeter_output_count += region_island.extrusion(LayerRegionIsland::PERIMETERS).child_count();
+    capture.infill_area_count = island.infill_areas().size();
+    capture.infill_free_area_count = island.infill_free_areas().size();
+    return capture;
 }
 
 PerimeterRunCapture run_perimeter_and_post_case(
