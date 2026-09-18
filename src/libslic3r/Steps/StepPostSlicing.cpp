@@ -245,7 +245,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_POST_SLICING, *plugin, execution_error, "run");
 
         Detail::validate_or_report(validate_post, print, "Post-slicing post-plugin validation");
-        print.complete_pipeline_progress_plugin(STEP_POST_SLICING, plugin->get_id());
+        print.pipeline_progress().complete_plugin(STEP_POST_SLICING, plugin->get_id());
     }
 
     attach_regions_to_islands(print);

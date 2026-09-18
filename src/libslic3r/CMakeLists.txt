@@ -471,6 +471,8 @@ set(SLIC3R_SOURCES
 	Steps/StepPostPerimeterGeneration.hpp
 	Steps/StepPostSlicing.cpp
 	Steps/StepPostSlicing.hpp
+	Steps/PipelineProgress.cpp
+	Steps/PipelineProgress.hpp
 	Steps/StepPipeline.cpp
 	Steps/StepPipeline.hpp
 	Steps/StepPrepareForPeriemters.cpp
@@ -856,6 +858,8 @@ set(SLIC3R_SOURCES
     PrintRecords.hpp
     PrintBase.cpp
     PrintBase.hpp
+    PrintStatus.cpp
+    PrintStatus.hpp
     Config/PrintConfig.cpp
     Config/PrintConfig.hpp
     PrintObject.cpp

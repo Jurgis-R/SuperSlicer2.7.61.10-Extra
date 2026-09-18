@@ -1297,7 +1297,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
             }
         }
     }
-    print.complete_pipeline_progress_plugin(STEP_PERIMETER, plugin->get_id());
+    print.pipeline_progress().complete_plugin(STEP_PERIMETER, plugin->get_id());
 }
 
 } // namespace Slic3r::Steps::StepGeneratePerimeter

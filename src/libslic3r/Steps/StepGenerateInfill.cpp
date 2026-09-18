@@ -544,7 +544,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         run_generator_for_object(
             orchestrator, *plugin, print, print.object(object_idx), host_context, infill_context, execution_error);
     }
-    print.complete_pipeline_progress_plugin(STEP_INFILL, plugin->get_id());
+    print.pipeline_progress().complete_plugin(STEP_INFILL, plugin->get_id());
 }
 
 } // namespace Slic3r::Steps::StepGenerateInfill

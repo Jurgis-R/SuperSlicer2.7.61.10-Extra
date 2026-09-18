@@ -46,6 +46,7 @@
 #include "Config/FFFPrintConfig.hpp"
 #include "PrintRecords.hpp"
 #include "PrintSteps.hpp"
+#include "Steps/PipelineProgress.hpp"
 
 namespace Slic3r {
 
@@ -350,21 +351,8 @@ public:
     void                mark_step_executed(slicing_step_t step);
     void                reset_step_execution_plan_all();
 
-    /*
-    StepPipeline prepares this accounting table before executing any work. A
-    non-empty unit id names a top-level plugin; an empty id represents work
-    performed directly by the host. Keeping the table in Print lets slicing and
-    the later G-code export advance the same monotone percentage.
-    */
-    void initialize_pipeline_progress(
-        const std::map<slicing_step_t, std::vector<std::string>> &units_by_step);
-    bool has_pipeline_progress() const { return m_pipeline_progress_active; }
-    int pipeline_progress_percent() const { return m_pipeline_progress_percent; }
-    void begin_pipeline_progress_step(slicing_step_t step, const std::string &message);
-    void complete_pipeline_progress_plugin(slicing_step_t step, const std::string &plugin_id);
-    void complete_pipeline_progress_step(slicing_step_t step);
-    void verify_pipeline_progress_step_complete(slicing_step_t step) const;
-    void reset_pipeline_progress();
+    Steps::PipelineProgress       &pipeline_progress()       { return m_pipeline_progress; }
+    const Steps::PipelineProgress &pipeline_progress() const { return m_pipeline_progress; }
 
     // Deprecated: legacy PrintState invalidation used by the historical object
     // and print steps. New plugin-pipeline options should mark execution with
@@ -374,8 +362,9 @@ public:
     bool                invalidate_steps(std::initializer_list<slicing_step_t> steps);
     bool                invalidate_all_steps();
 
-    // just a little wrapper to let the user know that this print can only be modified to emit warnings & update advancement status, change stats.
-    // TODO: have the status out of the printbase class and into another one, so we can have a const print & a mutable statusmonitor
+    // Legacy mutable facade used by G-code processing for warnings, step state
+    // and statistics. It is unrelated to PrintStatus, which only delivers
+    // progress and control notifications.
     class StatusMonitor
     {
     private:
@@ -475,16 +464,7 @@ private:
     // knows how to consume the plan in its fixed written order.
     std::set<slicing_step_t> m_steps_to_execute;
 
-    struct PipelineProgressStep {
-        std::vector<std::string> unit_ids;
-        size_t                   completed { 0 };
-    };
-
-    std::map<slicing_step_t, PipelineProgressStep> m_pipeline_progress_steps;
-    size_t                                      m_pipeline_progress_total { 0 };
-    size_t                                      m_pipeline_progress_completed { 0 };
-    int                                         m_pipeline_progress_percent { 0 };
-    bool                                        m_pipeline_progress_active { false };
+    Steps::PipelineProgress                    m_pipeline_progress;
 
     // To allow GCode to set the Print's GCodeExport step status.
     //friend class GCodeGenerator;

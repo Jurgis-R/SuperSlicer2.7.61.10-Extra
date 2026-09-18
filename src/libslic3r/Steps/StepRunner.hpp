@@ -199,7 +199,7 @@ void run_object_step_plugins(Orchestrator &orchestrator,
     for (Plugin *plugin : plugins) {
         if (plugin != nullptr) {
             run_object_step_plugin(orchestrator, print, step, *plugin, run_count, payload_factory);
-            print.complete_pipeline_progress_plugin(step, plugin->get_id());
+            print.pipeline_progress().complete_plugin(step, plugin->get_id());
         }
     }
 }

@@ -707,14 +707,14 @@ void initialize_pipeline_progress(Orchestrator &orchestrator,
                                   Print &print,
                                   const slicing_step_t first_step)
 {
-    if (print.has_pipeline_progress() && print.pipeline_progress_percent() < 100)
+    if (print.pipeline_progress().active() && print.pipeline_progress().percent() < 100)
         return;
 
     // A completed export may be followed by another export without a new
     // slicing pass. Its selected writers and ordering providers form a fresh
     // execution, so discard the completed accounting table before rebuilding
     // the scoped plan below.
-    print.reset_pipeline_progress();
+    print.pipeline_progress().reset();
 
     std::map<slicing_step_t, std::vector<std::string>> units_by_step;
     bool in_requested_scope = false;
@@ -734,7 +734,7 @@ void initialize_pipeline_progress(Orchestrator &orchestrator,
         if (unit_ids.empty())
             unit_ids.emplace_back();
     }
-    print.initialize_pipeline_progress(units_by_step);
+    print.pipeline_progress().initialize(units_by_step);
 }
 
 void begin_step(Print &print, slicing_step_t step, const std::string &message)
@@ -745,7 +745,7 @@ void begin_step(Print &print, slicing_step_t step, const std::string &message)
     starts; forwarding it here would give boost::format an argument for labels
     such as "Ordering extrusions", which have no placeholder and crash the GUI.
     */
-    print.begin_pipeline_progress_step(step, message);
+    print.pipeline_progress().begin_step(step, message);
 }
 
 bool stop_after(slicing_step_t current, slicing_step_t until)
@@ -768,8 +768,8 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
     // A step may observe cancellation cooperatively and return without
     // throwing. Do not publish such partial work as a completed step.
     print.throw_if_canceled();
-    print.complete_pipeline_progress_step(step);
-    print.verify_pipeline_progress_step_complete(step);
+    print.pipeline_progress().complete_step(step);
+    print.pipeline_progress().verify_step_complete(step);
     print.mark_step_executed(step);
 }
 
@@ -1023,7 +1023,7 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         Plugin *writer = selected_or_active_plugin_for_step(
             orchestrator, STEP_GCODE, &print.full_print_config());
         if (writer != nullptr)
-            print.complete_pipeline_progress_plugin(STEP_GCODE, writer->get_id());
+            print.pipeline_progress().complete_plugin(STEP_GCODE, writer->get_id());
     });
     if (stop_after(STEP_GCODE, until)) return;
 }
@@ -1121,7 +1121,7 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
     // run_slice() starts a new end-to-end execution. run_gcode() will retain
     // this table while it is incomplete so slicing and export share one
     // denominator.
-    print.reset_pipeline_progress();
+    print.pipeline_progress().reset();
     initialize_pipeline_progress(orchestrator, print, STEP_LAYER_HEIGHT);
 
     run_layer_height_generation(orchestrator, print, path);

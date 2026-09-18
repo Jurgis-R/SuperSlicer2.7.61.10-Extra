@@ -360,7 +360,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_ORDERING, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_ORDERING, *plugin, execution_error, "run");
-        print.complete_pipeline_progress_plugin(STEP_ORDERING, plugin->get_id());
+        print.pipeline_progress().complete_plugin(STEP_ORDERING, plugin->get_id());
     }
 
     std::string validation_error;
