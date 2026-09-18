@@ -40,11 +40,14 @@ class SLAPrint;
 class SlicingStatusEvent : public wxEvent
 {
 public:
-	SlicingStatusEvent(wxEventType eventType, int winid, const PrintBase::SlicingStatus &status) :
-		wxEvent(winid, eventType), status(std::move(status)) {}
+	SlicingStatusEvent(wxEventType eventType, int winid, PrintBase *source, uint64_t generation) :
+		wxEvent(winid, eventType), source(source), generation(generation) {}
 	virtual wxEvent *Clone() const { return new SlicingStatusEvent(*this); }
 
-	PrintBase::SlicingStatus status;
+	// PrintBase outlives Plater's queued GUI events. The generation prevents a
+	// delayed wakeup from consuming statuses belonging to a later slicing run.
+	PrintBase *source { nullptr };
+	uint64_t   generation { 0 };
 };
 
 class SlicingProcessCompletedEvent : public wxEvent

@@ -163,6 +163,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
             continue;
 
         run_plugin(orchestrator, print, plan, *plugin, locations);
+        print.complete_pipeline_progress_plugin(STEP_LAYER_EXTRUSION_EDIT, plugin->get_id());
     }
 }
 

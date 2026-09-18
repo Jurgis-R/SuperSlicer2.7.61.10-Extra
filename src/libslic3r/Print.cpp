@@ -406,8 +406,9 @@ void Print::clear() {
 
 void Print::mark_step_for_execution(slicing_step_t step)
 {
-    if (step != STEP_NONE)
-        m_steps_to_execute.insert(step);
+    if (step == STEP_NONE)
+        return;
+    m_steps_to_execute.insert(step);
 }
 
 void Print::mark_step_and_dependents_for_execution(slicing_step_t step)
@@ -434,8 +435,102 @@ void Print::mark_step_executed(slicing_step_t step)
     m_steps_to_execute.erase(step);
 }
 
+void Print::initialize_pipeline_progress(
+    const std::map<slicing_step_t, std::vector<std::string>> &units_by_step)
+{
+    this->reset_pipeline_progress();
+    for (const std::pair<const slicing_step_t, std::vector<std::string>> &entry : units_by_step) {
+        if (entry.second.empty())
+            continue;
+        PipelineProgressStep &progress = m_pipeline_progress_steps[entry.first];
+        progress.unit_ids = entry.second;
+        m_pipeline_progress_total += entry.second.size();
+    }
+    m_pipeline_progress_active = m_pipeline_progress_total != 0;
+}
+
+void Print::begin_pipeline_progress_step(const slicing_step_t step, const std::string &message)
+{
+    if (!m_pipeline_progress_active)
+        return;
+    if (m_pipeline_progress_steps.find(step) == m_pipeline_progress_steps.end())
+        throw std::logic_error("A pipeline step started without a progress-plan entry.");
+
+    this->set_status(m_pipeline_progress_percent, message, SlicingStatus::MAIN_STATE);
+    // A local percentage only describes the current plugin. Do not retain the
+    // previous plugin's detail below the new main step label.
+    this->set_status(-1, "", SlicingStatus::SECONDARY_STATE);
+    this->secondary_status_counter_reset();
+}
+
+void Print::complete_pipeline_progress_plugin(const slicing_step_t step,
+                                              const std::string &plugin_id)
+{
+    if (!m_pipeline_progress_active)
+        return;
+    const std::map<slicing_step_t, PipelineProgressStep>::iterator found =
+        m_pipeline_progress_steps.find(step);
+    if (found == m_pipeline_progress_steps.end())
+        throw std::logic_error("A plugin completed outside the pipeline progress plan.");
+
+    PipelineProgressStep &progress = found->second;
+    if (progress.completed >= progress.unit_ids.size() ||
+        progress.unit_ids[progress.completed] != plugin_id)
+        throw std::logic_error("A pipeline plugin completed out of its planned order.");
+
+    ++progress.completed;
+    ++m_pipeline_progress_completed;
+    const int percent = int((100 * m_pipeline_progress_completed) / m_pipeline_progress_total);
+    m_pipeline_progress_percent = std::max(m_pipeline_progress_percent, percent);
+    this->set_status_percent(m_pipeline_progress_percent, false);
+    // The next top-level unit must not inherit local progress from the plugin
+    // that just returned. Host units are finalized through the same path.
+    this->set_status(-1, "", SlicingStatus::SECONDARY_STATE);
+    this->secondary_status_counter_reset();
+}
+
+void Print::complete_pipeline_progress_step(const slicing_step_t step)
+{
+    if (!m_pipeline_progress_active)
+        return;
+    const std::map<slicing_step_t, PipelineProgressStep>::iterator found =
+        m_pipeline_progress_steps.find(step);
+    if (found == m_pipeline_progress_steps.end())
+        throw std::logic_error("A completed step was absent from the pipeline progress plan.");
+
+    // Some plugins have no payload when a print contains no matching object or
+    // plan entity. The step still completed successfully, so account for those
+    // planned no-op invocations here. Normally each runner already completed
+    // its unit immediately after the corresponding plugin returned.
+    while (found->second.completed < found->second.unit_ids.size()) {
+        const std::string plugin_id = found->second.unit_ids[found->second.completed];
+        this->complete_pipeline_progress_plugin(step, plugin_id);
+    }
+}
+
+void Print::verify_pipeline_progress_step_complete(const slicing_step_t step) const
+{
+    if (!m_pipeline_progress_active)
+        return;
+    const std::map<slicing_step_t, PipelineProgressStep>::const_iterator found =
+        m_pipeline_progress_steps.find(step);
+    if (found == m_pipeline_progress_steps.end() ||
+        found->second.completed != found->second.unit_ids.size())
+        throw std::logic_error("A pipeline step returned before all planned units completed.");
+}
+
+void Print::reset_pipeline_progress()
+{
+    m_pipeline_progress_steps.clear();
+    m_pipeline_progress_total = 0;
+    m_pipeline_progress_completed = 0;
+    m_pipeline_progress_percent = 0;
+    m_pipeline_progress_active = false;
+}
+
 void Print::reset_step_execution_plan_all()
 {
+    this->reset_pipeline_progress();
     m_steps_to_execute.clear();
     for (slicing_step_t step : Steps::execution_order())
         m_steps_to_execute.insert(step);
@@ -1568,7 +1663,8 @@ void Print::process() {
 
     m_timestamp_last_change = std::time(0);
     BOOST_LOG_TRIVIAL(info) << "Step pipeline slicing process finished." << log_memory_info();
-    this->set_status(printstep_percent(psGCodeExport), L("Slicing done"), SlicingStatus::FlagBits::SLICING_ENDED);
+    this->set_status(this->pipeline_progress_percent(), L("Slicing done"),
+                     SlicingStatus::FlagBits::SLICING_ENDED);
 }
 #else
 // Slicing process, running at a background thread.

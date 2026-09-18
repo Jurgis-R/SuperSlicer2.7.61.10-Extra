@@ -2145,6 +2145,7 @@ struct Plater::priv
 
     void on_select_preset(wxCommandEvent&);
     void on_slicing_update(SlicingStatusEvent&);
+    void process_slicing_status(const PrintBase::SlicingStatus &status);
     void on_slicing_completed(wxCommandEvent&);
     void on_process_completed(SlicingProcessCompletedEvent&);
 	void on_export_began(wxCommandEvent&);
@@ -2318,14 +2319,15 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     background_process.select_technology(this->printer_technology);
     // Register progress callback from the Print class to the Plater.
 
-    auto statuscb = [this](const Slic3r::PrintBase::SlicingStatus &status) {
-        BOOST_LOG_TRIVIAL(info) << "[seam-progress] GUI queues slicing status percent="
-                                << status.percent << " flags=" << status.flags
-                                << " message='" << status.main_text << "'";
-        wxQueueEvent(this->q, new Slic3r::SlicingStatusEvent(EVT_SLICING_UPDATE, 0, status));
+    auto register_status_wakeup = [this](PrintBase &print) {
+        PrintBase *source = &print;
+        print.set_gui_status_wakeup_callback([this, source]() {
+            wxQueueEvent(this->q, new Slic3r::SlicingStatusEvent(
+                EVT_SLICING_UPDATE, 0, source, source->gui_status_generation()));
+        });
     };
-    fff_print.set_status_callback(statuscb);
-    sla_print.set_status_callback(statuscb);
+    register_status_wakeup(fff_print);
+    register_status_wakeup(sla_print);
     this->q->Bind(EVT_SLICING_UPDATE, &priv::on_slicing_update, this);
 
     view3D = new View3D(q, bed, &model, config, &background_process);
@@ -4523,44 +4525,52 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
 
 void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
 {
+    if (evt.source == nullptr)
+        return;
+
     const bool worker_idle = m_worker.is_idle();
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] GUI receives slicing status percent="
-                            << evt.status.percent << " flags=" << evt.status.flags
-                            << " worker_idle=" << (worker_idle ? 1 : 0)
-                            << " message='" << evt.status.main_text << "'";
+    PrintBase::PendingStatusBatch batch =
+        evt.source->take_pending_gui_statuses(evt.generation, worker_idle);
+    if (batch.empty())
+        return;
+
     display_plugin_messages();
 
+    // Main progress provides the global pipeline context. Secondary progress
+    // then adds the current plugin's local detail beneath the same notification.
+    if (batch.main.has_value())
+        this->process_slicing_status(*batch.main);
+    if (batch.secondary.has_value())
+        this->process_slicing_status(*batch.secondary);
+    for (const PrintBase::SlicingStatus &status : batch.control_events)
+        this->process_slicing_status(status);
+}
+
+void Plater::priv::process_slicing_status(const PrintBase::SlicingStatus &status)
+{
     //update dirty flags
 
-    if (0 != (evt.status.flags & Slic3r::PrintBase::SlicingStatus::FlagBits::GCODE_ENDED)) {
+    if (0 != (status.flags & Slic3r::PrintBase::SlicingStatus::FlagBits::GCODE_ENDED)) {
         assert(m_worker.is_idle());
-        notification_manager->set_slicing_progress_ended(Slic3r::GUI::I18N::translate_utf8(evt.status.main_text));
+        notification_manager->set_slicing_progress_ended(Slic3r::GUI::I18N::translate_utf8(status.main_text));
     } else {
-        if (evt.status.percent >= -1) {
-            if (!worker_idle) {
-                // Avoid a race condition
-                BOOST_LOG_TRIVIAL(info)
-                    << "[seam-progress] GUI drops slicing status because worker is not idle";
-                return;
-            }
-
-            if (evt.status.args.empty()) {
-                BOOST_LOG_TRIVIAL(info) << "[seam-progress] GUI forwards slicing status kind="
-                                        << ((evt.status.flags & PrintBase::SlicingStatus::FlagBits::SECONDARY_STATE) != 0 ?
-                                                "secondary" : "main");
-                notification_manager->set_slicing_progress_percentage(evt.status.main_text.empty() ? "" : Slic3r::GUI::I18N::translate_utf8(evt.status.main_text), evt.status.percent / 100.f, 0 == (evt.status.flags & PrintBase::SlicingStatus::FlagBits::SECONDARY_STATE));
+        if (status.percent >= -1) {
+            if (status.args.empty()) {
+                notification_manager->set_slicing_progress_percentage(status.main_text.empty() ? "" : Slic3r::GUI::I18N::translate_utf8(status.main_text), status.percent / 100.f, 0 == (status.flags & PrintBase::SlicingStatus::FlagBits::SECONDARY_STATE));
             } else {
-                auto formatter = boost::format(Slic3r::GUI::I18N::translate_utf8(evt.status.main_text));
-                for (std::string& arg : evt.status.args)
+                boost::format formatter = boost::format(Slic3r::GUI::I18N::translate_utf8(status.main_text));
+                for (const std::string &arg : status.args)
                     formatter = formatter % Slic3r::GUI::I18N::translate_utf8(arg);
-                notification_manager->set_slicing_progress_percentage(formatter.str(), evt.status.percent / 100.f, 0 == (evt.status.flags & PrintBase::SlicingStatus::FlagBits::SECONDARY_STATE));
+                notification_manager->set_slicing_progress_percentage(formatter.str(), status.percent / 100.f, 0 == (status.flags & PrintBase::SlicingStatus::FlagBits::SECONDARY_STATE));
             }
         }
     }
 
-    // Check template filaments and add warning
-    // This is more convinient to do here than in slicing backend, so it happens on "Slicing complete".
-    if (evt.status.percent >= 100 && this->printer_technology == ptFFF) {
+    // This preset check belongs to the slicing-completed control event. Local
+    // plugin progress also reaches 100%, often while the worker is still
+    // running, and must not repeatedly trigger this completion-only work.
+    if ((status.flags & PrintBase::SlicingStatus::SLICING_ENDED) != 0 &&
+        this->printer_technology == ptFFF) {
         size_t templ_cnt = 0;
         const auto& preset_bundle = wxGetApp().preset_bundle;
         std::string names;
@@ -4591,7 +4601,7 @@ void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
         }
     }
 
-    if (evt.status.flags & (PrintBase::SlicingStatus::RELOAD_SCENE | PrintBase::SlicingStatus::RELOAD_SLA_SUPPORT_POINTS)) {
+    if (status.flags & (PrintBase::SlicingStatus::RELOAD_SCENE | PrintBase::SlicingStatus::RELOAD_SLA_SUPPORT_POINTS)) {
         switch (this->printer_technology) {
         case ptFFF:
             this->update_fff_scene();
@@ -4607,22 +4617,22 @@ void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
             break;
         default: break;
         }
-    } else if (evt.status.flags & PrintBase::SlicingStatus::RELOAD_SLA_PREVIEW) {
+    } else if (status.flags & PrintBase::SlicingStatus::RELOAD_SLA_PREVIEW) {
         // Update the SLA preview. Only called if not RELOAD_SLA_SUPPORT_POINTS, as the block above will refresh the preview anyways.
         this->preview->reload_print();
     }
 
-    if ((evt.status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) &&
-        static_cast<PrintStep>(evt.status.warning_step) == psAlertWhenSupportsNeeded &&
+    if ((status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) &&
+        static_cast<PrintStep>(status.warning_step) == psAlertWhenSupportsNeeded &&
         !get_app_config()->get_bool("alert_when_supports_needed")) {
         // This alerts are from psAlertWhenSupportsNeeded and the respective app settings is not Enabled, so discard the alerts.
-    } else if (evt.status.flags &
+    } else if (status.flags &
                (PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS | PrintBase::SlicingStatus::UPDATE_PRINT_OBJECT_STEP_WARNINGS)) {
         // Update notification center with warnings of object_id and its warning_step.
-        ObjectID object_id = evt.status.warning_object_id;
-        int warning_step = evt.status.warning_step;
+        ObjectID object_id = status.warning_object_id;
+        int warning_step = status.warning_step;
         PrintStateBase::StateWithWarnings state;
-        if (evt.status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
+        if (status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
             if (this->printer_technology == ptFFF)
                 state = this->fff_print.step_state_with_warnings(static_cast<PrintStep>(warning_step));
             else if (this->printer_technology == ptSLA)
@@ -4670,6 +4680,8 @@ void Plater::priv::on_export_began(wxCommandEvent& evt)
 }
 void Plater::priv::on_slicing_began()
 {
+	fff_print.reset_pending_gui_statuses();
+	sla_print.reset_pending_gui_statuses();
 	clear_warnings();
     notification_manager->close_notification_of_type(NotificationType::SignDetected);
     notification_manager->close_notification_of_type(NotificationType::ExportFinished);
@@ -4770,6 +4782,10 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     // At this point of time the thread should be either finished or canceled,
     // so the following call just confirms, that the produced data were consumed.
     this->background_process.stop();
+    // Completion makes Print data safe to inspect. Wake the GUI once more if
+    // reload or warning events were deliberately retained while work was active.
+    fff_print.request_pending_gui_status_delivery();
+    sla_print.request_pending_gui_status_delivery();
     display_plugin_messages();
 //    this->statusbar()->reset_cancel_callback();
 //    this->statusbar()->stop_busy();

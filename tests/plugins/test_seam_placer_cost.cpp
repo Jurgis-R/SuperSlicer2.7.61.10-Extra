@@ -62,12 +62,25 @@ struct CancellationProbe {
     size_t cancel_after = std::numeric_limits<size_t>::max();
 };
 
+struct ProgressProbe {
+    std::vector<int> percentages;
+};
+
 int cancel_after_checks(plugin_host_context *host_context)
 {
     CancellationProbe &probe = *reinterpret_cast<CancellationProbe *>(
         host_context);
     ++probe.checks;
     return probe.checks >= probe.cancel_after ? 1 : 0;
+}
+
+void capture_progress(plugin_host_context *host_context,
+                      const double progress,
+                      const char *message)
+{
+    ProgressProbe &probe = *reinterpret_cast<ProgressProbe *>(host_context);
+    if (message != nullptr && std::string(message) == "Calculating seam visibility")
+        probe.percentages.push_back(int(progress * 100.0 + 0.5));
 }
 
 bool find_loop(const slic3r_api::ExtrusionEntity &entity,
@@ -82,7 +95,8 @@ bool find_loop(const slic3r_api::ExtrusionEntity &entity,
     return false;
 }
 
-slic3r_api::SeamPlacer create_cost_session(Print &print)
+slic3r_api::SeamPlacer create_cost_session(
+    Print &print, const plugin_run_context *run_context = nullptr)
 {
     PrintingPlan &native_plan = print.mutable_printing_plan();
     const slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&native_plan));
@@ -94,9 +108,13 @@ slic3r_api::SeamPlacer create_cost_session(Print &print)
             regions.push_back(object.print_region(region_index));
     }
     PluginStorage storage;
-    raw_seam_placer_instance instance = slic3r_api::make_seam_placer_instance(
+    std::unique_ptr<slic3r_api::SeamPlacerSession> session = run_context == nullptr ?
         slic3r_api::SeamPlacement::CostPlugin::make_cost_seam_session(
-            reinterpret_cast<storage_handle *>(&storage)), plan, regions);
+            reinterpret_cast<storage_handle *>(&storage)) :
+        slic3r_api::SeamPlacement::CostPlugin::make_cost_seam_session(
+            reinterpret_cast<storage_handle *>(&storage), run_context);
+    raw_seam_placer_instance instance = slic3r_api::make_seam_placer_instance(
+        std::move(session), plan, regions);
     return slic3r_api::SeamPlacer(instance);
 }
 
@@ -1053,6 +1071,28 @@ TEST_CASE("Cost seam visibility switch changes the selected model-facing point",
         enabled_loop.root(), enabled.region_view(), {}));
     CHECK(with_visibility.x == scale_i(-10));
     CHECK(with_visibility.y == scale_i(-10));
+}
+
+TEST_CASE("Cost seam visibility reports local progress",
+          "[plugins][seam-placer][cost][progress]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    CostFixture fixture({{"seam_visibility", "1"}, {"seam_angle_cost", "0"},
+                         {"seam_travel_cost", "0"}});
+    ProgressProbe progress;
+    plugin_run_context run_context = {};
+    run_context.host_context = reinterpret_cast<plugin_host_context *>(&progress);
+    run_context.report_progress = &capture_progress;
+
+    const ExtrusionEntity loop = rectangle_loop(-10, -10, 10, 10, true);
+    fixture.add(loop, RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+    const slic3r_api::SeamPlacer placer = create_cost_session(
+        fixture.prepared.print, &run_context);
+    REQUIRE(placer.valid());
+    REQUIRE_FALSE(progress.percentages.empty());
+    CHECK(progress.percentages.front() == 0);
+    CHECK(progress.percentages.back() == 100);
+    CHECK(std::is_sorted(progress.percentages.begin(), progress.percentages.end()));
 }
 
 TEST_CASE("Cost seam visibility samples at the legacy layer slice Z",

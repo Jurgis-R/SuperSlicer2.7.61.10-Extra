@@ -342,15 +342,11 @@ void run_step(Orchestrator &orchestrator, Print &print)
 
     std::vector<Plugin *> plugins =
         selected_or_active_plugins_for_step(orchestrator, STEP_ORDERING, &print.full_print_config());
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] STEP_ORDERING starts plugin pipeline count="
-                            << plugins.size();
     std::string last_plugin_id = "<plugin pipeline>";
     for (Plugin *plugin : plugins) {
         if (plugin == nullptr)
             continue;
         last_plugin_id = plugin->get_id();
-        BOOST_LOG_TRIVIAL(info) << "[seam-progress] STEP_ORDERING plugin begin id='"
-                                << last_plugin_id << "'";
 
         std::atomic_bool execution_error { false };
         plugin_host_context host_context =
@@ -364,8 +360,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_ORDERING, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_ORDERING, *plugin, execution_error, "run");
-        BOOST_LOG_TRIVIAL(info) << "[seam-progress] STEP_ORDERING plugin end id='"
-                                << last_plugin_id << "'";
+        print.complete_pipeline_progress_plugin(STEP_ORDERING, plugin->get_id());
     }
 
     std::string validation_error;

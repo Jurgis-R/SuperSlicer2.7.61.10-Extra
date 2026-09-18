@@ -9,10 +9,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -482,6 +485,7 @@ public:
     virtual void            cleanup() = 0;
 
     struct SlicingStatus {
+        SlicingStatus() = default;
         SlicingStatus(int percent, const std::string& text, unsigned int flags = 0) : percent(percent), main_text(text), flags(flags) {}
         SlicingStatus(int percent, const std::string& text, const std::vector<std::string>& args, unsigned int flags = 0) 
             : percent(percent), main_text(text), args(args), flags(flags) {}
@@ -515,56 +519,51 @@ public:
         // For which Print or PrintObject step a new warning is being issued?
         int             warning_step { -1 };
     };
+
+    /*
+    The GUI consumes progress as a snapshot instead of receiving one wxWidgets
+    event per producer update. Main and secondary progress are coalesced, while
+    control events retain their order because warnings, scene reloads and
+    completion notifications each have an observable side effect.
+    */
+    struct PendingStatusBatch {
+        uint64_t                    generation { 0 };
+        std::optional<SlicingStatus> main;
+        std::optional<SlicingStatus> secondary;
+        std::vector<SlicingStatus>   control_events;
+
+        bool empty() const {
+            return !main.has_value() && !secondary.has_value() && control_events.empty();
+        }
+    };
+
     typedef std::function<void(const SlicingStatus&)>  status_callback_type;
+    typedef std::function<void()>                       status_wakeup_callback_type;
     // Default status console print out in the form of percent => message.
-    void                    set_status_default() { m_status_callback = nullptr; }
+    void                    set_status_default();
     // No status output or callback whatsoever, useful mostly for automatic tests.
-    void                    set_status_silent() { m_status_callback = [](const SlicingStatus&){}; }
-    // Register a custom status callback.
-    void                    set_status_callback(status_callback_type cb) { m_status_callback = cb; }
+    void                    set_status_silent();
+    // Register an immediate callback. Console clients and tests receive every status.
+    void                    set_status_callback(status_callback_type cb);
+    // Register the GUI wakeup callback. The callback only schedules a GUI event;
+    // the GUI later obtains owned snapshots with take_pending_gui_statuses().
+    void                    set_gui_status_wakeup_callback(status_wakeup_callback_type cb);
+    // Start a new status generation and discard queued data from an older run.
+    uint64_t                reset_pending_gui_statuses();
+    uint64_t                gui_status_generation() const { return m_gui_status_generation.load(std::memory_order_acquire); }
+    // Consume changed progress channels. Control events remain queued when the
+    // caller cannot safely inspect mutable Print data while a worker is active.
+    PendingStatusBatch      take_pending_gui_statuses(uint64_t generation, bool include_control_events);
+    // Schedule another wakeup for queued controls after the worker becomes idle.
+    void                    request_pending_gui_status_delivery() const;
     // Calls a registered callback to update the status, or print out the default message.
     void                    set_status(int percent, const std::string& message, unsigned int flags = SlicingStatus::DEFAULT) const {
         set_status(percent, message, {}, flags);
     }
-    void                    set_status(int percent, const std::string& message, const std::vector<std::string>& args, unsigned int flags = SlicingStatus::DEFAULT) const {
-        //check if it need an update. Avoid doing a gui update each ms.
-        {
-            std::lock_guard<std::mutex> lock(m_last_status_mutex);
-            if ((flags & SlicingStatus::FORCE_SHOW) == 0 && (flags & SlicingStatus::SECONDARY_STATE) != 0 &&
-                message != m_last_status_message) {
-                std::chrono::time_point<std::chrono::system_clock> current_time = std::chrono::system_clock::now();
-                if ((static_cast<std::chrono::duration<double>>(current_time - PrintBase::m_last_status_update))
-                            .count() > 0.002 &&
-                    PrintBase::m_last_status_percent != percent) {
-                    PrintBase::m_last_status_update  = current_time;
-                    PrintBase::m_last_status_percent = percent;
-                } else {
-                    // don't update if it's for the secondary and already done in less than 200ms
-                    return;
-                }
-            } else {
-                PrintBase::m_last_status_percent = -1;
-            }
-            m_last_status_message = message;
-        }
-        if ((flags & SlicingStatus::FlagBits::MAIN_STATE) == 0 && (flags & SlicingStatus::FlagBits::SECONDARY_STATE) == 0)
-            flags = flags | SlicingStatus::FlagBits::MAIN_STATE;
-        if (m_status_callback) {
-            if (args.empty())
-                m_status_callback(SlicingStatus(percent, message, flags));
-            else
-                m_status_callback(SlicingStatus(percent, message, args, flags));
-        } else {
-            printf("%d => ", percent);
-            if(args.empty())
-                printf("%s", message.c_str());
-            else if (args.size()==1)
-                printf(message.c_str(), args.front().c_str());
-            else if (args.size()==2)
-                printf(message.c_str(), args.front().c_str(), args.back().c_str());
-            printf("\n");
-        }
-    }
+    void                    set_status(int percent, const std::string& message, const std::vector<std::string>& args, unsigned int flags = SlicingStatus::DEFAULT) const;
+    // Update a progress number without locking the strings belonging to that
+    // channel. The current label and arguments remain unchanged.
+    void                    set_status_percent(int percent, bool secondary) const;
 
     void secondary_status_counter_reset() {
         m_secondary_state_counter = 0;
@@ -641,17 +640,19 @@ protected:
     DynamicPrintConfig						m_physical_printer_config;
     PlaceholderParser                       m_placeholder_parser;
 
-    // Callback to be evoked regularly to update state of the UI thread.
+    // Immediate status sink used by command-line clients and tests.
     status_callback_type                    m_status_callback;
 
-    //for gui status update
-    inline static std::chrono::time_point<std::chrono::system_clock>
-                                            m_last_status_update = {};
-    inline static int                       m_last_status_percent = -1;
-    inline static std::string               m_last_status_message = "";
-    inline static std::mutex                m_last_status_mutex;
-
 private:
+    enum GuiStatusDirty : uint8_t {
+        GUI_STATUS_MAIN_DIRTY      = 1 << 0,
+        GUI_STATUS_SECONDARY_DIRTY = 1 << 1
+    };
+
+    void publish_status(SlicingStatus status,
+                        const std::optional<std::string> &console_fallback = std::nullopt) const;
+    void request_gui_status_wakeup() const;
+
     std::atomic<CancelStatus>               m_cancel_status;
 
     // Callback to be evoked to stop the background processing before a state is updated.
@@ -663,6 +664,20 @@ private:
     mutable std::mutex                      m_state_mutex;
     std::atomic_int32_t                     m_secondary_state_counter;
     std::atomic_int32_t                     m_secondary_state_max;
+
+    // GUI mode stores one current value per coalescable channel. Percentages
+    // are independent atomics so hot progress loops do not contend on strings.
+    mutable std::mutex                      m_gui_status_mutex;
+    mutable status_wakeup_callback_type     m_gui_status_wakeup_callback;
+    mutable std::optional<SlicingStatus>    m_gui_main_status;
+    mutable std::optional<SlicingStatus>    m_gui_secondary_status;
+    mutable std::deque<SlicingStatus>       m_gui_control_statuses;
+    mutable std::atomic_int32_t             m_gui_main_percent { -1 };
+    mutable std::atomic_int32_t             m_gui_secondary_percent { -1 };
+    mutable std::atomic<uint8_t>            m_gui_status_dirty { 0 };
+    mutable std::atomic_bool                m_gui_event_waiting { false };
+    mutable std::atomic_bool                m_gui_status_mode { false };
+    mutable std::atomic_uint64_t            m_gui_status_generation { 0 };
 
     friend PrintTryCancel;
 };

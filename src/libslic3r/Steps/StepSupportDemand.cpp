@@ -122,6 +122,7 @@ void run_step(Orchestrator &orchestrator, Print &print, State &state)
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SUPPORT_DEMAND, *plugin, execution_error, "run");
 
         Detail::validate_or_report(validate_post, print, "Support-demand post-plugin validation");
+        print.complete_pipeline_progress_plugin(STEP_SUPPORT_DEMAND, plugin->get_id());
     }
 }
 

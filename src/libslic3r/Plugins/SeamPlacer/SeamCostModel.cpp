@@ -9,9 +9,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <vector>
-
-#include <boost/log/trivial.hpp>
 
 #include <array>
 #include <limits>
@@ -42,7 +41,9 @@ float compute_angle_penalty(float ccw_angle);
 
 /* Compute Cost visibility with an object-local mesh and the legacy ray model. */
 std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
-                                             const std::vector<c_vec3f> &points, const mesh_query_cancel *cancel);
+                                             const std::vector<c_vec3f> &points,
+                                             const mesh_query_cancel *cancel,
+                                             const std::function<void(double)> &report_progress);
 
 namespace {
 
@@ -99,7 +100,10 @@ c_vec3f hemisphere(float x,float y);
 c_vec3f normal_frame(c_vec3f normal,c_vec3f direction);
 // Compute sample costs from public intersection records, preserving signed
 // negative-volume handling. The host does not interpret geometry labels.
-void build_visibility_model(const Object &object, VisibilityModel &model, const mesh_query_cancel *cancel);
+void build_visibility_model(const Object &object,
+                            VisibilityModel &model,
+                            const mesh_query_cancel *cancel,
+                            const std::function<void(double)> &report_progress);
 // Interpolate exactly the same plane/distance weights as the native cost model.
 float calculate_point_visibility(const VisibilityModel &model,c_vec3f point);
 c_vec3f hemisphere(float x,float y)
@@ -114,11 +118,13 @@ c_vec3f normal_frame(c_vec3f normal,c_vec3f direction)
     const c_vec3f y=normalized(cross(z,seed)), x=cross(y,z);
     return add(add(mul(x,direction.x),mul(y,direction.y)),mul(z,direction.z));
 }
-void build_visibility_model(const Object &object, VisibilityModel &model, const mesh_query_cancel *cancel)
+void build_visibility_model(const Object &object,
+                            VisibilityModel &model,
+                            const mesh_query_cancel *cancel,
+                            const std::function<void(double)> &report_progress)
 {
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility model begins mesh assembly samples_target="
-                            << kVisibilitySamplesCount
-                            << " triangle_target=" << kDecimationTriangleCountTarget;
+    if (report_progress)
+        report_progress(0.0);
     // Work meshes die immediately after scene construction; the immutable scene
     // owns transformed copies and outlives neither initialization nor sampling.
     const MeshQueryScene scene = [&] {
@@ -133,16 +139,16 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
         return MeshQueryScene({{positives.handle(),object.transform_centered(),0},
                                {negatives.handle(),object.transform_centered(),1}},cancel);
     }();
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility scene ready positive_triangles="
-                            << scene.triangle_count(0) << " negative_triangles="
-                            << scene.triangle_count(1);
+    if (report_progress)
+        report_progress(0.1);
     const MeshSurfaceSamples sampled=scene.sample(kVisibilitySamplesCount,cancel);
     throw_if_mesh_cancelled(cancel);
     model.samples=sampled.values();
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility sampling complete samples="
-                            << model.samples.size() << " area=" << sampled.area();
+    if (report_progress)
+        report_progress(0.2);
     if (model.samples.empty()) {
-        BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility model ends without samples";
+        if (report_progress)
+            report_progress(0.9);
         return;
     }
     model.tree.build(model.samples.size());
@@ -159,17 +165,10 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
         for (size_t y=0; y<kRaysPerSampleAxis; ++y)
             directions.push_back(hemisphere(float(x)*step+step/2,float(y)*step+step/2));
     const size_t ray_batch_count = (model.samples.size() + 255) / 256;
-    const size_t ray_log_interval = std::max(size_t(1), ray_batch_count / 4);
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility ray casting begins batches="
-                            << ray_batch_count << " rays_per_sample=" << rays_per_sample;
     for (size_t begin=0; begin<model.samples.size(); begin+=256) {
         throw_if_mesh_cancelled(cancel);
         const size_t end=std::min(model.samples.size(),begin+256);
         const size_t batch_index = begin / 256;
-        if (batch_index == 0 || batch_index + 1 == ray_batch_count ||
-            batch_index % ray_log_interval == 0)
-            BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility ray batch "
-                                    << (batch_index + 1) << "/" << ray_batch_count;
         std::vector<mesh_query_ray> rays;
         rays.reserve((end-begin)*rays_per_sample);
         for (size_t i=begin; i<end; ++i) {
@@ -203,9 +202,10 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
             }
             if (occluded) model.visibility[begin+r/rays_per_sample]-=1.f/float(rays_per_sample);
         }
+        if (report_progress)
+            report_progress(0.2 + 0.7 * double(batch_index + 1) /
+                                      double(std::max(size_t(1), ray_batch_count)));
     }
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] visibility ray casting ends samples="
-                            << model.samples.size();
 }
 float calculate_point_visibility(const VisibilityModel &model,c_vec3f point)
 {
@@ -320,16 +320,23 @@ std::vector<float> calculate_cost_angles(const std::vector<c_point> &points, flo
 }
 
 std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
-                                             const std::vector<c_vec3f> &points, const mesh_query_cancel *cancel)
+                                             const std::vector<c_vec3f> &points,
+                                             const mesh_query_cancel *cancel,
+                                             const std::function<void(double)> &report_progress)
 {
     VisibilityModel model;
-    build_visibility_model(object, model, cancel);
+    build_visibility_model(object, model, cancel, report_progress);
     std::vector<float> visibility;
     visibility.reserve(points.size());
     for (size_t index = 0; index < points.size(); ++index) {
         if (index % 64 == 0) throw_if_mesh_cancelled(cancel);
         visibility.push_back(calculate_point_visibility(model, points[index]));
+        if (report_progress && (index % 64 == 0 || index + 1 == points.size()))
+            report_progress(0.9 + 0.1 * double(index + 1) /
+                                      double(std::max(size_t(1), points.size())));
     }
+    if (report_progress)
+        report_progress(1.0);
     return visibility;
 }
 

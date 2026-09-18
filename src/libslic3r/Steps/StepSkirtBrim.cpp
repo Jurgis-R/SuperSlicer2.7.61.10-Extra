@@ -85,6 +85,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SKIRT_BRIM, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_SKIRT_BRIM, *plugin, execution_error, "run");
+        print.complete_pipeline_progress_plugin(STEP_SKIRT_BRIM, plugin->get_id());
     }
 
     ApiInternal::PrintAccess::normalize_skirt_brim_direction(print);

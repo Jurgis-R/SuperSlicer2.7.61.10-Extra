@@ -197,8 +197,10 @@ void run_object_step_plugins(Orchestrator &orchestrator,
     std::vector<Plugin *> plugins = selected_or_active_plugins_for_step(orchestrator, step, config);
 
     for (Plugin *plugin : plugins) {
-        if (plugin != nullptr)
+        if (plugin != nullptr) {
             run_object_step_plugin(orchestrator, print, step, *plugin, run_count, payload_factory);
+            print.complete_pipeline_progress_plugin(step, plugin->get_id());
+        }
     }
 }
 

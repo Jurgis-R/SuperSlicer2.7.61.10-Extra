@@ -96,6 +96,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_EXTRUSION_EDIT, *plugin, execution_error, "setup_run");
         plugin->run(run_context);
         Detail::throw_if_plugin_stopped(orchestrator, print, STEP_EXTRUSION_EDIT, *plugin, execution_error, "run");
+        print.complete_pipeline_progress_plugin(STEP_EXTRUSION_EDIT, plugin->get_id());
     }
 }
 

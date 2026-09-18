@@ -350,6 +350,22 @@ public:
     void                mark_step_executed(slicing_step_t step);
     void                reset_step_execution_plan_all();
 
+    /*
+    StepPipeline prepares this accounting table before executing any work. A
+    non-empty unit id names a top-level plugin; an empty id represents work
+    performed directly by the host. Keeping the table in Print lets slicing and
+    the later G-code export advance the same monotone percentage.
+    */
+    void initialize_pipeline_progress(
+        const std::map<slicing_step_t, std::vector<std::string>> &units_by_step);
+    bool has_pipeline_progress() const { return m_pipeline_progress_active; }
+    int pipeline_progress_percent() const { return m_pipeline_progress_percent; }
+    void begin_pipeline_progress_step(slicing_step_t step, const std::string &message);
+    void complete_pipeline_progress_plugin(slicing_step_t step, const std::string &plugin_id);
+    void complete_pipeline_progress_step(slicing_step_t step);
+    void verify_pipeline_progress_step_complete(slicing_step_t step) const;
+    void reset_pipeline_progress();
+
     // Deprecated: legacy PrintState invalidation used by the historical object
     // and print steps. New plugin-pipeline options should mark execution with
     // invalidates_step and the methods above instead of extending this linear
@@ -458,6 +474,17 @@ private:
     // by Print because config changes arrive here, while StepPipeline only
     // knows how to consume the plan in its fixed written order.
     std::set<slicing_step_t> m_steps_to_execute;
+
+    struct PipelineProgressStep {
+        std::vector<std::string> unit_ids;
+        size_t                   completed { 0 };
+    };
+
+    std::map<slicing_step_t, PipelineProgressStep> m_pipeline_progress_steps;
+    size_t                                      m_pipeline_progress_total { 0 };
+    size_t                                      m_pipeline_progress_completed { 0 };
+    int                                         m_pipeline_progress_percent { 0 };
+    bool                                        m_pipeline_progress_active { false };
 
     // To allow GCode to set the Print's GCodeExport step status.
     //friend class GCodeGenerator;

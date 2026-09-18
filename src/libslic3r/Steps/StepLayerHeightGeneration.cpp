@@ -160,6 +160,7 @@ void run_step(Orchestrator &orchestrator, Print &print) {
     Detail::throw_if_plugin_stopped(orchestrator, print, STEP_LAYER_HEIGHT, *plugin, execution_error, "run");
 
     Detail::validate_or_report(validate_post, print, "Layer-height post-plugin validation");
+    print.complete_pipeline_progress_plugin(STEP_LAYER_HEIGHT, plugin->get_id());
 }
 
 } // namespace Slic3r::Steps::StepLayerHeightGeneration

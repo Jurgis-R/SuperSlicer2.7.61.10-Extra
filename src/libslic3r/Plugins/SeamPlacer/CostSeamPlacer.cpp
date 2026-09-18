@@ -9,13 +9,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <set>
 #include <stdexcept>
 #include <utility>
-
-#include <boost/log/trivial.hpp>
 
 #include "SeamPlacementConstraints.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
@@ -202,12 +201,6 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         throw std::logic_error(
             "Cost-based seam placement sessions may only be initialized once.");
     m_initialization_started = true;
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] Cost session initialize begin regions="
-                            << regions.size() << " progress_callback="
-                            << (m_run_context != nullptr && m_run_context->report_progress != nullptr ?
-                                    "present" : "absent")
-                            << " run_step="
-                            << (m_run_context != nullptr ? int(m_run_context->step) : -1);
     InitializationCancellation::check(m_run_context);
     if (!plan.valid() || m_storage == nullptr)
         throw std::invalid_argument("Cost-based seam placement needs a valid plan and temporary storage.");
@@ -291,9 +284,6 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         }
     }
 
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] Cost candidate collection complete islands="
-                            << work.size() << " loop_bindings=" << m_bindings.size();
-
     /*
     Finalize each external loop independently: enrich and filter its records,
     snapshot static costs, then deduplicate equal integer points. Equal points
@@ -325,7 +315,6 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         }
         angle_weight = angle_weight / island_work.island.region_count();
         std::vector<SeamCandidate> fallback;
-        size_t external_loop_index = 0;
         for (ExternalLoopWork &external_loop : island_work.external_loops) {
             InitializationCancellation::check(m_run_context);
             if (external_loop.candidates.empty())
@@ -343,11 +332,6 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
             // scores retain the same order as its own candidate records.
             std::vector<float> visibility;
             if (visibility_weight != 0) {
-                BOOST_LOG_TRIVIAL(info)
-                    << "[seam-progress] Cost visibility begin loop="
-                    << external_loop_index << " candidates="
-                    << external_loop.candidates.size() << " slice_z="
-                    << unscaled(layer.slice_z());
                 std::vector<c_vec3f> points;
                 points.reserve(external_loop.candidates.size());
                 for (const CandidatePreparation::Candidate &candidate :
@@ -363,16 +347,19 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
                         return is_cancelled(context) ? 1 : 0;
                     }};
                 try {
+                    const std::function<void(double)> report_visibility =
+                        [this](const double progress) {
+                            slic3r_api::report_progress(
+                                m_run_context, progress, "Calculating seam visibility");
+                        };
                     visibility = Slic3r::SeamCostModel::calculate_cost_visibility(
-                        object, points, m_run_context == nullptr ? nullptr : &cancel);
+                        object, points, m_run_context == nullptr ? nullptr : &cancel,
+                        report_visibility);
                 } catch (const MeshQueryError &error) {
                     if (error.status == MESH_QUERY_CANCELLED)
                         throw PluginCancelled();
                     throw;
                 }
-                BOOST_LOG_TRIVIAL(info)
-                    << "[seam-progress] Cost visibility end loop="
-                    << external_loop_index << " values=" << visibility.size();
             }
             std::vector<SeamCandidate> prepared;
             prepared.reserve(external_loop.candidates.size());
@@ -405,7 +392,6 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
             if (island_work.requires_island_fallback)
                 fallback.insert(fallback.end(), prepared.begin(), prepared.end());
             m_loop_candidates.emplace(external_loop.loop, std::move(prepared));
-            ++external_loop_index;
         }
         if (island_work.requires_island_fallback) {
             if (fallback.empty())
@@ -416,9 +402,6 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
     }
     m_storage = nullptr;
     m_run_context = nullptr;
-    BOOST_LOG_TRIVIAL(info) << "[seam-progress] Cost session initialize end loops="
-                            << m_loop_candidates.size() << " fallback_islands="
-                            << m_fallback_candidates.size();
 }
 
 c_point CostSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &region,

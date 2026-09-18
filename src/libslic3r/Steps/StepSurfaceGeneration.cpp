@@ -254,6 +254,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
             return payload;
         });
         remove_empty_region_islands(print);
+        print.complete_pipeline_progress_plugin(STEP_SURFACE_GENERATION, plugin->get_id());
     }
 }
 

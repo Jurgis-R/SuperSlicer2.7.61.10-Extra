@@ -130,6 +130,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
             return context;
         });
         remove_empty_region_islands(print);
+        print.complete_pipeline_progress_plugin(STEP_POST_INFILL, plugin->get_id());
     }
 }
 

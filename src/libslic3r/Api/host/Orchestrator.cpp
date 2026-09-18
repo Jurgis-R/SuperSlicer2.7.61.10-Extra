@@ -2014,13 +2014,6 @@ std::string Orchestrator::export_gcode(Print &print,
     // output everything to a G-code file
     // The following call may die if the output_filename_format template substitution fails.
     const std::string path = print.output_filepath(path_template);
-    if (!path.empty() && result == nullptr) {
-        // Only show the path if preview_data is not set -> running from command line.
-        print.set_status(printstep_percent(psGCodeExport), L("Exporting G-code to %s"), {path});
-    } else {
-        print.set_status(printstep_percent(psGCodeExport), L("Generating G-code"));
-    }
-
     Plugin *gcode_plugin = Steps::selected_or_active_plugin_for_step(*this, STEP_GCODE, &print.full_print_config());
     if (gcode_plugin != nullptr && gcode_plugin->get_id() == "gcode.legacy") {
         /*
