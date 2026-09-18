@@ -813,6 +813,7 @@ private:
 
     void run_impl(const plugin_run_context *run_ctx) const override
     {
+        throw_if_cancelled(run_ctx);
         const run_ctx_skirt_brim *ctx = plugin_ctx_as_skirt_brim(run_ctx);
         assert(ctx != nullptr);
         assert(ctx->print != nullptr);

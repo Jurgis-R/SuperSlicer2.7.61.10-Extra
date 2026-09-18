@@ -237,8 +237,10 @@ double squared_distance(c_point lhs, c_point rhs)
 StoredPolylineCollection reconnect_polylines(storage_handle *storage,
                                              const PolylineCollection &polylines,
                                              double limit_distance,
-                                             coord_t resolution)
+                                             coord_t resolution,
+                                             const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (polylines.empty())
         return StoredPolylineCollection(storage);
 
@@ -254,10 +256,13 @@ StoredPolylineCollection reconnect_polylines(storage_handle *storage,
     // Boolean clipping often splits one conceptual wave into small adjacent
     // pieces. Reconnect only near endpoints here; longer gaps are preserved so
     // they become real travels between separate extrusion paths.
+    uint64_t inspected_pairs = 0;
     for (size_t first_idx = 0; first_idx < connected.size(); ++first_idx) {
         if (!alive[first_idx])
             continue;
         for (size_t second_idx = first_idx + 1; second_idx < connected.size(); ++second_idx) {
+            if ((inspected_pairs++ & 63u) == 0u)
+                throw_if_cancelled(run_ctx);
             if (!alive[second_idx] || connected[first_idx].empty() || connected[second_idx].empty())
                 continue;
 
@@ -295,8 +300,10 @@ StoredPolylineCollection reconnect_polylines(storage_handle *storage,
 
 StoredPolylineCollection order_wave_polylines_from_current_point(storage_handle *storage,
                                                                  const PolylineCollection &polylines,
-                                                                 const c_point *current_point)
+                                                                 const c_point *current_point,
+                                                                 const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (current_point == nullptr || polylines.size() < 2)
         return polylines.clone(storage);
 
@@ -312,10 +319,14 @@ StoredPolylineCollection order_wave_polylines_from_current_point(storage_handle 
 
     // Clipper does not return pieces in travel-friendly order. Pick the next
     // piece by closest endpoint so any connector remains as short as possible.
+    uint64_t inspected_candidates = 0;
     while (!remaining.empty()) {
+        throw_if_cancelled(run_ctx);
         size_t best_idx = 0;
         double best_distance = std::numeric_limits<double>::max();
         for (size_t idx = 0; idx < remaining.size(); ++idx) {
+            if ((inspected_candidates++ & 63u) == 0u)
+                throw_if_cancelled(run_ctx);
             const std::vector<c_point> &candidate = remaining[idx];
             if (candidate.empty())
                 continue;
@@ -534,12 +545,16 @@ bool append_wave_polyline(storage_handle *storage,
 StoredExPolygonCollection coverage_for_extra_perimeters(storage_handle *storage,
                                                         const std::vector<StoredExtrusionEntity> &extra_perimeters,
                                                         const ExPolygonCollection &clip_area,
-                                                        const OverhangGenerationInput &input)
+                                                        const OverhangGenerationInput &input,
+                                                        const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection coverage(storage);
     ClipperContext clipper(storage);
     for (const StoredExtrusionEntity &zone : extra_perimeters) {
+        throw_if_cancelled(run_ctx);
         for (const ExtrusionEntity path : zone.children()) {
+            throw_if_cancelled(run_ctx);
             if (path.empty() || path.point_count() < 2)
                 continue;
 
@@ -606,14 +621,17 @@ void append_residual_gap_fill_paths(storage_handle *storage,
                                     std::vector<StoredExtrusionEntity> &extra_perimeters,
                                     const ExPolygonCollection &residual_overhangs,
                                     const OverhangGenerationInput &input,
-                                    const LineDistancer &lower_layer_distancer)
+                                    const LineDistancer &lower_layer_distancer,
+                                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (residual_overhangs.empty())
         return;
 
     const EPropertyAttributes gap_fill_attributes = gap_fill_attributes_from_wave_flow(input.wave_flow);
 
     for (const ExPolygon residual : residual_overhangs) {
+        throw_if_cancelled(run_ctx);
         if (residual_area_is_too_small_for_gap_fill(storage, residual, input))
             continue;
 
@@ -628,6 +646,8 @@ void append_residual_gap_fill_paths(storage_handle *storage,
 
         StoredExtrusionEntity gap_fill_zone(storage);
         for (uint32_t idx = 0; idx < fills->child_count(); ++idx) {
+            if ((idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             StoredExtrusionEntity path(storage, fills->child(idx));
             path.get_or_add(EPropertyAttributes::key) = gap_fill_attributes;
             path.disable_reverse();
@@ -644,8 +664,10 @@ void append_residual_gap_fill_paths(storage_handle *storage,
 
 OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_handle *storage,
                                                                        const ExPolygonCollection &infill_area,
-                                                                       const OverhangGenerationInput &input)
+                                                                       const OverhangGenerationInput &input,
+                                                                       const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     OverhangGenerationOutput out(storage);
     if (infill_area.empty() || input.lower_slices.empty() ||
         input.perimeter_depth <= 0 || input.overhang_spacing <= 0)
@@ -674,6 +696,7 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
     // independent and may later be sorted as whole units by the wrapper entity.
     StoredExPolygonCollection zones = clipper_union(clipper(overhangs)).to_expolygon_collection();
     for (const ExPolygon zone : zones) {
+        throw_if_cancelled(run_ctx);
         StoredExtrusionEntity zone_paths(storage);
         bool has_unsupported_wave = false;
         StoredExPolygonCollection zone_clip = collection_from_expolygon(storage, zone);
@@ -700,15 +723,19 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
             StoredPolylineCollection support_lines =
                 intersection_polylines_expolygons(storage, support_area_lines, supported_band);
             support_lines =
-                reconnect_polylines(storage, support_lines, SCALED_EPSILON * 2, coord_t(SCALED_EPSILON));
-            support_lines = order_wave_polylines_from_current_point(storage, support_lines, nullptr);
-            for (const Polyline line : support_lines)
+                reconnect_polylines(
+                    storage, support_lines, SCALED_EPSILON * 2, coord_t(SCALED_EPSILON), run_ctx);
+            support_lines = order_wave_polylines_from_current_point(storage, support_lines, nullptr, run_ctx);
+            for (const Polyline line : support_lines) {
+                throw_if_cancelled(run_ctx);
                 (void)append_wave_polyline(storage, zone_paths, line, input, lower_layer_distancer);
+            }
         }
 
         for (coord_t distance_from_support = std::max<coord_t>(SCALED_EPSILON, input.overhang_spacing / 2);
              distance_from_support <= max_wave_distance + SCALED_EPSILON;
              distance_from_support += input.overhang_spacing) {
+            throw_if_cancelled(run_ctx);
             StoredExPolygonCollection wave_area =
                 clipper_offset(clipper(optimized_lower_slices), double(distance_from_support)).to_expolygon_collection();
             if (wave_area.empty())
@@ -717,7 +744,8 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
             StoredPolylineCollection wave_area_lines = expolygons_to_polylines(storage, wave_area);
             StoredPolylineCollection wave_lines =
                 intersection_polylines_expolygons(storage, wave_area_lines, zone_clip);
-            wave_lines = reconnect_polylines(storage, wave_lines, SCALED_EPSILON * 2, coord_t(SCALED_EPSILON));
+            wave_lines = reconnect_polylines(
+                storage, wave_lines, SCALED_EPSILON * 2, coord_t(SCALED_EPSILON), run_ctx);
             if (wave_lines.empty())
                 continue;
 
@@ -727,10 +755,13 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
                 current_point = zone_paths.child(zone_paths.child_count() - 1).back();
                 current_point_ptr = &current_point;
             }
-            wave_lines = order_wave_polylines_from_current_point(storage, wave_lines, current_point_ptr);
-            for (const Polyline line : wave_lines)
+            wave_lines = order_wave_polylines_from_current_point(
+                storage, wave_lines, current_point_ptr, run_ctx);
+            for (const Polyline line : wave_lines) {
+                throw_if_cancelled(run_ctx);
                 has_unsupported_wave |=
                     append_wave_polyline(storage, zone_paths, line, input, lower_layer_distancer);
+            }
         }
 
         // A supported pre-line is only useful as the lead-in for real
@@ -745,8 +776,9 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
     }
 
     out.extra_perimeters = std::move(extra_perimeters);
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection wave_filled_area =
-        coverage_for_extra_perimeters(storage, out.extra_perimeters, infill_area, input);
+        coverage_for_extra_perimeters(storage, out.extra_perimeters, infill_area, input, run_ctx);
     wave_filled_area.ensure_valid();
     StoredExPolygonCollection residual_overhangs =
         clipper_diff(clipper(overhangs), clipper(wave_filled_area)).to_expolygon_collection();
@@ -756,7 +788,8 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
     // tiny leftovers disappear, printable leftovers become square-flow gap
     // fill. In both cases the area is removed from later fill/gap-fill stages
     // so it cannot be printed twice.
-    append_residual_gap_fill_paths(storage, out.extra_perimeters, residual_overhangs, input, lower_layer_distancer);
+    append_residual_gap_fill_paths(
+        storage, out.extra_perimeters, residual_overhangs, input, lower_layer_distancer, run_ctx);
     out.filled_area =
         clipper_union2(clipper(wave_filled_area), clipper(residual_overhangs)).to_expolygon_collection();
     out.filled_area.ensure_valid();
@@ -902,8 +935,10 @@ void process_island(const run_ctx_post_perimeter_generation &ctx,
                     storage_handle *storage,
                     const Object &object,
                     const LayerIsland &island,
-                    uint32_t layer_idx)
+                    uint32_t layer_idx,
+                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (island.region_count() == 0 || island.region_island_count() == 0 ||
         island.infill_areas().empty() || island.lower_island_count() == 0)
         return;
@@ -931,7 +966,7 @@ void process_island(const run_ctx_post_perimeter_generation &ctx,
         return;
 
     OverhangGenerationOutput generated =
-        generate_extra_perimeters_over_overhangs_wave(storage, enabled_area, input);
+        generate_extra_perimeters_over_overhangs_wave(storage, enabled_area, input, run_ctx);
     const bool has_extra_perimeter =
         std::any_of(generated.extra_perimeters.begin(),
                     generated.extra_perimeters.end(),
@@ -954,11 +989,13 @@ void process_island(const run_ctx_post_perimeter_generation &ctx,
 void process_layer(uint32_t layer_idx,
                    storage_handle *scratch_storage,
                    const run_ctx_post_perimeter_generation *ctx,
-                   const Object *object)
+                   const Object *object,
+                   const plugin_run_context *run_ctx)
 {
     assert(scratch_storage != nullptr);
     assert(ctx != nullptr);
     assert(object != nullptr);
+    throw_if_cancelled(run_ctx);
 
     // Each worker gets its own scratch storage from the helper. Temporary
     // RegionSettings, Clipper operands and generated path containers stay local
@@ -966,7 +1003,8 @@ void process_layer(uint32_t layer_idx,
     // layer island before the scratch storage is cleared.
     const Layer layer = object->layer(layer_idx);
     for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
-        process_island(*ctx, scratch_storage, *object, layer.island(island_idx), layer_idx);
+        throw_if_cancelled(run_ctx);
+        process_island(*ctx, scratch_storage, *object, layer.island(island_idx), layer_idx, run_ctx);
     }
 }
 
@@ -1062,6 +1100,7 @@ void ExtraPerimeterOverhangWave::inilialize_impl(storage_handle *) const
 
 void ExtraPerimeterOverhangWave::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
     if (ctx != nullptr && ctx->object != nullptr)
         progress().add_max(Object(ctx->object).layer_count());
@@ -1069,6 +1108,7 @@ void ExtraPerimeterOverhangWave::setup_run_impl(const plugin_run_context *run_ct
 
 void ExtraPerimeterOverhangWave::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
     if (ctx == nullptr || run_ctx == nullptr || run_ctx->plugin_storage == nullptr ||
         ctx->object == nullptr ||
@@ -1085,7 +1125,8 @@ void ExtraPerimeterOverhangWave::run_impl(const plugin_run_context *run_ctx) con
         &progress(),
         process_layer,
         ctx,
-        &object);
+        &object,
+        run_ctx);
 }
 
 void register_extra_perimeter_overhang_wave_plugin(orchestrator_handle *orch)

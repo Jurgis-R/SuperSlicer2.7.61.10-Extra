@@ -2,6 +2,9 @@
 
 #include "perimeter_test_helpers.hpp"
 
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
+
 namespace {
 using namespace Slic3r;
 using namespace Slic3r::Test::PerimeterPluginTests;
@@ -72,4 +75,22 @@ TEST_CASE("Remove gap fill on overhangs preserves perimeter tree fill areas", "[
         run_perimeter_case(enabled, {SIMPLE_PERIMETER_GENERATOR, REMOVE_GAP_FILL_ON_OVERHANGS}, area, 0);
     REQUIRE(external_perimeter_count(run) == 1);
     require_simple_generator_first_child_area_partition(run, area);
+}
+
+TEST_CASE("Remove gap fill on overhangs honors cancellation before nested geometry work",
+          "[plugins][perimeter][cancellation]")
+{
+    // The direct fixture enters the module normally, then requests cancellation
+    // immediately before module_after(). The callback must unwind before it
+    // clips paths or replaces the node extrusion batch.
+    Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
+    orchestrator.reset_plugin_cancel();
+    CHECK_THROWS_AS(
+        run_remove_gap_fill_module(perimeter_config({{"gap_fill_no_overhang", "1"}}),
+                                   false,
+                                   nullptr,
+                                   0,
+                                   true),
+        slic3r_api::PluginCancelled);
+    orchestrator.reset_plugin_cancel();
 }

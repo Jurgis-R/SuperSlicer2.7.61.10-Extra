@@ -167,17 +167,22 @@ std::vector<StoredExPolygonCollection> make_empty_expolygon_layers(storage_handl
 std::vector<StoredExPolygonCollection> slice_volume(const Volume &volume,
                                                     const std::vector<float> &slice_zs,
                                                     const c_mesh_slicing_params &params,
-                                                    storage_handle *storage)
+                                                    storage_handle *storage,
+                                                    const plugin_run_context *run_ctx)
 {
     if (slice_zs.empty() || volume.mesh().empty())
         return {};
 
     c_mesh_slicing_params volume_params = params;
     volume_params.transform = matrix4d_mul(params.transform, volume.matrix());
+    throw_if_cancelled(run_ctx);
     std::vector<StoredExPolygonCollection> out =
         volume.mesh().slice_to_expolygons(storage, volume_params, slice_zs);
-    for (StoredExPolygonCollection &expolygons : out)
+    throw_if_cancelled(run_ctx);
+    for (StoredExPolygonCollection &expolygons : out) {
+        throw_if_cancelled(run_ctx);
         expolygons.ensure_valid(scale_i(params.resolution));
+    }
     return out;
 }
 
@@ -185,13 +190,14 @@ std::vector<StoredExPolygonCollection> slice_volume(const Volume &volume,
                                                     const std::vector<float> &slice_zs,
                                                     const std::vector<std::pair<float, float>> &ranges,
                                                     const c_mesh_slicing_params &params,
-                                                    storage_handle *storage)
+                                                    storage_handle *storage,
+                                                    const plugin_run_context *run_ctx)
 {
     if (slice_zs.empty() || ranges.empty() || volume.mesh().empty())
         return {};
 
     if (ranges.size() == 1 && slice_zs.front() >= ranges.front().first && slice_zs.back() < ranges.front().second)
-        return slice_volume(volume, slice_zs, params, storage);
+        return slice_volume(volume, slice_zs, params, storage, run_ctx);
 
     std::vector<float> filtered_zs;
     std::vector<std::pair<size_t, size_t>> filtered_spans;
@@ -200,6 +206,7 @@ std::vector<StoredExPolygonCollection> slice_volume(const Volume &volume,
 
     size_t idx = 0;
     for (const std::pair<float, float> &range : ranges) {
+        throw_if_cancelled(run_ctx);
         for (; idx < slice_zs.size() && slice_zs[idx] < range.first; ++idx) {}
         const size_t first = idx;
         for (; idx < slice_zs.size() && slice_zs[idx] < range.second; ++idx)
@@ -210,10 +217,12 @@ std::vector<StoredExPolygonCollection> slice_volume(const Volume &volume,
     if (filtered_spans.empty())
         return {};
 
-    std::vector<StoredExPolygonCollection> sliced = slice_volume(volume, filtered_zs, params, storage);
+    throw_if_cancelled(run_ctx);
+    std::vector<StoredExPolygonCollection> sliced = slice_volume(volume, filtered_zs, params, storage, run_ctx);
     std::vector<StoredExPolygonCollection> out = make_empty_expolygon_layers(storage, slice_zs.size());
     size_t sliced_idx = 0;
     for (const std::pair<size_t, size_t> &span : filtered_spans) {
+        throw_if_cancelled(run_ctx);
         for (size_t layer_idx = span.first; layer_idx < span.second; ++layer_idx)
             out[layer_idx] = std::move(sliced[sliced_idx++]);
     }
@@ -225,7 +234,8 @@ void process_complex_volume_regions_with_clipping(
     storage_handle *storage,
     const std::vector<VolumeSlices> &volume_slices,
     const std::vector<ComplexSlice> &complex_slices,
-    std::vector<std::vector<StoredExPolygonCollection>> &region_slices)
+    std::vector<std::vector<StoredExPolygonCollection>> &region_slices,
+    const plugin_run_context *run_ctx)
 {
     ClipperContext clipper(storage);
 
@@ -239,6 +249,7 @@ void process_complex_volume_regions_with_clipping(
     };
 
     for (const ComplexSlice &complex_slice : complex_slices) {
+        throw_if_cancelled(run_ctx);
         const slicing_layer_range_handle *layer_range =
             ctx.layer_range_at(ctx.object, complex_slice.layer_range_idx);
         if (layer_range == nullptr)
@@ -249,6 +260,7 @@ void process_complex_volume_regions_with_clipping(
         temp_slices.reserve(volume_region_count);
 
         for (uint32_t idx = 0; idx < volume_region_count; ++idx) {
+            throw_if_cancelled(run_ctx);
             const slicing_volume_region_handle *volume_region =
                 ctx.layer_range_volume_region_at(layer_range, idx);
             const volume_handle *volume_h = ctx.volume_region_volume(volume_region);
@@ -300,8 +312,12 @@ void process_complex_volume_regions_with_clipping(
                     // A modifier receives only the area inside its parent. The
                     // parent then loses that same source area so following
                     // regions do not see duplicated material.
-                    this_slice.expolygons = clipper_intersection(clipper(parent_slice.expolygons), clipper(source)).to_expolygon_collection();
+                    throw_if_cancelled(run_ctx);
+                    this_slice.expolygons =
+                        clipper_intersection(clipper(parent_slice.expolygons), clipper(source)).to_expolygon_collection();
+                    throw_if_cancelled(run_ctx);
                     parent_slice.expolygons = clipper_diff(clipper(parent_slice.expolygons), clipper(source)).to_expolygon_collection();
+                    throw_if_cancelled(run_ctx);
                 }
 
                 if (idx + 1 < volume_region_count) {
@@ -314,6 +330,7 @@ void process_complex_volume_regions_with_clipping(
             } else if (volume.is_model_part() || volume.is_negative()) {
                 const c_bounding_box3f bbox = ctx.volume_region_bbox(volume_region);
                 for (uint32_t worse_idx = 0; worse_idx < idx; ++worse_idx) {
+                    throw_if_cancelled(run_ctx);
                     if (temp_slices[worse_idx].expolygons.empty())
                         continue;
 
@@ -334,6 +351,7 @@ void process_complex_volume_regions_with_clipping(
                     temp_slices[worse_idx].expolygons =
                         clipper_diff(clipper(temp_slices[worse_idx].expolygons), clipper(temp_slices[idx].expolygons))
                             .to_expolygon_collection();
+                    throw_if_cancelled(run_ctx);
                 }
             }
         }
@@ -342,18 +360,21 @@ void process_complex_volume_regions_with_clipping(
         // A union is applied after appending because several volume regions can
         // target the same print region on the same layer.
         for (RegionSlice &slice : temp_slices) {
+            throw_if_cancelled(run_ctx);
             if (slice.region_id < 0 || uint32_t(slice.region_id) >= region_slices.size() || slice.expolygons.empty())
                 continue;
 
             StoredExPolygonCollection &dst = region_slices[uint32_t(slice.region_id)][complex_slice.layer_idx];
             dst.append_move_from(std::move(slice.expolygons));
+            throw_if_cancelled(run_ctx);
             dst = clipper_union(clipper(dst)).to_expolygon_collection();
+            throw_if_cancelled(run_ctx);
             dst.ensure_valid();
         }
     }
 }
 
-std::vector<float> slice_z_from_layers(const Object &object)
+std::vector<float> slice_z_from_layers(const Object &object, const plugin_run_context *run_ctx)
 {
     // The low-level triangle slicer uses float coordinates, so keep the Z list
     // unscaled here. All comparisons against layer ranges are scaled explicitly
@@ -361,6 +382,7 @@ std::vector<float> slice_z_from_layers(const Object &object)
     std::vector<float> slice_zs;
     slice_zs.reserve(object.layer_count());
     for (uint32_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         const Layer layer = object.layer(layer_idx);
         slice_zs.push_back(static_cast<float>(unscaled(layer.slice_z())));
     }
@@ -371,7 +393,8 @@ std::vector<VolumeSlices> slice_volumes_inner(const run_ctx_slicing &ctx,
                                               const Print &print,
                                               const Object &object,
                                               const std::vector<float> &slice_zs,
-                                              storage_handle *storage)
+                                              storage_handle *storage,
+                                              const plugin_run_context *run_ctx)
 {
     // This follows PrintObjectSlice.cpp::slice_volumes_inner(): prepare one
     // MeshSlicingParamsEx-equivalent, slice only printable/negative/modifier
@@ -411,6 +434,7 @@ std::vector<VolumeSlices> slice_volumes_inner(const run_ctx_slicing &ctx,
 
     const uint32_t layer_range_count = ctx.layer_range_count(object.handle());
     for (const Volume &volume : volumes) {
+        throw_if_cancelled(run_ctx);
         if (!model_volume_needs_slicing(volume))
             continue;
 
@@ -429,13 +453,14 @@ std::vector<VolumeSlices> slice_volumes_inner(const run_ctx_slicing &ctx,
             // real bridge material before choosing which disconnected
             // component must survive.
 
-            by_layer = slice_volume(volume, slice_zs, params, storage);
+            by_layer = slice_volume(volume, slice_zs, params, storage, run_ctx);
         } else {
             assert(!print_config.get("spiral_vase").get_bool());
             std::vector<std::pair<float, float>> ranges = slicing_ranges_for_volume(ctx, object, volume.id());
-            by_layer = slice_volume(volume, slice_zs, ranges, params, storage);
+            by_layer = slice_volume(volume, slice_zs, ranges, params, storage, run_ctx);
         }
 
+        throw_if_cancelled(run_ctx);
         if (!by_layer.empty())
             out.push_back({volume, std::move(by_layer)});
     }
@@ -448,7 +473,8 @@ std::vector<std::vector<StoredExPolygonCollection>> slices_to_regions(const run_
                                                                       const Object &object,
                                                                       const std::vector<float> &slice_zs,
                                                                       std::vector<VolumeSlices> &&volume_slices,
-                                                                      storage_handle *storage)
+                                                                      storage_handle *storage,
+                                                                      const plugin_run_context *run_ctx)
 {
     (void)print;
 
@@ -469,6 +495,7 @@ std::vector<std::vector<StoredExPolygonCollection>> slices_to_regions(const run_
     const uint32_t layer_range_count = ctx.layer_range_count(ctx.object);
 
     for (uint32_t layer_range_idx = 0; layer_range_idx < layer_range_count; ++layer_range_idx) {
+        throw_if_cancelled(run_ctx);
         const slicing_layer_range_handle *layer_range = ctx.layer_range_at(ctx.object, layer_range_idx);
         if (layer_range == nullptr)
             continue;
@@ -494,6 +521,7 @@ std::vector<std::vector<StoredExPolygonCollection>> slices_to_regions(const run_
             if (volume.is_model_part() && region_idx >= 0 && uint32_t(region_idx) < region_slices.size()) {
                 VolumeSlices *slices_src = volume_slices_find_by_id(volume_slices, volume.id());
                 for (; layer_idx < slice_zs.size() && scale_i(double(slice_zs[layer_idx])) < range_z_max; ++layer_idx) {
+                    throw_if_cancelled(run_ctx);
                     region_slices[uint32_t(region_idx)][layer_idx].append_move_from(std::move(slices_src->by_layer[layer_idx]));
                 }
             }
@@ -504,11 +532,13 @@ std::vector<std::vector<StoredExPolygonCollection>> slices_to_regions(const run_
         // overlaps the first printable model volume in XY at the current Z.
         complex_slices.reserve(slice_zs.size());
         for (; layer_idx < slice_zs.size() && scale_i(double(slice_zs[layer_idx])) < range_z_max; ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const float z = slice_zs[layer_idx];
             int32_t first_printable_region = -1;
             bool complex = false;
 
             for (uint32_t region_idx = 0; region_idx < volume_region_count; ++region_idx) {
+                throw_if_cancelled(run_ctx);
                 const slicing_volume_region_handle *volume_region =
                     ctx.layer_range_volume_region_at(layer_range, region_idx);
                 const c_bounding_box3f bbox = ctx.volume_region_bbox(volume_region);
@@ -523,6 +553,7 @@ std::vector<std::vector<StoredExPolygonCollection>> slices_to_regions(const run_
 
                 if (first_printable_region != -1) {
                     for (int32_t prev_idx = first_printable_region; prev_idx < int32_t(region_idx); ++prev_idx) {
+                        throw_if_cancelled(run_ctx);
                         const slicing_volume_region_handle *prev_volume_region =
                             ctx.layer_range_volume_region_at(layer_range, uint32_t(prev_idx));
                         const c_bounding_box3f prev_bbox = ctx.volume_region_bbox(prev_volume_region);
@@ -553,13 +584,14 @@ std::vector<std::vector<StoredExPolygonCollection>> slices_to_regions(const run_
                     continue;
 
                 VolumeSlices *slices_src = volume_slices_find_by_id(volume_slices, volume.id());
+                throw_if_cancelled(run_ctx);
                 region_slices[uint32_t(region_idx)][layer_idx].append_move_from(std::move(slices_src->by_layer[layer_idx]));
             }
         }
     }
 
     if (!complex_slices.empty()) {
-        process_complex_volume_regions_with_clipping(ctx, storage, volume_slices, complex_slices, region_slices);
+        process_complex_volume_regions_with_clipping(ctx, storage, volume_slices, complex_slices, region_slices, run_ctx);
     }
 
     return region_slices;
@@ -567,18 +599,22 @@ std::vector<std::vector<StoredExPolygonCollection>> slices_to_regions(const run_
 
 void write_region_slices(const run_ctx_slicing &ctx,
                          Object object,
-                         std::vector<std::vector<StoredExPolygonCollection>> &&region_slices)
+                         std::vector<std::vector<StoredExPolygonCollection>> &&region_slices,
+                         const plugin_run_context *run_ctx)
 {
     // STEP_SLICING owns raw slice generation only. Do not create Surface entries
     // here: surface generation is a later step and must see these raw slices as
     // its input.
     for (uint32_t region_idx = 0; region_idx < region_slices.size(); ++region_idx) {
+        throw_if_cancelled(run_ctx);
         std::vector<StoredExPolygonCollection> &by_layer = region_slices[region_idx];
         for (uint32_t layer_idx = 0; layer_idx < by_layer.size(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             StoredExPolygonCollection &layer_region_slices = by_layer[layer_idx];
 
             expolygon_collection_handle *dst = ctx.layer_region_borrow_mutable_slices(
                 object.layer(layer_idx).region(region_idx).handle());
+            throw_if_cancelled(run_ctx);
             expolygons_move(dst, layer_region_slices.mutable_handle());
         }
     }
@@ -629,6 +665,7 @@ const char *SliceVolume::progress_message_format_impl() const noexcept
 
 void SliceVolume::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     // Progress is counted per layer, per object. setup_run() is called once for
     // each object before run(), allowing PluginProgress to aggregate all workers.
     const run_ctx_slicing *ctx = plugin_ctx_as_slicing(run_ctx);
@@ -640,6 +677,7 @@ void SliceVolume::setup_run_impl(const plugin_run_context *run_ctx) const
 
 void SliceVolume::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     // This plugin is intentionally written through public ABI views. If a host
     // object is missing from the step context, fail quietly; PluginBase handles
     // exceptions and fatal error reporting for real failures.
@@ -651,12 +689,16 @@ void SliceVolume::run_impl(const plugin_run_context *run_ctx) const
     Object object(ctx->object);
     storage_handle *storage = run_ctx->plugin_storage;
 
-    std::vector<float> slice_zs = slice_z_from_layers(object);
-    std::vector<VolumeSlices> volume_slices = slice_volumes_inner(*ctx, print, object, slice_zs, storage);
+    std::vector<float> slice_zs = slice_z_from_layers(object, run_ctx);
+    throw_if_cancelled(run_ctx);
+    std::vector<VolumeSlices> volume_slices = slice_volumes_inner(*ctx, print, object, slice_zs, storage, run_ctx);
+    throw_if_cancelled(run_ctx);
     std::vector<std::vector<StoredExPolygonCollection>> region_slices =
-        slices_to_regions(*ctx, print, object, slice_zs, std::move(volume_slices), storage);
+        slices_to_regions(*ctx, print, object, slice_zs, std::move(volume_slices), storage, run_ctx);
 
-    write_region_slices(*ctx, object, std::move(region_slices));
+    throw_if_cancelled(run_ctx);
+    write_region_slices(*ctx, object, std::move(region_slices), run_ctx);
+    throw_if_cancelled(run_ctx);
 
     progress().finish_run();
 }

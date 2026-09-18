@@ -249,12 +249,17 @@ private:
 
 void BuiltinThumbnailPluginBase::run_impl(const plugin_run_context *run_context) const
 {
+    // The published encoder session intentionally outlives this callback and
+    // therefore cannot borrow its run context. Stop before creating that
+    // session; the writer performs the remaining checks around each encode.
+    throw_if_cancelled(run_context);
     run_ctx_gcode_thumbnail *context = plugin_ctx_as_gcode_thumbnail(run_context);
     if (context == nullptr || context->print == nullptr)
         throw std::invalid_argument("Thumbnail encoder received an invalid run context.");
     std::unique_ptr<GCodeThumbnailEncoderSession> session(
         new BuiltinThumbnailEncoderSession(GCodeThumbnailRendererView(context->renderer),
                                            format()));
+    throw_if_cancelled(run_context);
     context->instance = make_gcode_thumbnail_encoder_instance(std::move(session));
 }
 

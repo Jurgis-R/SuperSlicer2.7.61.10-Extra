@@ -11,6 +11,7 @@
 
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_bridge_detector.h"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/BridgeDetector.hpp"
 #include "libslic3r/MultiPoint.hpp"
 #include "libslic3r/Polygon.hpp"
@@ -215,16 +216,39 @@ plugin_vtable default_plugin_vtable = {
     &BridgeDetector::run_bridge
 };
 
+template <typename Callback>
+void invoke_plugin_callback_safely(const plugin_run_context *run_ctx,
+                                   const char *unknown_error,
+                                   Callback callback) noexcept
+{
+    try {
+        callback();
+    } catch (const PluginCancelled &) {
+        return;
+    } catch (const std::exception &error) {
+        report_error(run_ctx, error.what());
+    } catch (...) {
+        report_error(run_ctx, unknown_error);
+    }
+}
+
 } // namespace
 
 void BridgeDetector::initialize(storage_handle * storage) const {}
 
-void BridgeDetector::setup(const plugin_run_context *, uint32_t) const {}
+void BridgeDetector::setup(const plugin_run_context *run_ctx, uint32_t) const
+{
+    throw_if_cancelled(run_ctx);
+}
 
-void BridgeDetector::setup_run(const plugin_run_context *) const {}
+void BridgeDetector::setup_run(const plugin_run_context *run_ctx) const
+{
+    throw_if_cancelled(run_ctx);
+}
 
 void BridgeDetector::run(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     // BRIDGE_DETECTOR contexts contain a creation input and an empty output
     // instance. On success, ownership of NativeBridgeDetector is transferred to
     // ctx->detector and later released through native_bridge_detector_vtable.
@@ -370,17 +394,23 @@ void BridgeDetector::initialize_bridge(void *plugin_ctx, storage_handle *storage
 
 void BridgeDetector::setup_bridge(void *plugin_ctx, const plugin_run_context *run_ctx, uint32_t run_count)
 {
-    static_cast<BridgeDetector *>(plugin_ctx)->setup(run_ctx, run_count);
+    invoke_plugin_callback_safely(run_ctx, "Unknown C++ exception in bridge detector setup", [=]() {
+        static_cast<BridgeDetector *>(plugin_ctx)->setup(run_ctx, run_count);
+    });
 }
 
 void BridgeDetector::setup_run_bridge(void *plugin_ctx, const plugin_run_context *run_ctx)
 {
-    static_cast<BridgeDetector *>(plugin_ctx)->setup_run(run_ctx);
+    invoke_plugin_callback_safely(run_ctx, "Unknown C++ exception in bridge detector setup_run", [=]() {
+        static_cast<BridgeDetector *>(plugin_ctx)->setup_run(run_ctx);
+    });
 }
 
 void BridgeDetector::run_bridge(void *plugin_ctx, const plugin_run_context *run_ctx)
 {
-    static_cast<BridgeDetector *>(plugin_ctx)->run(run_ctx);
+    invoke_plugin_callback_safely(run_ctx, "Unknown C++ exception in bridge detector run", [=]() {
+        static_cast<BridgeDetector *>(plugin_ctx)->run(run_ctx);
+    });
 }
 
 void register_bridge_detector_plugin(orchestrator_handle *orch)

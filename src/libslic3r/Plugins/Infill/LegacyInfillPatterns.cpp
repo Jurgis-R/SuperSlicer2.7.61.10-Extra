@@ -186,6 +186,7 @@ private:
 
     void run_impl(const plugin_run_context *run_ctx) const override
     {
+        throw_if_cancelled(run_ctx);
         const run_ctx_infill_pattern *ctx = plugin_ctx_as_infill_pattern(run_ctx);
         assert(ctx != nullptr);
         if (ctx == nullptr || ctx->surface == nullptr || ctx->params == nullptr || ctx->output == nullptr)
@@ -209,8 +210,11 @@ private:
                 "' requires object-level precomputed data that is not exposed to INFILL_PATTERN plugins yet.");
         }
 
+        throw_if_cancelled(run_ctx);
         Slic3r::FillParams params = fill_params_from_raw(*ctx->params, region->region().config());
+        throw_if_cancelled(run_ctx);
         std::unique_ptr<Slic3r::Fill> filler(Slic3r::Fill::new_from_type(m_pattern));
+        throw_if_cancelled(run_ctx);
         filler->set_bounding_box(object->bounding_box());
         filler->layer_id = ctx->params->layer_id;
         filler->z = ctx->params->z;
@@ -228,8 +232,11 @@ private:
         // these first migrated patterns. The new plugin boundary is already in
         // place: when the algorithms are rewritten against the pure C ABI, this
         // wrapper can disappear without changing the STEP_INFILL host wrapper.
+        throw_if_cancelled(run_ctx);
         filler->init_spacing(ctx->params->spacing, params);
+        throw_if_cancelled(run_ctx);
         filler->fill_surface_extrusion(surface, params, *output);
+        throw_if_cancelled(run_ctx);
         progress().increment();
     }
 

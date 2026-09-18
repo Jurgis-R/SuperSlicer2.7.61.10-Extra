@@ -21,6 +21,7 @@ external perimeter separate and use stable traversal identities for ties.
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_plugin_types.h"
+#include "libslic3r/Api/plugin/c/slic3r_plugin_run_context.h"
 
 struct storage_handle;
 
@@ -61,21 +62,25 @@ struct CollectedLoop {
 /* Collect every non-empty atomic perimeter loop while inheriting attributes
    downward and summarizing descendant metadata back onto the loop identity. */
 std::vector<CollectedLoop> collect_perimeter_loops(
-    const ExtrusionEntity &root, raw_extrusion_role inherited_role);
+    const ExtrusionEntity &root, raw_extrusion_role inherited_role,
+    const plugin_run_context *run_context = nullptr);
 
 /* Generate ordered geometric, painted-constraint, and boundary candidates for
    one external perimeter loop. */
 std::vector<Candidate> prepare_loop_candidates(
     storage_handle *storage, const SeamPlacementConstraints &constraints,
     const LayerRegionIsland &island, const ExtrusionEntity &loop,
-    const LayerRegion &region, c_point shift, double width, double nozzle);
+    const LayerRegion &region, c_point shift, double width, double nozzle,
+    const plugin_run_context *run_context = nullptr);
 
 /* Add legacy overhang, embedding, and neighboring-region boundary attributes. */
 void calculate_layer_attributes(const LayerRegionIsland &island,
-                               std::vector<Candidate> &candidates);
+                                std::vector<Candidate> &candidates,
+                                const plugin_run_context *run_context = nullptr);
 
 /* Apply the common blocker/enforcer/boundary/overhang/embedding policy. */
-void filter_candidates(std::vector<Candidate> &candidates);
+void filter_candidates(std::vector<Candidate> &candidates,
+                       const plugin_run_context *run_context = nullptr);
 
 /* Project onto real line and arc segments; strict ties retain traversal order. */
 std::pair<c_point, double> project_onto_loop(const ExtrusionEntity &entity,

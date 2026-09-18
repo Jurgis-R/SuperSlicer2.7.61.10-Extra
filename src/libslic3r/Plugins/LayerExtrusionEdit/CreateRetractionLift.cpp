@@ -17,6 +17,7 @@
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingEntityPropertyTraversal.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 #include "libslic3r/Api/plugin/cpp/RegionSettingsViews.hpp"
@@ -148,7 +149,8 @@ private:
     size_t flat_layer_index(uint32_t group_idx, uint32_t layer_idx) const;
 
     /* Return the final scope summary of the nearest preceding non-empty layer. */
-    const SourceLiftState *previous_layer_source(size_t flat_idx) const;
+    const SourceLiftState *previous_layer_source(
+        size_t flat_idx, const plugin_run_context *run_ctx) const;
 
     PluginPropertyKey<PrintingExtrusionScopeProperty> m_scope_property;
     mutable bool m_setup_valid = false;
@@ -177,66 +179,78 @@ bool find_last_printable_geometry(MutableExtrusionEntity entity,
                                   coord_t print_z,
                                   const EffectiveState &parent,
                                   SourceEndpoint &endpoint,
-                                  bool entity_already_resolved = false);
+                                  bool entity_already_resolved,
+                                  const plugin_run_context *run_ctx);
 
 /* Find whether a phase contains a semantic Retract request. */
 bool contains_semantic_retract(
     const ExtrusionEntity &entity,
-    std::optional<EPropertyAttributes> inherited_attributes);
+    std::optional<EPropertyAttributes> inherited_attributes,
+    const plugin_run_context *run_ctx);
 
 /* Resolve the final absolute Z reached by any geometry in one phase. */
 std::optional<coord_t> last_geometric_z(MutableExtrusionEntity entity,
                                         coord_t print_z,
-                                        const EffectiveState &parent);
+                                        const EffectiveState &parent,
+                                        const plugin_run_context *run_ctx);
 
 /* Resolve the source-region lift override or the extruder fallback. */
 double source_lift(const ScopeEntity &source,
                    const PrintingPlan &plan,
                    const SourceEndpoint &endpoint,
-                   const Config &print_config);
+                   const Config &print_config,
+                   const plugin_run_context *run_ctx);
 
 /* Describe one outgoing scope without retaining owner or entity handles. */
 SourceLiftState describe_source(
     const ScopeEntity &source,
     const PrintingPlan &plan,
     const Config &print_config,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx);
 
 /* Add a distance-linear Z ramp to every point of one travel phase. */
-void apply_z_ramp(MutableExtrusionEntity phase, coord_t from, coord_t to);
+void apply_z_ramp(MutableExtrusionEntity phase, coord_t from, coord_t to,
+                  const plugin_run_context *run_ctx);
 
 /* Raise every point of one travel plateau by the same amount. */
-void apply_constant_lift(MutableExtrusionEntity phase, coord_t lift);
+void apply_constant_lift(MutableExtrusionEntity phase, coord_t lift,
+                         const plugin_run_context *run_ctx);
 
 /* Materialize a vertical or ramped lift on one reserved travel leaf. */
 void lift_travel(MutableExtrusionEntity travel,
                  coord_t lift,
                  coord_t inherited_start_lift,
                  bool ramping,
-                 double slope_degrees);
+                 double slope_degrees,
+                 const plugin_run_context *run_ctx);
 
 /* Apply a progressive Z increase over one retracting Wipe leaf. */
 void lift_wipe(MutableExtrusionEntity entity,
                coord_t lift,
-               distf_t lift_length);
+               distf_t lift_length,
+               const plugin_run_context *run_ctx);
 
 /* Raise only Wipe plus Retract leaves in one outgoing phase. */
 void prepare_wipe_lifts(MutableExtrusionEntity entity,
                         extruder_index_t extruder_id,
                         coord_t layer_height,
                         const Config &print_config,
-                        std::optional<EPropertyAttributes> inherited_attributes);
+                        std::optional<EPropertyAttributes> inherited_attributes,
+                        const plugin_run_context *run_ctx);
 
 /* Apply wipe lift to the outgoing phase of one prepared scope. */
 void prepare_scope_wipe_lift(
     const ScopeEntity &scope,
     const Config &print_config,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx);
 
 /* Validate and return the absolute start Z of a reserved travel leaf. */
 coord_t travel_start_z(
     const ScopeEntity &target,
-    const ExtrusionScope::OrderedExtrusionScope &scope);
+    const ExtrusionScope::OrderedExtrusionScope &scope,
+    const plugin_run_context *run_ctx);
 
 /*
 Apply one source scope's lift policy to the following scope's travel.
@@ -256,7 +270,8 @@ void apply_transition_lift(
     const ScopeEntity &target,
     uint32_t layer_group_idx,
     const Config &print_config,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx);
 
 coord_t checked_add_z(const coord_t value, const coord_t offset)
 {
@@ -321,8 +336,10 @@ bool find_last_printable_geometry(
     const coord_t print_z,
     const EffectiveState &parent,
     SourceEndpoint &endpoint,
-    const bool entity_already_resolved)
+    const bool entity_already_resolved,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveState state = entity_already_resolved ?
         parent : resolved_state(entity.readonly(), parent);
     if (entity.segment_count() != 0) {
@@ -352,17 +369,21 @@ bool find_last_printable_geometry(
         return true;
     }
 
-    for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx)
+    for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx) {
+        throw_if_cancelled(run_ctx);
         if (find_last_printable_geometry(entity.child_mutable(child_idx - 1),
-                                         print_z, state, endpoint))
+                                         print_z, state, endpoint, false, run_ctx))
             return true;
+    }
     return false;
 }
 
 bool contains_semantic_retract(
     const ExtrusionEntity &entity,
-    std::optional<EPropertyAttributes> inherited_attributes)
+    std::optional<EPropertyAttributes> inherited_attributes,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (const EPropertyAttributes *direct = entity.get(EPropertyAttributes::key))
         inherited_attributes = *direct;
     const EPropertyExtrusionAxis *axis = entity.get(EPropertyExtrusionAxis::key);
@@ -370,22 +391,28 @@ bool contains_semantic_retract(
         RAW_EXTRUSION_ROLE_IS_RETRACT(inherited_attributes->extrusion_role()) &&
         axis->operation == C_EXTRUSION_AXIS_OPERATION_RETRACT_TO)
         return true;
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        if (contains_semantic_retract(entity.child(child_idx), inherited_attributes))
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        if (contains_semantic_retract(
+                entity.child(child_idx), inherited_attributes, run_ctx))
             return true;
+    }
     return false;
 }
 
 std::optional<coord_t> last_geometric_z(
     MutableExtrusionEntity entity,
     const coord_t print_z,
-    const EffectiveState &parent)
+    const EffectiveState &parent,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveState state = resolved_state(entity.readonly(), parent);
     std::optional<coord_t> result;
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const std::optional<coord_t> child_result = last_geometric_z(
-            entity.child_mutable(child_idx), print_z, state);
+            entity.child_mutable(child_idx), print_z, state, run_ctx);
         if (child_result)
             result = child_result;
     }
@@ -401,8 +428,10 @@ std::optional<coord_t> last_geometric_z(
 double source_lift(const ScopeEntity &source,
                    const PrintingPlan &plan,
                    const SourceEndpoint &endpoint,
-                   const Config &print_config)
+                   const Config &print_config,
+                   const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const extruder_index_t extruder_id = source.tool_group.extruder_id();
     const double printer_lift = print_config.vector_float_or_default(
         "retract_lift", extruder_id, 0.0);
@@ -418,6 +447,7 @@ double source_lift(const ScopeEntity &source,
     };
     RegionSettingsPointResult lookup = RegionSettings::lookup_at_point(
         region_island, k_lift_region_keys, lookup_point);
+    throw_if_cancelled(run_ctx);
     if (!lookup.found() && endpoint.has_interior_point) {
         lookup_point = c_point{
             endpoint.interior_point.x - shift.x,
@@ -425,6 +455,7 @@ double source_lift(const ScopeEntity &source,
         };
         lookup = RegionSettings::lookup_at_point(
             region_island, k_lift_region_keys, lookup_point);
+        throw_if_cancelled(run_ctx);
     }
     if (!lookup.found())
         throw std::runtime_error(
@@ -437,8 +468,10 @@ SourceLiftState describe_source(
     const ScopeEntity &source,
     const PrintingPlan &plan,
     const Config &print_config,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const ExtrusionScope::OrderedExtrusionScope scope(source.entity, key);
     SourceLiftState result;
     result.valid = true;
@@ -453,7 +486,8 @@ SourceLiftState describe_source(
     SourceEndpoint endpoint;
     if (!find_last_printable_geometry(content, source.layer_group.print_z(),
                                       scope_state, endpoint,
-                                      content.handle() == scope.root().handle()))
+                                      content.handle() == scope.root().handle(),
+                                      run_ctx))
         throw std::runtime_error("A lift source scope has no printable geometry.");
 
     result.unlifted_end_z = endpoint.absolute_z;
@@ -463,16 +497,17 @@ SourceLiftState describe_source(
         endpoint.role == RAW_EXTRUSION_ROLE_TOP_SOLID_INFILL ||
         RAW_EXTRUSION_ROLE_HAS(endpoint.role, RAW_EXTRUSION_ROLE_IRONING);
     result.retracted = contains_semantic_retract(
-        scope.after().readonly(), std::nullopt);
+        scope.after().readonly(), std::nullopt, run_ctx);
     if (!result.retracted)
         return result;
 
-    result.requested_lift_mm = source_lift(source, plan, endpoint, print_config);
+    result.requested_lift_mm = source_lift(
+        source, plan, endpoint, print_config, run_ctx);
     if (!std::isfinite(result.requested_lift_mm) ||
         result.requested_lift_mm < 0.0)
         throw std::runtime_error("Lift settings produced an invalid Z request.");
     const std::optional<coord_t> wipe_end = last_geometric_z(
-        scope.after(), source.layer_group.print_z(), scope_state);
+        scope.after(), source.layer_group.print_z(), scope_state, run_ctx);
     if (wipe_end)
         result.lifted_end_z = *wipe_end;
     return result;
@@ -480,14 +515,17 @@ SourceLiftState describe_source(
 
 void apply_z_ramp(MutableExtrusionEntity phase,
                   const coord_t from,
-                  const coord_t to)
+                  const coord_t to,
+                  const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const uint32_t point_count = phase.point_count();
     if (point_count == 0)
         return;
     const distf_t total_length = phase.local_length();
     distf_t traversed = 0.0;
     for (uint32_t point_idx = 0; point_idx < point_count; ++point_idx) {
+        throw_if_cancelled(run_ctx);
         if (point_idx > 0)
             traversed += segment_planar_length(phase.segment(point_idx - 1));
         const double factor = total_length <= distf_t(SCALED_EPSILON) ? 1.0 :
@@ -499,15 +537,21 @@ void apply_z_ramp(MutableExtrusionEntity phase,
         if (value < static_cast<long double>((std::numeric_limits<coord_t>::min)()) ||
             value > static_cast<long double>((std::numeric_limits<coord_t>::max)()))
             throw std::overflow_error("A ramped travel lift exceeds the coord_t range.");
+        throw_if_cancelled(run_ctx);
         if (!phase.set_z_offset(point_idx, coord_t(std::llround(value))))
             throw std::runtime_error("Unable to apply a Z ramp to a travel phase.");
     }
 }
 
-void apply_constant_lift(MutableExtrusionEntity phase, const coord_t lift)
+void apply_constant_lift(MutableExtrusionEntity phase,
+                         const coord_t lift,
+                         const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     for (uint32_t point_idx = 0; point_idx < phase.point_count(); ++point_idx) {
+        throw_if_cancelled(run_ctx);
         const coord_t offset = checked_add_z(phase.z_offset(point_idx), lift);
+        throw_if_cancelled(run_ctx);
         if (!phase.set_z_offset(point_idx, offset))
             throw std::runtime_error("Unable to apply a constant travel lift.");
     }
@@ -518,14 +562,17 @@ void lift_travel(
     const coord_t lift,
     const coord_t inherited_start_lift,
     const bool ramping,
-    const double slope_degrees)
+    const double slope_degrees,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if ((lift <= 0 && inherited_start_lift <= 0) ||
         travel.point_count() == 0)
         return;
 
     const coord_t effective_lift = std::max(lift, inherited_start_lift);
     if (!ramping || slope_degrees >= 90.0) {
+        throw_if_cancelled(run_ctx);
         std::vector<c_extrusion_segment> lifted = travel.segments();
         if (lifted.empty())
             return;
@@ -549,11 +596,14 @@ void lift_travel(
         lower.orientation = RAW_EXTRUSION_ARC_ORIENTATION_UNKNOWN;
 
         for (c_extrusion_segment &segment : lifted) {
+            throw_if_cancelled(run_ctx);
             segment.z_offset_a = checked_add_z(segment.z_offset_a, effective_lift);
             segment.z_offset_b = checked_add_z(segment.z_offset_b, effective_lift);
         }
+        throw_if_cancelled(run_ctx);
         lifted.insert(lifted.begin(), raise);
         lifted.push_back(lower);
+        throw_if_cancelled(run_ctx);
         if (!travel.set_segments(lifted))
             throw std::runtime_error("Unable to materialize a complete travel lift.");
         return;
@@ -576,46 +626,53 @@ void lift_travel(
     ramp_length = std::clamp<distf_t>(
         ramp_length, distf_t(SCALED_EPSILON), length * 0.5);
 
+    throw_if_cancelled(run_ctx);
     MutableExtrusionEntity ascending = travel.emplace_ordered_leaf(
         OrderedLeafPosition::Before, ExistingPropertyPlacement::KeepOnParent);
     if (!ascending.valid() || travel.child_count() != 2)
         throw std::runtime_error("Unable to create ordered ramped-travel phases.");
     MutableExtrusionEntity descending = travel.child_mutable(1);
+    throw_if_cancelled(run_ctx);
     if (extrusion_polyline_split_at_distance(
             descending.handle(), ramp_length,
             ascending.mutable_handle(), descending.mutable_handle()) == 0)
         throw std::runtime_error("Unable to split a travel for ramped lift.");
-    apply_z_ramp(ascending, inherited_start_lift, effective_lift);
+    apply_z_ramp(ascending, inherited_start_lift, effective_lift, run_ctx);
 
     const distf_t plateau_length = length - 2.0 * ramp_length;
     if (plateau_length > distf_t(SCALED_EPSILON)) {
+        throw_if_cancelled(run_ctx);
         MutableExtrusionEntity plateau = descending.emplace_ordered_leaf(
             OrderedLeafPosition::Before,
             ExistingPropertyPlacement::KeepOnParent);
         if (!plateau.valid() || descending.child_count() != 2)
             throw std::runtime_error("Unable to create a lifted travel plateau.");
         MutableExtrusionEntity final_descent = descending.child_mutable(1);
+        throw_if_cancelled(run_ctx);
         if (extrusion_polyline_split_at_distance(
                 final_descent.handle(), plateau_length,
                 plateau.mutable_handle(), final_descent.mutable_handle()) == 0)
             throw std::runtime_error("Unable to split the lifted travel plateau.");
-        apply_constant_lift(plateau, effective_lift);
-        apply_z_ramp(final_descent, effective_lift, 0);
+        apply_constant_lift(plateau, effective_lift, run_ctx);
+        apply_z_ramp(final_descent, effective_lift, 0, run_ctx);
         return;
     }
-    apply_z_ramp(descending, effective_lift, 0);
+    apply_z_ramp(descending, effective_lift, 0, run_ctx);
 }
 
 void lift_wipe(MutableExtrusionEntity entity,
                const coord_t lift,
-               const distf_t lift_length)
+               const distf_t lift_length,
+               const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (lift <= 0 || lift_length <= 0.0 || entity.point_count() < 2)
         return;
     const distf_t total = entity.local_length();
     const distf_t start = std::max<distf_t>(0.0, total - lift_length);
     distf_t traversed = 0.0;
     for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx) {
+        throw_if_cancelled(run_ctx);
         if (point_idx > 0)
             traversed += segment_planar_length(entity.segment(point_idx - 1));
         const double factor = traversed <= start ? 0.0 :
@@ -623,6 +680,7 @@ void lift_wipe(MutableExtrusionEntity entity,
                               std::max<distf_t>(lift_length, 1.0)),
                        0.0, 1.0);
         const coord_t added = coord_t(std::llround(double(lift) * factor));
+        throw_if_cancelled(run_ctx);
         if (!entity.set_z_offset(
                 point_idx, checked_add_z(entity.z_offset(point_idx), added)))
             throw std::runtime_error("Unable to apply progressive wipe lift.");
@@ -634,8 +692,10 @@ void prepare_wipe_lifts(
     const extruder_index_t extruder_id,
     const coord_t layer_height,
     const Config &print_config,
-    std::optional<EPropertyAttributes> inherited_attributes)
+    std::optional<EPropertyAttributes> inherited_attributes,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (!entity.valid())
         return;
     if (const EPropertyAttributes *direct = entity.get(EPropertyAttributes::key))
@@ -656,19 +716,25 @@ void prepare_wipe_lifts(
         if (!std::isfinite(lift_mm) || lift_mm < 0.0 ||
             !std::isfinite(length_mm) || length_mm < 0.0)
             throw std::runtime_error("Wipe lift settings produced an invalid value.");
-        lift_wipe(entity, scale_i(lift_mm), scale_d(length_mm));
+        throw_if_cancelled(run_ctx);
+        lift_wipe(entity, scale_i(lift_mm), scale_d(length_mm), run_ctx);
     }
 
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         prepare_wipe_lifts(entity.child_mutable(child_idx), extruder_id,
-                           layer_height, print_config, inherited_attributes);
+                           layer_height, print_config, inherited_attributes,
+                           run_ctx);
+    }
 }
 
 void prepare_scope_wipe_lift(
     const ScopeEntity &scope_entity,
     const Config &print_config,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const ExtrusionScope::OrderedExtrusionScope scope(scope_entity.entity, key);
     if (!scope.has_outgoing_transition())
         return;
@@ -678,13 +744,15 @@ void prepare_scope_wipe_lift(
     if (region_island.valid() && region_island.region_count() != 0)
         layer_height = region_island.region(0).layer().height();
     prepare_wipe_lifts(scope.after(), scope_entity.tool_group.extruder_id(),
-                       layer_height, print_config, std::nullopt);
+                       layer_height, print_config, std::nullopt, run_ctx);
 }
 
 coord_t travel_start_z(
     const ScopeEntity &target,
-    const ExtrusionScope::OrderedExtrusionScope &scope)
+    const ExtrusionScope::OrderedExtrusionScope &scope,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     MutableExtrusionEntity travel = scope.travel();
     if (!travel.valid() || travel.child_count() != 0 ||
         travel.segment_count() == 0)
@@ -708,8 +776,10 @@ void apply_transition_lift(
     const ScopeEntity &target,
     const uint32_t layer_group_idx,
     const Config &print_config,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const ExtrusionScope::OrderedExtrusionScope target_scope(target.entity, key);
     if (source.outgoing_transition != target_scope.has_incoming_transition())
         throw std::runtime_error(
@@ -725,7 +795,7 @@ void apply_transition_lift(
         (travel.segment_count() == 0 && travel.child_count() == 0))
         return;
 
-    const coord_t initial_travel_z = travel_start_z(target, target_scope);
+    const coord_t initial_travel_z = travel_start_z(target, target_scope, run_ctx);
     const extruder_index_t extruder_id = source.extruder_id == EXTRUDER_ID_UNKNOWN ?
         target.tool_group.extruder_id() : source.extruder_id;
     double lift_mm = source.requested_lift_mm;
@@ -774,8 +844,9 @@ void apply_transition_lift(
         "travel_slope", extruder_id, 0.0);
     if (!std::isfinite(slope))
         throw std::runtime_error("Travel lift slope is not finite.");
+    throw_if_cancelled(run_ctx);
     lift_travel(travel, scale_i(lift_mm), inherited_start_lift,
-                ramping, slope);
+                ramping, slope, run_ctx);
 }
 
 CreateRetractionLift &CreateRetractionLift::instance(
@@ -866,6 +937,7 @@ void CreateRetractionLift::setup_impl(
     const plugin_run_context *run_ctx,
     const uint32_t run_count) const
 {
+    throw_if_cancelled(run_ctx);
     // Rebuild only the small group/layer-to-summary mapping. Geometry remains
     // untouched here so expensive work can stay parallel in the later passes.
     m_setup_valid = false;
@@ -880,11 +952,14 @@ void CreateRetractionLift::setup_impl(
     size_t flat_idx = 0;
     m_flat_indices.resize(plan.group_count());
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         m_flat_indices[group_idx].resize(group.layer_group_count());
         for (uint32_t layer_idx = 0;
-             layer_idx < group.layer_group_count(); ++layer_idx)
+             layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             m_flat_indices[group_idx][layer_idx] = flat_idx++;
+        }
     }
     if (flat_idx != run_count)
         throw std::runtime_error(
@@ -905,9 +980,10 @@ size_t CreateRetractionLift::flat_layer_index(
 }
 
 const SourceLiftState *CreateRetractionLift::previous_layer_source(
-    const size_t flat_idx) const
+    const size_t flat_idx, const plugin_run_context *run_ctx) const
 {
     for (size_t idx = flat_idx; idx > 0; --idx) {
+        throw_if_cancelled(run_ctx);
         const LayerLiftSummary &summary = m_layers[idx - 1];
         if (!summary.prepared)
             throw std::runtime_error(
@@ -921,6 +997,7 @@ const SourceLiftState *CreateRetractionLift::previous_layer_source(
 void CreateRetractionLift::setup_run_impl(
     const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx =
@@ -938,14 +1015,15 @@ void CreateRetractionLift::setup_run_impl(
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         lift_state_definition(),
-        [this, &summary, &print_config, &plan]
+        [this, &summary, &print_config, &plan, run_ctx]
         (ScopeEntity *previous, ScopeEntity *next) {
+            throw_if_cancelled(run_ctx);
             // Every matching scope appears exactly once as `next`. Prepare its
             // outgoing retracting wipe here so a following travel observes the
             // final Z left by that wipe.
             if (next != nullptr)
                 prepare_scope_wipe_lift(
-                    *next, print_config, m_scope_property);
+                    *next, print_config, m_scope_property, run_ctx);
 
             // Only the terminal callback has `previous` without `next`. Store
             // that final scope as the layer summary because it is the sole
@@ -953,16 +1031,19 @@ void CreateRetractionLift::setup_run_impl(
             // summary contains scalar state only; no scope handle escapes.
             if (previous != nullptr && next == nullptr)
                 summary.last = describe_source(
-                    *previous, plan, print_config, m_scope_property);
+                    *previous, plan, print_config, m_scope_property, run_ctx);
         },
         MatchingEntityDescendants::Skip);
+    throw_if_cancelled(run_ctx);
     traversal.process(layer);
+    throw_if_cancelled(run_ctx);
     m_layers[flat_layer_index(ctx->group_idx, ctx->layer_group_idx)] = summary;
     progress().add_max(1);
 }
 
 void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx =
@@ -975,7 +1056,7 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
         ctx->group_idx, ctx->layer_group_idx);
     if (!m_layers[flat_idx].prepared)
         throw std::runtime_error("A lift layer has no prepared summary.");
-    const SourceLiftState *preceding = previous_layer_source(flat_idx);
+    const SourceLiftState *preceding = previous_layer_source(flat_idx, run_ctx);
     const PrintingLayerGroup layer(ctx->layer_group);
     const PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
@@ -986,8 +1067,10 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         lift_state_definition(),
-        [this, preceding, &print_config, &plan, layer_group_idx = ctx->layer_group_idx]
+        [this, preceding, &print_config, &plan,
+         layer_group_idx = ctx->layer_group_idx, run_ctx]
         (ScopeEntity *previous, ScopeEntity *next) {
+            throw_if_cancelled(run_ctx);
             // The terminal callback has a source but no target travel to edit.
             if (next == nullptr)
                 return;
@@ -997,10 +1080,10 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
             // reserved travel phase which enters `next`.
             if (previous != nullptr) {
                 const SourceLiftState source = describe_source(
-                    *previous, plan, print_config, m_scope_property);
+                    *previous, plan, print_config, m_scope_property, run_ctx);
                 apply_transition_lift(
                     source, *next, layer_group_idx, print_config,
-                    m_scope_property);
+                    m_scope_property, run_ctx);
                 return;
             }
 
@@ -1010,11 +1093,13 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
             if (preceding != nullptr) {
                 apply_transition_lift(
                     *preceding, *next, layer_group_idx, print_config,
-                    m_scope_property);
+                    m_scope_property, run_ctx);
             }
         },
         MatchingEntityDescendants::Skip);
+    throw_if_cancelled(run_ctx);
     traversal.process(layer);
+    throw_if_cancelled(run_ctx);
     progress().increment();
 }
 

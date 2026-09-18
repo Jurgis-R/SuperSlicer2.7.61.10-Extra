@@ -256,6 +256,39 @@ TEST_CASE("FlatAreaLayerHeight filters small flat cube surfaces", "[plugins][fla
     REQUIRE_FALSE(contains_z(filtered_flat_area_zs, 8.05));
 }
 
+TEST_CASE("FlatAreaLayerHeight observes cancellation before external provider work",
+          "[plugins][flat-area-layer-height][cancellation]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Model model;
+    Print print;
+    Slic3r::Test::init_print(
+        {make_flat_area_test_mesh()}, print, model, flat_area_config(0.));
+
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Plugin *plugin = orchestrator.get_plugin("flat_area_layer_height");
+    REQUIRE(plugin != nullptr);
+
+    plugin_host_context host_context = orchestrator.prepare_plugin_host_context(
+        STEP_LAYER_HEIGHT, plugin, &print);
+    plugin_run_context run_context = orchestrator.prepare_plugin_run_context(
+        STEP_LAYER_HEIGHT, plugin, &host_context);
+    plugin->setup(run_context, 1);
+
+    std::unique_ptr<ApiHost::Steps::LayerHeightRunContext> layer_context =
+        ApiHost::Steps::make_layer_height_run_context(print, 0);
+    run_context.data = &layer_context->context_step;
+    plugin->setup_run(run_context);
+    const std::vector<coord_t> profile_before = print.object(0).layer_profile();
+
+    orchestrator.request_plugin_cancel();
+    plugin->run(run_context);
+    orchestrator.reset_plugin_cancel();
+
+    CHECK(print.object(0).layer_profile() == profile_before);
+}
+
 TEST_CASE("Plugin option definitions default invalidation to plugin step", "[plugins][flat-area-layer-height][config]")
 {
     // FlatAreaLayerHeight intentionally leaves raw_config_option_def::invalidates_step

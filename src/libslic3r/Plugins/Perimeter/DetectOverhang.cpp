@@ -356,7 +356,9 @@ void merge_tiny_fragments(std::vector<Fragment> &fragments)
     }
 }
 
-std::vector<c_point> densify_points(const std::vector<c_point> &points, coord_t max_segment_length)
+std::vector<c_point> densify_points(const std::vector<c_point> &points,
+                                   coord_t max_segment_length,
+                                   const plugin_run_context *run_ctx)
 {
     // Dynamic overhang flow/speed depends on the distance to support along the
     // path. Long straight segments would hide that variation if only endpoints
@@ -369,6 +371,7 @@ std::vector<c_point> densify_points(const std::vector<c_point> &points, coord_t 
     out.reserve(points.size());
     out.push_back(points.front());
     for (size_t idx = 1; idx < points.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         const c_point previous = points[idx - 1];
         const c_point current = points[idx];
         const double length = norm(current - previous);
@@ -381,18 +384,26 @@ std::vector<c_point> densify_points(const std::vector<c_point> &points, coord_t 
 
 StoredExPolygonCollection supported_centerline_area(storage_handle *storage,
                                                     const LayerIsland &island,
-                                                    coord_t external_perimeter_width)
+                                                    coord_t external_perimeter_width,
+                                                    const plugin_run_context *run_ctx)
 {
     StoredExPolygonCollection lower_slices(storage);
-    for (uint32_t idx = 0; idx < island.lower_island_count(); ++idx)
+    for (uint32_t idx = 0; idx < island.lower_island_count(); ++idx) {
+        throw_if_cancelled(run_ctx);
         lower_slices.push_back(island.lower_island(idx).slice());
+    }
 
     if (lower_slices.empty())
         return lower_slices;
 
     ClipperContext clipper(storage);
+    throw_if_cancelled(run_ctx);
     ClipperOperand merged_lower = clipper_union(clipper(lower_slices.readonly()));
-    return clipper_offset(merged_lower, SCALED_EPSILON -0.5 * double(external_perimeter_width)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    StoredExPolygonCollection out =
+        clipper_offset(merged_lower, SCALED_EPSILON -0.5 * double(external_perimeter_width)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    return out;
 }
 
 OverhangConfig overhang_config_from_value(const RegionSettingsValue &value, const LayerRegion &region, bool external_role)
@@ -633,23 +644,27 @@ void append_overhang_fragments(storage_handle *storage,
                                const OverhangConfig &config,
                                const LineDistancer &support_distancer,
                                const CurledLineProximity &curled_lines,
-                               std::vector<Fragment> &fragments)
+                               std::vector<Fragment> &fragments,
+                               const plugin_run_context *run_ctx)
 {
     if (polyline.size() < 2)
         return;
 
     const double forced_distance = std::max(config.max_threshold_mm(), config.nozzle_diameter_mm) + config.nozzle_diameter_mm;
     const coord_t sample_step = std::max<coord_t>(1, scale_i(std::max(0.05, config.nozzle_diameter_mm * 0.5)));
-    const std::vector<c_point> points = densify_points(polyline.points(), sample_step);
+    const std::vector<c_point> points = densify_points(polyline.points(), sample_step, run_ctx);
     if (points.size() < 2)
         return;
 
     std::vector<PointSupportMetrics> metrics(points.size());
-    for (size_t idx = 0; idx < points.size(); ++idx)
+    for (size_t idx = 0; idx < points.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         metrics[idx] = point_metrics(points[idx], support_distancer, forced_distance);
+    }
 
     size_t begin = 0;
     while (begin + 1 < points.size()) {
+        throw_if_cancelled(run_ctx);
         double min_distance = std::min(metrics[begin].distance_mm, metrics[begin + 1].distance_mm);
         double max_distance = std::max(metrics[begin].distance_mm, metrics[begin + 1].distance_mm);
         double curled = curled_lines.proximity(points[begin], points[begin + 1],
@@ -658,6 +673,7 @@ void append_overhang_fragments(storage_handle *storage,
         size_t end = begin + 1;
 
         while (end + 1 < points.size()) {
+            throw_if_cancelled(run_ctx);
             const double next_min = std::min(metrics[end].distance_mm, metrics[end + 1].distance_mm);
             const double next_max = std::max(metrics[end].distance_mm, metrics[end + 1].distance_mm);
             const double next_curled = curled_lines.proximity(points[end], points[end + 1],
@@ -696,10 +712,14 @@ void append_region_fragments(storage_handle *storage,
                              const ExPolygonCollection &supported_area,
                              const LineDistancer &support_distancer,
                              const CurledLineProximity &curled_lines,
-                             std::vector<Fragment> &fragments)
+                             std::vector<Fragment> &fragments,
+                             const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     StoredPolylineCollection region_polylines = setting_clip.intersections(source_polyline);
+    throw_if_cancelled(run_ctx);
     for (const Polyline region_polyline : region_polylines) {
+        throw_if_cancelled(run_ctx);
         if (region_polyline.size() < 2)
             continue;
 
@@ -710,14 +730,22 @@ void append_region_fragments(storage_handle *storage,
 
         StoredPolylineCollection supported_polylines =
             clipper_intersection_polyline_expolygons(storage, region_polyline, supported_area);
+        throw_if_cancelled(run_ctx);
         for (const Polyline supported : supported_polylines)
+        {
+            throw_if_cancelled(run_ctx);
             append_supported_fragment(storage, source, supported, source_points, effective_attributes, config, fragments);
+        }
 
         StoredPolylineCollection overhang_polylines =
             clipper_diff_polyline_expolygons(storage, region_polyline, supported_area);
+        throw_if_cancelled(run_ctx);
         for (const Polyline overhang : overhang_polylines)
+        {
+            throw_if_cancelled(run_ctx);
             append_overhang_fragments(storage, source, overhang, source_points, effective_attributes, config,
-                                      support_distancer, curled_lines, fragments);
+                                      support_distancer, curled_lines, fragments, run_ctx);
+        }
     }
 }
 
@@ -728,8 +756,10 @@ std::vector<Fragment> split_leaf(storage_handle *storage,
                                  const ExPolygonCollection &supported_area,
                                  const CurledLineProximity &curled_lines,
                                  MutableExtrusionEntity entity,
-                                 const EPropertyAttributes &effective_attributes)
+                                 const EPropertyAttributes &effective_attributes,
+                                 const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::vector<Fragment> fragments;
     const std::vector<c_point> source_points = entity.points();
     if (source_points.size() < 2 || entity.has_z_offsets())
@@ -746,17 +776,19 @@ std::vector<Fragment> split_leaf(storage_handle *storage,
     const RegionSettings::AreaMap &areas = settings.get_areas(k_overhangs_key);
     const bool external_role = RAW_EXTRUSION_ROLE_IS_EXTERNAL(role);
     for (const auto &[setting_value, setting_clip] : areas) {
+        throw_if_cancelled(run_ctx);
         const std::vector<LayerRegion> &regions = settings.get_regions(k_overhangs_key, setting_value);
         const LayerRegion region = !regions.empty() ? regions.front() : region_island.region(0);
         const OverhangConfig config = overhang_config_from_value(setting_value, region, external_role);
 
         append_region_fragments(storage, entity.readonly(), source_polyline, source_points,
                                 setting_clip, effective_attributes, config,
-                                supported_area, support_distancer, curled_lines, fragments);
+                                supported_area, support_distancer, curled_lines, fragments, run_ctx);
     }
 
     std::sort(fragments.begin(), fragments.end(),
               [](const Fragment &lhs, const Fragment &rhs) { return lhs.order < rhs.order; });
+    throw_if_cancelled(run_ctx);
     merge_tiny_fragments(fragments);
     return fragments;
 }
@@ -800,29 +832,41 @@ public:
                           const LayerRegionIsland &region_island,
                           const LineDistancer &support_distancer,
                           const ExPolygonCollection &supported_area,
-                          const CurledLineProximity &curled_lines) :
+                          const CurledLineProximity &curled_lines,
+                          const plugin_run_context *run_ctx) :
         m_storage(storage),
         m_settings(settings),
         m_region_island(region_island),
         m_support_distancer(support_distancer),
         m_supported_area(supported_area),
-        m_curled_lines(curled_lines)
+        m_curled_lines(curled_lines),
+        m_run_ctx(run_ctx)
     {
         assert(m_storage != nullptr);
     }
 
 protected:
+    void enter_node(MutableExtrusionEntity) override
+    {
+        throw_if_cancelled(m_run_ctx);
+    }
+
     void visit_leaf(MutableExtrusionEntity entity) override
     {
+        throw_if_cancelled(m_run_ctx);
         const EPropertyAttributes *attributes = current_property(EPropertyAttributes::key);
         if (attributes == nullptr)
             return;
 
         std::vector<Fragment> fragments =
             split_leaf(m_storage, m_settings, m_region_island, m_support_distancer,
-                       m_supported_area, m_curled_lines, entity, *attributes);
+                       m_supported_area, m_curled_lines, entity, *attributes, m_run_ctx);
+        throw_if_cancelled(m_run_ctx);
         if (fragments_need_replacement(fragments, entity))
+        {
+            throw_if_cancelled(m_run_ctx);
             replace_root_leaf_with_fragments(entity, fragments);
+        }
     }
 
 private:
@@ -832,6 +876,7 @@ private:
     const LineDistancer &m_support_distancer;
     const ExPolygonCollection &m_supported_area;
     const CurledLineProximity &m_curled_lines;
+    const plugin_run_context *m_run_ctx = nullptr;
 };
 
 void process_region_island(const run_ctx_post_perimeter_generation &ctx,
@@ -840,21 +885,27 @@ void process_region_island(const run_ctx_post_perimeter_generation &ctx,
                            const RegionSettings &settings,
                            const ExPolygonCollection &supported_area,
                            const LineDistancer &support_distancer,
-                           const CurledLineProximity &curled_lines)
+                           const CurledLineProximity &curled_lines,
+                           const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (ctx.get_region_island_mutable_extrusion == nullptr ||
         !region_island.has_extrusion(RAW_EXTRUSION_ROLE_PERIMETER))
         return;
 
+    throw_if_cancelled(run_ctx);
     extrusion_entity_handle *root_handle =
         ctx.get_region_island_mutable_extrusion(region_island.handle(), RAW_EXTRUSION_ROLE_PERIMETER);
+    throw_if_cancelled(run_ctx);
     if (root_handle == nullptr)
         return;
 
     MutableExtrusionEntity root(root_handle);
     DetectOverhangVisitor visitor(storage, settings, region_island,
-                                  support_distancer, supported_area, curled_lines);
+                                  support_distancer, supported_area, curled_lines, run_ctx);
+    throw_if_cancelled(run_ctx);
     visitor.traverse(root);
+    throw_if_cancelled(run_ctx);
 }
 
 coord_t external_perimeter_width(const LayerIsland &island)
@@ -866,8 +917,10 @@ coord_t external_perimeter_width(const LayerIsland &island)
 
 void process_island(const run_ctx_post_perimeter_generation &ctx,
                     storage_handle *storage,
-                    const LayerIsland &island)
+                    const LayerIsland &island,
+                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (island.region_count() == 0 || island.region_island_count() == 0)
         return;
 
@@ -879,16 +932,23 @@ void process_island(const run_ctx_post_perimeter_generation &ctx,
                               k_overhangs_type_key,
                               k_overhangs_width_speed_key,
                               k_overhangs_dynamic_speed_key}});
+    throw_if_cancelled(run_ctx);
     settings.segregate(island.slice());
+    throw_if_cancelled(run_ctx);
 
     const coord_t support_offset_width = external_perimeter_width(island);
-    StoredExPolygonCollection supported_area = supported_centerline_area(storage, island, support_offset_width);
+    StoredExPolygonCollection supported_area = supported_centerline_area(storage, island, support_offset_width, run_ctx);
+    throw_if_cancelled(run_ctx);
     LineDistancer support_distancer(supported_area.readonly());
+    throw_if_cancelled(run_ctx);
     CurledLineProximity curled_lines(island.layer());
+    throw_if_cancelled(run_ctx);
 
-    for (uint32_t idx = 0; idx < island.region_island_count(); ++idx)
+    for (uint32_t idx = 0; idx < island.region_island_count(); ++idx) {
+        throw_if_cancelled(run_ctx);
         process_region_island(ctx, storage, island.region_island(idx), settings,
-                              supported_area.readonly(), support_distancer, curled_lines);
+                              supported_area.readonly(), support_distancer, curled_lines, run_ctx);
+    }
 }
 
 } // namespace
@@ -944,6 +1004,7 @@ const char *DetectOverhang::progress_message_format_impl() const noexcept
 
 void DetectOverhang::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
     if (ctx != nullptr && ctx->object != nullptr)
         progress().add_max(Object(ctx->object).layer_count());
@@ -951,6 +1012,7 @@ void DetectOverhang::setup_run_impl(const plugin_run_context *run_ctx) const
 
 void DetectOverhang::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr || run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
         return;
@@ -960,8 +1022,10 @@ void DetectOverhang::run_impl(const plugin_run_context *run_ctx) const
         throw_if_cancelled(run_ctx);
         const Layer layer = object.layer(layer_idx);
         if (layer_idx > 0) {
-            for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx)
-                process_island(*ctx, run_ctx->plugin_storage, layer.island(island_idx));
+            for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
+                throw_if_cancelled(run_ctx);
+                process_island(*ctx, run_ctx->plugin_storage, layer.island(island_idx), run_ctx);
+            }
         }
         progress().increment();
     }

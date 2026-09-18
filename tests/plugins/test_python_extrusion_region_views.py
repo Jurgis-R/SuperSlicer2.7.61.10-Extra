@@ -7,6 +7,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -172,6 +173,7 @@ class PythonExtrusionRegionViewTests(unittest.TestCase):
         cls.extrusions = importlib.import_module("slic3r_extrusion_views")
         cls.datatree = importlib.import_module("slic3r_datatree_views")
         cls.regions = importlib.import_module("slic3r_region_settings_views")
+        cls.run_context = importlib.import_module("slic3r_run_context")
         cls.perimeter = importlib.import_module("steps.perimeter")
 
     @classmethod
@@ -399,6 +401,58 @@ class PythonExtrusionRegionViewTests(unittest.TestCase):
             flow_calls,
             [self.generated.RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER],
         )
+
+    def test_perimeter_callback_defers_plugin_cancellation_until_native_return(self):
+        errors = []
+        native_events = []
+        generation = self.generated.PerimeterGenerationContext()
+        node = self.generated.PerimeterNode()
+
+        @self.generated.PLUGIN_REPORT
+        def report_error(_host_context, message):
+            errors.append(message.decode("utf-8"))
+
+        @self.generated.PERIMETER_RUN_REGION_GROUP
+        def run_region_group(
+            _payload,
+            _regions,
+            _region_count,
+            _root_area,
+            generator_state,
+            generate_node,
+        ):
+            result = generate_node(
+                generator_state,
+                ctypes.pointer(generation),
+                ctypes.pointer(node),
+                ctypes.c_void_p(31),
+                ctypes.c_void_p(32),
+            )
+            native_events.append(("callback returned", int(result)))
+            return 73
+
+        common = self.generated.PluginRunContext()
+        common.report_error = report_error
+        payload = self.generated.RunCtxGeneratePerimeter()
+        payload.run_region_group = run_region_group
+        context = self.perimeter.PerimeterContext(
+            types.SimpleNamespace(host=types.SimpleNamespace()),
+            common,
+            ctypes.pointer(payload),
+        )
+
+        def cancel_provider(_state, _generation, _node, _inner, _inner_fill):
+            raise self.run_context.PluginCancelled("provider cancelled")
+
+        with self.assertRaisesRegex(
+            self.run_context.PluginCancelled, "provider cancelled"
+        ):
+            context.run_region_group([], None, object(), cancel_provider)
+
+        self.assertEqual(native_events, [("callback returned", 0)])
+        self.assertEqual(errors, [])
+        self.assertEqual(context._states, {})
+        self.assertEqual(context._callbacks, [])
 
 
 if __name__ == "__main__":

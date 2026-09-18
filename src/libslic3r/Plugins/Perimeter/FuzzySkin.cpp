@@ -295,7 +295,8 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
                                      const FuzzyPaintingClip &painting,
                                      double nozzle_diameter,
                                      raw_extrusion_role role,
-                                     const InheritedExtrusionState &state)
+                                     const InheritedExtrusionState &state,
+                                     const plugin_run_context *run_ctx)
 {
     std::vector<FuzzyClip> fuzzy_clips;
 
@@ -303,7 +304,9 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
     // restricts or enables fuzzy skin inside each region while preserving the
     // region's own thickness and point-distance values.
     for (const auto &[setting_value, setting_clip] : areas) {
+        throw_if_cancelled(run_ctx);
         StoredExPolygonCollection region_area = setting_clip.intersections(island_slice);
+        throw_if_cancelled(run_ctx);
         if (region_area.empty())
             continue;
 
@@ -318,6 +321,7 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
                 // ownership instead of leaving a coincident fuzzy sliver.
                 ClipperOperand blockers = clipper_offset(clipper(painting.blockers.readonly()),
                                                          1000. * double(SCALED_EPSILON));
+                throw_if_cancelled(run_ctx);
                 append_grouped_fuzzy_clip(
                     fuzzy_clips,
                     clipper_diff(clipper(region_area.readonly()), blockers).to_expolygon_collection(),
@@ -329,12 +333,16 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
         const FuzzyParameters painted_params = parameters_for_painting_enforcer(params);
         if (should_fuzzify_for_role(role, painted_params, state) && painting.has_enforcers()) {
             ClipperContext clipper(storage);
+            throw_if_cancelled(run_ctx);
             ClipperOperand enforced = clipper_intersection(clipper(region_area.readonly()),
                                                            clipper(painting.enforcers.readonly()));
+            throw_if_cancelled(run_ctx);
             if (painting.has_blockers()) {
                 ClipperOperand blockers = clipper_offset(clipper(painting.blockers.readonly()),
                                                          1000. * double(SCALED_EPSILON));
+                throw_if_cancelled(run_ctx);
                 enforced = clipper_diff(enforced, blockers);
+                throw_if_cancelled(run_ctx);
             }
             append_grouped_fuzzy_clip(fuzzy_clips,
                                       enforced.to_expolygon_collection(), painted_params);
@@ -347,10 +355,12 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
 
     StoredExPolygonCollection accepted_area(storage);
     for (FuzzyClip &clip : fuzzy_clips) {
+        throw_if_cancelled(run_ctx);
         // Union only areas with identical final behavior. Areas with different
         // parameters remain separate members of the partition.
         ClipperContext clipper(storage);
         clip.area = clipper_union(clipper(clip.area.readonly())).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
         clip.area.ensure_valid();
         accepted_area.append_copy_from(clip.area.readonly());
         partition.params.push_back(clip.params);
@@ -358,15 +368,19 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
     }
 
     ClipperContext clipper(storage);
+    throw_if_cancelled(run_ctx);
     accepted_area = clipper_union(clipper(accepted_area.readonly())).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     accepted_area.ensure_valid();
 
     // The generic splitter requires a complete partition. Add the smooth
     // complement explicitly so every point of a perimeter or gap-fill path is
     // owned by exactly one area, including blockers and non-fuzzy settings.
     StoredExPolygonCollection island_area(storage, island_slice);
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection disabled_area =
         clipper_diff(clipper(island_area.readonly()), clipper(accepted_area.readonly())).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     disabled_area.ensure_valid();
     partition.params.push_back(FuzzyParameters{});
     partition.areas.push_back(std::move(disabled_area));
@@ -381,10 +395,12 @@ void split_leaf_and_collect_targets(storage_handle *storage,
                                     double nozzle_diameter,
                                     raw_extrusion_role role,
                                     const InheritedExtrusionState &state,
-                                    std::vector<FuzzyTarget> &targets)
+                                    std::vector<FuzzyTarget> &targets,
+                                    const plugin_run_context *run_ctx)
 {
     FuzzyPartition partition = build_fuzzy_partition(storage, island_slice, areas, painting,
-                                                     nozzle_diameter, role, state);
+                                                     nozzle_diameter, role, state, run_ctx);
+    throw_if_cancelled(run_ctx);
     if (partition.areas.empty())
         return;
 
@@ -392,11 +408,16 @@ void split_leaf_and_collect_targets(storage_handle *storage,
     // then split once. The returned handles already follow source path order.
     std::vector<ExPolygonCollection> area_views;
     area_views.reserve(partition.areas.size());
-    for (const StoredExPolygonCollection &area : partition.areas)
+    for (const StoredExPolygonCollection &area : partition.areas) {
+        throw_if_cancelled(run_ctx);
         area_views.push_back(area.readonly());
+    }
 
+    throw_if_cancelled(run_ctx);
     const std::vector<ExtrusionAreaFragment> fragments = entity.split_leaf_by_areas(area_views);
+    throw_if_cancelled(run_ctx);
     for (const ExtrusionAreaFragment &fragment : fragments) {
+        throw_if_cancelled(run_ctx);
         assert(fragment.area_index < partition.params.size());
         if (fragment.area_index < partition.params.size() &&
             should_fuzzify_for_role(role, partition.params[fragment.area_index], state))
@@ -413,8 +434,10 @@ void process_entity(storage_handle *storage,
                     double nozzle_diameter,
                     raw_extrusion_role role,
                     const InheritedExtrusionState &parent_state,
-                    std::vector<FuzzyTarget> &targets)
+                    std::vector<FuzzyTarget> &targets,
+                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     // Walk the extrusion tree directly instead of flattening it. The generic
     // splitter mutates only the leaf it receives, so parent collections keep
     // their identity, order and loop semantics.
@@ -422,9 +445,11 @@ void process_entity(storage_handle *storage,
 
     if (entity.child_count() > 0) {
         const uint32_t child_count = entity.child_count();
-        for (uint32_t child_idx = 0; child_idx < child_count; ++child_idx)
+        for (uint32_t child_idx = 0; child_idx < child_count; ++child_idx) {
+            throw_if_cancelled(run_ctx);
             process_entity(storage, entity.child_mutable(child_idx), island_slice, areas, painting,
-                           solo_params, nozzle_diameter, role, state, targets);
+                           solo_params, nozzle_diameter, role, state, targets, run_ctx);
+        }
         return;
     }
 
@@ -438,7 +463,7 @@ void process_entity(storage_handle *storage,
     }
 
     split_leaf_and_collect_targets(storage, entity, island_slice, *areas, painting,
-                                   nozzle_diameter, role, state, targets);
+                                   nozzle_diameter, role, state, targets, run_ctx);
 }
 
 // --------------------------------------------------------------------------
@@ -467,7 +492,9 @@ uint32_t seed_from_points(const std::vector<c_point> &points)
     return seed == 0 ? 1u : seed;
 }
 
-std::vector<c_point> remove_fuzzy_self_crossings(std::vector<c_point> points, bool closed)
+std::vector<c_point> remove_fuzzy_self_crossings(std::vector<c_point> points,
+                                                bool closed,
+                                                const plugin_run_context *run_ctx)
 {
     // Fuzzy offsets are random enough that a local back-and-forth can sometimes
     // fold over itself. The repair keeps the first and last point of the folded
@@ -523,8 +550,10 @@ std::vector<c_point> remove_fuzzy_self_crossings(std::vector<c_point> points, bo
             return false;
 
         const size_t segment_count = path.size() - 1;
-        for (size_t first_segment = 0; first_segment < segment_count; ++first_segment)
+        for (size_t first_segment = 0; first_segment < segment_count; ++first_segment) {
+            throw_if_cancelled(run_ctx);
             for (size_t second_segment = first_segment + 1; second_segment < segment_count; ++second_segment) {
+                throw_if_cancelled(run_ctx);
                 if (adjacent_segments(first_segment, second_segment, closed, segment_count))
                     continue;
 
@@ -555,6 +584,7 @@ std::vector<c_point> remove_fuzzy_self_crossings(std::vector<c_point> points, bo
                 return true;
             }
 
+        }
         return false;
     };
 
@@ -563,22 +593,33 @@ std::vector<c_point> remove_fuzzy_self_crossings(std::vector<c_point> points, bo
     // future generator creates a degenerate path.
     const size_t max_repairs = points.size();
     size_t repair_count = 0;
-    while (repair_count < max_repairs && collapse_first_crossing(points))
+    while (repair_count < max_repairs) {
+        throw_if_cancelled(run_ctx);
+        if (!collapse_first_crossing(points))
+            break;
         ++repair_count;
+    }
     return points;
 }
 
 // Keep the public entry point of the local algorithm first; these two helpers
 // are declared here and implemented immediately below it.
-void fuzzy_polygon(std::vector<c_point> &points, const FuzzyParameters &params);
-void fuzzy_extrusion_line(std::vector<c_point> &points, const FuzzyParameters &params);
+void fuzzy_polygon(std::vector<c_point> &points,
+                   const FuzzyParameters &params,
+                   const plugin_run_context *run_ctx);
+void fuzzy_extrusion_line(std::vector<c_point> &points,
+                          const FuzzyParameters &params,
+                          const plugin_run_context *run_ctx);
 
 // Thanks Cura developers for this function.
-void fuzzy_paths(MutableExtrusionEntity entity, const FuzzyParameters &params)
+void fuzzy_paths(MutableExtrusionEntity entity,
+                 const FuzzyParameters &params,
+                 const plugin_run_context *run_ctx)
 {
     // This is the compact entry point for the Cura-derived fuzzy algorithm:
     // read the current centerline, perturb it as either a closed polygon or an
     // open extrusion line, then write back only if the path really changed.
+    throw_if_cancelled(run_ctx);
     std::vector<c_point> points = entity.points();
     if (points.size() < 2)
         return;
@@ -586,19 +627,25 @@ void fuzzy_paths(MutableExtrusionEntity entity, const FuzzyParameters &params)
     const std::vector<c_point> original = points;
     // not always a loop, with arachne
     if (entity.local_is_closed())
-        fuzzy_polygon(points, params);
+        fuzzy_polygon(points, params, run_ctx);
     else
-        fuzzy_extrusion_line(points, params);
+        fuzzy_extrusion_line(points, params, run_ctx);
 
     bool changed = points.size() != original.size();
-    for (size_t idx = 0; !changed && idx < points.size(); ++idx)
+    for (size_t idx = 0; !changed && idx < points.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         changed = !points_equal(points[idx], original[idx]);
-    if (points.size() >= 2 && changed)
+    }
+    if (points.size() >= 2 && changed) {
+        throw_if_cancelled(run_ctx);
         entity.set_points(points);
+    }
 }
 
 // Thanks Cura developers for this function.
-void fuzzy_polygon(std::vector<c_point> &points, const FuzzyParameters &params)
+void fuzzy_polygon(std::vector<c_point> &points,
+                   const FuzzyParameters &params,
+                   const plugin_run_context *run_ctx)
 {
     // Closed paths are processed as a ring, then explicitly closed again. This
     // keeps loop semantics intact even when the first randomized point moves.
@@ -609,8 +656,10 @@ void fuzzy_polygon(std::vector<c_point> &points, const FuzzyParameters &params)
     const coordf_t min_dist_between_points = params.point_distance * 3. / 4.; // hardcoded: the point distance may vary between 3/4 and 5/4 the supplied value
     const coordf_t range_random_point_dist = params.point_distance / 2.;
     double source_length = 0.;
-    for (size_t idx = 1; idx < points.size(); ++idx)
+    for (size_t idx = 1; idx < points.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         source_length += norm(points[idx] - points[idx - 1]);
+    }
     if (min_dist_between_points <= SCALED_EPSILON || source_length < min_dist_between_points * 3.)
         return;
 
@@ -640,6 +689,7 @@ void fuzzy_polygon(std::vector<c_point> &points, const FuzzyParameters &params)
 
     c_point previous = ring.back();
     for (const c_point point : ring) {
+        throw_if_cancelled(run_ctx);
         // 'a' is the (next) new point between previous and point.
         const double segment_length = norm(point - previous);
         if (segment_length > 0.) {
@@ -648,6 +698,7 @@ void fuzzy_polygon(std::vector<c_point> &points, const FuzzyParameters &params)
             double last_inserted_distance = dist_left_over + segment_length * 2.;
             for (double distance = dist_left_over; distance < segment_length;
                  distance += min_dist_between_points + random_between_0_and_1() * range_random_point_dist) {
+                throw_if_cancelled(run_ctx);
                 // Alternate sides so each local fuzzy stroke crosses the original
                 // centerline, which keeps the final closed loop printable.
                 const double offset = random_between_0_and_1() * params.thickness * double(offset_side);
@@ -664,13 +715,15 @@ void fuzzy_polygon(std::vector<c_point> &points, const FuzzyParameters &params)
         return;
     // loop -> last point is the same as the first
     append_if_different(out, out.front());
-    points = remove_fuzzy_self_crossings(std::move(out), true);
+    points = remove_fuzzy_self_crossings(std::move(out), true, run_ctx);
 }
 
 // Thanks Cura developers for this function.
 // supermerill: the historical Arachne::ExtrusionLine version was not used.
 // This plugin variant keeps the same point-placement idea for an open polyline.
-void fuzzy_extrusion_line(std::vector<c_point> &points, const FuzzyParameters &params)
+void fuzzy_extrusion_line(std::vector<c_point> &points,
+                          const FuzzyParameters &params,
+                          const plugin_run_context *run_ctx)
 {
     // Open paths keep their original endpoints. Only intermediate randomized
     // points are inserted, otherwise travel planning may see a changed start or
@@ -683,8 +736,10 @@ void fuzzy_extrusion_line(std::vector<c_point> &points, const FuzzyParameters &p
 
     // check if the path length is enough for at least 3 points, or return.
     double source_length = 0.;
-    for (size_t idx = 1; idx < points.size(); ++idx)
+    for (size_t idx = 1; idx < points.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         source_length += norm(points[idx] - points[idx - 1]);
+    }
     if (min_dist_between_points <= SCALED_EPSILON || source_length < min_dist_between_points * 3.)
         return;
 
@@ -713,6 +768,7 @@ void fuzzy_extrusion_line(std::vector<c_point> &points, const FuzzyParameters &p
     append_if_different(out, points.front());
 
     for (size_t idx = 1; idx < points.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         const c_point previous = points[idx - 1];
         const c_point point = points[idx];
         // 'a' is the (next) new point between previous and point.
@@ -726,6 +782,7 @@ void fuzzy_extrusion_line(std::vector<c_point> &points, const FuzzyParameters &p
         double last_inserted_distance = dist_left_over + segment_length * 2.;
         for (double distance = dist_left_over; distance < segment_length;
              distance += min_dist_between_points + random_between_0_and_1() * range_random_point_dist) {
+            throw_if_cancelled(run_ctx);
             // Alternate sides so the fuzzy strokes cross the original line
             // instead of drifting along the same side of the perimeter.
             const double offset = random_between_0_and_1() * params.thickness * double(offset_side);
@@ -738,8 +795,10 @@ void fuzzy_extrusion_line(std::vector<c_point> &points, const FuzzyParameters &p
 
     // line -> ensure you end with the same last point
     append_if_different(out, points.back());
-    if (out.size() >= 2)
-        points = remove_fuzzy_self_crossings(std::move(out), false);
+    if (out.size() >= 2) {
+        throw_if_cancelled(run_ctx);
+        points = remove_fuzzy_self_crossings(std::move(out), false, run_ctx);
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -758,7 +817,8 @@ StoredExPolygonCollection painting_polygons_for_island(storage_handle *storage,
                                                        const LayerIsland &island,
                                                        const std::vector<StoredPolygonCollection> *by_layer,
                                                        uint32_t layer_idx,
-                                                       coordf_t painting_margin)
+                                                       coordf_t painting_margin,
+                                                       const plugin_run_context *run_ctx)
 {
     StoredExPolygonCollection out(storage);
     if (by_layer == nullptr || layer_idx >= by_layer->size() || (*by_layer)[layer_idx].empty())
@@ -766,11 +826,18 @@ StoredExPolygonCollection painting_polygons_for_island(storage_handle *storage,
 
     ClipperContext clipper(storage);
     ClipperOperand painted = clipper((*by_layer)[layer_idx].readonly());
-    if (painting_margin > 0.)
+    if (painting_margin > 0.) {
+        throw_if_cancelled(run_ctx);
         painted = clipper_offset(painted, painting_margin);
+        throw_if_cancelled(run_ctx);
+    }
+    throw_if_cancelled(run_ctx);
     ClipperOperand clipped = clipper_intersection(clipper(island.slice()), painted);
+    throw_if_cancelled(run_ctx);
     if (!clipped.empty()) {
+        throw_if_cancelled(run_ctx);
         out = clipper_union(clipped).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
         out.ensure_valid();
     }
     return out;
@@ -781,7 +848,8 @@ FuzzyPaintingClip painting_clip_for_island(storage_handle *storage,
                                            const std::vector<StoredPolygonCollection> *enforcers,
                                            const std::vector<StoredPolygonCollection> *blockers,
                                            uint32_t layer_idx,
-                                           coordf_t painting_margin)
+                                           coordf_t painting_margin,
+                                           const plugin_run_context *run_ctx)
 {
     // Facets are projected per layer for the whole object. Clip them to the
     // current island before mixing them with RegionSettings so nearby islands
@@ -790,8 +858,10 @@ FuzzyPaintingClip painting_clip_for_island(storage_handle *storage,
     // expanding by about one nozzle diameter lets a painted skin patch select
     // the extrusion centerline that belongs to it.
     FuzzyPaintingClip painting(storage);
-    painting.enforcers = painting_polygons_for_island(storage, island, enforcers, layer_idx, painting_margin);
-    painting.blockers = painting_polygons_for_island(storage, island, blockers, layer_idx, painting_margin);
+    painting.enforcers = painting_polygons_for_island(storage, island, enforcers, layer_idx, painting_margin, run_ctx);
+    throw_if_cancelled(run_ctx);
+    painting.blockers = painting_polygons_for_island(storage, island, blockers, layer_idx, painting_margin, run_ctx);
+    throw_if_cancelled(run_ctx);
     return painting;
 }
 
@@ -803,12 +873,15 @@ void process_region_island_role(const run_ctx_post_perimeter_generation &ctx,
                                 const FuzzyPaintingClip &painting,
                                 double nozzle_diameter,
                                 raw_extrusion_role role,
-                                std::vector<FuzzyTarget> &targets)
+                                std::vector<FuzzyTarget> &targets,
+                                const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     // Each role bucket has its own extrusion root. Perimeters and gap fill use
     // the same splitter, but fuzzy skin settings only allow gap fill in "all"
     // mode to match the historical behavior.
     extrusion_entity_handle *root_handle = ctx.get_region_island_mutable_extrusion(region_island.handle(), role);
+    throw_if_cancelled(run_ctx);
     if (root_handle == nullptr)
         return;
 
@@ -820,7 +893,8 @@ void process_region_island_role(const run_ctx_post_perimeter_generation &ctx,
     const InheritedExtrusionState empty_state;
     if (settings.has_many_config(k_fuzzy_skin_key) || painting.has_any()) {
         process_entity(storage, root, island_slice, &areas, painting, FuzzyParameters{},
-                       nozzle_diameter, role, empty_state, targets);
+                       nozzle_diameter, role, empty_state, targets, run_ctx);
+        throw_if_cancelled(run_ctx);
         return;
     }
 
@@ -830,7 +904,8 @@ void process_region_island_role(const run_ctx_post_perimeter_generation &ctx,
         return;
 
     process_entity(storage, root, island_slice, nullptr, painting, solo_params,
-                   nozzle_diameter, role, empty_state, targets);
+                   nozzle_diameter, role, empty_state, targets, run_ctx);
+    throw_if_cancelled(run_ctx);
 }
 
 void process_island(const run_ctx_post_perimeter_generation &ctx,
@@ -838,33 +913,40 @@ void process_island(const run_ctx_post_perimeter_generation &ctx,
                     const LayerIsland &island,
                     const std::vector<StoredPolygonCollection> *painted_enforcers,
                     const std::vector<StoredPolygonCollection> *painted_blockers,
-                    uint32_t layer_idx)
+                    uint32_t layer_idx,
+                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     // Build the region-setting map once per island. Every region island inside
     // that layer island can then reuse the same spatial partitioning.
     if (island.region_count() == 0 || island.region_island_count() == 0)
         return;
 
     RegionSettings settings(storage, island, {{k_fuzzy_skin_key, k_fuzzy_skin_thickness_key, k_fuzzy_skin_point_dist_key}});
+    throw_if_cancelled(run_ctx);
     settings.segregate(island.slice());
+    throw_if_cancelled(run_ctx);
     const double nozzle_diameter = nozzle_diameter_for_fuzzy_skin(island);
     FuzzyPaintingClip painting =
         painting_clip_for_island(storage, island, painted_enforcers, painted_blockers,
-                                 layer_idx, scale_d(nozzle_diameter));
+                                 layer_idx, scale_d(nozzle_diameter), run_ctx);
     std::vector<FuzzyTarget> targets;
 
     for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count(); ++region_island_idx) {
+        throw_if_cancelled(run_ctx);
         const LayerRegionIsland region_island = island.region_island(region_island_idx);
         process_region_island_role(ctx, storage, region_island, island.slice(), settings, painting, nozzle_diameter,
-                                   RAW_EXTRUSION_ROLE_PERIMETER, targets);
+                                   RAW_EXTRUSION_ROLE_PERIMETER, targets, run_ctx);
         process_region_island_role(ctx, storage, region_island, island.slice(), settings, painting, nozzle_diameter,
-                                   RAW_EXTRUSION_ROLE_GAP_FILL, targets);
+                                   RAW_EXTRUSION_ROLE_GAP_FILL, targets, run_ctx);
     }
 
     // Split first, fuzz afterwards. This avoids invalidating tree positions
     // while the splitter is still walking the children of a parent entity.
-    for (const FuzzyTarget &target : targets)
-        fuzzy_paths(target.entity, target.params);
+    for (const FuzzyTarget &target : targets) {
+        throw_if_cancelled(run_ctx);
+        fuzzy_paths(target.entity, target.params, run_ctx);
+    }
 }
 
 } // namespace
@@ -935,6 +1017,7 @@ void FuzzySkin::inilialize_impl(storage_handle *) const
 
 void FuzzySkin::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
     if (ctx != nullptr && ctx->object != nullptr)
         progress().add_max(Object(ctx->object).layer_count());
@@ -942,31 +1025,40 @@ void FuzzySkin::setup_run_impl(const plugin_run_context *run_ctx) const
 
 void FuzzySkin::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
-    if (ctx == nullptr || ctx->object == nullptr || run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
+    if (ctx == nullptr || ctx->object == nullptr || run_ctx == nullptr || run_ctx->plugin_storage == nullptr ||
+        ctx->get_region_island_mutable_extrusion == nullptr)
         return;
 
     throw_if_cancelled(run_ctx);
 
     const Object object(ctx->object);
+    throw_if_cancelled(run_ctx);
     const bool has_painting = object_has_fuzzy_skin_painting(object);
     std::vector<StoredPolygonCollection> painted_enforcers;
     std::vector<StoredPolygonCollection> painted_blockers;
     if (has_painting) {
+        throw_if_cancelled(run_ctx);
         painted_enforcers = project_painting_to_polygons(
             run_ctx->plugin_storage, object, k_fuzzy_skin_painting_key, RAW_FACET_PAINTING_ENFORCER);
+        throw_if_cancelled(run_ctx);
         painted_blockers = project_painting_to_polygons(
             run_ctx->plugin_storage, object, k_fuzzy_skin_painting_key, RAW_FACET_PAINTING_BLOCKER);
+        throw_if_cancelled(run_ctx);
     }
 
     for (uint32_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         const Layer layer = object.layer(layer_idx);
         if (layer_idx > 0) {
-            for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx)
+            for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
+                throw_if_cancelled(run_ctx);
                 process_island(*ctx, run_ctx->plugin_storage, layer.island(island_idx),
                                has_painting ? &painted_enforcers : nullptr,
                                has_painting ? &painted_blockers : nullptr,
-                               layer_idx);
+                               layer_idx, run_ctx);
+            }
         }
         progress().increment();
     }

@@ -5,6 +5,7 @@
 #include <functional>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -19,6 +20,7 @@
 #include "libslic3r/Api/internal/LayerAccess.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 #include "libslic3r/Api/plugin/cpp/properties/ExtrusionProperties.hpp"
 #include "libslic3r/Geometry/ArcWelder.hpp"
@@ -54,6 +56,19 @@ using namespace Slic3r::Test::PerimeterPluginTests;
 const char *const k_cost_plugin = "seam_placer.cost";
 const char *const k_aligned_plugin = "seam_placer.aligned";
 const char *const k_contiguous_plugin = "seam_placer.contiguous";
+
+struct CancellationProbe {
+    size_t checks = 0;
+    size_t cancel_after = std::numeric_limits<size_t>::max();
+};
+
+int cancel_after_checks(plugin_host_context *host_context)
+{
+    CancellationProbe &probe = *reinterpret_cast<CancellationProbe *>(
+        host_context);
+    ++probe.checks;
+    return probe.checks >= probe.cancel_after ? 1 : 0;
+}
 
 bool find_loop(const slic3r_api::ExtrusionEntity &entity,
                slic3r_api::ExtrusionEntity &loop)
@@ -1214,6 +1229,110 @@ TEST_CASE("Cost seam sessions reject repeated initialization without changing st
         extrusion.root(), fixture.region_view(), extrusion.root().front()));
     CHECK(point.x == scale_i(-5));
     CHECK(point.y == scale_i(-5));
+}
+
+TEST_CASE("Cost seam cancellation never publishes a partial session",
+          "[plugins][seam-placer][cost][cancellation]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    SECTION("candidate preparation")
+    {
+        CostFixture fixture;
+        fixture.add(rectangle_loop(-5, -5, 5, 5),
+                    RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+        PrintingPlan &native_plan =
+            fixture.prepared.print.mutable_printing_plan();
+        const slic3r_api::PrintingPlan plan(
+            reinterpret_cast<printing_plan_handle *>(&native_plan));
+        const std::vector<slic3r_api::PrintRegion> regions = {
+            fixture.region_view().print_region()};
+        PluginStorage storage;
+        CancellationProbe probe{0, 1};
+        plugin_run_context run_context = {};
+        run_context.plugin_storage =
+            reinterpret_cast<storage_handle *>(&storage);
+        run_context.host_context =
+            reinterpret_cast<plugin_host_context *>(&probe);
+        run_context.is_cancelled = &cancel_after_checks;
+        raw_seam_placer_instance instance = {};
+
+        CHECK_THROWS_AS(
+            instance = slic3r_api::make_seam_placer_instance(
+                slic3r_api::SeamPlacement::CostPlugin::
+                    make_cost_seam_session(
+                        reinterpret_cast<storage_handle *>(&storage),
+                        &run_context),
+                plan, regions),
+            slic3r_api::PluginCancelled);
+        CHECK(instance.session == nullptr);
+    }
+
+    SECTION("visibility model")
+    {
+        CostFixture baseline({{"seam_visibility", "0"},
+                              {"seam_angle_cost", "0"},
+                              {"seam_travel_cost", "0"}});
+        baseline.add(rectangle_loop(-5, -5, 5, 5),
+                     RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+        PrintingPlan &baseline_native_plan =
+            baseline.prepared.print.mutable_printing_plan();
+        const slic3r_api::PrintingPlan baseline_plan(
+            reinterpret_cast<printing_plan_handle *>(
+                &baseline_native_plan));
+        const std::vector<slic3r_api::PrintRegion> baseline_regions = {
+            baseline.region_view().print_region()};
+        PluginStorage baseline_storage;
+        CancellationProbe baseline_probe;
+        plugin_run_context baseline_context = {};
+        baseline_context.plugin_storage =
+            reinterpret_cast<storage_handle *>(&baseline_storage);
+        baseline_context.host_context =
+            reinterpret_cast<plugin_host_context *>(&baseline_probe);
+        baseline_context.is_cancelled = &cancel_after_checks;
+        raw_seam_placer_instance baseline_instance =
+            slic3r_api::make_seam_placer_instance(
+                slic3r_api::SeamPlacement::CostPlugin::
+                    make_cost_seam_session(
+                        reinterpret_cast<storage_handle *>(&baseline_storage),
+                        &baseline_context),
+                baseline_plan, baseline_regions);
+        const slic3r_api::SeamPlacer baseline_placer(baseline_instance);
+        REQUIRE(baseline_placer.valid());
+
+        CostFixture visible({{"seam_visibility", "1"},
+                             {"seam_angle_cost", "0"},
+                             {"seam_travel_cost", "0"}});
+        visible.add(rectangle_loop(-5, -5, 5, 5),
+                    RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+        PrintingPlan &visible_native_plan =
+            visible.prepared.print.mutable_printing_plan();
+        const slic3r_api::PrintingPlan visible_plan(
+            reinterpret_cast<printing_plan_handle *>(
+                &visible_native_plan));
+        const std::vector<slic3r_api::PrintRegion> visible_regions = {
+            visible.region_view().print_region()};
+        PluginStorage visible_storage;
+        CancellationProbe visible_probe{0, baseline_probe.checks + 1};
+        plugin_run_context visible_context = {};
+        visible_context.plugin_storage =
+            reinterpret_cast<storage_handle *>(&visible_storage);
+        visible_context.host_context =
+            reinterpret_cast<plugin_host_context *>(&visible_probe);
+        visible_context.is_cancelled = &cancel_after_checks;
+        raw_seam_placer_instance visible_instance = {};
+
+        CHECK_THROWS_AS(
+            visible_instance = slic3r_api::make_seam_placer_instance(
+                slic3r_api::SeamPlacement::CostPlugin::
+                    make_cost_seam_session(
+                        reinterpret_cast<storage_handle *>(&visible_storage),
+                        &visible_context),
+                visible_plan, visible_regions),
+            slic3r_api::PluginCancelled);
+        CHECK(visible_probe.checks == visible_probe.cancel_after);
+        CHECK(visible_instance.session == nullptr);
+    }
 }
 
 TEST_CASE("Cost seam diagnoses perimeter islands without external geometry",

@@ -103,6 +103,7 @@ struct ThroughHole
 // center. The returned polygons are storage-owned because they will be copied
 // into several borrowed raw slices during conversion.
 std::vector<StoredPolygon> create_polyholes(storage_handle *storage,
+                                            const plugin_run_context *run_ctx,
                                             const c_point center,
                                             const coord_t radius,
                                             const coord_t nozzle_diameter,
@@ -121,9 +122,12 @@ std::vector<StoredPolygon> create_polyholes(storage_handle *storage,
     for (int i_poly = 0; i_poly < nb_polyhole; i_poly++)
         list.emplace_back(storage);
     for (int i_poly = 0; i_poly < nb_polyhole; i_poly++) {
+        throw_if_cancelled(run_ctx);
         StoredPolygon& pts = (((i_poly % 2) == 0) ? list[i_poly / 2] : list[(nb_polyhole + 1) / 2 + i_poly / 2]);
         const coordf_t new_radius = coordf_t(radius) / std::cos(PI / double(nb_edges));
         for (size_t i_edge = 0; i_edge < nb_edges; ++i_edge) {
+            if ((i_edge & 63u) == 0u)
+                throw_if_cancelled(run_ctx);
             const double angle = double(rotation) * double(i_poly) + (PI * 2. * double(i_edge)) / double(nb_edges);
             pts.push_back(c_point{coord_t(std::round(coordf_t(center.x) + new_radius * std::cos(angle))),
                                   coord_t(std::round(coordf_t(center.y) + new_radius * std::sin(angle)))});
@@ -136,7 +140,9 @@ std::vector<StoredPolygon> create_polyholes(storage_handle *storage,
 // Replace the matching hole contour inside one mutable ExPolygon. The match is
 // done against point views so we do not depend on handle identity: raw slices and
 // immutable slices are different containers that can hold the same geometry.
-bool replace_matching_hole_points(expolygon_handle *expolygon, const Polygon &hole_to_replace, const StoredPolygon &replacement)
+bool replace_matching_hole_points(expolygon_handle *expolygon,
+                                  const Polygon &hole_to_replace,
+                                  const StoredPolygon &replacement)
 {
     assert(expolygon != nullptr);
     for (uint32_t hole_idx = 0; hole_idx < expolygon_hole_size(expolygon); ++hole_idx) {
@@ -154,6 +160,7 @@ bool replace_matching_hole_points(expolygon_handle *expolygon, const Polygon &ho
 
 void Polyholes::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     // POST_SLICING provides raw LayerRegion slices and layer island slices as
     // mutable borrowed handles. The plugin must keep both consistent by asking
     // the host to recompute slices/islands after raw slice edits.
@@ -163,23 +170,28 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
 
 
     struct ThreadData {
+        const plugin_run_context *run_ctx;
         const run_ctx_post_slicing *ctx;
         Object object;
         uint32_t extruder_count;
         std::vector<std::vector<HoleData>> layerid2center;
         PluginProgress *progress;
-    } thread_data{ctx, Object(ctx->object),
+    } thread_data{run_ctx, ctx, Object(ctx->object),
                   Print(ctx->print).config().get("nozzle_diameter").size(), {}, &progress()};
 
     thread_data.layerid2center.resize(thread_data.object.layer_count());
 
     slic3r_parallel_for(0, thread_data.object.layer_count(), &thread_data, [](uint32_t layer_idx, void *user_data) {
         ThreadData *data = static_cast<ThreadData *>(user_data);
+        if (is_cancelled(data->run_ctx))
+            return;
         Layer layer = data->object.layer(layer_idx);
         // Each worker writes only to the pre-sized layer slot matching its layer,
         // so no lock is needed during candidate collection.
         std::vector<HoleData> &layer_center_data = data->layerid2center[layer_idx];
         for (uint32_t region_idx = 0; region_idx < layer.region_count(); ++region_idx) {
+            if ((region_idx & 63u) == 0u && is_cancelled(data->run_ctx))
+                return;
             LayerRegion lregion = layer.region(region_idx);
             Config region_config = lregion.print_region().config();
             ConfigOption setting_hole_to_polyhole = region_config.get("hole_to_polyhole");
@@ -191,8 +203,14 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
                     continue;
                 bool twist = region_config.get("hole_to_polyhole_twisted").get_bool();
                 ExPolygonCollection region_slices = lregion.slices();
+                uint32_t surface_idx = 0;
                 for (ExPolygon surf_expoly : region_slices) {
+                    if ((surface_idx++ & 63u) == 0u && is_cancelled(data->run_ctx))
+                        return;
+                    uint32_t hole_idx = 0;
                     for (Polygon hole : surf_expoly.holes()) {
+                        if ((hole_idx++ & 63u) == 0u && is_cancelled(data->run_ctx))
+                            return;
                         // test if convex (as it's clockwise bc it's a hole, we have to do the opposite)
                         if (hole.convex_points_idx(0, PI).empty() && hole.size() > 8) {
                             // Estimate circularity from vertex radius and edge-midpoint radius. The midpoint check
@@ -201,6 +219,8 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
                             distf_t diameter_min = std::numeric_limits<float>::max(), diameter_max = 0;
                             double diameter_sum = 0;
                             for (uint32_t i = 0; i < hole.size(); ++i) {
+                                if ((i & 63u) == 0u && is_cancelled(data->run_ctx))
+                                    return;
                                 distf_t dist = norm(hole[i] - center);
                                 diameter_min = std::min(diameter_min, dist);
                                 diameter_max = std::max(diameter_max, dist);
@@ -210,6 +230,8 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
                             distf_t diameter_line_min = std::numeric_limits<float>::max(), diameter_line_max = 0;
                             c_point prev = hole.back();
                             for (uint32_t hole_line_a_idx = 0; hole_line_a_idx < hole.size(); ++hole_line_a_idx) {
+                                if ((hole_line_a_idx & 63u) == 0u && is_cancelled(data->run_ctx))
+                                    return;
                                 c_point midline = (prev + hole[hole_line_a_idx]) / 2;
                                 distf_t dist = norm(center - midline);
                                 diameter_line_min = std::min(diameter_line_min, dist);
@@ -237,6 +259,7 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
         }
         data->progress->increment(ProgressSearchHoles);
     });
+    throw_if_cancelled(run_ctx);
     progress().finish_run(ProgressSearchHoles);
     
     // Group layer-local candidates into through-holes. A match is intentionally
@@ -244,18 +267,25 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
     std::vector<ThroughHole> id2layers2hole;
     const size_t min_nb_layers = 2;
     for (uint32_t layer_idx = 0; layer_idx < thread_data.object.layer_count(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         for (uint32_t hole_idx = 0; hole_idx < thread_data.layerid2center[layer_idx].size(); ++hole_idx) {
+            if ((hole_idx & 63u) == 0u)
+                throw_if_cancelled(run_ctx);
             //get all other same polygons
             const HoleData& main_hole_data = thread_data.layerid2center[layer_idx][hole_idx];
             coord_t max_z = thread_data.object.layer(layer_idx).print_z();
             std::vector<LayerHole> holes;
             holes.push_back(LayerHole{main_hole_data.hole_polygon, layer_idx, main_hole_data.hole_lregion_idx});
             for (uint32_t search_layer_idx = layer_idx + 1; search_layer_idx < thread_data.object.layer_count(); ++search_layer_idx) {
+                if ((search_layer_idx & 63u) == 0u)
+                    throw_if_cancelled(run_ctx);
                 Layer search_layer(thread_data.object.layer(search_layer_idx));
                 if (search_layer.print_z() - search_layer.height() - max_z > 0) break;
                 //search an other polygon with same main_hole_data
                 std::vector<HoleData> &layer_center_data = thread_data.layerid2center[search_layer_idx];
                 for (uint32_t search_hole_idx = 0; search_hole_idx < layer_center_data.size(); ++search_hole_idx) {
+                    if ((search_hole_idx & 63u) == 0u)
+                        throw_if_cancelled(run_ctx);
                     const HoleData& search_hole = layer_center_data[search_hole_idx];
                     if (main_hole_data.extruder_id == search_hole.extruder_id
                         && norm(main_hole_data.center - search_hole.center) < main_hole_data.max_deviation
@@ -283,48 +313,67 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
     progress().increment(ProgressGroupHoles);
     progress().finish_run(ProgressGroupHoles);
 
-    // Replace every grouped hole in the mutable raw slices. The immutable views
-    // collected above are never modified directly.
-    std::set<uint32_t> modified_layer_idx;
-    for (ThroughHole &through_hole : id2layers2hole) {
-        ConfigOption setting_nozzle_diameter = Print(ctx->print).config().get("nozzle_diameter");
-        if (through_hole.hole_data.extruder_id < 0 ||
-            uint32_t(through_hole.hole_data.extruder_id) >= setting_nozzle_diameter.size())
-            continue;
-        std::vector<StoredPolygon> polyholes = create_polyholes(run_ctx->plugin_storage, through_hole.hole_data.center,
-                                                                through_hole.hole_data.max_diameter,
-                                                                scale_i(setting_nozzle_diameter.get_float(through_hole.hole_data.extruder_id)),
-                                                                through_hole.hole_data.is_twist);
-        for (LayerHole& poly_to_replace : through_hole.layers) {
-            StoredPolygon &polyhole = polyholes[poly_to_replace.layer_idx % polyholes.size()];
-            assert(polyhole.valid_polygon());
-
-            // Borrow the mutable raw slices only at the last possible moment:
-            // modifying them may invalidate read-only views collected earlier.
-            int modified = 0;
-            layer_handle *mut_layer = ctx->object_borrow_mutable_layer(ctx->object, poly_to_replace.layer_idx);
-            layer_region_handle *mut_lregion = layer_get_region_mutable(mut_layer, poly_to_replace.lregion_idx);
-            expolygon_collection_handle *mut_region_slices(ctx->layer_region_borrow_mutable_slices(mut_lregion));
-            assert(expolygons_size(mut_region_slices) > 0);
-            for (uint32_t expoly_idx = 0; expoly_idx < expolygons_size(mut_region_slices); ++expoly_idx) {
-                expolygon_handle *lregion_slice = expolygons_at(mut_region_slices, expoly_idx);
-                if (replace_matching_hole_points(lregion_slice, poly_to_replace.polygon, polyhole))
-                    modified++;
+    {
+        // Prepare every replacement before mutating raw slices. Cancellation remains
+        // responsive during this potentially expensive geometry-only phase.
+        std::vector<std::vector<StoredPolygon>> prepared_polyholes;
+        prepared_polyholes.reserve(id2layers2hole.size());
+        for (ThroughHole &through_hole : id2layers2hole) {
+            throw_if_cancelled(run_ctx);
+            ConfigOption setting_nozzle_diameter = Print(ctx->print).config().get("nozzle_diameter");
+            if (through_hole.hole_data.extruder_id < 0 ||
+                uint32_t(through_hole.hole_data.extruder_id) >= setting_nozzle_diameter.size()) {
+                assert(false);
+                continue;
             }
-            assert(modified == 1);
-            // The Layer cache and LayerSliceIsland list depend on raw slices, so
-            // recompute them after all replacements for the layer are done.
-            modified_layer_idx.insert(poly_to_replace.layer_idx);
+            prepared_polyholes.push_back(
+                create_polyholes(run_ctx->plugin_storage, run_ctx,
+                                 through_hole.hole_data.center,
+                                 through_hole.hole_data.max_diameter,
+                                 scale_i(setting_nozzle_diameter.get_float(through_hole.hole_data.extruder_id)),
+                                 through_hole.hole_data.is_twist));
         }
-        progress().increment(ProgressConvertHoles);
-    }
-    progress().finish_run(ProgressConvertHoles);
 
-    // Recompute once per modified layer instead of after every hole replacement.
-    for (uint32_t layer_idx : modified_layer_idx) {
-        layer_handle *mut_layer = ctx->object_borrow_mutable_layer(ctx->object, layer_idx);
-        ctx->layer_recompute_slices_and_islands_from_layer_region(mut_layer);
+        // Raw slices and their derived Layer caches form one consistency commit.
+        // Once mutation starts, recompute every touched layer before observing a
+        // cancellation request so callers never see stale slice-island caches.
+        throw_if_cancelled(run_ctx);
+        std::set<uint32_t> modified_layer_idx;
+        for (size_t through_hole_idx = 0; through_hole_idx < id2layers2hole.size(); ++through_hole_idx) {
+            ThroughHole &through_hole = id2layers2hole[through_hole_idx];
+            std::vector<StoredPolygon> &polyholes = prepared_polyholes[through_hole_idx];
+            for (LayerHole& poly_to_replace : through_hole.layers) {
+                StoredPolygon &polyhole = polyholes[poly_to_replace.layer_idx % polyholes.size()];
+                assert(polyhole.valid_polygon());
+
+                // Borrow the mutable raw slices only at the last possible moment:
+                // modifying them may invalidate read-only views collected earlier.
+                int modified = 0;
+                layer_handle *mut_layer = ctx->object_borrow_mutable_layer(ctx->object, poly_to_replace.layer_idx);
+                layer_region_handle *mut_lregion = layer_get_region_mutable(mut_layer, poly_to_replace.lregion_idx);
+                expolygon_collection_handle *mut_region_slices(ctx->layer_region_borrow_mutable_slices(mut_lregion));
+                assert(expolygons_size(mut_region_slices) > 0);
+                for (uint32_t expoly_idx = 0; expoly_idx < expolygons_size(mut_region_slices); ++expoly_idx) {
+                    expolygon_handle *lregion_slice = expolygons_at(mut_region_slices, expoly_idx);
+                    if (replace_matching_hole_points(lregion_slice, poly_to_replace.polygon, polyhole))
+                        modified++;
+                }
+                assert(modified == 1);
+                // The Layer cache and LayerSliceIsland list depend on raw slices, so
+                // recompute them after all replacements for the layer are done.
+                modified_layer_idx.insert(poly_to_replace.layer_idx);
+            }
+            progress().increment(ProgressConvertHoles);
+        }
+        progress().finish_run(ProgressConvertHoles);
+
+        // Recompute once per modified layer instead of after every hole replacement.
+        for (uint32_t layer_idx : modified_layer_idx) {
+            layer_handle *mut_layer = ctx->object_borrow_mutable_layer(ctx->object, layer_idx);
+            ctx->layer_recompute_slices_and_islands_from_layer_region(mut_layer);
+        }
     }
+    throw_if_cancelled(run_ctx);
 
     assert(storage_size(run_ctx->plugin_storage) == 0);
     storage_clear(run_ctx->plugin_storage);
@@ -515,6 +564,7 @@ void Polyholes::setup_impl(const plugin_run_context *, uint32_t) const
 
 void Polyholes::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_slicing *ctx = plugin_ctx_as_post_slicing(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr)
         return;

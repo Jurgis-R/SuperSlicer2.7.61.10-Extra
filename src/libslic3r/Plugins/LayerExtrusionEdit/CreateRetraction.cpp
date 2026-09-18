@@ -27,6 +27,7 @@ small scalar cache so parallel workers never inspect or mutate another layer.
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingEntityPropertyTraversal.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
@@ -121,35 +122,41 @@ bool find_first_geometric_role(
     MutableExtrusionEntity entity,
     std::optional<raw_extrusion_role> inherited_role,
     std::optional<raw_extrusion_role> &result,
-    bool entity_already_resolved = false);
+    bool entity_already_resolved,
+    const plugin_run_context *run_ctx);
 
 /* Resolve the first role from printable content, never from technical phases. */
 std::optional<raw_extrusion_role> first_content_role(
     const ScopeEntity &target,
-    const ExtrusionScope::OrderedExtrusionScope &scope);
+    const ExtrusionScope::OrderedExtrusionScope &scope,
+    const plugin_run_context *run_ctx);
 
 /* Resolve the first geometric leaf, optionally starting with entity resolved. */
 bool find_first_geometry(MutableExtrusionEntity entity, coord_t print_z,
                          const EffectiveState &parent,
                          GeometricEndpoint &endpoint,
-                         bool entity_already_resolved = false);
+                         bool entity_already_resolved,
+                         const plugin_run_context *run_ctx);
 
 /* Resolve the last geometric leaf, optionally starting with entity resolved. */
 bool find_last_geometry(MutableExtrusionEntity entity, coord_t print_z,
                         const EffectiveState &parent,
                         GeometricEndpoint &endpoint,
-                        bool entity_already_resolved = false);
+                        bool entity_already_resolved,
+                        const plugin_run_context *run_ctx);
 
 /* Resolve one scope endpoint while retaining only its effective leaf state. */
 GeometricEndpoint scope_endpoint(const ScopeEntity &scope,
                                  const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
-                                 bool first);
+                                 bool first,
+                                 const plugin_run_context *run_ctx);
 
 /* Read the source-region override for the normal retraction target. */
 double normal_retract_target(const Config &print_config,
                              const PrintingPlan &plan,
                              const ScopeEntity &source,
-                             const GeometricEndpoint &endpoint);
+                             const GeometricEndpoint &endpoint,
+                             const plugin_run_context *run_ctx);
 
 /* Convert a scope side into the scalar decision format. */
 BoundaryState boundary_state(const ScopeEntity &scope,
@@ -157,7 +164,8 @@ BoundaryState boundary_state(const ScopeEntity &scope,
                              const PrintingPlan &plan,
                              const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
                              bool first,
-                             bool resolve_normal_target);
+                             bool resolve_normal_target,
+                             const plugin_run_context *run_ctx);
 
 /* Return the direct XY gap used by retract_before_travel. */
 double planar_gap_mm(const BoundaryState &source,
@@ -181,21 +189,25 @@ void set_event_attributes(MutableExtrusionEntity event,
 /* Append the source-owned semantic Retract request. */
 void write_outgoing_retraction(const ScopeEntity &source,
                                const RetractionDecision &decision,
-                               const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
+                               const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+                               const plugin_run_context *run_ctx);
 
 /* Append the target-owned Unretract request after tool-group selection events. */
 void write_incoming_retraction(const ScopeEntity &target,
                                const RetractionDecision &decision,
-                               const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
+                               const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+                               const plugin_run_context *run_ctx);
 
 /* Count marked roots for progress without retaining their handles. */
 uint32_t scope_count(const PrintingLayerGroup &layer,
-                     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
+                     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+                     const plugin_run_context *run_ctx);
 
 /* Append the end-of-print Retract event to the plan after sequence. */
 void append_terminal_retraction(storage_handle *storage,
                                 const PrintingPlan &plan,
-                                double target);
+                                double target,
+                                const plugin_run_context *run_ctx);
 
 /* Parallel provider that writes retraction operations around scope pairs. */
 class CreateRetraction final : public PluginBase
@@ -225,10 +237,12 @@ private:
     size_t flat_layer_index(uint32_t group_idx, uint32_t layer_idx) const;
 
     /* Find the nearest preceding non-empty prepared layer. */
-    const LayerBoundarySummary *previous_nonempty_layer(size_t flat_idx) const;
+    const LayerBoundarySummary *previous_nonempty_layer(
+        size_t flat_idx, const plugin_run_context *run_ctx) const;
 
     /* Find the nearest following non-empty prepared layer. */
-    const LayerBoundarySummary *next_nonempty_layer(size_t flat_idx) const;
+    const LayerBoundarySummary *next_nonempty_layer(
+        size_t flat_idx, const plugin_run_context *run_ctx) const;
 
     PluginPropertyKey<PrintingExtrusionScopeProperty> m_scope_property;
     mutable bool m_setup_valid = false;
@@ -301,8 +315,10 @@ bool find_first_geometric_role(
     MutableExtrusionEntity entity,
     const std::optional<raw_extrusion_role> inherited_role,
     std::optional<raw_extrusion_role> &result,
-    const bool entity_already_resolved)
+    const bool entity_already_resolved,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::optional<raw_extrusion_role> role = inherited_role;
     if (!entity_already_resolved) {
         const EPropertyAttributes *attributes =
@@ -318,17 +334,21 @@ bool find_first_geometric_role(
         return true;
     }
 
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         if (find_first_geometric_role(
-                entity.child_mutable(child_idx), role, result))
+                entity.child_mutable(child_idx), role, result, false, run_ctx))
             return true;
+    }
     return false;
 }
 
 std::optional<raw_extrusion_role> first_content_role(
     const ScopeEntity &target,
-    const ExtrusionScope::OrderedExtrusionScope &scope)
+    const ExtrusionScope::OrderedExtrusionScope &scope,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EPropertyAttributes *inherited_attributes =
         target.effective_properties.get(EPropertyAttributes::key);
     const std::optional<raw_extrusion_role> inherited_role = inherited_attributes ?
@@ -338,7 +358,7 @@ std::optional<raw_extrusion_role> first_content_role(
     std::optional<raw_extrusion_role> result;
     if (!find_first_geometric_role(
             content, inherited_role, result,
-            content.handle() == scope.root().handle()))
+            content.handle() == scope.root().handle(), run_ctx))
         throw std::runtime_error(
             "A retraction target scope has no printable geometry.");
     return result;
@@ -347,8 +367,10 @@ std::optional<raw_extrusion_role> first_content_role(
 bool find_first_geometry(MutableExtrusionEntity entity, const coord_t print_z,
                          const EffectiveState &parent,
                          GeometricEndpoint &endpoint,
-                         const bool entity_already_resolved)
+                         const bool entity_already_resolved,
+                         const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveState state = entity_already_resolved ?
         parent : resolved_state(entity.readonly(), parent);
     if (entity.segment_count() != 0) {
@@ -367,18 +389,22 @@ bool find_first_geometry(MutableExtrusionEntity entity, const coord_t print_z,
         }
         return true;
     }
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         if (find_first_geometry(entity.child_mutable(child_idx), print_z,
-                                state, endpoint))
+                                state, endpoint, false, run_ctx))
             return true;
+    }
     return false;
 }
 
 bool find_last_geometry(MutableExtrusionEntity entity, const coord_t print_z,
                         const EffectiveState &parent,
                         GeometricEndpoint &endpoint,
-                        const bool entity_already_resolved)
+                        const bool entity_already_resolved,
+                        const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveState state = entity_already_resolved ?
         parent : resolved_state(entity.readonly(), parent);
     if (entity.segment_count() != 0) {
@@ -397,18 +423,22 @@ bool find_last_geometry(MutableExtrusionEntity entity, const coord_t print_z,
         }
         return true;
     }
-    for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx)
+    for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx) {
+        throw_if_cancelled(run_ctx);
         if (find_last_geometry(entity.child_mutable(child_idx - 1), print_z,
-                               state, endpoint))
+                               state, endpoint, false, run_ctx))
             return true;
+    }
     return false;
 }
 
 GeometricEndpoint scope_endpoint(
     const ScopeEntity &scope,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
-    const bool first)
+    const bool first,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const ExtrusionScope::OrderedExtrusionScope ordered(scope.entity, key);
     const EffectiveState scope_state = traversal_state(scope.effective_properties);
     MutableExtrusionEntity content = ordered.content();
@@ -416,9 +446,9 @@ GeometricEndpoint scope_endpoint(
     GeometricEndpoint endpoint;
     const bool found = first ?
         find_first_geometry(content, scope.layer_group.print_z(), scope_state,
-                            endpoint, content_is_scope) :
+                            endpoint, content_is_scope, run_ctx) :
         find_last_geometry(content, scope.layer_group.print_z(), scope_state,
-                           endpoint, content_is_scope);
+                           endpoint, content_is_scope, run_ctx);
     if (!found)
         throw std::runtime_error("A prepared retraction scope has no printable geometry.");
     return endpoint;
@@ -427,8 +457,10 @@ GeometricEndpoint scope_endpoint(
 double normal_retract_target(const Config &print_config,
                              const PrintingPlan &plan,
                              const ScopeEntity &source,
-                             const GeometricEndpoint &endpoint)
+                             const GeometricEndpoint &endpoint,
+                             const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const extruder_index_t extruder_id = source.tool_group.extruder_id();
     const double printer_target = print_config.vector_float_or_default(
         "retract_length", extruder_id, 0.0);
@@ -443,6 +475,7 @@ double normal_retract_target(const Config &print_config,
     };
     RegionSettingsPointResult lookup = RegionSettings::lookup_at_point(
         region_island, k_retraction_region_keys, lookup_point);
+    throw_if_cancelled(run_ctx);
     if (!lookup.found() && endpoint.has_interior_point) {
         lookup_point = c_point{
             endpoint.interior_point.x - shift.x,
@@ -450,6 +483,7 @@ double normal_retract_target(const Config &print_config,
         };
         lookup = RegionSettings::lookup_at_point(
             region_island, k_retraction_region_keys, lookup_point);
+        throw_if_cancelled(run_ctx);
     }
     if (!lookup.found())
         throw std::runtime_error(
@@ -464,9 +498,11 @@ BoundaryState boundary_state(
     const PrintingPlan &plan,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
     const bool first,
-    const bool resolve_normal_target)
+    const bool resolve_normal_target,
+    const plugin_run_context *run_ctx)
 {
-    const GeometricEndpoint endpoint = scope_endpoint(scope, key, first);
+    throw_if_cancelled(run_ctx);
+    const GeometricEndpoint endpoint = scope_endpoint(scope, key, first, run_ctx);
     BoundaryState state;
     state.valid = true;
     state.position = endpoint.position;
@@ -474,7 +510,7 @@ BoundaryState boundary_state(
     state.extruder_id = scope.tool_group.extruder_id();
     if (resolve_normal_target)
         state.normal_retract_target = normal_retract_target(
-            print_config, plan, scope, endpoint);
+            print_config, plan, scope, endpoint, run_ctx);
     return state;
 }
 
@@ -562,13 +598,18 @@ void set_event_attributes(MutableExtrusionEntity event,
 void write_outgoing_retraction(
     const ScopeEntity &source,
     const RetractionDecision &decision,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (!decision.requested || decision.target <= 0.0)
         return;
     const ExtrusionScope::OrderedExtrusionScope scope(source.entity, key);
+    throw_if_cancelled(run_ctx);
     MutableExtrusionEntity event = ExtrusionScope::append_phase_leaf(scope.after());
+    throw_if_cancelled(run_ctx);
     set_event_attributes(event, RAW_EXTRUSION_ROLE_RETRACT);
+    throw_if_cancelled(run_ctx);
     event.get_or_add(EPropertyExtrusionAxis::key).retract_to(
         decision.target, decision.toolchange_retraction);
 }
@@ -576,45 +617,61 @@ void write_outgoing_retraction(
 void write_incoming_retraction(
     const ScopeEntity &target,
     const RetractionDecision &decision,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (!decision.requested || decision.target <= 0.0)
         return;
 
     const ExtrusionScope::OrderedExtrusionScope scope(target.entity, key);
-    const std::optional<raw_extrusion_role> role = first_content_role(target, scope);
+    const std::optional<raw_extrusion_role> role = first_content_role(
+        target, scope, run_ctx);
+    throw_if_cancelled(run_ctx);
     MutableExtrusionEntity event = ExtrusionScope::append_phase_leaf(scope.before());
+    throw_if_cancelled(run_ctx);
     set_event_attributes(event, role.value_or(RAW_EXTRUSION_ROLE_NONE) |
         RAW_EXTRUSION_ROLE_UNRETRACT);
+    throw_if_cancelled(run_ctx);
     event.get_or_add(EPropertyExtrusionAxis::key).unretract(
         decision.restart_extra, decision.toolchange_retraction);
 }
 
 uint32_t scope_count(
     const PrintingLayerGroup &layer,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     uint32_t count = 0;
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         key,
-        [&count](ScopeEntity *, ScopeEntity *next) {
+        [&count, run_ctx](ScopeEntity *, ScopeEntity *next) {
+            throw_if_cancelled(run_ctx);
             if (next != nullptr)
                 ++count;
         },
         MatchingEntityDescendants::Skip);
+    throw_if_cancelled(run_ctx);
     traversal.process(layer);
+    throw_if_cancelled(run_ctx);
     return count;
 }
 
 void append_terminal_retraction(storage_handle *storage,
                                 const PrintingPlan &plan,
-                                const double target)
+                                const double target,
+                                const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (storage == nullptr || target <= 0.0)
         return;
     StoredExtrusionEntity event(storage);
+    throw_if_cancelled(run_ctx);
     set_event_attributes(event.mutable_view(), RAW_EXTRUSION_ROLE_RETRACT);
+    throw_if_cancelled(run_ctx);
     event.get_or_add(EPropertyExtrusionAxis::key).retract_to(target, false);
+    throw_if_cancelled(run_ctx);
     if (!plan.events().append_after_move(event.mutable_view()).valid())
         throw std::runtime_error("Unable to append the terminal retraction event.");
 }
@@ -699,6 +756,7 @@ const char *CreateRetraction::progress_message_format_impl() const noexcept
 void CreateRetraction::setup_impl(const plugin_run_context *run_ctx,
                                   const uint32_t run_count) const
 {
+    throw_if_cancelled(run_ctx);
     m_setup_valid = false;
     m_flat_indices.clear();
     m_layers.clear();
@@ -711,10 +769,13 @@ void CreateRetraction::setup_impl(const plugin_run_context *run_ctx,
     size_t flat_idx = 0;
     m_flat_indices.resize(plan.group_count());
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         m_flat_indices[group_idx].resize(group.layer_group_count());
-        for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx)
+        for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             m_flat_indices[group_idx][layer_idx] = flat_idx++;
+        }
     }
     if (flat_idx != run_count)
         throw std::runtime_error("Retraction run count does not match PrintingPlan layers.");
@@ -732,9 +793,10 @@ size_t CreateRetraction::flat_layer_index(
 }
 
 const LayerBoundarySummary *CreateRetraction::previous_nonempty_layer(
-    const size_t flat_idx) const
+    const size_t flat_idx, const plugin_run_context *run_ctx) const
 {
     for (size_t idx = flat_idx; idx > 0; --idx) {
+        throw_if_cancelled(run_ctx);
         const LayerBoundarySummary &summary = m_layers[idx - 1];
         if (!summary.prepared)
             throw std::runtime_error("A retraction summary was read before the host barrier.");
@@ -745,9 +807,10 @@ const LayerBoundarySummary *CreateRetraction::previous_nonempty_layer(
 }
 
 const LayerBoundarySummary *CreateRetraction::next_nonempty_layer(
-    const size_t flat_idx) const
+    const size_t flat_idx, const plugin_run_context *run_ctx) const
 {
     for (size_t idx = flat_idx + 1; idx < m_layers.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         const LayerBoundarySummary &summary = m_layers[idx];
         if (!summary.prepared)
             throw std::runtime_error("A retraction summary was read before the host barrier.");
@@ -759,6 +822,7 @@ const LayerBoundarySummary *CreateRetraction::next_nonempty_layer(
 
 void CreateRetraction::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx =
@@ -775,30 +839,35 @@ void CreateRetraction::setup_run_impl(const plugin_run_context *run_ctx) const
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         retraction_state_definition(),
-        [this, &summary, &print_config, &plan](ScopeEntity *previous, ScopeEntity *next) {
+        [this, &summary, &print_config, &plan, run_ctx](
+            ScopeEntity *previous, ScopeEntity *next) {
+            throw_if_cancelled(run_ctx);
             if (previous == nullptr && next != nullptr) {
                 summary.first = boundary_state(
-                    *next, print_config, plan, m_scope_property, true, false);
+                    *next, print_config, plan, m_scope_property, true, false, run_ctx);
                 summary.first_incoming_toolchange = printing_extrusion_scope_has_flag(
                     *next->property,
                     PRINTING_EXTRUSION_SCOPE_INCOMING_TOOLCHANGE);
             }
             if (previous != nullptr && next == nullptr) {
                 summary.last = boundary_state(
-                    *previous, print_config, plan, m_scope_property, false, true);
+                    *previous, print_config, plan, m_scope_property, false, true, run_ctx);
                 summary.last_outgoing_toolchange = printing_extrusion_scope_has_flag(
                     *previous->property,
                     PRINTING_EXTRUSION_SCOPE_OUTGOING_TOOLCHANGE);
             }
         },
         MatchingEntityDescendants::Skip);
+    throw_if_cancelled(run_ctx);
     traversal.process(layer);
+    throw_if_cancelled(run_ctx);
     m_layers[flat_layer_index(ctx->group_idx, ctx->layer_group_idx)] = summary;
-    progress().add_max(scope_count(layer, m_scope_property));
+    progress().add_max(scope_count(layer, m_scope_property, run_ctx));
 }
 
 void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     if (!m_setup_valid)
         return;
     const run_ctx_layer_extrusion_edition *ctx =
@@ -810,8 +879,8 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
     const size_t flat_idx = flat_layer_index(ctx->group_idx, ctx->layer_group_idx);
     if (!m_layers[flat_idx].prepared)
         throw std::runtime_error("A retraction layer has no prepared summary.");
-    const LayerBoundarySummary *preceding = previous_nonempty_layer(flat_idx);
-    const LayerBoundarySummary *following = next_nonempty_layer(flat_idx);
+    const LayerBoundarySummary *preceding = previous_nonempty_layer(flat_idx, run_ctx);
+    const LayerBoundarySummary *following = next_nonempty_layer(flat_idx, run_ctx);
     const PrintingLayerGroup layer(ctx->layer_group);
     const PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
@@ -819,8 +888,9 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,
         retraction_state_definition(),
-        [this, &print_config, &plan, &progress = progress(), preceding, following]
+        [this, &print_config, &plan, &progress = progress(), preceding, following, run_ctx]
         (ScopeEntity *previous, ScopeEntity *next) {
+            throw_if_cancelled(run_ctx);
             if (previous == nullptr && next != nullptr) {
                 if (preceding != nullptr) {
                     const bool incoming_toolchange = printing_extrusion_scope_has_flag(
@@ -830,11 +900,11 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
                         throw std::runtime_error(
                             "Inter-layer scopes disagree about their tool-change transition.");
                     const BoundaryState target = boundary_state(
-                        *next, print_config, plan, m_scope_property, true, false);
+                        *next, print_config, plan, m_scope_property, true, false, run_ctx);
                     const RetractionDecision decision = decide_boundary(
                         print_config, preceding->last, target, true,
                         incoming_toolchange);
-                    write_incoming_retraction(*next, decision, m_scope_property);
+                    write_incoming_retraction(*next, decision, m_scope_property, run_ctx);
                 }
                 progress.increment();
                 return;
@@ -852,14 +922,14 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
                         "Adjacent scopes disagree about their retraction transition.");
                 if (outgoing_transition) {
                     const BoundaryState source = boundary_state(
-                        *previous, print_config, plan, m_scope_property, false, true);
+                        *previous, print_config, plan, m_scope_property, false, true, run_ctx);
                     const BoundaryState target = boundary_state(
-                        *next, print_config, plan, m_scope_property, true, false);
+                        *next, print_config, plan, m_scope_property, true, false, run_ctx);
                     const RetractionDecision decision = decide_boundary(
                         print_config, source, target, false,
                         boundary_toolchange(*previous->property, *next->property));
-                    write_outgoing_retraction(*previous, decision, m_scope_property);
-                    write_incoming_retraction(*next, decision, m_scope_property);
+                    write_outgoing_retraction(*previous, decision, m_scope_property, run_ctx);
+                    write_incoming_retraction(*next, decision, m_scope_property, run_ctx);
                 }
                 progress.increment();
                 return;
@@ -873,14 +943,15 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
                     throw std::runtime_error(
                         "Inter-layer scopes disagree about their tool-change transition.");
                 const BoundaryState source = boundary_state(
-                    *previous, print_config, plan, m_scope_property, false, true);
+                    *previous, print_config, plan, m_scope_property, false, true, run_ctx);
                 const RetractionDecision decision = decide_boundary(
                     print_config, source, following->first, true,
                     outgoing_toolchange);
-                write_outgoing_retraction(*previous, decision, m_scope_property);
+                write_outgoing_retraction(*previous, decision, m_scope_property, run_ctx);
             }
         },
         MatchingEntityDescendants::Skip);
+    throw_if_cancelled(run_ctx);
     traversal.process(layer);
 }
 
@@ -957,6 +1028,7 @@ int32_t CreateTerminalRetraction::used_config_keys(
 void CreateTerminalRetraction::run_impl(
     const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_extrusion_edition *ctx =
         plugin_ctx_as_extrusion_edition(run_ctx);
     if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr ||
@@ -967,14 +1039,17 @@ void CreateTerminalRetraction::run_impl(
     const Config print_config = Print(ctx->print).config();
     bool found_terminal = false;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
                 m_scope_property,
                 retraction_state_definition(),
                 [this, &found_terminal, &print_config, &plan, run_ctx]
                 (ScopeEntity *, ScopeEntity *next) {
+                    throw_if_cancelled(run_ctx);
                     if (next == nullptr || !printing_extrusion_scope_has_flag(
                             *next->property, PRINTING_EXTRUSION_SCOPE_TERMINAL))
                         return;
@@ -983,14 +1058,16 @@ void CreateTerminalRetraction::run_impl(
                             "The PrintingPlan contains several terminal extrusion scopes.");
                     found_terminal = true;
                     const BoundaryState source = boundary_state(
-                        *next, print_config, plan, m_scope_property, false, true);
+                        *next, print_config, plan, m_scope_property, false, true, run_ctx);
                     if (source.modifier.disable_retraction == 0)
                         append_terminal_retraction(
                             run_ctx->plugin_storage, plan,
-                            source.normal_retract_target);
+                            source.normal_retract_target, run_ctx);
                 },
                 MatchingEntityDescendants::Skip);
+            throw_if_cancelled(run_ctx);
             traversal.process(layer);
+            throw_if_cancelled(run_ctx);
         }
     }
 }

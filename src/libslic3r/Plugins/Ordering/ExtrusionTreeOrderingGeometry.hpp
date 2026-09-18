@@ -23,15 +23,20 @@ which seam, direction, or ordering should be selected.
 */
 
 /* Reverse every local path and child order so the complete tree runs backward. */
-void reverse_tree(MutableExtrusionEntity entity);
+void reverse_tree(
+    MutableExtrusionEntity entity,
+    const plugin_run_context *run_ctx = nullptr);
 
 /* Rotate a fixed closed loop so its first and last point equal seam. */
 void rotate_loop_to_seam(storage_handle *scratch_storage,
                          MutableExtrusionEntity loop,
-                         c_point seam);
+                         c_point seam,
+                         const plugin_run_context *run_ctx = nullptr);
 
 /* Remove sorting and reversal permissions from an entity and all descendants. */
-void disable_ordering_flags_recursively(MutableExtrusionEntity entity);
+void disable_ordering_flags_recursively(
+    MutableExtrusionEntity entity,
+    const plugin_run_context *run_ctx = nullptr);
 
 /*
 Resolve the first source LayerRegion touched by a PrintingExtrusion.

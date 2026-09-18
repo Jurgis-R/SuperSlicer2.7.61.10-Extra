@@ -10,6 +10,7 @@ add_executable(${_TEST_NAME}_tests
     perimeter_test_helpers.cpp
     plugin_test_helpers.cpp
     test_auxiliary_layer_helpers.cpp
+    test_bridge_detector_cancellation.cpp
     mesh_queries_c_fixture.c
     mesh_query_visibility_reference.cpp
     test_mesh_queries.cpp

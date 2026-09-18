@@ -18,7 +18,7 @@ The example runs late in the pipeline and only reports progress once, so it is
 safe to keep enabled while testing the loader.
 """
 
-from slic3r_api import PluginBase, STEP_POST_SLICING, report_progress
+from slic3r_api import PluginBase, STEP_POST_SLICING, report_progress, throw_if_cancelled
 
 
 class ExamplePythonPlugin(PluginBase):
@@ -32,6 +32,7 @@ class ExamplePythonPlugin(PluginBase):
         )
 
     def run(self, run_ctx_address):
+        throw_if_cancelled(run_ctx_address)
         if run_ctx_address:
             report_progress(run_ctx_address, 1.0, "Python example plugin")
 

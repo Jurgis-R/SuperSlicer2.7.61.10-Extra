@@ -17,6 +17,7 @@
 #include "SeamCostModel.hpp"
 #include "SeamPlacementConstraints.hpp"
 #include "SeamTrackPreparation.hpp"
+#include "SeamInitializationCancellation.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
@@ -110,12 +111,14 @@ size_t nearest_surviving_base(
 /* Finalize every track from lower to upper layers. */
 void build_contiguous_targets(TP::Data &data,
                               const SeamPlacementConstraints &constraints,
-                              std::vector<TrackState> &states);
+                              std::vector<TrackState> &states,
+                              const plugin_run_context *run_context);
 
 class ContiguousSession final : public SeamPlacerSession
 {
 public:
-    explicit ContiguousSession(storage_handle *storage);
+    explicit ContiguousSession(storage_handle *storage,
+                               const plugin_run_context *run_context = nullptr);
     void initialize(const PrintingPlan &plan,
                     const std::vector<PrintRegion> &regions) override;
     float get_priority(const ExtrusionEntity &, const LayerRegion &) const override;
@@ -124,6 +127,7 @@ public:
 
 private:
     storage_handle *m_storage;
+    const plugin_run_context *m_run_context;
     bool m_initialization_started = false;
     TP::Data m_data;
     std::vector<TrackState> m_states;
@@ -278,7 +282,8 @@ size_t nearest_surviving_base(
 
 void build_contiguous_targets(TP::Data &data,
                               const SeamPlacementConstraints &constraints,
-                              std::vector<TrackState> &states)
+                              std::vector<TrackState> &states,
+                              const plugin_run_context *run_context)
 {
     states.resize(data.tracks.size());
     std::vector<size_t> order(data.tracks.size());
@@ -288,9 +293,10 @@ void build_contiguous_targets(TP::Data &data,
     });
 
     for (const size_t track_index : order) {
+        InitializationCancellation::check(run_context);
         TP::Track &track = data.tracks[track_index];
         std::vector<CP::Candidate> local_candidates = track.candidates;
-        CP::filter_candidates(local_candidates);
+        CP::filter_candidates(local_candidates, run_context);
         if (local_candidates.empty())
             throw std::runtime_error(
                 "Contiguous seam filtering removed every perimeter candidate.");
@@ -323,6 +329,7 @@ void build_contiguous_targets(TP::Data &data,
         const ExtrusionEntity loop(track.loop);
         const LayerRegionIsland region_island(track.region_island);
         for (const size_t source_track : lower) {
+            InitializationCancellation::check(run_context);
             const TP::Track &source = data.tracks[source_track];
             const c_point source_target = {
                 states[source_track].final_point.x + source.instance_shift.x,
@@ -352,7 +359,8 @@ void build_contiguous_targets(TP::Data &data,
             candidate.enforced =
                 status == SeamPlacementConstraints::Status::Enforced;
             std::vector<CP::Candidate> enriched{candidate};
-            CP::calculate_layer_attributes(region_island, enriched);
+            CP::calculate_layer_attributes(
+                region_island, enriched, run_context);
             candidate = enriched.front();
             candidate.stable_order = projection_begin + projections.size();
             combined.push_back(candidate);
@@ -365,7 +373,7 @@ void build_contiguous_targets(TP::Data &data,
             state.ready = true;
             continue;
         }
-        CP::filter_candidates(combined);
+        CP::filter_candidates(combined, run_context);
         if (combined.empty()) combined = local_candidates;
         size_t selected = best_surviving_projection(
             data, combined, projections);
@@ -381,8 +389,9 @@ void build_contiguous_targets(TP::Data &data,
     }
 }
 
-ContiguousSession::ContiguousSession(storage_handle *storage) :
-    m_storage(storage)
+ContiguousSession::ContiguousSession(
+    storage_handle *storage, const plugin_run_context *run_context) :
+    m_storage(storage), m_run_context(run_context)
 {}
 
 void ContiguousSession::initialize(
@@ -392,15 +401,18 @@ void ContiguousSession::initialize(
         throw std::logic_error(
             "Contiguous seam placement sessions may only be initialized once.");
     m_initialization_started = true;
+    InitializationCancellation::check(m_run_context);
     if (!plan.valid() || m_storage == nullptr)
         throw std::invalid_argument(
             "Contiguous seam placement needs a valid plan and temporary storage.");
     SeamPlacementConstraints constraints;
-    constraints.initialize_for_regions(plan, m_storage, regions);
+    constraints.initialize_for_regions(plan, m_storage, regions, m_run_context);
     m_data = TP::prepare(
-        plan, regions, m_storage, constraints, "Contiguous");
-    build_contiguous_targets(m_data, constraints, m_states);
+        plan, regions, m_storage, constraints, "Contiguous", m_run_context);
+    build_contiguous_targets(
+        m_data, constraints, m_states, m_run_context);
     m_storage = nullptr;
+    m_run_context = nullptr;
 }
 
 float ContiguousSession::get_priority(const ExtrusionEntity &,
@@ -549,9 +561,10 @@ void ContiguousSeamPlacer::run_impl(
     regions.reserve(context->region_count);
     for (uint32_t index = 0; index < context->region_count; ++index)
         regions.emplace_back(context->regions[index]);
+    InitializationCancellation::check(run_context);
     context->instance = make_seam_placer_instance(
         std::unique_ptr<SeamPlacerSession>(
-            new ContiguousSession(run_context->plugin_storage)),
+            new ContiguousSession(run_context->plugin_storage, run_context)),
         PrintingPlan(context->plan), regions);
 }
 

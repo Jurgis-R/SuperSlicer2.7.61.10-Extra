@@ -43,6 +43,7 @@ caches allow concurrent reads while the host keeps borrowed inputs stable.
 */
 
 #include "SeamPlacementConstraints.hpp"
+#include "SeamInitializationCancellation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -426,22 +427,27 @@ double SeamPlacementConstraints::Curve::parameter(double angle) const
     return delta/sweep;
 }
 
-void SeamPlacementConstraints::initialize(const PrintingPlan &plan, storage_handle *storage)
+void SeamPlacementConstraints::initialize(
+    const PrintingPlan &plan, storage_handle *storage,
+    const plugin_run_context *run_context)
 {
-    initialize_impl(plan, storage, nullptr);
+    initialize_impl(plan, storage, nullptr, run_context);
 }
 
 void SeamPlacementConstraints::initialize_for_regions(
     const PrintingPlan &plan, storage_handle *storage,
-    const std::vector<PrintRegion> &regions)
+    const std::vector<PrintRegion> &regions,
+    const plugin_run_context *run_context)
 {
-    initialize_impl(plan, storage, &regions);
+    initialize_impl(plan, storage, &regions, run_context);
 }
 
 void SeamPlacementConstraints::initialize_impl(
     const PrintingPlan &plan, storage_handle *storage,
-    const std::vector<PrintRegion> *regions)
+    const std::vector<PrintRegion> *regions,
+    const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     // Build the replacement cache locally so a projection or slicing exception
     // cannot publish a partially initialized cache.
     if (!plan.valid() || storage==nullptr) throw std::invalid_argument("Seam constraints need plan and temporary storage.");
@@ -459,6 +465,7 @@ void SeamPlacementConstraints::initialize_impl(
        tool-position inference or spatial search across translated copies. */
     std::function<void(const ExtrusionEntity &,Binding)> register_tree;
     register_tree=[&](const ExtrusionEntity &entity,Binding binding) {
+        InitializationCancellation::check(run_context);
         prepared->bindings.emplace(entity.handle(),binding);
         const c_extrusion_property_attributes *attributes=static_cast<const c_extrusion_property_attributes *>(
             entity.property_data(EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
@@ -469,12 +476,14 @@ void SeamPlacementConstraints::initialize_impl(
         for (uint32_t i=0;i<entity.child_count();++i) register_tree(entity.child(i),binding);
     };
     for (uint32_t g=0;g<plan.group_count();++g) {
+        InitializationCancellation::check(run_context);
         const PrintingGroup group=plan.group(g);
         for (uint32_t l=0;l<group.layer_group_count();++l) {
             const PrintingLayerGroup layer_group=group.layer_group(l);
             for (uint32_t t=0;t<layer_group.tool_group_count();++t) {
                 const PrintingToolGroup tool=layer_group.tool_group(t);
                 for (uint32_t e=0;e<tool.extrusion_count();++e) {
+                    InitializationCancellation::check_periodic(run_context, e);
                     const PrintingExtrusion extrusion=tool.extrusion(e);
                     const LayerRegionIsland island=extrusion.region_island();
                     if (!island.valid() || island.region_count()==0) continue;
@@ -501,11 +510,15 @@ void SeamPlacementConstraints::initialize_impl(
     // One projection per source object, shared by all its translated instances.
     // Stored collections release their allocations even if preparation throws.
     for (const std::pair<const object_handle *const,bool> &entry:objects) {
+        InitializationCancellation::check(run_context);
         const Object object(entry.first);
         std::vector<StoredPolygonCollection> enforced=project_painting_to_polygons(storage,object,RAW_FACET_PAINTING_SEAM,RAW_FACET_PAINTING_ENFORCER);
+        InitializationCancellation::check(run_context);
         std::vector<StoredPolygonCollection> blocked=project_painting_to_polygons(storage,object,RAW_FACET_PAINTING_SEAM,RAW_FACET_PAINTING_BLOCKER);
+        InitializationCancellation::check(run_context);
         std::vector<float> zs;
         for (uint32_t l=0;l<object.layer_count();++l) {
+            InitializationCancellation::check_periodic(run_context, l);
             const Layer layer=object.layer(l);
             Zones &zones=prepared->layers[layer.handle()];
             zones.enforced=copy_shape(enforced[l].readonly());
@@ -515,12 +528,16 @@ void SeamPlacementConstraints::initialize_impl(
         const c_point center=object.center_offset();
         const c_matrix4d transform=matrix4d_mul(matrix4d_translation(-unscaled(center.x),-unscaled(center.y),0),object.transform());
         for (uint32_t v=0;v<object.volume_count();++v) {
+            InitializationCancellation::check(run_context);
             const Volume volume=object.volume(v);
             if (volume.type()!=RAW_VOLUME_TYPE_SEAM_POSITION_INSIDE) continue;
             std::vector<StoredPolygonCollection> slices=volume.mesh().slice_to_polygons(
                 storage,matrix4d_mul(transform,volume_get_matrix(volume.handle())),zs);
-            for (uint32_t l=0;l<object.layer_count();++l)
+            InitializationCancellation::check(run_context);
+            for (uint32_t l=0;l<object.layer_count();++l) {
+                InitializationCancellation::check_periodic(run_context, l);
                 prepared->layers[object.layer(l).handle()].volumes.push_back(copy_shape(slices[l].readonly()));
+            }
         }
     }
     m_impl=std::move(prepared);

@@ -102,22 +102,29 @@ coord_t max_external_perimeter_width(const Layer &layer);
 // Copy current island slices into storage-owned collections. The layer may be
 // rebuilt after the plugin writes LayerRegion slices, so long-lived data must
 // not borrow from the original layer.
-std::vector<IslandInfo> copy_layer_islands(storage_handle *storage, const Layer &layer);
+std::vector<IslandInfo> copy_layer_islands(storage_handle *storage,
+                                           const Layer &layer,
+                                           const plugin_run_context *run_ctx);
 
 // Build the list of island pairs close enough to be connected. Each edge stores
 // the nearest boundary points, which are also the bridge capsule centerline.
-std::vector<BridgeEdge> proximity_edges(const std::vector<IslandInfo> &islands, coord_t threshold);
+std::vector<BridgeEdge> proximity_edges(const std::vector<IslandInfo> &islands,
+                                        coord_t threshold,
+                                        const plugin_run_context *run_ctx);
 
 // Select a non-redundant set of close bridges. Kruskal gives one minimal bridge
 // tree per connected component, instead of connecting every close pair.
-std::vector<BridgeEdge> minimum_bridge_edges(uint32_t island_count, std::vector<BridgeEdge> edges);
+std::vector<BridgeEdge> minimum_bridge_edges(uint32_t island_count,
+                                            std::vector<BridgeEdge> edges,
+                                            const plugin_run_context *run_ctx);
 
 // Offset a two-point centerline into a round-ended bridge capsule. The returned
 // collection may contain several polygons after Clipper cleanup, although the
 // common case is one ExPolygon.
 StoredExPolygonCollection bridge_capsule(storage_handle *storage,
                                          const BridgeEdge &edge,
-                                         coord_t bridge_width);
+                                         coord_t bridge_width,
+                                         const plugin_run_context *run_ctx);
 
 // Merge copied island slices and bridge capsules into component geometries.
 std::vector<ConnectedComponent> build_connected_components(storage_handle *storage,
@@ -131,7 +138,8 @@ std::vector<ConnectedComponent> build_connected_components(storage_handle *stora
 // the largest component is kept.
 uint32_t choose_component_to_keep(storage_handle *storage,
                                   const std::vector<ConnectedComponent> &components,
-                                  const ExPolygonCollection &previous_kept);
+                                  const ExPolygonCollection &previous_kept,
+                                  const plugin_run_context *run_ctx);
 
 // Build replacement raw LayerRegion slices from the selected component. Region
 // ownership remains mostly unchanged, except bridge capsules are added to the
@@ -139,13 +147,15 @@ uint32_t choose_component_to_keep(storage_handle *storage,
 std::vector<StoredExPolygonCollection> replacement_region_slices(storage_handle *storage,
                                                                  const Layer &layer,
                                                                  const ConnectedComponent &kept_component,
-                                                                 const std::vector<BridgeEdge> &all_accepted_edges);
+                                                                 const std::vector<BridgeEdge> &all_accepted_edges,
+                                                                 const plugin_run_context *run_ctx);
 
 // Write replacement raw region slices to the host layer and ask the host to
 // rebuild layer slices and islands from those raw regions.
 void publish_layer_regions(const run_ctx_post_slicing &ctx,
                            uint32_t layer_idx,
-                           std::vector<StoredExPolygonCollection> &regions);
+                           std::vector<StoredExPolygonCollection> &regions,
+                           const plugin_run_context *run_ctx);
 
 // Process one multi-island layer. The previous layer geometry is used only for
 // disconnected-component selection.
@@ -158,7 +168,10 @@ void process_layer(storage_handle *storage,
 
 // Geometry helpers used by the graph builder and testable selection logic.
 double collection_area(const ExPolygonCollection &areas);
-double intersection_area(storage_handle *storage, const ExPolygonCollection &lhs, const ExPolygonCollection &rhs);
+double intersection_area(storage_handle *storage,
+                         const ExPolygonCollection &lhs,
+                         const ExPolygonCollection &rhs,
+                         const plugin_run_context *run_ctx);
 c_bounding_box grow_bbox(c_bounding_box bbox, coord_t delta);
 bool bboxes_can_be_close(c_bounding_box lhs, c_bounding_box rhs, coord_t threshold);
 std::vector<BoundarySegment> boundary_segments(const ExPolygon &area);
@@ -270,21 +283,29 @@ coord_t max_external_perimeter_width(const Layer &layer)
     return width;
 }
 
-std::vector<IslandInfo> copy_layer_islands(storage_handle *storage, const Layer &layer)
+std::vector<IslandInfo> copy_layer_islands(storage_handle *storage,
+                                           const Layer &layer,
+                                           const plugin_run_context *run_ctx)
 {
     std::vector<IslandInfo> islands;
     islands.reserve(layer.island_count());
-    for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx)
+    for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
+        throw_if_cancelled(run_ctx);
         islands.emplace_back(storage, island_idx, layer.island(island_idx).slice());
+    }
     return islands;
 }
 
-std::vector<BridgeEdge> proximity_edges(const std::vector<IslandInfo> &islands, const coord_t threshold)
+std::vector<BridgeEdge> proximity_edges(const std::vector<IslandInfo> &islands,
+                                        const coord_t threshold,
+                                        const plugin_run_context *run_ctx)
 {
     std::vector<BridgeEdge> edges;
     const double threshold_squared = double(threshold) * double(threshold);
     for (uint32_t lhs_idx = 0; lhs_idx < islands.size(); ++lhs_idx) {
+        throw_if_cancelled(run_ctx);
         for (uint32_t rhs_idx = lhs_idx + 1; rhs_idx < islands.size(); ++rhs_idx) {
+            throw_if_cancelled(run_ctx);
             if (!bboxes_can_be_close(islands[lhs_idx].bbox, islands[rhs_idx].bbox, threshold))
                 continue;
 
@@ -305,35 +326,46 @@ std::vector<BridgeEdge> proximity_edges(const std::vector<IslandInfo> &islands, 
     return edges;
 }
 
-std::vector<BridgeEdge> minimum_bridge_edges(const uint32_t island_count, std::vector<BridgeEdge> edges)
+std::vector<BridgeEdge> minimum_bridge_edges(const uint32_t island_count,
+                                            std::vector<BridgeEdge> edges,
+                                            const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::sort(edges.begin(), edges.end(), [](const BridgeEdge &lhs, const BridgeEdge &rhs) {
         return lhs.distance_squared < rhs.distance_squared;
     });
+    throw_if_cancelled(run_ctx);
 
     UnionFind uf(island_count);
     std::vector<BridgeEdge> accepted;
     accepted.reserve(edges.size());
-    for (BridgeEdge &edge : edges)
+    for (BridgeEdge &edge : edges) {
+        throw_if_cancelled(run_ctx);
         if (uf.unite(edge.lhs, edge.rhs))
             accepted.push_back(std::move(edge));
+    }
     return accepted;
 }
 
 StoredExPolygonCollection bridge_capsule(storage_handle *storage,
                                          const BridgeEdge &edge,
-                                         const coord_t bridge_width)
+                                         const coord_t bridge_width,
+                                         const plugin_run_context *run_ctx)
 {
     StoredPolyline centerline(storage);
     centerline.push_back(edge.lhs_point);
     centerline.push_back(edge.rhs_point);
     const double radius = double(bridge_width) / 2.0;
+    throw_if_cancelled(run_ctx);
     ClipperOperand capsule = clipper_offset(ClipperOperand(storage, centerline.readonly()),
                                             radius,
                                             CLIPPER_JOIN_ROUND,
                                             3.0,
                                             CLIPPER_END_OPEN_ROUND);
-    return clipper_union(capsule).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    StoredExPolygonCollection out = clipper_union(capsule).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    return out;
 }
 
 std::vector<ConnectedComponent> build_connected_components(storage_handle *storage,
@@ -343,12 +375,15 @@ std::vector<ConnectedComponent> build_connected_components(storage_handle *stora
                                                            const plugin_run_context *run_ctx)
 {
     UnionFind uf(uint32_t(islands.size()));
-    for (const BridgeEdge &edge : accepted_edges)
+    for (const BridgeEdge &edge : accepted_edges) {
+        throw_if_cancelled(run_ctx);
         uf.unite(edge.lhs, edge.rhs);
+    }
 
     std::map<uint32_t, uint32_t> root_to_component;
     std::vector<ConnectedComponent> components;
     for (uint32_t island_idx = 0; island_idx < islands.size(); ++island_idx) {
+        throw_if_cancelled(run_ctx);
         const uint32_t root = uf.find(island_idx);
         std::map<uint32_t, uint32_t>::iterator it = root_to_component.find(root);
         if (it == root_to_component.end()) {
@@ -360,8 +395,9 @@ std::vector<ConnectedComponent> build_connected_components(storage_handle *stora
     }
 
     for (uint32_t edge_idx = 0; edge_idx < accepted_edges.size(); ++edge_idx) {
+        throw_if_cancelled(run_ctx);
         BridgeEdge &edge = accepted_edges[edge_idx];
-        edge.capsule = bridge_capsule(storage, edge, bridge_width);
+        edge.capsule = bridge_capsule(storage, edge, bridge_width, run_ctx);
         if (edge.capsule.empty()) {
             report_warning(run_ctx, "Plugin 'vase.multi_island_connector': skipped a degenerate vase bridge.");
             continue;
@@ -371,12 +407,19 @@ std::vector<ConnectedComponent> build_connected_components(storage_handle *stora
     }
 
     for (ConnectedComponent &component : components) {
+        throw_if_cancelled(run_ctx);
         ClipperOperand joined = ClipperOperand::create_empty(storage);
-        for (uint32_t island_idx : component.island_indices)
+        for (uint32_t island_idx : component.island_indices) {
+            throw_if_cancelled(run_ctx);
             joined += ClipperOperand(storage, islands[island_idx].area.readonly());
-        for (uint32_t edge_idx : component.bridge_indices)
+        }
+        for (uint32_t edge_idx : component.bridge_indices) {
+            throw_if_cancelled(run_ctx);
             joined += ClipperOperand(storage, accepted_edges[edge_idx].capsule.readonly());
+        }
+        throw_if_cancelled(run_ctx);
         component.area = clipper_union(joined).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
         component.unscaled_area = collection_area(component.area.readonly());
     }
     return components;
@@ -384,7 +427,8 @@ std::vector<ConnectedComponent> build_connected_components(storage_handle *stora
 
 uint32_t choose_component_to_keep(storage_handle *storage,
                                   const std::vector<ConnectedComponent> &components,
-                                  const ExPolygonCollection &previous_kept)
+                                  const ExPolygonCollection &previous_kept,
+                                  const plugin_run_context *run_ctx)
 {
     assert(!components.empty());
 
@@ -392,9 +436,11 @@ uint32_t choose_component_to_keep(storage_handle *storage,
     double best_continuity_area = 0.;
     if (!previous_kept.empty()) {
         for (uint32_t component_idx = 0; component_idx < components.size(); ++component_idx) {
+            throw_if_cancelled(run_ctx);
             const double continuity_area = intersection_area(storage,
                                                              components[component_idx].area.readonly(),
-                                                             previous_kept);
+                                                             previous_kept,
+                                                             run_ctx);
             if (continuity_area > best_continuity_area) {
                 best_continuity_area = continuity_area;
                 best_idx = component_idx;
@@ -405,36 +451,45 @@ uint32_t choose_component_to_keep(storage_handle *storage,
     if (best_continuity_area > 0.)
         return best_idx;
 
-    for (uint32_t component_idx = 1; component_idx < components.size(); ++component_idx)
+    for (uint32_t component_idx = 1; component_idx < components.size(); ++component_idx) {
+        throw_if_cancelled(run_ctx);
         if (components[component_idx].unscaled_area > components[best_idx].unscaled_area)
             best_idx = component_idx;
+    }
     return best_idx;
 }
 
 std::vector<StoredExPolygonCollection> replacement_region_slices(storage_handle *storage,
                                                                  const Layer &layer,
                                                                  const ConnectedComponent &kept_component,
-                                                                 const std::vector<BridgeEdge> &all_accepted_edges)
+                                                                 const std::vector<BridgeEdge> &all_accepted_edges,
+                                                                 const plugin_run_context *run_ctx)
 {
     std::vector<StoredExPolygonCollection> original_regions;
     std::vector<StoredExPolygonCollection> new_regions;
     original_regions.reserve(layer.region_count());
     new_regions.reserve(layer.region_count());
     for (uint32_t region_idx = 0; region_idx < layer.region_count(); ++region_idx) {
+        throw_if_cancelled(run_ctx);
         original_regions.push_back(layer.region(region_idx).slices().clone(storage));
+        throw_if_cancelled(run_ctx);
         ClipperOperand clipped = clipper_intersection(ClipperOperand(storage, original_regions.back().readonly()),
                                                       ClipperOperand(storage, kept_component.area.readonly()));
+        throw_if_cancelled(run_ctx);
         new_regions.push_back(clipped.to_expolygon_collection());
     }
 
     for (uint32_t edge_idx : kept_component.bridge_indices) {
+        throw_if_cancelled(run_ctx);
         const BridgeEdge &edge = all_accepted_edges[edge_idx];
         double best_overlap = 0.;
         uint32_t owner_region = 0;
         for (uint32_t region_idx = 0; region_idx < original_regions.size(); ++region_idx) {
+            throw_if_cancelled(run_ctx);
             const double overlap = intersection_area(storage,
                                                      original_regions[region_idx].readonly(),
-                                                     edge.capsule.readonly());
+                                                     edge.capsule.readonly(),
+                                                     run_ctx);
             if (overlap > best_overlap) {
                 best_overlap = overlap;
                 owner_region = region_idx;
@@ -444,15 +499,19 @@ std::vector<StoredExPolygonCollection> replacement_region_slices(storage_handle 
         // The capsule is real slice material. It is added to exactly one
         // LayerRegion so raw regions stay non-overlapping after reconstruction.
         for (uint32_t region_idx = 0; region_idx < new_regions.size(); ++region_idx) {
+            throw_if_cancelled(run_ctx);
             if (region_idx == owner_region)
                 continue;
             new_regions[region_idx] =
                 clipper_diff(ClipperOperand(storage, new_regions[region_idx].readonly()),
                              ClipperOperand(storage, edge.capsule.readonly())).to_expolygon_collection();
+            throw_if_cancelled(run_ctx);
         }
         new_regions[owner_region].append_copy_from(edge.capsule.readonly());
+        throw_if_cancelled(run_ctx);
         new_regions[owner_region] =
             clipper_union(ClipperOperand(storage, new_regions[owner_region].readonly())).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
     }
 
     return new_regions;
@@ -460,12 +519,16 @@ std::vector<StoredExPolygonCollection> replacement_region_slices(storage_handle 
 
 void publish_layer_regions(const run_ctx_post_slicing &ctx,
                            const uint32_t layer_idx,
-                           std::vector<StoredExPolygonCollection> &regions)
+                           std::vector<StoredExPolygonCollection> &regions,
+                           const plugin_run_context *run_ctx)
 {
     layer_handle *mutable_layer = ctx.object_borrow_mutable_layer(ctx.object, layer_idx);
     if (mutable_layer == nullptr)
         return;
 
+    // Once publication starts, every region move and the layer cache rebuild
+    // form one consistency commit and must not be split by cancellation.
+    throw_if_cancelled(run_ctx);
     for (uint32_t region_idx = 0; region_idx < regions.size(); ++region_idx) {
         layer_region_handle *mutable_region = layer_get_region_mutable(mutable_layer, region_idx);
         expolygon_collection_handle *raw_slices = ctx.layer_region_borrow_mutable_slices(mutable_region);
@@ -483,6 +546,7 @@ void process_layer(storage_handle *storage,
                    const uint32_t layer_idx,
                    const ExPolygonCollection &previous_kept)
 {
+    throw_if_cancelled(run_ctx);
     if (layer.island_count() <= 1)
         return;
 
@@ -492,9 +556,12 @@ void process_layer(storage_handle *storage,
 
     const coord_t bridge_width = 2 * external_width;
     const coord_t threshold = 2 * external_width;
-    std::vector<IslandInfo> islands = copy_layer_islands(storage, layer);
+    std::vector<IslandInfo> islands = copy_layer_islands(storage, layer, run_ctx);
+    throw_if_cancelled(run_ctx);
     std::vector<BridgeEdge> edges = minimum_bridge_edges(uint32_t(islands.size()),
-                                                         proximity_edges(islands, threshold));
+                                                         proximity_edges(islands, threshold, run_ctx),
+                                                         run_ctx);
+    throw_if_cancelled(run_ctx);
     std::vector<ConnectedComponent> components = build_connected_components(storage,
                                                                             islands,
                                                                             edges,
@@ -503,14 +570,15 @@ void process_layer(storage_handle *storage,
     if (components.empty())
         return;
 
-    const uint32_t keep_idx = choose_component_to_keep(storage, components, previous_kept);
+    const uint32_t keep_idx = choose_component_to_keep(storage, components, previous_kept, run_ctx);
     ConnectedComponent &kept_component = components[keep_idx];
 
     // Even when no bridge was required, disconnected components are still
     // reduced to one kept component so vase mode receives one island per layer.
     std::vector<StoredExPolygonCollection> new_regions =
-        replacement_region_slices(storage, layer, kept_component, edges);
-    publish_layer_regions(ctx, layer_idx, new_regions);
+        replacement_region_slices(storage, layer, kept_component, edges, run_ctx);
+    throw_if_cancelled(run_ctx);
+    publish_layer_regions(ctx, layer_idx, new_regions, run_ctx);
 }
 
 double collection_area(const ExPolygonCollection &areas)
@@ -521,12 +589,17 @@ double collection_area(const ExPolygonCollection &areas)
     return out;
 }
 
-double intersection_area(storage_handle *storage, const ExPolygonCollection &lhs, const ExPolygonCollection &rhs)
+double intersection_area(storage_handle *storage,
+                         const ExPolygonCollection &lhs,
+                         const ExPolygonCollection &rhs,
+                         const plugin_run_context *run_ctx)
 {
     if (lhs.empty() || rhs.empty())
         return 0.;
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection intersection =
         clipper_intersection(ClipperOperand(storage, lhs), ClipperOperand(storage, rhs)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     return collection_area(intersection.readonly());
 }
 
@@ -655,6 +728,7 @@ const char *VaseMultiIslandConnector::progress_message_format_impl() const noexc
 
 void VaseMultiIslandConnector::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_slicing *ctx = plugin_ctx_as_post_slicing(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr)
         return;
@@ -667,6 +741,7 @@ void VaseMultiIslandConnector::setup_run_impl(const plugin_run_context *run_ctx)
 
 void VaseMultiIslandConnector::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_slicing *ctx = plugin_ctx_as_post_slicing(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr)
         return;

@@ -31,6 +31,7 @@ temperature fields remain owned by their original producers.
 #include "ExtrusionProcessParameterHelpers.hpp"
 #include "RegionalProcessParameterHelpers.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 
 namespace slic3r_api { namespace LayerExtrusionEdit { namespace DefaultAccelerationPlugin {
@@ -108,13 +109,15 @@ float resolved_travel_acceleration(const ExtrusionSettingsContext &context);
 // Collect roles that still need acceleration from one validated tree.
 void collect_unresolved_roles(MutableExtrusionEntity entity,
                               const EffectiveTreeState &parent_state,
-                              std::set<raw_extrusion_role> &roles);
+                              std::set<raw_extrusion_role> &roles,
+                              const plugin_run_context *run_ctx);
 
 // Validate all trees and prepare immutable partitions before parallel mutation.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
                   const PrintingPlan &plan,
-                  AccelerationPartitions &partitions);
+                  AccelerationPartitions &partitions,
+                  const plugin_run_context *run_ctx);
 
 // Assign missing acceleration recursively while preserving speed and overrides.
 void assign_acceleration_tree(MutableExtrusionEntity entity,
@@ -123,14 +126,16 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
                               const LayerRegionIsland &region_island,
                               size_t printing_catalog_idx,
                               const AccelerationPartitions &partitions,
-                              EPropertySpeedFieldEditor &editor);
+                              EPropertySpeedFieldEditor &editor,
+                              const plugin_run_context *run_ctx);
 
 // Resolve and compact acceleration on one cloned extrusion root.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
                     const PrintingToolGroup &tool_group,
                     const PrintingExtrusion &extrusion,
-                    const AccelerationPartitions &partitions);
+                    const AccelerationPartitions &partitions,
+                    const plugin_run_context *run_ctx);
 
 class DefaultAcceleration : public PluginBase
 {
@@ -256,12 +261,16 @@ float resolved_travel_acceleration(const ExtrusionSettingsContext &context)
 
 void collect_unresolved_roles(MutableExtrusionEntity entity,
                               const EffectiveTreeState &parent_state,
-                              std::set<raw_extrusion_role> &roles)
+                              std::set<raw_extrusion_role> &roles,
+                              const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveTreeState state = effective_state(entity, parent_state);
     if (entity.child_count() > 0) {
-        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-            collect_unresolved_roles(entity.child_mutable(child_idx), state, roles);
+        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+            throw_if_cancelled(run_ctx);
+            collect_unresolved_roles(entity.child_mutable(child_idx), state, roles, run_ctx);
+        }
         return;
     }
 
@@ -272,8 +281,10 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
 void prepare_plan(storage_handle *storage,
                   const Print &print,
                   const PrintingPlan &plan,
-                  AccelerationPartitions &partitions)
+                  AccelerationPartitions &partitions,
+                  const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     partitions.clear();
     std::set<AccelerationPartitionKey> prepared_keys;
     RegionalSettingsPartitions regional_settings;
@@ -281,12 +292,16 @@ void prepare_plan(storage_handle *storage,
     // Visit every root before mutation. Besides validating source attributes,
     // collect every role that may need a regional partition in later runs.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer_group = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
+                throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+                    throw_if_cancelled(run_ctx);
                     const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, false);
@@ -294,8 +309,10 @@ void prepare_plan(storage_handle *storage,
                     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
 
                     std::set<raw_extrusion_role> roles;
-                    collect_unresolved_roles(extrusion.mutable_root(), EffectiveTreeState{}, roles);
+                    collect_unresolved_roles(
+                        extrusion.mutable_root(), EffectiveTreeState{}, roles, run_ctx);
                     for (const raw_extrusion_role role : roles) {
+                        throw_if_cancelled(run_ctx);
                         const RegionalSourceKey source{
                             region_island.handle(), static_cast<uint16_t>(object_instance_idx)
                         };
@@ -310,11 +327,13 @@ void prepare_plan(storage_handle *storage,
                         // that expensive partition for every role and tool.
                         RegionalSettingsPartitions::iterator settings_it = regional_settings.find(source);
                         if (settings_it == regional_settings.end()) {
+                            throw_if_cancelled(run_ctx);
                             RegionalSettingsPartition settings = build_regional_settings_partition(
                                 storage, region_island, k_region_acceleration_keys, plan.object_instance_shift(extrusion));
                             settings_it = regional_settings.emplace(source, std::move(settings)).first;
                         }
 
+                        throw_if_cancelled(run_ctx);
                         RegionalProcessPartition partition = project_regional_process_values(
                             storage, settings_it->second,
                             [&context, role](const Config &region_config) {
@@ -322,6 +341,7 @@ void prepare_plan(storage_handle *storage,
                                 regional_context.region_config = region_config;
                                 return float(role_acceleration(regional_context, role));
                             });
+                        throw_if_cancelled(run_ctx);
                         if (partition.requires_split())
                             partitions.emplace(key, std::move(partition));
                     }
@@ -337,15 +357,20 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
                               const LayerRegionIsland &region_island,
                               size_t printing_catalog_idx,
                               const AccelerationPartitions &partitions,
-                              EPropertySpeedFieldEditor &editor)
+                              EPropertySpeedFieldEditor &editor,
+                              const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     // Collections propagate inherited state; only editable leaves receive a
     // missing acceleration value.
     const EffectiveTreeState state = effective_state(entity, parent_state);
     if (entity.child_count() > 0) {
-        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+            throw_if_cancelled(run_ctx);
             assign_acceleration_tree(entity.child_mutable(child_idx), state, context,
-                                     region_island, printing_catalog_idx, partitions, editor);
+                                     region_island, printing_catalog_idx, partitions, editor,
+                                     run_ctx);
+        }
         return;
     }
 
@@ -357,6 +382,7 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
     // Travels bypass regional partitioning and first-layer role policy. Their
     // single movement setting is resolved directly from the process config.
     if (RAW_EXTRUSION_ROLE_IS_TRAVEL(role)) {
+        throw_if_cancelled(run_ctx);
         editor.set_value(entity, resolved_travel_acceleration(context));
         return;
     }
@@ -369,12 +395,14 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
     };
     const AccelerationPartitions::const_iterator partition_it = partitions.find(key);
     if (partition_it == partitions.end()) {
+        throw_if_cancelled(run_ctx);
         editor.set_value(entity, float(role_acceleration(context, role)));
         return;
     }
 
     // The common helper keeps clipping, fragment ordering and property edits
     // identical between acceleration and speed.
+    throw_if_cancelled(run_ctx);
     apply_regional_process_partition(entity, partition_it->second, editor);
 }
 
@@ -382,15 +410,19 @@ void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
                     const PrintingToolGroup &tool_group,
                     const PrintingExtrusion &extrusion,
-                    const AccelerationPartitions &partitions)
+                    const AccelerationPartitions &partitions,
+                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
     const LayerRegionIsland region_island = extrusion.region_island();
     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
     MutableExtrusionEntity root = extrusion.mutable_root();
     EPropertySpeedFieldEditor editor(EPropertySpeedField::Acceleration);
     assign_acceleration_tree(root, EffectiveTreeState{}, context, region_island,
-                             static_cast<uint16_t>(object_instance_idx), partitions, editor);
+                             static_cast<uint16_t>(object_instance_idx), partitions, editor,
+                             run_ctx);
+    throw_if_cancelled(run_ctx);
     editor.hoist(root);
 }
 
@@ -461,6 +493,7 @@ const char *DefaultAcceleration::progress_message_format_impl() const noexcept
 
 void DefaultAcceleration::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
 {
+    throw_if_cancelled(run_ctx);
     m_setup_valid = false;
     m_partitions.clear();
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
@@ -470,7 +503,9 @@ void DefaultAcceleration::setup_impl(const plugin_run_context *run_ctx, uint32_t
         run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
         return;
 
-    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), PrintingPlan(ctx->plan), m_partitions);
+    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), PrintingPlan(ctx->plan),
+                 m_partitions, run_ctx);
+    throw_if_cancelled(run_ctx);
     m_setup_valid = true;
 }
 
@@ -479,6 +514,7 @@ void DefaultAcceleration::setup_run_impl(const plugin_run_context *run_ctx) cons
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
     if (ctx == nullptr || ctx->layer_group == nullptr)
         return;
+    throw_if_cancelled(run_ctx);
     progress().add_max(extrusion_tree_count(PrintingLayerGroup(ctx->layer_group)));
 }
 
@@ -492,14 +528,19 @@ void DefaultAcceleration::run_impl(const plugin_run_context *run_ctx) const
     if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr ||
         ctx->layer_group == nullptr)
         return;
+    throw_if_cancelled(run_ctx);
 
     const Print print(ctx->print);
     const PrintingPlan plan(ctx->plan);
     const PrintingLayerGroup layer_group(ctx->layer_group);
     for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
-            edit_extrusion(print, plan, tool_group, tool_group.extrusion(extrusion_idx), m_partitions);
+            throw_if_cancelled(run_ctx);
+            edit_extrusion(
+                print, plan, tool_group, tool_group.extrusion(extrusion_idx),
+                m_partitions, run_ctx);
             progress().increment();
         }
     }

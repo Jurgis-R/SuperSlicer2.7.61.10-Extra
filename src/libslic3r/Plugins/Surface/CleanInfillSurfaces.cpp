@@ -440,8 +440,10 @@ void clean_region_island_surfaces(const run_ctx_surface_generation &ctx,
                                   storage_handle *storage,
                                   const Layer &layer,
                                   const LayerIsland &island,
-                                  const LayerRegionIsland &region_island)
+                                  const LayerRegionIsland &region_island,
+                                  const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const SurfaceCollection input = region_island.fill_surfaces_collection();
     if (input.empty())
         return;
@@ -450,58 +452,73 @@ void clean_region_island_surfaces(const run_ctx_surface_generation &ctx,
         {{ k_solid_infill_below_layer_area_key },
          { k_solid_infill_below_area_key },
          { k_solid_infill_below_width_key }});
+    throw_if_cancelled(run_ctx);
     settings.segregate(island.slice());
+    throw_if_cancelled(run_ctx);
 
     // Phase 1: layer-wide tiny-fill rule. If the whole layer is below the
     // configured area threshold, sparse surfaces in matching regions become
     // solid before the more local rules are evaluated.
     StoredExPolygonCollection layer_zone =
         layer_area_promotion_zone(storage, layer, island, settings);
+    throw_if_cancelled(run_ctx);
     StoredSurfaceCollection after_layer_area =
         promote_sparse_inside_zone(storage, input, layer_zone.readonly());
+    throw_if_cancelled(run_ctx);
 
     // Phase 2: per-infill-area tiny-fill rule. Each ExPolygon in
     // island.infill_areas() is tested independently, which preserves large
     // sparse areas on the same layer while solidifying small isolated ones.
     StoredExPolygonCollection area_zone =
         small_infill_area_promotion_zone(storage, island, settings);
+    throw_if_cancelled(run_ctx);
     StoredSurfaceCollection after_small_area =
         promote_sparse_inside_zone(storage, after_layer_area.readonly(), area_zone.readonly());
+    throw_if_cancelled(run_ctx);
 
     // Phase 3: thin sparse cleanup. Sparse areas that cannot contain the
     // requested width are removed from sparse and reintroduced as solid.
     StoredSurfaceCollection after_width =
         collapse_sparse_width(storage, island, after_small_area.readonly(), settings);
+    throw_if_cancelled(run_ctx);
 
     // Phase 4: discard isolated numerical dust. Tiny fragments touching a
     // larger same-type neighbor are kept because the next phase can merge them.
     StoredSurfaceCollection after_micro_cleanup =
         drop_isolated_micro_surfaces(storage, after_width.readonly());
+    throw_if_cancelled(run_ctx);
 
     // Phase 5: normalize same-type surfaces. Later infill code should see a
     // compact partition, not a pile of fragments created by the cleanup steps.
     StoredSurfaceCollection normalized =
         normalize_same_type_surfaces(storage, after_micro_cleanup.readonly());
+    throw_if_cancelled(run_ctx);
     set_region_island_surfaces(ctx, region_island, normalized);
+    throw_if_cancelled(run_ctx);
 }
 
 void process_layer(const run_ctx_surface_generation &ctx,
                    storage_handle *storage,
                    const Object &object,
-                   const uint32_t layer_idx)
+                   const uint32_t layer_idx,
+                   const plugin_run_context *run_ctx)
 {
     // Surface data lives on LayerRegionIsland. Iterate through every existing
     // region island and replace only its fill-surface collection; the island
     // geometry and region assignment remain owned by earlier steps.
     const Layer layer = object.layer(layer_idx);
     for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
+        throw_if_cancelled(run_ctx);
         const LayerIsland island = layer.island(island_idx);
-        for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count(); ++region_island_idx)
+        for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count(); ++region_island_idx) {
+            throw_if_cancelled(run_ctx);
             clean_region_island_surfaces(ctx,
                                          storage,
                                          layer,
                                          island,
-                                         island.region_island(region_island_idx));
+                                         island.region_island(region_island_idx),
+                                         run_ctx);
+        }
     }
 }
 
@@ -558,6 +575,7 @@ const char *CleanInfillSurfaces::progress_message_format_impl() const noexcept
 
 void CleanInfillSurfaces::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_surface_generation *ctx = plugin_ctx_as_surface_generation(run_ctx);
     if (ctx != nullptr && ctx->object != nullptr) {
         const Object object(ctx->object);
@@ -567,6 +585,7 @@ void CleanInfillSurfaces::setup_run_impl(const plugin_run_context *run_ctx) cons
 
 void CleanInfillSurfaces::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_surface_generation *ctx = plugin_ctx_as_surface_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr || run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
         return;
@@ -574,7 +593,8 @@ void CleanInfillSurfaces::run_impl(const plugin_run_context *run_ctx) const
     const Object object(ctx->object);
     for (uint32_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx) {
         throw_if_cancelled(run_ctx);
-        process_layer(*ctx, run_ctx->plugin_storage, object, layer_idx);
+        process_layer(*ctx, run_ctx->plugin_storage, object, layer_idx, run_ctx);
+        throw_if_cancelled(run_ctx);
         progress().increment();
     }
 }

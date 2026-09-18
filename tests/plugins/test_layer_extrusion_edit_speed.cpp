@@ -1688,6 +1688,50 @@ TEST_CASE("Layer fan plugin assigns roles and preserves upstream overrides",
     CHECK_FALSE(time->is_final());
 }
 
+TEST_CASE("Layer fan rerun preserves unrelated process fields",
+          "[plugins][layer-extrusion-edit][fan][regression]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    PreparedSpeedPrint prepared;
+    const DynamicPrintConfig config = speed_config({
+        {"default_fan_speed", "20"},
+        {"perimeter_fan_speed", "35"},
+        {"external_perimeter_fan_speed", "70"},
+        {"disable_fan_first_layers", "0"},
+        {"full_fan_speed_layer", "0"},
+        {"fan_below_layer_time", "0"},
+        {"slowdown_below_layer_time", "0"},
+        {"fan_printer_min_speed", "0"}
+    });
+    ExtrusionSpec preserved{ExtrusionRole::Perimeter, 0.2};
+    preserved.existing_speed = 27.f;
+    preserved.existing_acceleration = 321.f;
+    preserved.pressure_advance = 0.047f;
+    preserved.temperature = 211.f;
+    ExtrusionSpec external{ExtrusionRole::ExternalPerimeter, 0.2};
+    external.existing_speed = 29.f;
+    prepare_ordered_plan(prepared, config, {{
+        preserved,
+        external
+    }});
+
+    run_editors(prepared, {DEFAULT_FAN_PLUGIN});
+    run_editors(prepared, {DEFAULT_FAN_PLUGIN});
+
+    const std::map<uint16_t, ObservedLeaf> leaves =
+        observed_by_role(observed_plan_leaves(prepared.print));
+    REQUIRE(leaves.count(uint16_t(ExtrusionRole::Perimeter)) == 1);
+    const ObservedLeaf &perimeter =
+        leaves.at(uint16_t(ExtrusionRole::Perimeter));
+    REQUIRE(perimeter.direct_process != nullptr);
+    CHECK(perimeter.direct_process->speed_mm_per_s == Approx(27.f));
+    CHECK(perimeter.direct_process->accel_mm_per_s2 == Approx(321.f));
+    CHECK(perimeter.direct_process->pressure_adv == Approx(0.047f));
+    CHECK(perimeter.direct_process->temperature_C == Approx(211.f));
+    CHECK(perimeter.direct_process->fan_speed_percent == Approx(35.f));
+}
+
 TEST_CASE("PrintingPlan time estimator counts geometry and connecting travel",
           "[plugins][layer-extrusion-edit][fan][time-estimator]")
 {

@@ -83,6 +83,7 @@ int32_t PostInfillGapFill::priority_impl() const noexcept
 
 void PostInfillGapFill::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_infill_generation *ctx = plugin_ctx_as_post_infill_generation(run_ctx);
     assert(ctx != nullptr);
     assert(ctx->get_region_island_mutable_extrusion != nullptr);

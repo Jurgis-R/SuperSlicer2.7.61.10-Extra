@@ -17,6 +17,7 @@
 #include "SeamPlacementConstraints.hpp"
 #include "SeamCostModel.hpp"
 #include "SeamTrackPreparation.hpp"
+#include "SeamInitializationCancellation.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
@@ -78,30 +79,35 @@ double local_cost(const CP::Candidate &candidate);
 bool stable_candidate_less(const Track &left_track, const CP::Candidate &left,
                            const Track &right_track, const CP::Candidate &right);
 /* Select the local best candidate of every independently filtered perimeter. */
-void prepare_local_anchors(AlignedData &data, std::vector<TrackState> &states);
+void prepare_local_anchors(AlignedData &data, std::vector<TrackState> &states,
+                           const plugin_run_context *run_context);
 /* Find one eligible continuation on a linked island at the adjacent level. */
 Continuation find_continuation(const AlignedData &data,
                                const std::vector<TrackState> &states,
                                size_t source_track, size_t source_candidate,
-                               bool upward);
+                               bool upward,
+                               const plugin_run_context *run_context);
 /* Walk one graph direction, reserving only the selected branch. */
 std::vector<std::pair<size_t, size_t>> walk_chain(
     const AlignedData &data, std::vector<TrackState> &states,
-    size_t seed_track, size_t seed_candidate, bool upward);
+    size_t seed_track, size_t seed_candidate, bool upward,
+    const plugin_run_context *run_context);
 /* Smooth a long chain and preserve local anchors if fitting is not finite. */
 void smooth_chain(const AlignedData &data,
                   const std::vector<std::pair<size_t, size_t>> &chain,
                   std::vector<TrackState> &states);
 /* Seed chains by local quality and stable traversal identity. */
 void build_aligned_targets(const AlignedData &data,
-                           std::vector<TrackState> &states);
+                           std::vector<TrackState> &states,
+                           const plugin_run_context *run_context);
 /* Verify that the request is a real non-empty closed geometry loop. */
 void validate_loop(const ExtrusionEntity &loop);
 
 class AlignedSession final : public SeamPlacerSession
 {
 public:
-    explicit AlignedSession(storage_handle *storage);
+    explicit AlignedSession(storage_handle *storage,
+                            const plugin_run_context *run_context = nullptr);
     void initialize(const PrintingPlan &plan,
                     const std::vector<PrintRegion> &regions) override;
     float get_priority(const ExtrusionEntity &, const LayerRegion &) const override;
@@ -110,6 +116,7 @@ public:
 
 private:
     storage_handle *m_storage;
+    const plugin_run_context *m_run_context;
     bool m_initialization_started = false;
     AlignedData m_data;
     std::vector<TrackState> m_states;
@@ -151,12 +158,14 @@ bool stable_candidate_less(const Track &left_track, const CP::Candidate &left,
     return left.stable_order < right.stable_order;
 }
 
-void prepare_local_anchors(AlignedData &data, std::vector<TrackState> &states)
+void prepare_local_anchors(AlignedData &data, std::vector<TrackState> &states,
+                           const plugin_run_context *run_context)
 {
     states.resize(data.tracks.size());
     for (size_t track_index = 0; track_index < data.tracks.size(); ++track_index) {
+        InitializationCancellation::check(run_context);
         Track &track = data.tracks[track_index];
-        CP::filter_candidates(track.candidates);
+        CP::filter_candidates(track.candidates, run_context);
         if (track.candidates.empty())
             throw std::runtime_error("Aligned seam filtering removed every perimeter candidate.");
         TrackState &state = states[track_index];
@@ -176,7 +185,8 @@ void prepare_local_anchors(AlignedData &data, std::vector<TrackState> &states)
 Continuation find_continuation(const AlignedData &data,
                                const std::vector<TrackState> &states,
                                size_t source_track, size_t source_candidate,
-                               bool upward)
+                               bool upward,
+                               const plugin_run_context *run_context)
 {
     Continuation best;
     const Track &source = data.tracks[source_track];
@@ -190,11 +200,14 @@ Continuation find_continuation(const AlignedData &data,
         (source_node->second.layer == 0 ? size_t(-1) : source_node->second.layer - 1);
 
     for (const layer_island_handle *linked_handle : links) {
+        InitializationCancellation::check(run_context);
         const std::map<const layer_island_handle *, LayerIslandNode>::const_iterator linked =
             data.islands.find(linked_handle);
         if (linked == data.islands.end() || linked->second.layer != expected_layer)
             continue;
         for (size_t track_index = 0; track_index < data.tracks.size(); ++track_index) {
+            InitializationCancellation::check_periodic(
+                run_context, track_index);
             const Track &target = data.tracks[track_index];
             if (states[track_index].assigned || target.layer_island != linked_handle ||
                 target.stable_id.object != source.stable_id.object ||
@@ -234,14 +247,16 @@ Continuation find_continuation(const AlignedData &data,
 
 std::vector<std::pair<size_t, size_t>> walk_chain(
     const AlignedData &data, std::vector<TrackState> &states,
-    size_t seed_track, size_t seed_candidate, bool upward)
+    size_t seed_track, size_t seed_candidate, bool upward,
+    const plugin_run_context *run_context)
 {
     std::vector<std::pair<size_t, size_t>> result;
     size_t source_track = seed_track;
     size_t source_candidate = seed_candidate;
     while (true) {
         const Continuation next = find_continuation(
-            data, states, source_track, source_candidate, upward);
+            data, states, source_track, source_candidate, upward,
+            run_context);
         if (next.track == size_t(-1)) break;
         states[next.track].assigned = true;
         states[next.track].chain_candidate = next.candidate;
@@ -294,7 +309,8 @@ void smooth_chain(const AlignedData &data,
 }
 
 void build_aligned_targets(const AlignedData &data,
-                           std::vector<TrackState> &states)
+                           std::vector<TrackState> &states,
+                           const plugin_run_context *run_context)
 {
     std::vector<size_t> seeds(data.tracks.size());
     for (size_t index = 0; index < seeds.size(); ++index) seeds[index] = index;
@@ -304,13 +320,14 @@ void build_aligned_targets(const AlignedData &data,
         return TP::stable_track_less(data.tracks[left], data.tracks[right]);
     });
     for (const size_t seed : seeds) {
+        InitializationCancellation::check(run_context);
         if (states[seed].assigned) continue;
         states[seed].assigned = true;
         const size_t candidate = states[seed].local_candidate;
         std::vector<std::pair<size_t, size_t>> upper =
-            walk_chain(data, states, seed, candidate, true);
+            walk_chain(data, states, seed, candidate, true, run_context);
         std::vector<std::pair<size_t, size_t>> lower =
-            walk_chain(data, states, seed, candidate, false);
+            walk_chain(data, states, seed, candidate, false, run_context);
         std::vector<std::pair<size_t, size_t>> chain;
         chain.reserve(lower.size() + 1 + upper.size());
         for (std::vector<std::pair<size_t, size_t>>::reverse_iterator iterator =
@@ -334,7 +351,10 @@ void validate_loop(const ExtrusionEntity &loop)
             "Aligned seam placement rejects open or invalid loop geometry.");
 }
 
-AlignedSession::AlignedSession(storage_handle *storage) : m_storage(storage) {}
+AlignedSession::AlignedSession(storage_handle *storage,
+                               const plugin_run_context *run_context) :
+    m_storage(storage), m_run_context(run_context)
+{}
 
 void AlignedSession::initialize(const PrintingPlan &plan,
                                 const std::vector<PrintRegion> &regions)
@@ -343,15 +363,18 @@ void AlignedSession::initialize(const PrintingPlan &plan,
         throw std::logic_error(
             "Aligned seam placement sessions may only be initialized once.");
     m_initialization_started = true;
+    InitializationCancellation::check(m_run_context);
     if (!plan.valid() || m_storage == nullptr)
         throw std::invalid_argument(
             "Aligned seam placement needs a valid plan and temporary storage.");
     SeamPlacementConstraints constraints;
-    constraints.initialize_for_regions(plan, m_storage, regions);
-    m_data = TP::prepare(plan, regions, m_storage, constraints, "Aligned");
-    prepare_local_anchors(m_data, m_states);
-    build_aligned_targets(m_data, m_states);
+    constraints.initialize_for_regions(plan, m_storage, regions, m_run_context);
+    m_data = TP::prepare(
+        plan, regions, m_storage, constraints, "Aligned", m_run_context);
+    prepare_local_anchors(m_data, m_states, m_run_context);
+    build_aligned_targets(m_data, m_states, m_run_context);
     m_storage = nullptr;
+    m_run_context = nullptr;
 }
 
 float AlignedSession::get_priority(const ExtrusionEntity &,
@@ -464,9 +487,10 @@ void AlignedSeamPlacer::run_impl(const plugin_run_context *run_context) const
     regions.reserve(context->region_count);
     for (uint32_t index = 0; index < context->region_count; ++index)
         regions.emplace_back(context->regions[index]);
+    InitializationCancellation::check(run_context);
     context->instance = make_seam_placer_instance(
         std::unique_ptr<SeamPlacerSession>(
-            new AlignedSession(run_context->plugin_storage)),
+            new AlignedSession(run_context->plugin_storage, run_context)),
         PrintingPlan(context->plan), regions);
 }
 

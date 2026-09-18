@@ -548,6 +548,7 @@ const char *InfillRegionCompatibilitySplitter::progress_message_format_impl() co
 
 void InfillRegionCompatibilitySplitter::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_surface_generation *ctx = plugin_ctx_as_surface_generation(run_ctx);
     if (ctx != nullptr && ctx->object != nullptr) {
         const Object object(ctx->object);
@@ -557,6 +558,7 @@ void InfillRegionCompatibilitySplitter::setup_run_impl(const plugin_run_context 
 
 void InfillRegionCompatibilitySplitter::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_surface_generation *ctx = plugin_ctx_as_surface_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr || ctx->print == nullptr ||
         run_ctx == nullptr || run_ctx->plugin_storage == nullptr)

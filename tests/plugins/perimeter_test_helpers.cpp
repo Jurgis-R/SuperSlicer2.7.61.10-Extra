@@ -906,7 +906,8 @@ void require_simple_generator_first_child_area_partition(const PerimeterRunCaptu
 size_t run_remove_gap_fill_module(const DynamicPrintConfig &config,
                                   const bool use_region_override,
                                   double *length_out,
-                                  const size_t layer_idx)
+                                  const size_t layer_idx,
+                                  const bool cancel_before_after)
 {
     PreparedPerimeterPrint prepared;
     prepare_cube_print(prepared, config);
@@ -947,7 +948,14 @@ size_t run_remove_gap_fill_module(const DynamicPrintConfig &config,
     REQUIRE(module.vt->after != nullptr);
     REQUIRE(module.vt->end != nullptr);
     void *module_context = module.vt->start(module.ctx, &context);
-    module.vt->after(module.ctx, module_context, &context, &root.c_node);
+    if (cancel_before_after)
+        Orchestrator::instance().request_plugin_cancel();
+    try {
+        module.vt->after(module.ctx, module_context, &context, &root.c_node);
+    } catch (...) {
+        module.vt->end(module.ctx, module_context, &context);
+        throw;
+    }
     module.vt->end(module.ctx, module_context, &context);
     if (length_out != nullptr)
         *length_out = extrusion_length(root.extrusions);

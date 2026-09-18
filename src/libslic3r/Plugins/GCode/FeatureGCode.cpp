@@ -75,14 +75,19 @@ bool has_feature_script(const MutableExtrusionEntity &entity);
 bool is_feature_wrapper(const MutableExtrusionEntity &entity);
 // Remove annotations from an earlier run and restore wrapped entities without
 // copying their geometry or stored property data.
-void clear_feature_scripts(storage_handle *storage, MutableExtrusionEntity root);
+void clear_feature_scripts(storage_handle *storage,
+                          MutableExtrusionEntity root,
+                          const plugin_run_context *run_ctx);
 // Clear every cloned extrusion tree before recomputing transitions.
-void clear_plan_feature_scripts(storage_handle *storage, const PrintingPlan &plan);
+void clear_plan_feature_scripts(storage_handle *storage,
+                                const PrintingPlan &plan,
+                                const plugin_run_context *run_ctx);
 // Annotate every role transition while preserving one previous role across the
 // complete ordered plan.
 void add_plan_feature_scripts(storage_handle *storage,
                               const PrintingPlan &plan,
-                              const std::string &script);
+                              const std::string &script,
+                              const plugin_run_context *run_ctx);
 
 class FeatureRoleVisitor final : public ExtrusionTreeVisitor<>
 {
@@ -180,12 +185,16 @@ bool is_feature_wrapper(const MutableExtrusionEntity &entity)
     return has_feature_script(event) && event.property_count() == 1 && event.empty();
 }
 
-void clear_feature_scripts(storage_handle *storage, MutableExtrusionEntity root)
+void clear_feature_scripts(storage_handle *storage,
+                          MutableExtrusionEntity root,
+                          const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::vector<MutableExtrusionEntity> pending;
     pending.push_back(root);
 
     while (!pending.empty()) {
+        throw_if_cancelled(run_ctx);
         MutableExtrusionEntity entity = pending.back();
         pending.pop_back();
 
@@ -203,21 +212,36 @@ void clear_feature_scripts(storage_handle *storage, MutableExtrusionEntity root)
 
         // Push in reverse so inspection still follows normal child order even
         // though cleanup itself does not depend on traversal order.
-        for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx)
+        for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx) {
+            if ((child_idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             pending.push_back(entity.child_mutable(child_idx - 1));
+        }
     }
 }
 
-void clear_plan_feature_scripts(storage_handle *storage, const PrintingPlan &plan)
+void clear_plan_feature_scripts(storage_handle *storage,
+                                const PrintingPlan &plan,
+                                const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        if ((group_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            if ((layer_idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                if ((tool_idx & 63u) == 0)
+                    throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
-                for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx)
-                    clear_feature_scripts(storage, tool_group.extrusion(extrusion_idx).mutable_root());
+                for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+                    if ((extrusion_idx & 63u) == 0)
+                        throw_if_cancelled(run_ctx);
+                    clear_feature_scripts(storage, tool_group.extrusion(extrusion_idx).mutable_root(), run_ctx);
+                }
             }
         }
     }
@@ -287,17 +311,28 @@ void FeatureRoleVisitor::add_transition(MutableExtrusionEntity entity,
 
 void add_plan_feature_scripts(storage_handle *storage,
                               const PrintingPlan &plan,
-                              const std::string &script)
+                              const std::string &script,
+                              const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     FeatureRoleVisitor visitor(storage, script);
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        if ((group_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            if ((layer_idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                if ((tool_idx & 63u) == 0)
+                    throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
-                for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx)
+                for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+                    if ((extrusion_idx & 63u) == 0)
+                        throw_if_cancelled(run_ctx);
                     visitor.traverse(tool_group.extrusion(extrusion_idx).mutable_root());
+                }
             }
         }
     }
@@ -333,6 +368,7 @@ private:
     }
     void run_impl(const plugin_run_context *run_context) const override
     {
+        throw_if_cancelled(run_context);
         const run_ctx_extrusion_edition *context = plugin_ctx_as_extrusion_edition(run_context);
         assert(context != nullptr && context->print != nullptr && context->plan != nullptr);
         if (context == nullptr || context->print == nullptr || context->plan == nullptr ||
@@ -341,11 +377,11 @@ private:
 
         const Print print(context->print);
         const PrintingPlan plan(context->plan);
-        clear_plan_feature_scripts(run_context->plugin_storage, plan);
+        clear_plan_feature_scripts(run_context->plugin_storage, plan, run_context);
 
         const std::string script = print.config().string_or_default("feature_gcode", std::string());
         if (!script.empty())
-            add_plan_feature_scripts(run_context->plugin_storage, plan, script);
+            add_plan_feature_scripts(run_context->plugin_storage, plan, script, run_context);
     }
 };
 

@@ -108,12 +108,15 @@ Slic3r::Flow perimeter_flow(const Slic3r::LayerRegion &region, const bool extern
     return region.flow(external ? Slic3r::frExternalPerimeter : Slic3r::frPerimeter);
 }
 
-size_t max_inset_idx(const std::vector<Slic3r::Arachne::VariableWidthLines> &perimeters)
+size_t max_inset_idx(const std::vector<Slic3r::Arachne::VariableWidthLines> &perimeters,
+                     const plugin_run_context *run_ctx)
 {
     size_t out = 0;
-    for (const Slic3r::Arachne::VariableWidthLines &perimeter : perimeters)
+    for (const Slic3r::Arachne::VariableWidthLines &perimeter : perimeters) {
+        throw_if_cancelled(run_ctx);
         for (const Slic3r::Arachne::ExtrusionLine &line : perimeter)
             out = std::max(out, line.inset_idx);
+    }
     return out;
 }
 
@@ -137,7 +140,8 @@ bool line_is_closed(const Slic3r::Arachne::ExtrusionLine &line)
 Slic3r::ExtrusionPaths variable_width_paths(const Slic3r::Arachne::ExtrusionLine &line,
                                             const Slic3r::ExtrusionRole role,
                                             const Slic3r::Flow &flow,
-                                            const Slic3r::PrintConfig &print_config)
+                                            const Slic3r::PrintConfig &print_config,
+                                            const plugin_run_context *run_ctx)
 {
     if (line.size() < 2 || line.is_zero_length())
         return {};
@@ -148,7 +152,11 @@ Slic3r::ExtrusionPaths variable_width_paths(const Slic3r::Arachne::ExtrusionLine
 
     const Slic3r::coord_t resolution = std::max(flow.scaled_width() / 4, scale_i(print_config.resolution.value));
     const Slic3r::coord_t tolerance  = std::max<Slic3r::coord_t>(1, flow.scaled_width() / 10);
-    return Slic3r::Geometry::unsafe_variable_width(thick_polyline, role, flow, resolution, tolerance);
+    throw_if_cancelled(run_ctx);
+    Slic3r::ExtrusionPaths paths =
+        Slic3r::Geometry::unsafe_variable_width(thick_polyline, role, flow, resolution, tolerance);
+    throw_if_cancelled(run_ctx);
+    return paths;
 }
 
 void annotate_paths(Slic3r::ExtrusionPaths &paths,
@@ -186,7 +194,8 @@ void append_arachne_line(Slic3r::ExtrusionEntityCollection &dst,
                          const Slic3r::PrintRegionConfig &region_config,
                          const Slic3r::PrintConfig &print_config,
                          const Slic3r::Flow &external_flow,
-                         const Slic3r::Flow &internal_flow)
+                         const Slic3r::Flow &internal_flow,
+                         const plugin_run_context *run_ctx)
 {
     if (line.size() < 2 || line.is_zero_length())
         return;
@@ -200,7 +209,7 @@ void append_arachne_line(Slic3r::ExtrusionEntityCollection &dst,
         Slic3r::ExtrusionRole::Perimeter;
     const Slic3r::Flow &flow = is_external ? external_flow : internal_flow;
     Slic3r::ExtrusionLoopRole loop_role = loop_role_for_line(line, biggest_inset_idx);
-    Slic3r::ExtrusionPaths paths = variable_width_paths(line, role, flow, print_config);
+    Slic3r::ExtrusionPaths paths = variable_width_paths(line, role, flow, print_config, run_ctx);
     if (paths.empty())
         return;
 
@@ -244,14 +253,17 @@ Slic3r::ExtrusionEntityCollection make_arachne_extrusions(
     const Slic3r::PrintRegionConfig &region_config,
     const Slic3r::PrintConfig &print_config,
     const Slic3r::Flow &external_flow,
-    const Slic3r::Flow &internal_flow)
+    const Slic3r::Flow &internal_flow,
+    const plugin_run_context *run_ctx)
 {
     Slic3r::ExtrusionEntityCollection extrusion;
-    const size_t biggest_inset_idx = max_inset_idx(perimeters);
-    for (const Slic3r::Arachne::VariableWidthLines &perimeter : perimeters)
+    const size_t biggest_inset_idx = max_inset_idx(perimeters, run_ctx);
+    for (const Slic3r::Arachne::VariableWidthLines &perimeter : perimeters) {
+        throw_if_cancelled(run_ctx);
         for (const Slic3r::Arachne::ExtrusionLine &line : perimeter)
             append_arachne_line(extrusion, line, biggest_inset_idx, inset_offset, layer, region_config, print_config,
-                                external_flow, internal_flow);
+                                external_flow, internal_flow, run_ctx);
+    }
     return extrusion;
 }
 
@@ -276,16 +288,19 @@ Slic3r::ExPolygons *to_expolygons(expolygon_collection_handle *handle)
 }
 
 int32_t generate_node(void *generator_context,
-                      perimeter_generation_context *,
+                      perimeter_generation_context *context,
                       perimeter_node *node,
                       expolygon_collection_handle *inner_areas_out,
                       expolygon_collection_handle *inner_fill_areas_out)
 {
     const ArachneGeneratorState *state = reinterpret_cast<const ArachneGeneratorState *>(generator_context);
     if (state == nullptr || state->layer == nullptr || state->print == nullptr || state->region == nullptr ||
+        context == nullptr || context->run_ctx == nullptr ||
         node == nullptr || node->extrusions == nullptr || inner_areas_out == nullptr ||
         inner_fill_areas_out == nullptr)
         return 0;
+
+    throw_if_cancelled(context->run_ctx);
 
     const Slic3r::ExPolygon *area = node_area(*node);
     if (area == nullptr || area->empty())
@@ -302,6 +317,7 @@ int32_t generate_node(void *generator_context,
     Slic3r::ExPolygons fill_no_overlap = Slic3r::ExPolygons{ *area };
     if (node->perimeter_needed > 0) {
         Slic3r::Polygons outlines = Slic3r::to_polygons(*area);
+        throw_if_cancelled(context->run_ctx);
         Slic3r::Arachne::WallToolPaths wall_tool_paths(outlines,
                                                        outer_flow.scaled_spacing(),
                                                        outer_flow.scaled_width(),
@@ -312,22 +328,32 @@ int32_t generate_node(void *generator_context,
                                                        state->layer->unscaled_height(),
                                                        region_config,
                                                        print_config);
+        throw_if_cancelled(context->run_ctx);
         const std::vector<Slic3r::Arachne::VariableWidthLines> &perimeters =
             wall_tool_paths.getToolPaths();
+        throw_if_cancelled(context->run_ctx);
         Slic3r::ExtrusionEntityCollection extrusion =
             make_arachne_extrusions(perimeters, node->perimeter_idx, *state->layer, region_config, print_config,
-                                    outer_flow, inner_flow);
+                                    outer_flow, inner_flow, context->run_ctx);
+        throw_if_cancelled(context->run_ctx);
         extrusion_move_from(node->extrusions, reinterpret_cast<extrusion_entity_handle *>(&extrusion));
 
+        throw_if_cancelled(context->run_ctx);
         fill_no_overlap = Slic3r::union_ex(wall_tool_paths.getInnerContour());
+        throw_if_cancelled(context->run_ctx);
         if (fill_no_overlap.empty())
             fill_no_overlap = Slic3r::ExPolygons{ *area };
     }
 
-    Slic3r::ExPolygons fill_areas = Slic3r::ensure_valid(
-        Slic3r::offset_ex(fill_no_overlap, 0.25 * double(inner_flow.scaled_spacing())));
+    throw_if_cancelled(context->run_ctx);
+    Slic3r::ExPolygons fill_areas = Slic3r::offset_ex(
+        fill_no_overlap, 0.25 * double(inner_flow.scaled_spacing()));
+    throw_if_cancelled(context->run_ctx);
+    fill_areas = Slic3r::ensure_valid(std::move(fill_areas));
+    throw_if_cancelled(context->run_ctx);
     fill_no_overlap = Slic3r::ensure_valid(std::move(fill_no_overlap));
 
+    throw_if_cancelled(context->run_ctx);
     *to_expolygons(inner_areas_out) = std::move(fill_no_overlap);
     *to_expolygons(inner_fill_areas_out) = std::move(fill_areas);
     return 1;
@@ -369,6 +395,7 @@ const char *ArachnePerimeterGenerator::progress_message_format_impl() const noex
 
 void ArachnePerimeterGenerator::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_generate_perimeter *ctx = plugin_ctx_as_generate_perimeter(run_ctx);
     if (ctx != nullptr && ctx->island != nullptr)
         progress().add_max(1);
@@ -376,6 +403,7 @@ void ArachnePerimeterGenerator::setup_run_impl(const plugin_run_context *run_ctx
 
 void ArachnePerimeterGenerator::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_generate_perimeter *ctx = plugin_ctx_as_generate_perimeter(run_ctx);
     if (ctx == nullptr || ctx->island == nullptr || ctx->layer == nullptr || ctx->print == nullptr ||
         ctx->run_region_group == nullptr)
@@ -408,12 +436,14 @@ void ArachnePerimeterGenerator::run_impl(const plugin_run_context *run_ctx) cons
         size_t(0) :
         size_t(region->region().config().perimeters.value);
 
+    throw_if_cancelled(run_ctx);
     ctx->run_region_group(ctx,
                           region_handles.empty() ? nullptr : region_handles.data(),
                           uint32_t(region_handles.size()),
                           nullptr,
                           &state,
                           &generate_node);
+    throw_if_cancelled(run_ctx);
 
     progress().increment();
 }

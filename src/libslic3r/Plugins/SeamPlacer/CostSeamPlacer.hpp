@@ -23,6 +23,7 @@ native configuration are not mutated.
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_plugin_types.h"
+#include "libslic3r/Api/plugin/c/slic3r_plugin_run_context.h"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 
 namespace slic3r_api {
@@ -38,6 +39,8 @@ struct SeamCandidate {
 using RegionIslandKey = const layer_region_island_handle *;
 
 std::unique_ptr<SeamPlacerSession> make_cost_seam_session(storage_handle *storage);
+std::unique_ptr<SeamPlacerSession> make_cost_seam_session(
+    storage_handle *storage, const plugin_run_context *run_context);
 void register_cost_seam_placer_plugin(orchestrator_handle *orchestrator);
 
 }} // namespace SeamPlacement::CostPlugin

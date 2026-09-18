@@ -16,6 +16,7 @@
 #include "ExtrusionScopeHelpers.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 #include "libslic3r/Api/plugin/cpp/properties/ExtrusionProperties.hpp"
@@ -197,7 +198,8 @@ bool needs_geometric_or_semantic_boundary(const LeafBoundary &source,
 /* Analyze a subtree without producing candidates, used for existing scopes. */
 EntityAnalysis analyze_entity(const ExtrusionEntity &entity,
                               coord_t print_z,
-                              const EffectiveState &parent);
+                              const EffectiveState &parent,
+                              const plugin_run_context *run_ctx);
 
 /*
 Append maximal non-nested candidates and process tokens in execution order.
@@ -211,20 +213,24 @@ EntityAnalysis append_entity_stream(
     const EffectiveState &parent,
     extruder_index_t extruder_id,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
-    std::vector<StreamEntry> &output);
+    std::vector<StreamEntry> &output,
+    const plugin_run_context *run_ctx);
 
 /* Scan one complete layer and preserve empty tool selections in the stream. */
 std::vector<StreamEntry> collect_layer_stream(
     const PrintingLayerGroup &layer,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key);
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
+    const plugin_run_context *run_ctx);
 
 /* Find the nearest scope before one stream location across layer boundaries. */
 ScopeLocation previous_scope(const std::vector<LayerScan> &layers,
-                             ScopeLocation current);
+                             ScopeLocation current,
+                             const plugin_run_context *run_ctx);
 
 /* Find the nearest scope after one stream location across layer boundaries. */
 ScopeLocation next_scope(const std::vector<LayerScan> &layers,
-                         ScopeLocation current);
+                         ScopeLocation current,
+                         const plugin_run_context *run_ctx);
 
 /* Read one scope descriptor from a validated stream location. */
 const ScopeDescriptor &scope_at(const std::vector<LayerScan> &layers,
@@ -239,7 +245,8 @@ boundary even when source and target use the same extruder.
 TransitionFacts transition_between(const std::vector<LayerScan> &layers,
                                    ScopeLocation source,
                                    ScopeLocation target,
-                                   const Config &print_config);
+                                   const Config &print_config,
+                                   const plugin_run_context *run_ctx);
 
 /*
 Built-in producer of compact transition scopes.
@@ -407,8 +414,10 @@ bool needs_geometric_or_semantic_boundary(const LeafBoundary &source,
 /* Analyze a subtree bottom-up without retaining or mutating descendant views. */
 EntityAnalysis analyze_entity(const ExtrusionEntity &entity,
                               const coord_t print_z,
-                              const EffectiveState &parent)
+                              const EffectiveState &parent,
+                              const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveState state = resolved_state(entity, parent);
 
     // A geometric entity, or an empty event leaf, has no child sequence to
@@ -421,8 +430,9 @@ EntityAnalysis analyze_entity(const ExtrusionEntity &entity,
     // Merge children in execution order. A gap between consecutive printable
     // children prevents their parent from becoming one maximal scope.
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const EntityAnalysis child = analyze_entity(
-            entity.child(child_idx), print_z, state);
+            entity.child(child_idx), print_z, state, run_ctx);
         result.has_process = result.has_process || child.has_process;
         result.has_internal_boundary =
             result.has_internal_boundary || child.has_internal_boundary;
@@ -452,8 +462,10 @@ EntityAnalysis append_entity_stream(
     const EffectiveState &parent,
     const extruder_index_t extruder_id,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
-    std::vector<StreamEntry> &output)
+    std::vector<StreamEntry> &output,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveState state = resolved_state(entity.readonly(), parent);
 
     // A marker from an earlier execution is already a scope boundary. Validate
@@ -465,7 +477,7 @@ EntityAnalysis append_entity_stream(
             throw std::runtime_error("An existing extrusion scope lost its marker.");
         const MutableExtrusionEntity content = scope.content();
         const EntityAnalysis analysis = analyze_entity(
-            content.readonly(), print_z, state);
+            content.readonly(), print_z, state, run_ctx);
         if (!analysis.has_printable || analysis.has_process ||
             analysis.has_internal_boundary || !content.continuous())
             throw std::runtime_error(
@@ -513,9 +525,10 @@ EntityAnalysis append_entity_stream(
     // Preserve prefix order while aggregating process facts and detecting gaps
     // between consecutive printable descendants.
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const EntityAnalysis child = append_entity_stream(
             entity.child_mutable(child_idx), print_z, state, extruder_id,
-            scope_key, output);
+            scope_key, output, run_ctx);
         result.has_process = result.has_process || child.has_process;
         result.has_internal_boundary =
             result.has_internal_boundary || child.has_internal_boundary;
@@ -538,6 +551,7 @@ EntityAnalysis append_entity_stream(
         result.has_printable && !result.has_process &&
         !result.has_internal_boundary;
     if (can_be_one_scope) {
+        throw_if_cancelled(run_ctx);
         output.resize(output_begin);
         StreamEntry entry;
         entry.kind = StreamEntryKind::Scope;
@@ -551,14 +565,17 @@ EntityAnalysis append_entity_stream(
 /* Convert one PrintingLayerGroup into its immutable execution-order stream. */
 std::vector<StreamEntry> collect_layer_stream(
     const PrintingLayerGroup &layer,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::vector<StreamEntry> output;
     const EffectiveState empty_state;
 
     // Emit every tool selection, including empty tool-groups. A temporary tool
     // change may be semantically important even when no extrusion follows it.
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingToolGroup tool = layer.tool_group(tool_idx);
         StreamEntry selection;
         selection.kind = StreamEntryKind::ToolSelection;
@@ -569,10 +586,11 @@ std::vector<StreamEntry> collect_layer_stream(
         // candidates may be geometrically contiguous but are never coalesced.
         for (uint32_t extrusion_idx = 0;
              extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
             append_entity_stream(extrusion.mutable_root(), layer.print_z(),
                                  empty_state, tool.extruder_id(), scope_key,
-                                 output);
+                                 output, run_ctx);
         }
     }
     return output;
@@ -580,12 +598,16 @@ std::vector<StreamEntry> collect_layer_stream(
 
 /* Walk backward through immutable streams until the preceding Scope entry. */
 ScopeLocation previous_scope(const std::vector<LayerScan> &layers,
-                             ScopeLocation current)
+                             ScopeLocation current,
+                             const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     size_t layer_idx = current.layer_idx;
     size_t entry_idx = current.entry_idx;
     while (true) {
+        throw_if_cancelled(run_ctx);
         while (entry_idx > 0) {
+            throw_if_cancelled(run_ctx);
             --entry_idx;
             if (layers[layer_idx].entries[entry_idx].kind == StreamEntryKind::Scope)
                 return ScopeLocation{layer_idx, entry_idx};
@@ -599,12 +621,16 @@ ScopeLocation previous_scope(const std::vector<LayerScan> &layers,
 
 /* Walk forward through immutable streams until the following Scope entry. */
 ScopeLocation next_scope(const std::vector<LayerScan> &layers,
-                         ScopeLocation current)
+                         ScopeLocation current,
+                         const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     size_t layer_idx = current.layer_idx;
     size_t entry_idx = current.entry_idx + 1;
     while (layer_idx < layers.size()) {
+        throw_if_cancelled(run_ctx);
         while (entry_idx < layers[layer_idx].entries.size()) {
+            throw_if_cancelled(run_ctx);
             if (layers[layer_idx].entries[entry_idx].kind == StreamEntryKind::Scope)
                 return ScopeLocation{layer_idx, entry_idx};
             ++entry_idx;
@@ -637,8 +663,10 @@ parallel after setup_run's barrier.
 TransitionFacts transition_between(const std::vector<LayerScan> &layers,
                                    const ScopeLocation source,
                                    const ScopeLocation target,
-                                   const Config &print_config)
+                                   const Config &print_config,
+                                   const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const ScopeDescriptor &source_scope = scope_at(layers, source);
     const ScopeDescriptor &target_scope = scope_at(layers, target);
     TransitionFacts facts;
@@ -648,10 +676,12 @@ TransitionFacts transition_between(const std::vector<LayerScan> &layers,
     // A pure Travel marks an already materialized connection; Wipe remains a
     // process boundary but is not the target scope's reserved travel.
     for (size_t layer_idx = source.layer_idx; layer_idx <= target.layer_idx; ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         const std::vector<StreamEntry> &entries = layers[layer_idx].entries;
         const size_t begin = layer_idx == source.layer_idx ? source.entry_idx + 1 : 0;
         const size_t end = layer_idx == target.layer_idx ? target.entry_idx : entries.size();
         for (size_t entry_idx = begin; entry_idx < end; ++entry_idx) {
+            throw_if_cancelled(run_ctx);
             const StreamEntry &entry = entries[entry_idx];
             if (entry.kind == StreamEntryKind::ToolSelection) {
                 if (entry.selected_extruder != selected_extruder) {
@@ -795,6 +825,7 @@ setup_run_impl(), where each PrintingLayerGroup can be scanned in parallel.
 void CreateTransitionScope::setup_impl(const plugin_run_context *run_ctx,
                                        const uint32_t run_count) const
 {
+    throw_if_cancelled(run_ctx);
     // Invalidate previous topology before inspecting the new context so an
     // early return cannot expose stale scan entries to later callbacks.
     m_setup_valid = false;
@@ -814,11 +845,14 @@ void CreateTransitionScope::setup_impl(const plugin_run_context *run_ctx,
     m_flat_indices.resize(plan.group_count());
     size_t flat_idx = 0;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         m_flat_indices[group_idx].resize(group.layer_group_count());
         for (uint32_t layer_idx = 0;
-             layer_idx < group.layer_group_count(); ++layer_idx)
+             layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             m_flat_indices[group_idx][layer_idx] = flat_idx++;
+        }
     }
     if (flat_idx != run_count)
         throw std::runtime_error(
@@ -839,6 +873,7 @@ void CreateTransitionScope::setup_run_impl(
         plugin_ctx_as_layer_extrusion_edition(run_ctx);
     if (ctx == nullptr || ctx->layer_group == nullptr)
         return;
+    throw_if_cancelled(run_ctx);
     const size_t flat_idx = flat_layer_index(
         ctx->group_idx, ctx->layer_group_idx);
     if (flat_idx >= m_layers.size())
@@ -848,7 +883,8 @@ void CreateTransitionScope::setup_run_impl(
     // Every worker owns one pre-sized element. The host barrier completes all
     // writes before any run reads neighbouring descriptions.
     m_layers[flat_idx].entries = collect_layer_stream(
-        PrintingLayerGroup(ctx->layer_group), m_scope_property);
+        PrintingLayerGroup(ctx->layer_group), m_scope_property, run_ctx);
+    throw_if_cancelled(run_ctx);
     progress().add_max(1);
 }
 
@@ -867,6 +903,7 @@ void CreateTransitionScope::run_impl(const plugin_run_context *run_ctx) const
         plugin_ctx_as_layer_extrusion_edition(run_ctx);
     if (ctx == nullptr || ctx->layer_group == nullptr)
         return;
+    throw_if_cancelled(run_ctx);
     const size_t flat_idx = flat_layer_index(
         ctx->group_idx, ctx->layer_group_idx);
     if (flat_idx >= m_layers.size())
@@ -881,11 +918,12 @@ void CreateTransitionScope::run_impl(const plugin_run_context *run_ctx) const
     // Process only Scope tokens. Tool selections and process operations exist
     // solely to explain the boundaries between successive Scope tokens.
     for (size_t entry_idx = 0; entry_idx < entries.size(); ++entry_idx) {
+        throw_if_cancelled(run_ctx);
         if (entries[entry_idx].kind != StreamEntryKind::Scope)
             continue;
         const ScopeLocation current{flat_idx, entry_idx};
-        const ScopeLocation previous = previous_scope(m_layers, current);
-        const ScopeLocation next = next_scope(m_layers, current);
+        const ScopeLocation previous = previous_scope(m_layers, current, run_ctx);
+        const ScopeLocation next = next_scope(m_layers, current, run_ctx);
         uint8_t flags = 0;
 
         // The first global scope has no incoming phases. Otherwise derive its
@@ -895,7 +933,7 @@ void CreateTransitionScope::run_impl(const plugin_run_context *run_ctx) const
             flags = uint8_t(flags | PRINTING_EXTRUSION_SCOPE_START);
         } else {
             const TransitionFacts incoming = transition_between(
-                m_layers, previous, current, *m_print_config);
+                m_layers, previous, current, *m_print_config, run_ctx);
             if (incoming.boundary)
                 flags = uint8_t(flags |
                     PRINTING_EXTRUSION_SCOPE_INCOMING_TRANSITION);
@@ -913,7 +951,7 @@ void CreateTransitionScope::run_impl(const plugin_run_context *run_ctx) const
             flags = uint8_t(flags | PRINTING_EXTRUSION_SCOPE_TERMINAL);
         } else {
             const TransitionFacts outgoing = transition_between(
-                m_layers, current, next, *m_print_config);
+                m_layers, current, next, *m_print_config, run_ctx);
             if (outgoing.boundary)
                 flags = uint8_t(flags |
                     PRINTING_EXTRUSION_SCOPE_OUTGOING_TRANSITION);
@@ -940,6 +978,7 @@ void CreateTransitionScope::run_impl(const plugin_run_context *run_ctx) const
         if ((flags & PRINTING_EXTRUSION_SCOPE_OUTGOING_TRANSITION) != 0)
             flags = uint8_t(flags | (descriptor.preserved_materialized_flags &
                 PRINTING_EXTRUSION_SCOPE_OUTGOING_TRAVEL_MATERIALIZED));
+        throw_if_cancelled(run_ctx);
         ExtrusionScope::ensure_scope(
             MutableExtrusionEntity(descriptor.entity), m_scope_property, flags);
     }

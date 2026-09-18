@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 
@@ -62,7 +63,10 @@ The function chooses one first/last extruder pair per layer, then applies those
 choices to the layer groups. It is intentionally local to this plugin so another
 tool-ordering plugin can replace the strategy without relying on host callbacks.
 */
-void order_tool_groups_in_plugin(const PrintingGroup &printing_group, extruder_index_t first_extruder = EXTRUDER_ID_UNKNOWN);
+void order_tool_groups_in_plugin(
+    const PrintingGroup &printing_group,
+    extruder_index_t first_extruder,
+    const plugin_run_context *run_ctx);
 
 bool is_unassigned_extruder(extruder_index_t extruder_id);
 
@@ -73,7 +77,9 @@ One layer may contain several tool groups with the same extruder after a plugin
 splits a tool visit into several sections. Tool-change optimization only needs
 each extruder id once; the later reordering keeps same-extruder groups stable.
 */
-std::vector<extruder_index_t> unique_layer_extruders(const PrintingLayerGroup &layer_group);
+std::vector<extruder_index_t> unique_layer_extruders(
+    const PrintingLayerGroup &layer_group,
+    const plugin_run_context *run_ctx);
 
 /*
 Generate every first/last tool choice for one printable layer.
@@ -82,7 +88,9 @@ The ordering inside the layer is still mostly stable. The candidate only says
 which extruder should appear first and which one should appear last so the next
 layer can start with fewer tool changes.
 */
-std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(const std::vector<extruder_index_t> &extruders);
+std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(
+    const std::vector<extruder_index_t> &extruders,
+    const plugin_run_context *run_ctx);
 
 /* Return true when lhs is a better dynamic-programming score than rhs. */
 bool tool_order_score_less(const ToolOrderScore &lhs, const ToolOrderScore &rhs);
@@ -95,7 +103,8 @@ first_extruder is only a tie-break for the first printable layer; it should not
 force a worse global sequence.
 */
 std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup &printing_group,
-                                                             extruder_index_t first_extruder);
+                                                             extruder_index_t first_extruder,
+                                                             const plugin_run_context *run_ctx);
 
 /*
 Apply a selected first/last tool choice by moving tool groups in place.
@@ -104,13 +113,19 @@ This is a stable category reorder: all groups for the first extruder move to
 the front, groups for the last extruder move to the back, and everything else
 keeps its relative order in the middle.
 */
-void apply_tool_order_candidate(const PrintingLayerGroup &layer_group, const ToolOrderCandidate &candidate);
+void apply_tool_order_candidate(
+    const PrintingLayerGroup &layer_group,
+    const ToolOrderCandidate &candidate,
+    const plugin_run_context *run_ctx);
 
 extruder_index_t next_concrete_extruder(const PrintingGroup &printing_group,
-                                uint32_t start_layer_idx,
-                                uint32_t start_tool_idx);
+                               uint32_t start_layer_idx,
+                               uint32_t start_tool_idx,
+                               const plugin_run_context *run_ctx);
 
-void resolve_unassigned_tool_groups(const PrintingGroup &printing_group);
+void resolve_unassigned_tool_groups(
+    const PrintingGroup &printing_group,
+    const plugin_run_context *run_ctx);
 
 bool is_unassigned_extruder(const extruder_index_t extruder_id)
 {
@@ -118,24 +133,33 @@ bool is_unassigned_extruder(const extruder_index_t extruder_id)
     return extruder_id == EXTRUDER_ID_UNKNOWN;
 }
 
-void order_tool_groups_in_plugin(const PrintingGroup &printing_group, const extruder_index_t first_extruder)
+void order_tool_groups_in_plugin(
+    const PrintingGroup &printing_group,
+    const extruder_index_t first_extruder,
+    const plugin_run_context *run_ctx)
 {
     const std::vector<ToolOrderCandidate> candidates =
-        select_tool_order_candidates(printing_group, first_extruder);
+        select_tool_order_candidates(printing_group, first_extruder, run_ctx);
     assert(candidates.size() == printing_group.layer_group_count());
 
     /*
     Candidate selection is computed for the whole PrintingGroup before any
     layer is moved. Applying moves afterwards keeps the DP input stable.
     */
-    for (uint32_t layer_idx = 0; layer_idx < printing_group.layer_group_count(); ++layer_idx)
-        apply_tool_order_candidate(printing_group.layer_group(layer_idx), candidates[layer_idx]);
+    for (uint32_t layer_idx = 0; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
+        apply_tool_order_candidate(
+            printing_group.layer_group(layer_idx), candidates[layer_idx], run_ctx);
+    }
 }
 
-std::vector<extruder_index_t> unique_layer_extruders(const PrintingLayerGroup &layer_group)
+std::vector<extruder_index_t> unique_layer_extruders(
+    const PrintingLayerGroup &layer_group,
+    const plugin_run_context *run_ctx)
 {
     std::vector<extruder_index_t> out;
     for (uint32_t idx = 0; idx < layer_group.tool_group_count(); ++idx) {
+        throw_if_cancelled(run_ctx);
         const extruder_index_t extruder_id = layer_group.tool_group(idx).extruder_id();
         if (is_unassigned_extruder(extruder_id))
             continue;
@@ -154,8 +178,11 @@ std::vector<extruder_index_t> unique_layer_extruders(const PrintingLayerGroup &l
     return out;
 }
 
-std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(const std::vector<extruder_index_t> &extruders)
+std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(
+    const std::vector<extruder_index_t> &extruders,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::vector<ToolOrderCandidate> candidates;
     if (extruders.empty())
         return candidates;
@@ -170,10 +197,15 @@ std::vector<ToolOrderCandidate> tool_order_candidates_for_extruders(const std::v
     iterated from the current end toward the beginning so equal-cost solutions
     tend to preserve the existing layer order.
     */
-    for (extruder_index_t first_extruder : extruders)
-        for (std::vector<extruder_index_t>::const_reverse_iterator it = extruders.rbegin(); it != extruders.rend(); ++it)
+    for (extruder_index_t first_extruder : extruders) {
+        throw_if_cancelled(run_ctx);
+        for (std::vector<extruder_index_t>::const_reverse_iterator it = extruders.rbegin();
+             it != extruders.rend(); ++it) {
+            throw_if_cancelled(run_ctx);
             if (*it != first_extruder)
                 candidates.push_back(ToolOrderCandidate{first_extruder, *it, true});
+        }
+    }
     return candidates;
 }
 
@@ -185,16 +217,19 @@ bool tool_order_score_less(const ToolOrderScore &lhs, const ToolOrderScore &rhs)
 }
 
 std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup &printing_group,
-                                                             const extruder_index_t first_extruder)
+                                                             const extruder_index_t first_extruder,
+                                                             const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::vector<ToolOrderCandidate> selected(printing_group.layer_group_count());
     std::vector<uint32_t> active_layers;
     std::vector<std::vector<extruder_index_t>> active_extruders;
     std::vector<std::vector<ToolOrderCandidate>> active_candidates;
 
     for (uint32_t layer_idx = 0; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
-        std::vector<extruder_index_t> extruders = unique_layer_extruders(layer_group);
+        std::vector<extruder_index_t> extruders = unique_layer_extruders(layer_group, run_ctx);
         if (extruders.empty())
             continue;
 
@@ -204,7 +239,8 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
         printable layers.
         */
         active_layers.push_back(layer_idx);
-        active_candidates.push_back(tool_order_candidates_for_extruders(extruders));
+        active_candidates.push_back(
+            tool_order_candidates_for_extruders(extruders, run_ctx));
         active_extruders.push_back(std::move(extruders));
     }
 
@@ -215,6 +251,7 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
     std::vector<std::vector<size_t>> previous(active_layers.size());
 
     for (size_t layer_idx = 0; layer_idx < active_layers.size(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         dp[layer_idx].resize(active_candidates[layer_idx].size());
         previous[layer_idx].assign(active_candidates[layer_idx].size(), size_t(-1));
 
@@ -230,6 +267,7 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
             extruder so ties are deterministic.
             */
             for (size_t candidate_idx = 0; candidate_idx < active_candidates[layer_idx].size(); ++candidate_idx) {
+                throw_if_cancelled(run_ctx);
                 ToolOrderScore score;
                 score.tool_changes = 0;
                 score.initial_penalty =
@@ -240,7 +278,9 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
         }
 
         for (size_t candidate_idx = 0; candidate_idx < active_candidates[layer_idx].size(); ++candidate_idx) {
+            throw_if_cancelled(run_ctx);
             for (size_t previous_idx = 0; previous_idx < active_candidates[layer_idx - 1].size(); ++previous_idx) {
+                throw_if_cancelled(run_ctx);
                 ToolOrderScore score = dp[layer_idx - 1][previous_idx];
                 if (active_candidates[layer_idx - 1][previous_idx].last_extruder !=
                     active_candidates[layer_idx][candidate_idx].first_extruder)
@@ -262,15 +302,18 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
 
     size_t best_idx = 0;
     const size_t last_layer = active_layers.size() - 1;
-    for (size_t candidate_idx = 1; candidate_idx < dp[last_layer].size(); ++candidate_idx)
+    for (size_t candidate_idx = 1; candidate_idx < dp[last_layer].size(); ++candidate_idx) {
+        throw_if_cancelled(run_ctx);
         if (tool_order_score_less(dp[last_layer][candidate_idx], dp[last_layer][best_idx]))
             best_idx = candidate_idx;
+    }
 
     /*
     Walk the predecessor table backward. active_layers maps compressed DP rows
     back to the real PrintingLayerGroup indices, leaving empty layers untouched.
     */
     for (size_t layer_offset = active_layers.size(); layer_offset > 0; --layer_offset) {
+        throw_if_cancelled(run_ctx);
         const size_t layer_idx = layer_offset - 1;
         selected[active_layers[layer_idx]] = active_candidates[layer_idx][best_idx];
         best_idx = layer_idx == 0 ? size_t(-1) : previous[layer_idx][best_idx];
@@ -279,8 +322,12 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
     return selected;
 }
 
-void apply_tool_order_candidate(const PrintingLayerGroup &layer_group, const ToolOrderCandidate &candidate)
+void apply_tool_order_candidate(
+    const PrintingLayerGroup &layer_group,
+    const ToolOrderCandidate &candidate,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (!candidate.valid || candidate.first_extruder == candidate.last_extruder ||
         layer_group.tool_group_count() < 2)
         return;
@@ -297,12 +344,14 @@ void apply_tool_order_candidate(const PrintingLayerGroup &layer_group, const Too
         */
         uint32_t scan_idx = dst_idx;
         while (scan_idx < layer_group.tool_group_count()) {
+            throw_if_cancelled(run_ctx);
             const extruder_index_t extruder_id = layer_group.tool_group(scan_idx).extruder_id();
             const uint32_t group_category =
                 extruder_id == candidate.first_extruder ? 0u :
                 extruder_id == candidate.last_extruder ? 2u :
                 1u;
             if (group_category == category) {
+                throw_if_cancelled(run_ctx);
                 layer_group.move_tool_group(scan_idx, dst_idx);
                 ++dst_idx;
                 scan_idx = dst_idx;
@@ -315,12 +364,15 @@ void apply_tool_order_candidate(const PrintingLayerGroup &layer_group, const Too
 
 extruder_index_t next_concrete_extruder(const PrintingGroup &printing_group,
                                 const uint32_t start_layer_idx,
-                                const uint32_t start_tool_idx)
+                                const uint32_t start_tool_idx,
+                                const plugin_run_context *run_ctx)
 {
     for (uint32_t layer_idx = start_layer_idx; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
         const uint32_t first_tool_idx = layer_idx == start_layer_idx ? start_tool_idx : 0;
         for (uint32_t tool_idx = first_tool_idx; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
+            throw_if_cancelled(run_ctx);
             const extruder_index_t extruder_id = layer_group.tool_group(tool_idx).extruder_id();
             if (!is_unassigned_extruder(extruder_id))
                 return extruder_id;
@@ -330,12 +382,16 @@ extruder_index_t next_concrete_extruder(const PrintingGroup &printing_group,
     return 0;
 }
 
-void resolve_unassigned_tool_groups(const PrintingGroup &printing_group)
+void resolve_unassigned_tool_groups(
+    const PrintingGroup &printing_group,
+    const plugin_run_context *run_ctx)
 {
     extruder_index_t previous_extruder = EXTRUDER_ID_UNKNOWN;
     for (uint32_t layer_idx = 0; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
         for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
             const extruder_index_t extruder_id = tool_group.extruder_id();
             if (!is_unassigned_extruder(extruder_id)) {
@@ -346,7 +402,9 @@ void resolve_unassigned_tool_groups(const PrintingGroup &printing_group)
             const extruder_index_t resolved_extruder =
                 !is_unassigned_extruder(previous_extruder) ?
                     previous_extruder :
-                    next_concrete_extruder(printing_group, layer_idx, tool_idx + 1);
+                    next_concrete_extruder(
+                        printing_group, layer_idx, tool_idx + 1, run_ctx);
+            throw_if_cancelled(run_ctx);
             tool_group.set_extruder_id(resolved_extruder);
             previous_extruder = resolved_extruder;
         }
@@ -385,10 +443,11 @@ private:
     {
         const run_ctx_extrusion_ordering *ctx = plugin_ctx_as_extrusion_ordering(run_ctx);
         assert(ctx != nullptr);
-        assert(ctx->plan != nullptr);
-        if (ctx == nullptr || ctx->plan == nullptr)
+        assert(ctx == nullptr || ctx->plan != nullptr);
+        if (ctx == nullptr || ctx->plan == nullptr || run_ctx == nullptr)
             return;
 
+        throw_if_cancelled(run_ctx);
         PrintingPlan plan(ctx->plan);
         /*
         Tool ordering works independently per PrintingGroup. Complete-object
@@ -396,9 +455,11 @@ private:
         the single global group.
         */
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingGroup group = plan.group(group_idx);
-            order_tool_groups_in_plugin(group);
-            resolve_unassigned_tool_groups(group);
+            order_tool_groups_in_plugin(group, int32_t(-1), run_ctx);
+            throw_if_cancelled(run_ctx);
+            resolve_unassigned_tool_groups(group, run_ctx);
         }
     }
 };

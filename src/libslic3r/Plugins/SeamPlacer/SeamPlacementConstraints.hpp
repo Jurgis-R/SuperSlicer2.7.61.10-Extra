@@ -45,6 +45,7 @@ classify_point() before the provider returns a seam to its consumer.
 
 #include <memory>
 #include <vector>
+#include "libslic3r/Api/plugin/c/slic3r_plugin_run_context.h"
 #include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 
 namespace slic3r_api { namespace SeamPlacement {
@@ -96,7 +97,8 @@ public:
     SeamPlacementConstraints(const SeamPlacementConstraints &) = delete;
     SeamPlacementConstraints &operator=(const SeamPlacementConstraints &) = delete;
     /* Called once, before publication. storage is borrowed only for this call. */
-    void initialize(const PrintingPlan &plan, storage_handle *storage);
+    void initialize(const PrintingPlan &plan, storage_handle *storage,
+                    const plugin_run_context *run_context = nullptr);
     /*
     Called once, before publication, with a borrowed region list. Only an island
     with any LayerRegion whose PrintRegion is in regions is prepared; an empty
@@ -106,7 +108,8 @@ public:
     matches, so the filter is island-level rather than loop-level.
     */
     void initialize_for_regions(const PrintingPlan &plan, storage_handle *storage,
-                                const std::vector<PrintRegion> &regions);
+                                const std::vector<PrintRegion> &regions,
+                                const plugin_run_context *run_context = nullptr);
     /* Classify true segments in tree order, inheriting extrusion width/role.
        Blockers override enforcers; boundaries belong to the closed zone.
        include_unconstrained also returns full segments when no zone applies,
@@ -118,7 +121,8 @@ public:
     Status classify_point(const ExtrusionEntity &loop, c_point point, double paint_margin) const;
 private:
     void initialize_impl(const PrintingPlan &plan, storage_handle *storage,
-                         const std::vector<PrintRegion> *regions);
+                         const std::vector<PrintRegion> *regions,
+                         const plugin_run_context *run_context);
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

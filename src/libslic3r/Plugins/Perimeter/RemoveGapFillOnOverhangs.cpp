@@ -71,12 +71,14 @@ const raw_used_config_key k_used_config_keys[] = {
 };
 const char *k_gap_fill_no_overhang_key = "gap_fill_no_overhang";
 
-StoredExPolygonCollection lower_slice_coverage(storage_handle *storage, const LayerIsland &island);
+StoredExPolygonCollection lower_slice_coverage(storage_handle *storage,
+                                                const LayerIsland &island,
+                                                const plugin_run_context *run_ctx);
 
 class ModuleState
 {
 public:
-    void initialize(const PerimeterGenerationContextView &context)
+    void initialize(const PerimeterGenerationContextView &context, const plugin_run_context *run_ctx)
     {
         // The host calls this module once for every node of the same perimeter
         // tree. The current island, the lower islands and the region settings do
@@ -86,8 +88,11 @@ public:
         const LayerIsland island = context.island();
         m_region_count = island.region_count();
         m_settings.reset(new RegionSettings(context.storage(), island, {{k_gap_fill_no_overhang_key}}));
+        throw_if_cancelled(run_ctx);
         m_settings->segregate(island.slice());
-        m_lower_slices.reset(new StoredExPolygonCollection(lower_slice_coverage(context.storage(), island)));
+        throw_if_cancelled(run_ctx);
+        m_lower_slices.reset(new StoredExPolygonCollection(lower_slice_coverage(context.storage(), island, run_ctx)));
+        throw_if_cancelled(run_ctx);
 
         m_disabled =
             !m_settings->has_many_config(k_gap_fill_no_overhang_key) &&
@@ -128,21 +133,28 @@ private:
     std::unique_ptr<StoredExPolygonCollection> m_lower_slices;
 };
 
-StoredExPolygonCollection lower_slice_coverage(storage_handle *storage, const LayerIsland &island)
+StoredExPolygonCollection lower_slice_coverage(storage_handle *storage,
+                                                const LayerIsland &island,
+                                                const plugin_run_context *run_ctx)
 {
     // For this module, lower geometry is only a yes/no mask: if a gap-fill line
     // is above any lower island, it is considered supported. Union the lower
     // slices once so later node-level tests can use one compact coverage area.
     StoredExPolygonCollection lower_slices(storage);
     const std::vector<LayerIsland> lower_islands = island.lower_islands();
-    for (const LayerIsland &lower_island : lower_islands)
+    for (const LayerIsland &lower_island : lower_islands) {
+        throw_if_cancelled(run_ctx);
         lower_slices.push_back(lower_island.slice());
+    }
 
     if (lower_slices.empty())
         return lower_slices;
 
     ClipperContext clipper(storage);
-    return clipper_union(clipper(lower_slices)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    StoredExPolygonCollection result = clipper_union(clipper(lower_slices)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    return result;
 }
 
 StoredExPolygonCollection node_area_collection(storage_handle *storage, const PerimeterNodeView &node)
@@ -165,8 +177,10 @@ StoredExPolygonCollection node_area_collection(storage_handle *storage, const Pe
 // node, or when every enabled part of the node is already supported below.
 StoredExPolygonCollection gap_fill_no_overhang_area(const PerimeterGenerationContextView &context,
                                                     const PerimeterNodeView &node,
-                                                    const ModuleState &state)
+                                                    const ModuleState &state,
+                                                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     storage_handle *storage = context.storage();
     StoredExPolygonCollection forbidden_area(storage);
     StoredExPolygonCollection node_area = node_area_collection(storage, node);
@@ -174,6 +188,7 @@ StoredExPolygonCollection gap_fill_no_overhang_area(const PerimeterGenerationCon
     const RegionSettings::AreaMap &areas = state.settings().get_areas(k_gap_fill_no_overhang_key);
 
     for (const auto &[setting_value, setting_clip] : areas) {
+        throw_if_cancelled(run_ctx);
         if (!setting_value.get_bool(k_gap_fill_no_overhang_key))
             continue;
 
@@ -181,7 +196,9 @@ StoredExPolygonCollection gap_fill_no_overhang_area(const PerimeterGenerationCon
         // value means "apply only to the part of this node covered by this
         // region or modifier". This is what lets the setting vary by region
         // without forcing the generator to split the whole island up front.
+        throw_if_cancelled(run_ctx);
         StoredExPolygonCollection enabled_area = setting_clip.intersections(node_area);
+        throw_if_cancelled(run_ctx);
         if (enabled_area.empty())
             continue;
 
@@ -193,8 +210,10 @@ StoredExPolygonCollection gap_fill_no_overhang_area(const PerimeterGenerationCon
             unsupported_area.move_from(std::move(enabled_area));
         else {
             ClipperContext clipper(storage);
+            throw_if_cancelled(run_ctx);
             unsupported_area =
                 clipper_diff(clipper(enabled_area), clipper(lower_slices)).to_expolygon_collection();
+            throw_if_cancelled(run_ctx);
         }
 
         if (!unsupported_area.empty())
@@ -206,7 +225,9 @@ StoredExPolygonCollection gap_fill_no_overhang_area(const PerimeterGenerationCon
         // them before clipping polylines so each candidate is clipped once
         // against a clean area.
         ClipperContext clipper(storage);
+        throw_if_cancelled(run_ctx);
         forbidden_area = clipper_union(clipper(forbidden_area)).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
         forbidden_area.ensure_valid();
     }
     return forbidden_area;
@@ -215,7 +236,8 @@ StoredExPolygonCollection gap_fill_no_overhang_area(const PerimeterGenerationCon
 void append_entity_without_overhang_gap_fill(storage_handle *storage,
                                              StoredExtrusionEntity &dst,
                                              const ExtrusionEntity &entity,
-                                             const ExPolygonCollection &forbidden_area)
+                                             const ExPolygonCollection &forbidden_area,
+                                             const plugin_run_context *run_ctx)
 {
     // Closed local polylines are perimeter walls, and entities without a local
     // polyline are collections or empty nodes. This module only removes open
@@ -234,10 +256,13 @@ void append_entity_without_overhang_gap_fill(storage_handle *storage,
     StoredPolyline source_polyline(storage);
     const std::vector<c_point> points = entity.points();
     source_polyline.insert_array(0, points.data(), static_cast<uint32_t>(points.size()));
+    throw_if_cancelled(run_ctx);
     StoredPolylineCollection fragments =
         clipper_diff_polyline_expolygons(storage, source_polyline, forbidden_area);
+    throw_if_cancelled(run_ctx);
 
     for (const Polyline fragment : fragments) {
+        throw_if_cancelled(run_ctx);
         if (fragment.size() < 2)
             continue;
 
@@ -250,7 +275,8 @@ void append_entity_without_overhang_gap_fill(storage_handle *storage,
 
 void remove_gap_fill_on_overhangs(storage_handle *storage,
                                   MutableExtrusionEntity extrusions,
-                                  const ExPolygonCollection &forbidden_area)
+                                  const ExPolygonCollection &forbidden_area,
+                                  const plugin_run_context *run_ctx)
 {
     if (forbidden_area.empty() || extrusions.empty() || extrusions.child_count() == 0)
         return;
@@ -262,13 +288,18 @@ void remove_gap_fill_on_overhangs(storage_handle *storage,
     clipped_extrusions.clear_content();
 
     const uint32_t child_count = extrusions.child_count();
-    for (uint32_t child_idx = 0; child_idx < child_count; ++child_idx)
-        append_entity_without_overhang_gap_fill(storage, clipped_extrusions, extrusions.child(child_idx), forbidden_area);
+    for (uint32_t child_idx = 0; child_idx < child_count; ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        append_entity_without_overhang_gap_fill(
+            storage, clipped_extrusions, extrusions.child(child_idx), forbidden_area, run_ctx);
+    }
 
     // Replace the node output only after every child has been processed. If all
     // open strokes are removed, the resulting collection can legitimately be
     // empty; the node area/fill-area data is not changed here.
+    throw_if_cancelled(run_ctx);
     const bool moved = extrusion_move_from(extrusions.mutable_handle(), clipped_extrusions.mutable_handle()) != 0;
+    throw_if_cancelled(run_ctx);
     assert(moved);
     (void) moved;
 }
@@ -279,20 +310,22 @@ void *module_start(void *, perimeter_generation_context *context)
     // per-run state object instead of storing data on the plugin singleton:
     // multiple islands can be processed in parallel, and each one has different
     // region settings and lower coverage.
-    ModuleState *state = new ModuleState();
     assert(context != nullptr);
     assert(context == nullptr || context->root != nullptr);
+    const plugin_run_context *run_ctx = context != nullptr ? context->run_ctx : nullptr;
+    throw_if_cancelled(run_ctx);
+    std::unique_ptr<ModuleState> state(new ModuleState());
     if (context == nullptr || context->root == nullptr)
-        return state;
+        return state.release();
 
     PerimeterGenerationContextView context_view(context);
     const uint32_t region_count = context_view.island().region_count();
     assert(region_count > 0);
     if (region_count == 0)
-        return state;
+        return state.release();
 
-    state->initialize(context_view);
-    return state;
+    state->initialize(context_view, run_ctx);
+    return state.release();
 }
 
 void module_after(void *, void *user_context, perimeter_generation_context *context, perimeter_node *node)
@@ -304,6 +337,8 @@ void module_after(void *, void *user_context, perimeter_generation_context *cont
     assert(context != nullptr);
     assert(node != nullptr);
     assert(state != nullptr);
+    const plugin_run_context *run_ctx = context != nullptr ? context->run_ctx : nullptr;
+    throw_if_cancelled(run_ctx);
     if (context == nullptr || node == nullptr || state == nullptr)
         return;
 
@@ -322,8 +357,8 @@ void module_after(void *, void *user_context, perimeter_generation_context *cont
         return;
 
     StoredExPolygonCollection forbidden_area =
-        gap_fill_no_overhang_area(context_view, parent, *state);
-    remove_gap_fill_on_overhangs(context_view.storage(), parent.extrusions(), forbidden_area);
+        gap_fill_no_overhang_area(context_view, parent, *state, run_ctx);
+    remove_gap_fill_on_overhangs(context_view.storage(), parent.extrusions(), forbidden_area, run_ctx);
 }
 
 void module_end(void *, void *user_context, perimeter_generation_context *)
@@ -389,6 +424,7 @@ const char *RemoveGapFillOnOverhangs::progress_message_format_impl() const noexc
 
 void RemoveGapFillOnOverhangs::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     run_ctx_perimeter_generation_module *ctx = plugin_ctx_as_perimeter_generation_module(run_ctx);
     if (ctx == nullptr)
         return;

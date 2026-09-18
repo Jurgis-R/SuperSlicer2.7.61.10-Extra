@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from slic3r_api import (
     CPoint,
+    PluginCancelled,
     PluginBase,
     RAW_CO_BOOL,
     RAW_CO_FLOAT_OR_PERCENT,
@@ -40,6 +41,7 @@ from slic3r_api import (
     make_point,
     round_coord,
     scale_i,
+    throw_if_cancelled,
     unscaled,
     used_config_key,
 )
@@ -91,7 +93,16 @@ def _points_equal(lhs: list[CPoint], rhs: list[CPoint]) -> bool:
     return all(a.x == b.x and a.y == b.y for a, b in zip(lhs, rhs))
 
 
-def _create_polyholes(api, storage: int, center_scaled: CPoint, radius_scaled: float, nozzle_diameter_scaled: int, twist: bool) -> list[StoredPolygon]:
+def _create_polyholes(
+    api,
+    storage: int,
+    center_scaled: CPoint,
+    radius_scaled: float,
+    nozzle_diameter_scaled: int,
+    twist: bool,
+    run_ctx_address: int,
+) -> list[StoredPolygon]:
+    throw_if_cancelled(run_ctx_address)
     if nozzle_diameter_scaled <= 0:
         nozzle_diameter_scaled = 1
     radius_mm = unscaled(radius_scaled)
@@ -103,9 +114,12 @@ def _create_polyholes(api, storage: int, center_scaled: CPoint, radius_scaled: f
 
     polygons = [api.new_polygon(storage) for _ in range(polyhole_count)]
     for poly_idx in range(polyhole_count):
+        throw_if_cancelled(run_ctx_address)
         polygon_idx = poly_idx // 2 if poly_idx % 2 == 0 else (polyhole_count + 1) // 2 + poly_idx // 2
         polygon = polygons[polygon_idx]
         for edge_idx in range(edge_count):
+            if edge_idx % 64 == 0:
+                throw_if_cancelled(run_ctx_address)
             angle_rad = rotation_rad * poly_idx + 2.0 * math.pi * edge_idx / edge_count
             x_scaled = round_coord(float(center_scaled.x) + new_radius_scaled * math.cos(angle_rad))
             y_scaled = round_coord(float(center_scaled.y) + new_radius_scaled * math.sin(angle_rad))
@@ -114,7 +128,9 @@ def _create_polyholes(api, storage: int, center_scaled: CPoint, radius_scaled: f
     return polygons
 
 
-def _replace_matching_hole(expolygon, points_to_replace_scaled: list[CPoint], replacement: StoredPolygon) -> bool:
+def _replace_matching_hole(
+    expolygon, points_to_replace_scaled: list[CPoint], replacement: StoredPolygon
+) -> bool:
     for hole in expolygon.holes_mutable():
         if _points_equal(hole.points(), points_to_replace_scaled):
             hole.copy_from(replacement)
@@ -242,24 +258,29 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
         )
 
     def run(self, run_ctx_address: int) -> None:
+        throw_if_cancelled(run_ctx_address)
         ctx = self.api.post_slicing_context(run_ctx_address)
         if ctx is None:
             return
 
         try:
-            self._run_polyholes(ctx)
+            self._run_polyholes(ctx, run_ctx_address)
+        except PluginCancelled:
+            raise
         except Exception as exc:
             ctx.report_error(f"Python Polyholes high level failed: {exc}")
 
-    def _run_polyholes(self, ctx) -> None:
+    def _run_polyholes(self, ctx, run_ctx_address: int) -> None:
+        throw_if_cancelled(run_ctx_address)
         obj = ctx.post_slicing_object()
         layer_count = obj.layer_count()
         layer_holes: list[list[HoleData]] = [[] for _ in range(layer_count)]
 
         for layer_idx, layer in enumerate(obj.layers()):
-            if ctx.is_cancelled():
-                return
+            throw_if_cancelled(run_ctx_address)
             for region_idx, layer_region in enumerate(layer.regions()):
+                if region_idx % 64 == 0:
+                    throw_if_cancelled(run_ctx_address)
                 region_config = layer_region.print_region().config()
                 if not region_config.bool(POLYHOLES_KEY):
                     continue
@@ -268,8 +289,12 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
                 perimeter_extruder = region_config.int("perimeter_extruder") - 1
                 threshold = region_config.option(POLYHOLES_THRESHOLD_KEY)
 
-                for expolygon in layer_region.slices():
-                    for hole in expolygon.holes():
+                for expolygon_idx, expolygon in enumerate(layer_region.slices()):
+                    if expolygon_idx % 64 == 0:
+                        throw_if_cancelled(run_ctx_address)
+                    for hole_idx, hole in enumerate(expolygon.holes()):
+                        if hole_idx % 64 == 0:
+                            throw_if_cancelled(run_ctx_address)
                         points_scaled = hole.points()
                         if len(points_scaled) <= 8:
                             continue
@@ -280,7 +305,9 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
                         min_radius_scaled = float("inf")
                         max_radius_scaled = 0.0
                         radius_sum_scaled = 0.0
-                        for point in points_scaled:
+                        for point_idx, point in enumerate(points_scaled):
+                            if point_idx % 64 == 0:
+                                throw_if_cancelled(run_ctx_address)
                             distance_scaled = _point_distance_scaled(point, center_scaled)
                             min_radius_scaled = min(min_radius_scaled, distance_scaled)
                             max_radius_scaled = max(max_radius_scaled, distance_scaled)
@@ -289,7 +316,9 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
                         min_line_radius_scaled = float("inf")
                         max_line_radius_scaled = 0.0
                         previous = points_scaled[-1]
-                        for point in points_scaled:
+                        for point_idx, point in enumerate(points_scaled):
+                            if point_idx % 64 == 0:
+                                throw_if_cancelled(run_ctx_address)
                             midline_scaled = _point_mid_scaled(previous, point)
                             distance_scaled = _point_distance_scaled(center_scaled, midline_scaled)
                             min_line_radius_scaled = min(min_line_radius_scaled, distance_scaled)
@@ -311,11 +340,12 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
                             ))
             ctx.report_progress((layer_idx + 1) / max(1, layer_count), "Python Polyholes high level: searching holes")
 
-        through_holes = self._group_holes(obj, layer_holes)
+        through_holes = self._group_holes(obj, layer_holes, run_ctx_address)
         print_config = ctx.post_slicing_print().config()
-        modified_layers: set[int] = set()
 
-        for hole_idx, through_hole in enumerate(through_holes):
+        prepared_replacements: list[tuple[ThroughHole, list[StoredPolygon]]] = []
+        for through_hole in through_holes:
+            throw_if_cancelled(run_ctx_address)
             nozzle_diameter_scaled = scale_i(print_config.float(
                 "nozzle_diameter",
                 max(0, through_hole.hole_data.extruder_id),
@@ -327,7 +357,16 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
                 through_hole.hole_data.max_radius_scaled,
                 nozzle_diameter_scaled,
                 through_hole.hole_data.twist,
+                run_ctx_address,
             )
+            prepared_replacements.append((through_hole, replacements))
+
+        # Raw slices and their derived layer caches form one consistency commit.
+        # Once mutation starts, every touched layer is recomputed before the next
+        # cancellation check so callers cannot observe stale slice-island caches.
+        throw_if_cancelled(run_ctx_address)
+        modified_layers: set[int] = set()
+        for hole_idx, (through_hole, replacements) in enumerate(prepared_replacements):
             for layer_hole in through_hole.layers:
                 mutable_layer = obj.layer_mutable(layer_hole.layer_idx)
                 mutable_region = mutable_layer.region_mutable(layer_hole.layer_region_idx)
@@ -339,35 +378,49 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
                         modified += 1
                 if modified:
                     modified_layers.add(layer_hole.layer_idx)
-            for polygon in replacements:
-                polygon.free_from_storage()
             ctx.report_progress(
                 (hole_idx + 1) / max(1, len(through_holes)),
                 "Python Polyholes high level: converting holes",
             )
 
-        for layer_idx in sorted(modified_layers):
-            ctx.recompute_slices_and_islands_from_layer_region(obj.layer_mutable(layer_idx))
+        for modified_layer_idx in sorted(modified_layers):
+            ctx.recompute_slices_and_islands_from_layer_region(obj.layer_mutable(modified_layer_idx))
+
+        for _, replacements in prepared_replacements:
+            for polygon in replacements:
+                polygon.free_from_storage()
 
         if ctx.post_slicing_storage_size() != 0:
             ctx.clear_storage()
+        throw_if_cancelled(run_ctx_address)
 
-    def _group_holes(self, obj, layer_holes: list[list[HoleData]]) -> list[ThroughHole]:
+    def _group_holes(
+        self, obj, layer_holes: list[list[HoleData]], run_ctx_address: int
+    ) -> list[ThroughHole]:
+        throw_if_cancelled(run_ctx_address)
         through_holes: list[ThroughHole] = []
         min_layer_count = 2
         layer_count = len(layer_holes)
 
         for layer_idx in range(layer_count):
-            for main_hole in list(layer_holes[layer_idx]):
+            if layer_idx % 64 == 0:
+                throw_if_cancelled(run_ctx_address)
+            for main_hole_idx, main_hole in enumerate(list(layer_holes[layer_idx])):
+                if main_hole_idx % 64 == 0:
+                    throw_if_cancelled(run_ctx_address)
                 max_z_scaled = obj.layer(layer_idx).print_z()
                 holes = [LayerHole(main_hole.points_scaled, layer_idx, main_hole.layer_region_idx)]
                 for search_layer_idx in range(layer_idx + 1, layer_count):
+                    if search_layer_idx % 64 == 0:
+                        throw_if_cancelled(run_ctx_address)
                     search_layer = obj.layer(search_layer_idx)
                     if search_layer.print_z() - search_layer.height() - max_z_scaled > 0:
                         break
 
                     candidates = layer_holes[search_layer_idx]
                     for search_hole_idx, search_hole in enumerate(candidates):
+                        if search_hole_idx % 64 == 0:
+                            throw_if_cancelled(run_ctx_address)
                         if (
                             main_hole.extruder_id == search_hole.extruder_id
                             and _point_distance_scaled(main_hole.center_scaled, search_hole.center_scaled) < main_hole.max_deviation_scaled

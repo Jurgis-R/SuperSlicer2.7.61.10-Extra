@@ -321,10 +321,12 @@ void collapse_tiny_segments(StoredPolyline &polyline, coord_t min_length)
 
 StoredPolylineCollection collapse_tiny_segments(storage_handle *storage,
                                                 const PolylineCollection &polylines,
-                                                coord_t min_length)
+                                                coord_t min_length,
+                                                const plugin_run_context *run_ctx)
 {
     StoredPolylineCollection out(storage);
     for (Polyline polyline : polylines) {
+        throw_if_cancelled(run_ctx);
         StoredPolyline cleaned(storage);
         cleaned.copy_from(polyline);
         collapse_tiny_segments(cleaned, min_length);
@@ -334,23 +336,31 @@ StoredPolylineCollection collapse_tiny_segments(storage_handle *storage,
     return out;
 }
 
-StoredExPolygonCollection lower_slices_for_island(storage_handle *storage, const LayerIsland &island)
+StoredExPolygonCollection lower_slices_for_island(storage_handle *storage,
+                                                  const LayerIsland &island,
+                                                  const plugin_run_context *run_ctx)
 {
     StoredExPolygonCollection lower_slices(storage);
     const std::vector<LayerIsland> lower_islands = island.lower_islands();
-    for (const LayerIsland &lower_island : lower_islands)
+    for (const LayerIsland &lower_island : lower_islands) {
+        throw_if_cancelled(run_ctx);
         lower_slices.push_back(lower_island.slice());
+    }
 
     if (lower_slices.empty())
         return lower_slices;
 
     ClipperContext clipper(storage);
-    return clipper_union(clipper(lower_slices)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    StoredExPolygonCollection out = clipper_union(clipper(lower_slices)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    return out;
 }
 
 StoredExPolygonCollection enabled_infill_area(storage_handle *storage,
                                              const ExPolygonCollection &candidate,
-                                             const RegionSettings &settings)
+                                             const RegionSettings &settings,
+                                             const plugin_run_context *run_ctx)
 {
     // RegionSettings may describe one value for the whole island or several
     // non-overlapping clips. Convert that setting state into the part of the
@@ -365,6 +375,7 @@ StoredExPolygonCollection enabled_infill_area(storage_handle *storage,
     StoredExPolygonCollection enabled(storage);
     const RegionSettings::AreaMap &areas = settings.get_areas(k_extra_perimeters_on_overhangs_key);
     for (const auto &[setting_value, setting_clip] : areas) {
+        throw_if_cancelled(run_ctx);
         if (!setting_value.get_bool(k_extra_perimeters_on_overhangs_key))
             continue;
         setting_clip.append_intersections_to(enabled, candidate);
@@ -373,12 +384,16 @@ StoredExPolygonCollection enabled_infill_area(storage_handle *storage,
     }
 
     ClipperContext clipper(storage);
-    return clipper_union(clipper(enabled)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    StoredExPolygonCollection out = clipper_union(clipper(enabled)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    return out;
 }
 
 StoredExPolygonCollection disabled_infill_area(storage_handle *storage,
                                               const ExPolygonCollection &candidate,
-                                              const ExPolygonCollection &enabled)
+                                              const ExPolygonCollection &enabled,
+                                              const plugin_run_context *run_ctx)
 {
     // Disabled clips are not processed, but they still belong to the island's
     // infill domain. They are unioned back into the unfilled area so later
@@ -386,7 +401,10 @@ StoredExPolygonCollection disabled_infill_area(storage_handle *storage,
     if (candidate.empty() || enabled.empty())
         return candidate.clone(storage);
     ClipperContext clipper(storage);
-    return clipper_diff(clipper(candidate), clipper(enabled)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    StoredExPolygonCollection out = clipper_diff(clipper(candidate), clipper(enabled)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    return out;
 }
 
 double collection_area(const ExPolygonCollection &collection)
@@ -475,7 +493,8 @@ bool paths_touch(const GeneratedPath &path_one,
 
 StoredPolylineCollection reconnect_polylines(storage_handle *storage,
                                              const PolylineCollection &polylines,
-                                             coordf_t limit_distance)
+                                             coordf_t limit_distance,
+                                             const plugin_run_context *run_ctx)
 {
     if (polylines.empty())
         return StoredPolylineCollection(storage);
@@ -483,6 +502,7 @@ StoredPolylineCollection reconnect_polylines(storage_handle *storage,
     std::vector<std::unique_ptr<StoredPolyline>> connected;
     connected.reserve(polylines.size());
     for (Polyline polyline : polylines) {
+        throw_if_cancelled(run_ctx);
         if (polyline.empty())
             continue;
         std::unique_ptr<StoredPolyline> copy(new StoredPolyline(storage));
@@ -495,10 +515,12 @@ StoredPolylineCollection reconnect_polylines(storage_handle *storage,
     // G-code planner receives long printable strokes instead of many crumbs.
     const double limit_squared = limit_distance * limit_distance;
     for (size_t first_idx = 0; first_idx < connected.size(); ++first_idx) {
+        throw_if_cancelled(run_ctx);
         if (!connected[first_idx])
             continue;
         StoredPolyline &base = *connected[first_idx];
         for (size_t second_idx = first_idx + 1; second_idx < connected.size(); ++second_idx) {
+            throw_if_cancelled(run_ctx);
             if (!connected[second_idx])
                 continue;
             StoredPolyline &next = *connected[second_idx];
@@ -527,6 +549,7 @@ StoredPolylineCollection reconnect_polylines(storage_handle *storage,
 
     StoredPolylineCollection result(storage);
     for (std::unique_ptr<StoredPolyline> &polyline : connected) {
+        throw_if_cancelled(run_ctx);
         if (!polyline || polyline->size() < 2)
             continue;
         polyline->ensure_valid(coord_t(SCALED_EPSILON));
@@ -571,7 +594,8 @@ void orient_extra_perimeter_from_support(GeneratedPath &path,
 
 std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extra_perims,
                                                  int index_of_first_unanchored,
-                                                 coordf_t extrusion_spacing)
+                                                 coordf_t extrusion_spacing,
+                                                 const plugin_run_context *run_ctx)
 {
     if (extra_perims.empty())
         return {};
@@ -583,10 +607,14 @@ std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extr
     // material. Later paths should be printed only once they are connected to a
     // processed path, otherwise unsupported strokes may be emitted in mid-air.
     std::vector<std::unordered_set<size_t>> dependencies(extra_perims.size());
-    for (size_t path_idx = 0; path_idx < extra_perims.size(); ++path_idx)
-        for (size_t prev_path_idx = 0; prev_path_idx < path_idx; ++prev_path_idx)
+    for (size_t path_idx = 0; path_idx < extra_perims.size(); ++path_idx) {
+        throw_if_cancelled(run_ctx);
+        for (size_t prev_path_idx = 0; prev_path_idx < path_idx; ++prev_path_idx) {
+            throw_if_cancelled(run_ctx);
             if (paths_touch(extra_perims[path_idx], extra_perims[prev_path_idx], extrusion_spacing * 1.5f))
                 dependencies[path_idx].insert(prev_path_idx);
+        }
+    }
 
     std::vector<bool> processed(extra_perims.size(), false);
     for (int path_idx = 0; path_idx < index_of_first_unanchored; ++path_idx)
@@ -596,8 +624,10 @@ std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extr
     // Flip unresolved dependencies when needed so unsupported strokes still get
     // printed in an order that tends to grow out of anchored material.
     for (size_t iteration = size_t(index_of_first_unanchored); iteration < extra_perims.size(); ++iteration) {
+        throw_if_cancelled(run_ctx);
         bool changed = false;
         for (size_t path_idx = size_t(index_of_first_unanchored); path_idx < extra_perims.size(); ++path_idx) {
+            throw_if_cancelled(run_ctx);
             if (processed[path_idx])
                 continue;
             std::unordered_set<size_t>::iterator processed_dep = std::find_if(
@@ -628,9 +658,11 @@ std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extr
     size_t next_idx = invalid_idx;
     bool reverse = false;
     while (true) {
+        throw_if_cancelled(run_ctx);
         if (next_idx == invalid_idx) {
             double dist = std::numeric_limits<double>::max();
             for (size_t path_idx = 0; path_idx < extra_perims.size(); ++path_idx) {
+                throw_if_cancelled(run_ctx);
                 if (!dependencies[path_idx].empty())
                     continue;
                 const GeneratedPath &path = extra_perims[path_idx];
@@ -662,6 +694,7 @@ std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extr
             double dist = std::numeric_limits<double>::max();
             next_idx = invalid_idx;
             for (size_t path_idx = 0; path_idx < extra_perims.size(); ++path_idx) {
+                throw_if_cancelled(run_ctx);
                 if (!dependencies[path_idx].empty())
                     continue;
                 const GeneratedPath &next_path = extra_perims[path_idx];
@@ -686,6 +719,7 @@ std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extr
     std::vector<GeneratedPath> reconnected;
     reconnected.reserve(sorted_paths.size());
     for (GeneratedPath &path : sorted_paths) {
+        throw_if_cancelled(run_ctx);
         if (path.entity.local_length() < min_split_length)
             continue;
 
@@ -714,9 +748,11 @@ std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extr
 
     std::vector<GeneratedPath> filtered;
     filtered.reserve(reconnected.size());
-    for (GeneratedPath &path : reconnected)
+    for (GeneratedPath &path : reconnected) {
+        throw_if_cancelled(run_ctx);
         if (path.entity.local_length() > 3 * extrusion_spacing)
             filtered.push_back(std::move(path));
+    }
 
     return filtered;
 }
@@ -724,22 +760,32 @@ std::vector<GeneratedPath> sort_extra_perimeters(std::vector<GeneratedPath> extr
 void append_overhang_paths(storage_handle *storage,
                            std::vector<GeneratedPath> &dst,
                            const PolylineCollection &polylines,
-                           const OverhangGenerationInput &input)
+                           const OverhangGenerationInput &input,
+                           const plugin_run_context *run_ctx)
 {
     const coord_t min_split_length = minimum_printable_split_length(input.overhang_spacing);
-    StoredPolylineCollection reconnected = reconnect_polylines(storage, polylines, input.overhang_spacing);
-    StoredPolylineCollection cleaned = collapse_tiny_segments(storage, reconnected.readonly(), min_split_length);
-    for (Polyline polyline : cleaned)
+    throw_if_cancelled(run_ctx);
+    StoredPolylineCollection reconnected = reconnect_polylines(storage, polylines, input.overhang_spacing, run_ctx);
+    throw_if_cancelled(run_ctx);
+    StoredPolylineCollection cleaned =
+        collapse_tiny_segments(storage, reconnected.readonly(), min_split_length, run_ctx);
+    throw_if_cancelled(run_ctx);
+    for (Polyline polyline : cleaned) {
+        throw_if_cancelled(run_ctx);
         dst.emplace_back(storage, polyline, input.overhang_flow.attributes);
+    }
 }
 
 StoredPolylineCollection clipped_polylines(storage_handle *storage,
                                            const PolylineCollection &polylines,
-                                           const ExPolygonCollection &clip_area)
+                                           const ExPolygonCollection &clip_area,
+                                           const plugin_run_context *run_ctx)
 {
     StoredPolylineCollection out(storage);
     for (Polyline polyline : polylines) {
+        throw_if_cancelled(run_ctx);
         StoredPolylineCollection clipped = clipper_intersection_polyline_expolygons(storage, polyline, clip_area);
+        throw_if_cancelled(run_ctx);
         out.append_move_from(std::move(clipped));
     }
     return out;
@@ -762,7 +808,8 @@ c_flow medial_axis_flow_from_overhang_flow(const OverhangFlow &flow, coord_t spa
 void append_medial_axis_paths(storage_handle *storage,
                               std::vector<GeneratedPath> &dst,
                               const ExPolygonCollection &areas,
-                              const OverhangGenerationInput &input)
+                              const OverhangGenerationInput &input,
+                              const plugin_run_context *run_ctx)
 {
     /*
     Gap fill is optional for each area: tiny or degenerate shapes may produce no
@@ -771,16 +818,19 @@ void append_medial_axis_paths(storage_handle *storage,
     */
     const c_flow flow = medial_axis_flow_from_overhang_flow(input.overhang_flow, input.overhang_spacing);
     for (ExPolygon area : areas) {
+        throw_if_cancelled(run_ctx);
         std::optional<StoredExtrusionEntity> tree =
             medial_axis_extrusion(RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER, flow)
                 .medial_widths(coord_t(0.75 * input.overhang_flow.width), coord_t(3.0 * input.overhang_spacing))
                 .constant_width()
                 .min_extrusion_length(input.overhang_spacing / 10)
                 .try_build(storage, area);
+        throw_if_cancelled(run_ctx);
         if (!tree.has_value())
             continue;
 
         for (uint32_t idx = 0; idx < tree->child_count(); ++idx) {
+            throw_if_cancelled(run_ctx);
             GeneratedPath path(storage);
             path.entity.copy_from(tree->child(idx));
             path.entity.get_or_add(EPropertyAttributes::key) = input.overhang_flow.attributes;
@@ -793,8 +843,10 @@ void append_medial_axis_paths(storage_handle *storage,
 bool bridgeable_overhang_area(storage_handle *storage,
                               const ExPolygonCollection &real_overhang,
                               const ExPolygonCollection &anchors,
-                              const OverhangGenerationInput &input)
+                              const OverhangGenerationInput &input,
+                              const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (real_overhang.empty() || anchors.empty())
         return false;
 
@@ -809,32 +861,46 @@ bool bridgeable_overhang_area(storage_handle *storage,
     detector_input.precision = input.bridge_precision;
     detector_input.layer_id = input.layer_id;
 
+    throw_if_cancelled(run_ctx);
     BridgeDetector detector(orchestrator_create_bridge_detector(nullptr, &detector_input));
+    throw_if_cancelled(run_ctx);
     if (!detector)
         return false;
 
     double bridge_angle = input.bridge_angle_enabled ? input.bridge_angle_rad : 0.;
     if (!input.bridge_angle_enabled) {
-        if (!detector.detect_angle())
+        throw_if_cancelled(run_ctx);
+        const int32_t has_angle = detector.detect_angle();
+        throw_if_cancelled(run_ctx);
+        if (!has_angle)
             return false;
         bridge_angle = detector.angle();
     }
 
     StoredPolylineCollection unsupported_lines(storage);
+    throw_if_cancelled(run_ctx);
     const uint32_t unsupported_count = detector.unsupported_edges(unsupported_lines, bridge_angle);
+    throw_if_cancelled(run_ctx);
     double unsupported_length = 0.;
     if (unsupported_count > 0) {
-        for (Polyline line : unsupported_lines)
+        for (Polyline line : unsupported_lines) {
+            throw_if_cancelled(run_ctx);
             unsupported_length += line.length();
+        }
     }
 
     StoredPolygonCollection coverage_polygons(storage);
+    throw_if_cancelled(run_ctx);
     detector.coverage(coverage_polygons, bridge_angle);
+    throw_if_cancelled(run_ctx);
 
     ClipperContext clipper(storage);
+    throw_if_cancelled(run_ctx);
     ClipperOperand coverage = clipper_union(clipper(coverage_polygons));
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection unbridgeable =
         clipper_diff(clipper(real_overhang), coverage).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
 
     const double real_area = collection_area(real_overhang);
     if (real_area <= 0.)
@@ -847,8 +913,10 @@ bool bridgeable_overhang_area(storage_handle *storage,
 OverhangGenerationOutput generate_extra_perimeters_over_overhangs(storage_handle *storage,
                                                                   const ExPolygon &island,
                                                                   const ExPolygonCollection &infill_area,
-                                                                  const OverhangGenerationInput &input)
+                                                                  const OverhangGenerationInput &input,
+                                                                  const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     OverhangGenerationOutput out(storage);
     if (infill_area.empty() || input.lower_slices.empty() || input.perimeter_depth <= 0)
         return out;
@@ -858,27 +926,37 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs(storage_handle
     if (!collection_bounding_box(infill_area, infill_area_bb))
         return out;
     const coord_t bbox_margin = coord_t(SCALED_EPSILON) + input.anchors_size;
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection optimized_lower_slices =
         clipper_clip_expolygons_with_subject_bbox(
             storage, input.lower_slices.readonly(), inflated_bounding_box(infill_area_bb, bbox_margin));
+    throw_if_cancelled(run_ctx);
 
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection overhangs =
         clipper_diff(clipper(infill_area), clipper(optimized_lower_slices)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     if (overhangs.empty())
         return out;
 
     LineDistancer lower_layer_distancer(optimized_lower_slices);
     StoredExPolygonCollection island_collection(storage, island);
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection anchors =
         clipper_intersection(clipper(island_collection), clipper(optimized_lower_slices)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection anchors_no_overhangs =
         clipper_diff(clipper(anchors), clipper(overhangs)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     ClipperOperand expanded_overhangs_for_anchors =
         clipper_offset(clipper(overhangs), input.anchors_size, CLIPPER_JOIN_SQUARE, 0.);
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection inset_anchors =
         clipper_diff(clipper(anchors), expanded_overhangs_for_anchors).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection inset_overhang_area =
         clipper_diff(clipper(infill_area), clipper(inset_anchors)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
 
     StoredExPolygonCollection inset_overhang_area_left_unfilled(storage);
     std::vector<std::vector<GeneratedPath>> extra_perimeters;
@@ -887,88 +965,113 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs(storage_handle
     // builds clipped overhang perimeters until the remaining area is either
     // bridgeable or too small, then returns both the generated paths and the
     // area consumed by them.
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection overhang_regions =
         clipper_union(clipper(inset_overhang_area)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     for (ExPolygon overhang : overhang_regions) {
+        throw_if_cancelled(run_ctx);
         StoredExPolygonCollection overhang_to_cover(storage, overhang);
         // These expanded/shrunken masks feed several boolean operations before
         // any code needs to iterate their ExPolygons. Keeping them as Clipper
         // operands avoids creating temporary collections after each offset.
         ClipperOperand expanded_overhang_to_cover =
             clipper_offset(clipper(overhang_to_cover), 1.1 * input.overhang_spacing);
+        throw_if_cancelled(run_ctx);
         ClipperOperand shrinked_overhang_shape =
             clipper_offset(clipper(overhang_to_cover), -0.1 * input.overhang_spacing);
+        throw_if_cancelled(run_ctx);
 
+        throw_if_cancelled(run_ctx);
         StoredExPolygonCollection real_overhang =
             clipper_intersection(clipper(overhang_to_cover), clipper(overhangs)).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
         if (real_overhang.empty()) {
             inset_overhang_area_left_unfilled.append_copy_from(overhang_to_cover.readonly());
             continue;
         }
 
         std::vector<GeneratedPath> &overhang_region = extra_perimeters.emplace_back();
+        throw_if_cancelled(run_ctx);
         StoredExPolygonCollection anchoring =
             clipper_intersection(expanded_overhang_to_cover, clipper(inset_anchors)).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
         ClipperOperand grown_overhang_to_cover =
             clipper_offset(clipper(overhang_to_cover), 0.1 * input.overhang_spacing);
+        throw_if_cancelled(run_ctx);
         ClipperOperand perimeter_source =
             clipper_union2(grown_overhang_to_cover, clipper(anchoring));
+        throw_if_cancelled(run_ctx);
         StoredExPolygonCollection perimeter_polygon =
             clipper_offset2(
                 perimeter_source,
                 -input.overhang_spacing * (0.1 + 0.5 + 0.1),
                 input.overhang_spacing * 0.1)
                 .to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
 
-        if (bridgeable_overhang_area(storage, real_overhang, anchors, input)) {
+        if (bridgeable_overhang_area(storage, real_overhang, anchors, input, run_ctx)) {
             inset_overhang_area_left_unfilled.append_copy_from(overhang_to_cover.readonly());
             perimeter_polygon.clear();
         } else {
             ClipperOperand inset_anchor_exclusion =
                 clipper_offset(clipper(inset_anchors), input.overhang_spacing * 0.5);
+            throw_if_cancelled(run_ctx);
             StoredExPolygonCollection shrinked_overhang_to_cover =
                 clipper_diff(shrinked_overhang_shape, inset_anchor_exclusion).to_expolygon_collection();
+            throw_if_cancelled(run_ctx);
 
             int continuation_loops = 2;
             while (continuation_loops >= 0) {
+                throw_if_cancelled(run_ctx);
                 StoredExPolygonCollection previous = perimeter_polygon.readonly().clone(storage);
                 StoredPolylineCollection perimeter_polylines =
                     expolygons_to_polylines(storage, perimeter_polygon);
+                throw_if_cancelled(run_ctx);
                 StoredPolylineCollection perimeter =
-                    clipped_polylines(storage, perimeter_polylines, shrinked_overhang_to_cover);
+                    clipped_polylines(storage, perimeter_polylines, shrinked_overhang_to_cover, run_ctx);
+                throw_if_cancelled(run_ctx);
 
                 // The next perimeter is a chain of union -> offset ->
                 // intersection. Only the final intersection is materialized
                 // because the rest is immediately consumed by Clipper again.
                 ClipperOperand perimeter_with_anchoring =
                     clipper_union2(clipper(perimeter_polygon), clipper(anchoring));
+                throw_if_cancelled(run_ctx);
                 ClipperOperand next_perimeter =
                     clipper_offset(perimeter_with_anchoring, -input.overhang_spacing);
+                throw_if_cancelled(run_ctx);
                 perimeter_polygon =
                     clipper_intersection(next_perimeter, expanded_overhang_to_cover).to_expolygon_collection();
+                throw_if_cancelled(run_ctx);
 
                 if (perimeter_polygon.empty()) {
                     ClipperOperand previous_shrunken =
                         clipper_offset(clipper(previous), -0.3 * input.overhang_spacing);
+                    throw_if_cancelled(run_ctx);
                     StoredExPolygonCollection shrinked =
                         clipper_intersection(previous_shrunken, expanded_overhang_to_cover)
                             .to_expolygon_collection();
+                    throw_if_cancelled(run_ctx);
                     if (!shrinked.empty())
-                        append_overhang_paths(storage, overhang_region, perimeter, input);
+                        append_overhang_paths(storage, overhang_region, perimeter, input, run_ctx);
 
                     StoredExPolygonCollection gap =
                         shrinked.empty() ?
                         clipper_offset(clipper(previous), input.overhang_spacing * 0.5).to_expolygon_collection() :
                         std::move(shrinked);
+                    throw_if_cancelled(run_ctx);
                     StoredExPolygonCollection clipped_gap =
                         clipper_intersection(clipper(gap), clipper(shrinked_overhang_to_cover)).to_expolygon_collection();
-                    append_medial_axis_paths(storage, overhang_region, clipped_gap, input);
+                    throw_if_cancelled(run_ctx);
+                    append_medial_axis_paths(storage, overhang_region, clipped_gap, input, run_ctx);
                     break;
                 }
 
-                append_overhang_paths(storage, overhang_region, perimeter, input);
+                append_overhang_paths(storage, overhang_region, perimeter, input, run_ctx);
                 ClipperOperand remaining_real_overhang =
                     clipper_intersection(clipper(perimeter_polygon), clipper(real_overhang));
+                throw_if_cancelled(run_ctx);
                 if (remaining_real_overhang.empty())
                     --continuation_loops;
                 if (collection_equals(previous, perimeter_polygon))
@@ -977,8 +1080,10 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs(storage_handle
 
             ClipperOperand grown_perimeter_polygon =
                 clipper_offset(clipper(perimeter_polygon), 0.5 * input.overhang_spacing);
+            throw_if_cancelled(run_ctx);
             perimeter_polygon =
                 clipper_union2(grown_perimeter_polygon, clipper(anchoring)).to_expolygon_collection();
+            throw_if_cancelled(run_ctx);
             inset_overhang_area_left_unfilled.append_copy_from(perimeter_polygon.readonly());
 
             overhang_region.erase(
@@ -987,11 +1092,13 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs(storage_handle
                                    return path.entity.point_count() < 2 || path.entity.local_length() <= 0.;
                                }),
                 overhang_region.end());
+            throw_if_cancelled(run_ctx);
 
             if (!overhang_region.empty()) {
                 StoredPolyline first_polyline = polyline_from_path(storage, overhang_region.front());
                 StoredPolylineCollection anchored_part =
                     clipper_intersection_polyline_expolygons(storage, first_polyline, optimized_lower_slices);
+                throw_if_cancelled(run_ctx);
                 const bool first_overhang_is_closed_and_anchored =
                     overhang_region.front().entity.local_is_closed() && !anchored_part.empty();
 
@@ -1011,21 +1118,29 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs(storage_handle
                     std::stable_partition(overhang_region.begin(), overhang_region.end(), is_anchored);
                 const int index_of_first_unanchored = int(first_unanchored - overhang_region.begin());
                 overhang_region =
-                    sort_extra_perimeters(std::move(overhang_region), index_of_first_unanchored, input.overhang_spacing);
+                    sort_extra_perimeters(std::move(overhang_region), index_of_first_unanchored, input.overhang_spacing,
+                                          run_ctx);
             }
         }
     }
 
+    throw_if_cancelled(run_ctx);
     inset_overhang_area_left_unfilled =
         clipper_union(clipper(inset_overhang_area_left_unfilled)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
 
     out.extra_perimeters = std::move(extra_perimeters);
+    throw_if_cancelled(run_ctx);
     out.filled_area =
         clipper_diff(clipper(inset_overhang_area), clipper(inset_overhang_area_left_unfilled)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     out.filled_area.ensure_valid();
+    throw_if_cancelled(run_ctx);
     out.unfilled_area =
         clipper_union2(clipper(inset_anchors), clipper(inset_overhang_area_left_unfilled)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     out.unfilled_area.ensure_valid();
+    throw_if_cancelled(run_ctx);
     return out;
 }
 
@@ -1035,7 +1150,8 @@ OverhangGenerationInput generation_input_for_island(storage_handle *storage,
                                                     const LayerIsland &island,
                                                     uint32_t layer_idx,
                                                     const c_flow &perimeter_flow,
-                                                    const c_flow &external_flow)
+                                                    const c_flow &external_flow,
+                                                    const plugin_run_context *run_ctx)
 {
     // Gather the small immutable bundle needed by the overhang-anchor
     // algorithm. Geometry still uses the configured overhang spacing so the
@@ -1063,7 +1179,7 @@ OverhangGenerationInput generation_input_for_island(storage_handle *storage,
     input.bridge_angle_enabled = region_config.has(k_bridge_angle_key) &&
         region_config.get(k_bridge_angle_key).is_enabled();
     input.bridge_angle_rad = deg_to_rad(config_float_or(region_config, k_bridge_angle_key, 0.));
-    input.lower_slices = lower_slices_for_island(storage, island);
+    input.lower_slices = lower_slices_for_island(storage, island, run_ctx);
 
     // Keep the old "do not add overhang extras on the first printable object
     // layer" guard. The C layer handle currently exposes traversal index rather
@@ -1092,7 +1208,8 @@ coord_t infill_overlap_for_island(const LayerIsland &island,
 }
 
 void prepend_extra_perimeters_to_root(MutableExtrusionEntity root,
-                                      std::vector<std::vector<GeneratedPath>> &extra_perimeters)
+                                      std::vector<std::vector<GeneratedPath>> &extra_perimeters,
+                                      const plugin_run_context *run_ctx)
 {
     const bool original_was_collection = root.child_count() > 0;
     const bool original_was_fixed_collection =
@@ -1108,6 +1225,7 @@ void prepend_extra_perimeters_to_root(MutableExtrusionEntity root,
          group_it != extra_perimeters.rend(); ++group_it) {
         for (std::vector<GeneratedPath>::reverse_iterator path_it = group_it->rbegin();
              path_it != group_it->rend(); ++path_it) {
+            throw_if_cancelled(run_ctx);
             MutableExtrusionEntity inserted = root.emplace_ordered_leaf(
                 OrderedLeafPosition::Before,
                 ExistingPropertyPlacement::KeepOnParent);
@@ -1123,6 +1241,7 @@ void prepend_extra_perimeters_to_root(MutableExtrusionEntity root,
     explicitly to retain the same perimeter ordering contract.
     */
     if (original_was_collection && !original_was_fixed_collection && root.child_count() > 0) {
+        throw_if_cancelled(run_ctx);
         MutableExtrusionEntity original = root.child_mutable(root.child_count() - 1);
         original.disable_sort();
         original.disable_reverse();
@@ -1140,10 +1259,14 @@ bool extra_perimeters_empty(const std::vector<std::vector<GeneratedPath>> &extra
 void publish_fill_areas(const run_ctx_post_perimeter_generation &ctx,
                         const LayerIsland &island,
                         const ExPolygonCollection &fill_areas,
-                        const ExPolygonCollection &free_areas)
+                        const ExPolygonCollection &free_areas,
+                        const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const int32_t fill_ok = ctx.set_island_fill_areas(island.handle(), fill_areas.handle());
+    throw_if_cancelled(run_ctx);
     const int32_t free_ok = ctx.set_island_fill_free_areas(island.handle(), free_areas.handle());
+    throw_if_cancelled(run_ctx);
     assert(fill_ok != 0);
     assert(free_ok != 0);
     (void)fill_ok;
@@ -1154,7 +1277,8 @@ void update_fill_areas(storage_handle *storage,
                        const run_ctx_post_perimeter_generation &ctx,
                        const LayerIsland &island,
                        const OverhangGenerationOutput &generated,
-                       coord_t infill_overlap)
+                       coord_t infill_overlap,
+                       const plugin_run_context *run_ctx)
 {
     // Extra perimeter paths consume part of the old infill job. The strict
     // free area loses the generated extrusion coverage; the wider fill/anchor
@@ -1166,24 +1290,37 @@ void update_fill_areas(storage_handle *storage,
     ClipperOperand free_source =
         free_areas.empty() ? clipper(fill_areas) : clipper(free_areas);
 
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection next_free_areas =
         clipper_diff(free_source, clipper(generated.filled_area)).to_expolygon_collection();
-    StoredExPolygonCollection next_fill_areas =
-        infill_overlap != 0 ?
-        clipper_intersection(clipper(fill_areas),
-                             clipper_offset(clipper(generated.unfilled_area), infill_overlap)).to_expolygon_collection() :
-        clipper_diff(clipper(fill_areas), clipper(generated.filled_area)).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
+    StoredExPolygonCollection next_fill_areas(storage);
+    if (infill_overlap != 0) {
+        throw_if_cancelled(run_ctx);
+        ClipperOperand expanded_unfilled = clipper_offset(clipper(generated.unfilled_area), infill_overlap);
+        throw_if_cancelled(run_ctx);
+        next_fill_areas =
+            clipper_intersection(clipper(fill_areas), expanded_unfilled).to_expolygon_collection();
+    } else {
+        throw_if_cancelled(run_ctx);
+        next_fill_areas =
+            clipper_diff(clipper(fill_areas), clipper(generated.filled_area)).to_expolygon_collection();
+    }
+    throw_if_cancelled(run_ctx);
 
-    publish_fill_areas(ctx, island, next_fill_areas, next_free_areas);
+    publish_fill_areas(ctx, island, next_fill_areas, next_free_areas, run_ctx);
 }
 
 MutableExtrusionEntity first_mutable_perimeter_root(const run_ctx_post_perimeter_generation &ctx,
-                                                    const LayerIsland &island)
+                                                    const LayerIsland &island,
+                                                    const plugin_run_context *run_ctx)
 {
     for (uint32_t idx = 0; idx < island.region_island_count(); ++idx) {
+        throw_if_cancelled(run_ctx);
         const LayerRegionIsland region_island = island.region_island(idx);
         extrusion_entity_handle *root =
             ctx.get_region_island_mutable_extrusion(region_island.handle(), RAW_EXTRUSION_ROLE_PERIMETER);
+        throw_if_cancelled(run_ctx);
         if (root != nullptr)
             return MutableExtrusionEntity(root);
     }
@@ -1195,8 +1332,10 @@ void process_island(const run_ctx_post_perimeter_generation &ctx,
                     const Print &print,
                     const Object &object,
                     const LayerIsland &island,
-                    uint32_t layer_idx)
+                    uint32_t layer_idx,
+                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     // The module is an island-level post-process. It needs a generated
     // perimeter bucket, a remaining infill domain, and a lower island graph;
     // otherwise there is either nothing to anchor or no overhang to classify.
@@ -1204,42 +1343,53 @@ void process_island(const run_ctx_post_perimeter_generation &ctx,
         island.infill_areas().empty() || island.lower_island_count() == 0)
         return;
 
-    MutableExtrusionEntity root = first_mutable_perimeter_root(ctx, island);
+    MutableExtrusionEntity root = first_mutable_perimeter_root(ctx, island, run_ctx);
     if (!root)
         return;
 
     const c_flow perimeter_flow = island.region(0).flow(RAW_EXTRUSION_ROLE_INTERNAL_PERIMETER);
     const c_flow external_flow = island.region(0).flow(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+    throw_if_cancelled(run_ctx);
     OverhangGenerationInput input =
-        generation_input_for_island(storage, print, object, island, layer_idx, perimeter_flow, external_flow);
+        generation_input_for_island(storage, print, object, island, layer_idx, perimeter_flow, external_flow, run_ctx);
+    throw_if_cancelled(run_ctx);
     if (input.perimeter_depth <= 0 || input.overhang_spacing <= 0 || input.lower_slices.empty())
         return;
 
     RegionSettings settings(storage, island, {{k_extra_perimeters_on_overhangs_key}});
+    throw_if_cancelled(run_ctx);
     settings.segregate(island.slice());
+    throw_if_cancelled(run_ctx);
 
     const ExPolygonCollection infill_candidate =
         island.infill_no_overlap_areas().empty() ?
         island.infill_areas() :
         island.infill_no_overlap_areas();
-    StoredExPolygonCollection enabled_area = enabled_infill_area(storage, infill_candidate, settings);
+    StoredExPolygonCollection enabled_area = enabled_infill_area(storage, infill_candidate, settings, run_ctx);
+    throw_if_cancelled(run_ctx);
     if (enabled_area.empty())
         return;
 
     OverhangGenerationOutput generated =
-        generate_extra_perimeters_over_overhangs(storage, island.slice(), enabled_area, input);
+        generate_extra_perimeters_over_overhangs(storage, island.slice(), enabled_area, input, run_ctx);
+    throw_if_cancelled(run_ctx);
     if (extra_perimeters_empty(generated.extra_perimeters))
         return;
 
     if (settings.has_many_config(k_extra_perimeters_on_overhangs_key)) {
-        StoredExPolygonCollection disabled_area = disabled_infill_area(storage, infill_candidate, enabled_area);
+        StoredExPolygonCollection disabled_area = disabled_infill_area(storage, infill_candidate, enabled_area, run_ctx);
         ClipperContext clipper(storage);
+        throw_if_cancelled(run_ctx);
         generated.unfilled_area =
             clipper_union2(clipper(generated.unfilled_area), clipper(disabled_area)).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
     }
 
-    prepend_extra_perimeters_to_root(root, generated.extra_perimeters);
-    update_fill_areas(storage, ctx, island, generated, infill_overlap_for_island(island, perimeter_flow, external_flow));
+    throw_if_cancelled(run_ctx);
+    prepend_extra_perimeters_to_root(root, generated.extra_perimeters, run_ctx);
+    throw_if_cancelled(run_ctx);
+    update_fill_areas(storage, ctx, island, generated,
+                      infill_overlap_for_island(island, perimeter_flow, external_flow), run_ctx);
 }
 
 } // namespace
@@ -1296,6 +1446,7 @@ const char *ExtraPerimetersOnOverhangs::progress_message_format_impl() const noe
 
 void ExtraPerimetersOnOverhangs::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
     if (ctx != nullptr && ctx->object != nullptr)
         progress().add_max(Object(ctx->object).layer_count());
@@ -1303,6 +1454,7 @@ void ExtraPerimetersOnOverhangs::setup_run_impl(const plugin_run_context *run_ct
 
 void ExtraPerimetersOnOverhangs::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_perimeter_generation *ctx = plugin_ctx_as_post_perimeter_generation(run_ctx);
     if (ctx == nullptr || run_ctx == nullptr || run_ctx->plugin_storage == nullptr ||
         ctx->print == nullptr || ctx->object == nullptr ||
@@ -1316,8 +1468,10 @@ void ExtraPerimetersOnOverhangs::run_impl(const plugin_run_context *run_ctx) con
     for (uint32_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx) {
         throw_if_cancelled(run_ctx);
         const Layer layer = object.layer(layer_idx);
-        for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx)
-            process_island(*ctx, run_ctx->plugin_storage, print, object, layer.island(island_idx), layer_idx);
+        for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
+            throw_if_cancelled(run_ctx);
+            process_island(*ctx, run_ctx->plugin_storage, print, object, layer.island(island_idx), layer_idx, run_ctx);
+        }
         progress().increment();
     }
 }

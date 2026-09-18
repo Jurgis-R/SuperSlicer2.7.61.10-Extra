@@ -300,7 +300,8 @@ LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, O
 }
 
 std::vector<coord_t> layer_descriptors_from_height_profile(const LayerHeightSlicingParameters &slicing_params,
-                                                           const std::vector<coord_t> &layer_height_profile)
+                                                           const std::vector<coord_t> &layer_height_profile,
+                                                           const plugin_run_context *run_ctx)
 {
     // Expand the compact [z, height] profile produced by this plugin into the
     // explicit [layer_top_z, layer_height] pairs consumed by STEP_SLICING. This
@@ -320,10 +321,12 @@ std::vector<coord_t> layer_descriptors_from_height_profile(const LayerHeightSlic
     size_t idx_layer_height_profile = 0;
     coord_t slice_z = print_z + slicing_params.min_layer_height / 2;
     while (slice_z < slicing_params.object_print_z_height) {
+        throw_if_cancelled(run_ctx);
         coord_t height = slicing_params.min_layer_height;
         if (idx_layer_height_profile < layer_height_profile.size()) {
             size_t next = idx_layer_height_profile + 2;
             for (;;) {
+                throw_if_cancelled(run_ctx);
                 if (next >= layer_height_profile.size() || slice_z < layer_height_profile[next])
                     break;
                 idx_layer_height_profile = next;
@@ -360,7 +363,9 @@ std::vector<coord_t> layer_descriptors_from_height_profile(const LayerHeightSlic
 // lift the printed object by the raft thickness.
 std::vector<coord_t> layer_height_profile_from_ranges(Print print,
                                                       Object object,
-                                                      LayerConfigRanges layer_config_ranges) {
+                                                      LayerConfigRanges layer_config_ranges,
+                                                      const plugin_run_context *run_ctx) {
+    throw_if_cancelled(run_ctx);
     LayerHeightSlicingParameters slicing_params = make_layer_height_slicing_parameters(print, object);
 
     // 1) Trim ranges to be non-overlapping. User/model ranges are sorted
@@ -374,6 +379,7 @@ std::vector<coord_t> layer_height_profile_from_ranges(Print print,
                                                  slicing_params.first_object_layer_height));
     // The height ranges are sorted lexicographically by low / high layer boundaries.
     for (LayerConfigRange range : layer_config_ranges) {
+        throw_if_cancelled(run_ctx);
         coord_t lo = range.z_min();
         coord_t hi = std::min(range.z_max(), slicing_params.object_print_z_height);
         coord_t height = scale_i(range.config().get("layer_height").get_float());
@@ -418,6 +424,7 @@ std::vector<coord_t> layer_height_profile_from_ranges(Print print,
     };
 
     for (const std::pair<LayerHeightRange, coord_t> &non_overlapping_range : ranges_non_overlapping) {
+        throw_if_cancelled(run_ctx);
         coord_t lo = non_overlapping_range.first.first;
         coord_t hi = non_overlapping_range.first.second;
         coord_t height = non_overlapping_range.second;
@@ -441,13 +448,14 @@ std::vector<coord_t> layer_height_profile_from_ranges(Print print,
 }
 
 void StandardLayerHeightGenerator::run_impl(const plugin_run_context *run_ctx) const {
+    throw_if_cancelled(run_ctx);
     // STEP_LAYER_HEIGHT is object-local. The host passes one Object and a setter
     // callback; the plugin either forwards enforced Z values or computes the
     // normal profile from config ranges.
     if (plugin_ctx_as_layer_height_generation(run_ctx) == nullptr)
         return;
     const run_ctx_layer_height_generation &ctx = *plugin_ctx_as_layer_height_generation(run_ctx);
-    if (ctx.print == nullptr || ctx.print == nullptr)
+    if (ctx.print == nullptr || ctx.object == nullptr || ctx.set_layer_height_profile == nullptr)
         return;
 
     Print print(ctx.print);
@@ -457,17 +465,27 @@ void StandardLayerHeightGenerator::run_impl(const plugin_run_context *run_ctx) c
 
     if (ctx.enforce_layer_zs != nullptr && ctx.enforce_layer_zs_size > 0) {
         // Host-enforced layer Zs take precedence over config ranges.
+        throw_if_cancelled(run_ctx);
         ctx.set_layer_height_profile(ctx.object, ctx.enforce_layer_zs, ctx.enforce_layer_zs_size);
+        throw_if_cancelled(run_ctx);
     } else {
         LayerConfigRanges layer_config_ranges(ctx);
-        std::vector<coord_t> layer_height_profile = layer_height_profile_from_ranges(print,object, layer_config_ranges);
+        throw_if_cancelled(run_ctx);
+        std::vector<coord_t> layer_height_profile =
+            layer_height_profile_from_ranges(print, object, layer_config_ranges, run_ctx);
+        throw_if_cancelled(run_ctx);
         if (!layer_height_profile.empty()) {
             std::vector<coord_t> layer_descriptors = layer_descriptors_from_height_profile(
                 make_layer_height_slicing_parameters(print, object),
-                layer_height_profile);
+                layer_height_profile,
+                run_ctx);
+            throw_if_cancelled(run_ctx);
             ctx.set_layer_height_profile(ctx.object, layer_descriptors.data(), layer_descriptors.size());
+            throw_if_cancelled(run_ctx);
         } else {
+            throw_if_cancelled(run_ctx);
             ctx.set_layer_height_profile(ctx.object, nullptr, 0);
+            throw_if_cancelled(run_ctx);
         }
     }
 }

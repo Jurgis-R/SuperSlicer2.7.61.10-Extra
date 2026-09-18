@@ -19,11 +19,13 @@ from slic3r_api import (
     CFlow,
     EPropertyAttributes,
     EPropertyPerimeter,
+    PluginCancelled,
     PluginBase,
     RAW_EXTRUSION_FLAG_REVERSIBLE,
     RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER,
     STEP_PERIMETER,
     StoredExtrusionEntity,
+    throw_if_cancelled,
     unscaled,
 )
 
@@ -37,6 +39,7 @@ LOOP_ROLE_HOLE = 1 << 3
 class SimpleGeneratorState:
     flow: CFlow
     perimeter_count: int
+    run_ctx_address: int
 
 
 def _offset_area(api, storage: int, area, delta: float):
@@ -71,15 +74,28 @@ def _append_perimeter_loop(dst: StoredExtrusionEntity, polygon, flow: CFlow, per
     dst.add_child_move(loop)
 
 
-def _make_perimeter_extrusion(api, storage: int, area, flow: CFlow, perimeter_idx: int, line_offset: float) -> StoredExtrusionEntity:
+def _make_perimeter_extrusion(
+    api,
+    storage: int,
+    area,
+    flow: CFlow,
+    perimeter_idx: int,
+    line_offset: float,
+    run_ctx_address: int,
+) -> StoredExtrusionEntity:
+    throw_if_cancelled(run_ctx_address)
     extrusion = StoredExtrusionEntity(api, storage)
     extrusion.disable_reverse().disable_sort()
 
     loops = _offset_area(api, storage, area, line_offset)
     try:
-        for loop in loops:
+        for loop_idx, loop in enumerate(loops):
+            if loop_idx % 64 == 0:
+                throw_if_cancelled(run_ctx_address)
             _append_perimeter_loop(extrusion, loop.contour(), flow, perimeter_idx, LOOP_ROLE_DEFAULT)
-            for hole in loop.holes():
+            for hole_idx, hole in enumerate(loop.holes()):
+                if hole_idx % 64 == 0:
+                    throw_if_cancelled(run_ctx_address)
                 _append_perimeter_loop(extrusion, hole, flow, perimeter_idx, LOOP_ROLE_HOLE)
     finally:
         loops.free_from_storage()
@@ -92,16 +108,19 @@ class PythonSimplePerimeterGeneratorPlugin(PluginBase):
         self.api = api
 
     def run(self, run_ctx_address: int) -> None:
+        throw_if_cancelled(run_ctx_address)
         ctx = self.api.perimeter_context(run_ctx_address)
         if ctx is None:
             return
 
         try:
-            self._run_perimeter(ctx)
+            self._run_perimeter(ctx, run_ctx_address)
+        except PluginCancelled:
+            raise
         except Exception as exc:
             ctx.report_error(f"Python simple perimeter generator failed: {exc}")
 
-    def _run_perimeter(self, ctx) -> None:
+    def _run_perimeter(self, ctx, run_ctx_address: int) -> None:
         island = ctx.perimeter_island()
         regions = list(island.regions())
         if not regions:
@@ -112,10 +131,12 @@ class PythonSimplePerimeterGeneratorPlugin(PluginBase):
         state = SimpleGeneratorState(
             regions[0].flow(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER),
             perimeter_count,
+            run_ctx_address,
         )
         ctx.run_region_group(regions, island.slice(), state, self._generate_node)
 
     def _generate_node(self, state: SimpleGeneratorState, generation, node, inner_areas, inner_fill_areas) -> bool:
+        throw_if_cancelled(state.run_ctx_address)
         storage = generation.perimeter_generation_plugin_storage()
         flow = state.flow
 
@@ -141,7 +162,15 @@ class PythonSimplePerimeterGeneratorPlugin(PluginBase):
         first_perimeter = node.perimeter_idx() == 0
         perimeter_idx = node.perimeter_idx()
         line_offset = -0.5 * float(flow.width if first_perimeter else flow.spacing)
-        extrusion = _make_perimeter_extrusion(self.api, storage, node.area(), flow, perimeter_idx, line_offset)
+        extrusion = _make_perimeter_extrusion(
+            self.api,
+            storage,
+            node.area(),
+            flow,
+            perimeter_idx,
+            line_offset,
+            state.run_ctx_address,
+        )
         try:
             node.extrusions().move_from(extrusion)
         finally:

@@ -76,7 +76,13 @@ from slic3r_extrusion_views import ExtrusionEntity, MutableExtrusionEntity
 from slic3r_geometry_views import ExPolygon, ExPolygonCollection, MutableExPolygonCollection
 from slic3r_region_settings_views import RegionSettings
 from slic3r_abi import abi_requires_headers
-from slic3r_run_context import PluginRunContextView
+from slic3r_run_context import (
+    PluginCancelled,
+    PluginRunContextView,
+    _clear_exception_references,
+    _exception_snapshot,
+    _raise_exception_snapshot,
+)
 
 
 def _address(handle) -> int:
@@ -401,9 +407,12 @@ class PerimeterContext(PluginRunContextView):
 
         state_key = id(generator_state)
         self._states[state_key] = generator_state
+        callback_cancellations = []
 
         def callback(raw_state, raw_context, raw_node, inner_areas, inner_fill_areas) -> int:
             try:
+                if callback_cancellations:
+                    return 0
                 state = self._states.get(_address(raw_state))
                 if state is None or not raw_context or not raw_node:
                     return 0
@@ -412,14 +421,20 @@ class PerimeterContext(PluginRunContextView):
                 inner = MutableExPolygonCollection(self.api, inner_areas)
                 inner_fill = MutableExPolygonCollection(self.api, inner_fill_areas)
                 return 1 if generate_node(state, generation, node, inner, inner_fill) else 0
-            except Exception as exc:
+            except PluginCancelled as exc:
+                # ctypes callbacks cannot unwind through the host. Retain only
+                # inert exception data and rethrow after the native traversal.
+                callback_cancellations.append(_exception_snapshot(exc))
+                _clear_exception_references(exc)
+                return 0
+            except BaseException as exc:
                 self.report_error(f"Python perimeter generator callback failed: {exc}")
                 return 0
 
         c_callback = PERIMETER_GENERATE_NODE(callback)
         self._callbacks.append(c_callback)
         try:
-            return int(self.payload.run_region_group(
+            status = int(self.payload.run_region_group(
                 ctypes.cast(self._payload_ptr, ctypes.c_void_p),
                 region_array,
                 len(region_addresses),
@@ -427,6 +442,9 @@ class PerimeterContext(PluginRunContextView):
                 ctypes.c_void_p(state_key),
                 c_callback,
             ))
+            if callback_cancellations:
+                _raise_exception_snapshot(callback_cancellations[0])
+            return status
         finally:
             self._states.pop(state_key, None)
             self._callbacks.remove(c_callback)

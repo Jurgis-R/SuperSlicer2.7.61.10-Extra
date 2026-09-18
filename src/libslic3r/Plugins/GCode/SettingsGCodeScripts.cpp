@@ -90,11 +90,13 @@ struct PlanSummary
 };
 
 // Read global facts once before scripts are inserted, including values needed by plan-level events.
-PlanSummary summarize_plan(const PrintingPlan &plan);
+PlanSummary summarize_plan(const PrintingPlan &plan,
+                           const plugin_run_context *run_ctx);
 // Resolve a one-object group to the stable object index expected by PlaceholderParser.
 std::optional<uint32_t> group_object_index(const Print &print,
                                            const PrintingPlan &plan,
-                                           const PrintingGroup &group);
+                                           const PrintingGroup &group,
+                                           const plugin_run_context *run_ctx);
 // Add one typed scalar to the temporary Config transported with a script.
 void set_int_argument(MutableConfig &config, const char *key, int32_t value);
 void set_float_argument(MutableConfig &config, const char *key, double value);
@@ -116,28 +118,38 @@ void append_script_event(storage_handle *storage,
 // Search one tree for the first scope whose incoming boundary selects a tool.
 MutableExtrusionEntity first_toolchange_scope_in_entity(
     MutableExtrusionEntity entity,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key);
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
+    const plugin_run_context *run_ctx);
 // Return the first tool-change scope owned by one tool visit.
 MutableExtrusionEntity first_toolchange_scope(
     const PrintingToolGroup &tool_group,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key);
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
+    const plugin_run_context *run_ctx);
 // Find the semantic Unretract event in one phase subtree.
-MutableExtrusionEntity find_unretract(MutableExtrusionEntity entity);
+MutableExtrusionEntity find_unretract(MutableExtrusionEntity entity,
+                                      const plugin_run_context *run_ctx);
 // Insert start-filament immediately before Unretract, or first in before.
 void append_start_filament_script(
     MutableExtrusionEntity scope_root,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const std::string &script,
     const Config &arguments,
-    extruder_index_t processing_extruder_id);
+    extruder_index_t processing_extruder_id,
+    const plugin_run_context *run_ctx);
 
-PlanSummary summarize_plan(const PrintingPlan &plan)
+PlanSummary summarize_plan(const PrintingPlan &plan,
+                           const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     PlanSummary summary;
     int32_t layer_number = 0;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        if ((group_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            if ((layer_idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             summary.max_print_z = std::max(summary.max_print_z, layer.print_z());
             const LayerContext current_layer{layer_number++, layer.print_z()};
@@ -146,6 +158,8 @@ PlanSummary summarize_plan(const PrintingPlan &plan)
             summary.previous_layer = summary.last_layer;
             summary.last_layer = current_layer;
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                if ((tool_idx & 63u) == 0)
+                    throw_if_cancelled(run_ctx);
                 const extruder_index_t extruder_id = layer.tool_group(tool_idx).extruder_id();
                 if (extruder_id == EXTRUDER_ID_UNKNOWN)
                     continue;
@@ -160,8 +174,10 @@ PlanSummary summarize_plan(const PrintingPlan &plan)
 
 std::optional<uint32_t> group_object_index(const Print &print,
                                            const PrintingPlan &plan,
-                                           const PrintingGroup &group)
+                                           const PrintingGroup &group,
+                                           const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (group.object_instance_count() != 1)
         return std::nullopt;
     const uint32_t printing_catalog_id = group.printing_catalog_id(0);
@@ -169,9 +185,12 @@ std::optional<uint32_t> group_object_index(const Print &print,
         printing_catalog_id >= plan.object_instance_count())
         return std::nullopt;
     const Object object = plan.object_instance(printing_catalog_id).object();
-    for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx)
+    for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx) {
+        if ((object_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         if (print.object(object_idx).handle() == object.handle())
             return object_idx;
+    }
     return std::nullopt;
 }
 
@@ -229,8 +248,10 @@ void append_script_event(storage_handle *storage,
 
 MutableExtrusionEntity first_toolchange_scope_in_entity(
     MutableExtrusionEntity entity,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (LayerExtrusionEdit::ExtrusionScope::is_scope(
             entity.readonly(), scope_key)) {
         const PrintingExtrusionScopeProperty *property = entity.get(scope_key);
@@ -242,8 +263,10 @@ MutableExtrusionEntity first_toolchange_scope_in_entity(
         return MutableExtrusionEntity();
     }
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        if ((child_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         MutableExtrusionEntity found = first_toolchange_scope_in_entity(
-            entity.child_mutable(child_idx), scope_key);
+            entity.child_mutable(child_idx), scope_key, run_ctx);
         if (found.valid())
             return found;
     }
@@ -252,27 +275,35 @@ MutableExtrusionEntity first_toolchange_scope_in_entity(
 
 MutableExtrusionEntity first_toolchange_scope(
     const PrintingToolGroup &tool_group,
-    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key)
+    const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     for (uint32_t extrusion_idx = 0;
          extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+        if ((extrusion_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         MutableExtrusionEntity found = first_toolchange_scope_in_entity(
-            tool_group.extrusion(extrusion_idx).mutable_root(), scope_key);
+            tool_group.extrusion(extrusion_idx).mutable_root(), scope_key, run_ctx);
         if (found.valid())
             return found;
     }
     return MutableExtrusionEntity();
 }
 
-MutableExtrusionEntity find_unretract(MutableExtrusionEntity entity)
+MutableExtrusionEntity find_unretract(MutableExtrusionEntity entity,
+                                      const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EPropertyAttributes *attributes = entity.get(EPropertyAttributes::key);
     if (attributes != nullptr &&
         RAW_EXTRUSION_ROLE_IS_UNRETRACT(attributes->extrusion_role()))
         return entity;
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        if ((child_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         MutableExtrusionEntity found = find_unretract(
-            entity.child_mutable(child_idx));
+            entity.child_mutable(child_idx), run_ctx);
         if (found.valid())
             return found;
     }
@@ -284,8 +315,10 @@ void append_start_filament_script(
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const std::string &script,
     const Config &arguments,
-    const extruder_index_t processing_extruder_id)
+    const extruder_index_t processing_extruder_id,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (script.empty())
         return;
     const LayerExtrusionEdit::ExtrusionScope::OrderedExtrusionScope scope(
@@ -299,7 +332,7 @@ void append_start_filament_script(
     // script remains the last operation before restoring E. Otherwise place
     // it at the beginning of the target's before phase; tool selection lives
     // outside the scope in PrintingToolGroup::events().before.
-    MutableExtrusionEntity unretract = find_unretract(before);
+    MutableExtrusionEntity unretract = find_unretract(before, run_ctx);
     MutableExtrusionEntity event;
     if (unretract.valid()) {
         event = unretract.emplace_ordered_leaf(
@@ -358,6 +391,7 @@ private:
         return 9;
     }
     void run_impl(const plugin_run_context *run_context) const override {
+        throw_if_cancelled(run_context);
         const run_ctx_extrusion_edition *context = plugin_ctx_as_extrusion_edition(run_context);
         assert(context != nullptr && context->print != nullptr && context->plan != nullptr);
         if (context == nullptr || context->print == nullptr || context->plan == nullptr ||
@@ -368,7 +402,7 @@ private:
         const Config config = print.config();
         const PrintingPlan plan(context->plan);
         const PrintingScopeEvents plan_events = plan.events();
-        const PlanSummary summary = summarize_plan(plan);
+        const PlanSummary summary = summarize_plan(plan, run_context);
 
         const LayerContext first_layer = summary.first_layer.value_or(LayerContext{});
         StoredConfig start_arguments = layer_arguments(
@@ -402,10 +436,12 @@ private:
         // The plan hierarchy is not resized during this pass. Borrowed event
         // roots therefore remain valid while scripts are appended to them.
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+            if ((group_idx & 63u) == 0)
+                throw_if_cancelled(run_context);
             const PrintingGroup group = plan.group(group_idx);
             const PrintingScopeEvents group_events = group.events();
             const std::optional<uint32_t> current_object =
-                group_object_index(print, plan, group);
+                group_object_index(print, plan, group, run_context);
             if (current_object && previous_object && !between_objects.empty()) {
                 StoredConfig arguments(run_context->plugin_storage);
                 const LayerContext object_layer = previous_layer.value_or(LayerContext{});
@@ -431,6 +467,8 @@ private:
 
             std::optional<PrintingScopeEvents> previous_layer_events;
             for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+                if ((layer_idx & 63u) == 0)
+                    throw_if_cancelled(run_context);
                 const PrintingLayerGroup layer = group.layer_group(layer_idx);
                 const PrintingScopeEvents layer_events = layer.events();
                 const LayerContext current_layer{layer_number++, layer.print_z()};
@@ -452,6 +490,8 @@ private:
                 seen_layer = true;
 
                 for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                    if ((tool_idx & 63u) == 0)
+                        throw_if_cancelled(run_context);
                     const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                     const PrintingScopeEvents tool_events = tool_group.events();
                     const extruder_index_t target_tool = tool_group.extruder_id();
@@ -478,7 +518,7 @@ private:
                             ScopeEventPosition::After, current_tool);
                     }
                     const MutableExtrusionEntity transition_scope = current_tool != EXTRUDER_ID_UNKNOWN ?
-                        first_toolchange_scope(tool_group, m_scope_property) :
+                        first_toolchange_scope(tool_group, m_scope_property, run_context) :
                         MutableExtrusionEntity();
                     StoredConfig start_filament_arguments = copy_arguments(
                         run_context->plugin_storage, tool_arguments);
@@ -490,7 +530,8 @@ private:
                         append_start_filament_script(
                             transition_scope, m_scope_property, start_filament,
                             start_filament_arguments,
-                            target_tool);
+                            target_tool,
+                            run_context);
                     else
                         append_script_event(
                             run_context->plugin_storage, tool_events,
@@ -510,6 +551,7 @@ private:
             const std::set<extruder_index_t> final_tools = single_extruder_multi_material ?
                 std::set<extruder_index_t>{extruder_index_t(current_tool)} : used_tools;
             for (extruder_index_t tool_id : final_tools) {
+                throw_if_cancelled(run_context);
                 StoredConfig arguments(run_context->plugin_storage);
                 if (summary.last_layer)
                     arguments.deserialize_all(layer_arguments(

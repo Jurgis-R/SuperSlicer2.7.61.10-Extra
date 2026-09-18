@@ -78,11 +78,14 @@ StoredExPolygonCollection dense_fill_fit_to_size(storage_handle *storage,
                                                  const ExPolygon &bad_polygon_to_cover,
                                                  const ExPolygon &growing_area,
                                                  const coord_t offset,
-                                                 float coverage)
+                                                 float coverage,
+                                                 const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     ClipperContext clipper(storage);
 
-    const auto try_fit_to_size = [storage](const ExPolygon &polygon_to_check, const ExPolygon &allowed_points) {
+    const auto try_fit_to_size = [storage, run_ctx](const ExPolygon &polygon_to_check,
+                                                    const ExPolygon &allowed_points) {
         StoredExPolygon polygon_reduced(storage);
         polygon_reduced.copy_from(polygon_to_check);
 
@@ -90,9 +93,13 @@ StoredExPolygonCollection dense_fill_fit_to_size(storage_handle *storage,
         multipoint_handle *contour_points = polygon_as_multipoint(contour);
         uint32_t pos_check = 0;
         while (pos_check < multipoint_size(contour_points)) {
+            if ((pos_check & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             const c_point tested_point = multipoint_get(contour_points, pos_check);
             c_point best_point = polygon_point_projection(allowed_points.contour().handle(), tested_point, nullptr);
             for (uint32_t hole_idx = 0; hole_idx < allowed_points.hole_size(); ++hole_idx) {
+                if ((hole_idx & 63u) == 0)
+                    throw_if_cancelled(run_ctx);
                 const c_point hole_point = polygon_point_projection(allowed_points.hole(hole_idx).handle(), tested_point, nullptr);
                 if (norm(hole_point - tested_point) < norm(best_point - tested_point))
                     best_point = hole_point;
@@ -122,6 +129,7 @@ StoredExPolygonCollection dense_fill_fit_to_size(storage_handle *storage,
     coord_t current_offset = offset;
     StoredExPolygon polygon_reduced = try_fit_to_size(polygon_to_cover, growing_area);
     while (polygon_reduced.contour().size() < 3) {
+        throw_if_cancelled(run_ctx);
         current_offset *= 2;
         StoredExPolygonCollection bigger_polygon =
             clipper_offset(clipper(polygon_to_cover), double(current_offset)).to_expolygon_collection();
@@ -137,6 +145,7 @@ StoredExPolygonCollection dense_fill_fit_to_size(storage_handle *storage,
     StoredExPolygonCollection not_covered =
         clipper_diff_with_safety_offset(clipper(polygon_to_cover), clipper(polygon_reduced.readonly())).to_expolygon_collection();
     while (!not_covered.empty()) {
+        throw_if_cancelled(run_ctx);
         //not enough, use a bigger offset
         float percent_coverage = float(polygon_reduced.area() / growing_area.area());
         float next_coverage = percent_coverage + (percent_coverage - current_coverage) * 4;
@@ -157,6 +166,8 @@ StoredExPolygonCollection dense_fill_fit_to_size(storage_handle *storage,
         if (bigger_polygon.size() > 1) {
             //remove polygon not in intersection with polygon_to_cover
             for (uint32_t i = 0; i < bigger_polygon.size();) {
+                if ((i & 63u) == 0)
+                    throw_if_cancelled(run_ctx);
                 StoredExPolygonCollection contact =
                     clipper_intersection(clipper(bigger_polygon[i]), clipper(polygon_to_cover)).to_expolygon_collection();
                 if (contact.empty())
@@ -181,6 +192,7 @@ StoredExPolygonCollection dense_fill_fit_to_size(storage_handle *storage,
         //try to shrink
         uint32_t nb_opti_max = 6;
         for (uint32_t i = 0; i < nb_opti_max; ++i) {
+            throw_if_cancelled(run_ctx);
             coord_t new_offset = (previous_offset + current_offset) / 2;
             StoredExPolygonCollection bigger_polygon =
                 clipper_offset(clipper(polygon_to_cover), double(new_offset)).to_expolygon_collection();
@@ -215,6 +227,8 @@ StoredExPolygonCollection dense_fill_fit_to_size(storage_handle *storage,
 
     //remove polygon not in intersection with polygon_to_cover
     for (uint32_t i = 0; i < to_print.size();) {
+        if ((i & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         StoredExPolygonCollection contact =
             clipper_intersection(clipper(to_print[i]), clipper(polygon_to_cover)).to_expolygon_collection();
         if (contact.empty())
@@ -239,6 +253,7 @@ struct DenseSurfaceMarkerResult
 struct DenseSurfaceMarkerStore
 {
     const run_ctx_surface_generation *ctx = nullptr;
+    const plugin_run_context *run_ctx = nullptr;
     const PluginPropertyKey<SurfaceDenseInfillHint> *hint_property = nullptr;
     storage_handle *persistent_storage = nullptr;
     std::mutex mutex;
@@ -253,12 +268,18 @@ void process_surface_marker_surface(storage_handle *storage,
                                     const RegionSettings &settings,
                                     const Surface &surface,
                                     StoredSurfaceCollection &surface_output,
-                                    bool &changed)
+                                    bool &changed,
+                                    const plugin_run_context *run_ctx)
 {
-    const auto area_sum = [](const ExPolygonCollection &areas) {
+    throw_if_cancelled(run_ctx);
+    const auto area_sum = [run_ctx](const ExPolygonCollection &areas) {
         double out = 0.;
-        for (const ExPolygon area : areas)
+        uint32_t area_idx = 0;
+        for (const ExPolygon area : areas) {
+            if ((area_idx++ & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             out += std::abs(area.area());
+        }
         return out;
     };
     const auto dense_algo_from_serialized = [](std::string serialized) {
@@ -276,13 +297,16 @@ void process_surface_marker_surface(storage_handle *storage,
             return DenseAlgo::Disabled;
         return DenseAlgo::Automatic;
     };
-    const auto max_nozzle_diameter = [&print]() {
+    const auto max_nozzle_diameter = [&print, run_ctx]() {
         if (!print.config().has(k_nozzle_diameter_key))
             return scale_d(0.4);
         const ConfigOption nozzles = print.config().get(k_nozzle_diameter_key);
         double max_nozzle = 0.;
-        for (uint32_t idx = 0; idx < nozzles.size(); ++idx)
+        for (uint32_t idx = 0; idx < nozzles.size(); ++idx) {
+            if ((idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             max_nozzle = std::max(max_nozzle, nozzles.get_float(idx));
+        }
         return scale_d(max_nozzle > 0. ? max_nozzle : 0.4);
     };
 
@@ -302,6 +326,7 @@ void process_surface_marker_surface(storage_handle *storage,
     // settings local while still writing the final surfaces into the
     // LayerRegionIsland-owned output collection.
     for (const auto &[settings_value, settings_clip] : settings.get_areas(k_infill_dense_key)) {
+        throw_if_cancelled(run_ctx);
         StoredExPolygonCollection source_parts = settings_clip.intersections(surface.expolygon());
         if (source_parts.empty())
             continue;
@@ -320,6 +345,7 @@ void process_surface_marker_surface(storage_handle *storage,
         }
 
         for (const ExPolygon surf_with_overlap : source_parts) {
+            throw_if_cancelled(run_ctx);
             // sparse_polys is the remaining ordinary sparse area for this
             // settings piece. Each accepted dense patch is removed from it
             // immediately, so later upper surfaces cannot create overlapping
@@ -330,9 +356,13 @@ void process_surface_marker_surface(storage_handle *storage,
 
             //find the surface which intersect with the smallest maxNb possible
             for (const LayerIsland upper_island : island.upper_islands()) {
+                throw_if_cancelled(run_ctx);
                 for (uint32_t upper_region_island_idx = 0; upper_region_island_idx < upper_island.region_island_count(); ++upper_region_island_idx) {
+                    if ((upper_region_island_idx & 63u) == 0)
+                        throw_if_cancelled(run_ctx);
                     const LayerRegionIsland upper_region_island = upper_island.region_island(upper_region_island_idx);
                     for (const Surface upp : upper_region_island.fill_surfaces_collection()) {
+                        throw_if_cancelled(run_ctx);
                         if (!surface_type_is_solid(upp.type()) && !surface_type_is_bridge(upp.type()))
                             continue;
 
@@ -415,13 +445,15 @@ void process_surface_marker_surface(storage_handle *storage,
                                 // it will be a dense infill, split the surface if needed
                                 //ExPolygons cover_intersect;
                                 for (const ExPolygon expoly_tocover : intersect) {
+                                    throw_if_cancelled(run_ctx);
                                     StoredExPolygonCollection temp =
                                         dense_fill_fit_to_size(
                                             storage,
                                             expoly_tocover,
                                             surf_with_overlap,
                                             4 * scaled_width,
-                                            0.01f);
+                                            0.01f,
+                                            run_ctx);
                                     cover_intersect.append_move_from(std::move(temp));
                                 }
                                 // calculate area to decide if area is small enough for autofill
@@ -455,9 +487,12 @@ void process_surface_marker_surface(storage_handle *storage,
                                 // is stored on the resulting Surface and used
                                 // by the post-infill ordering plugin.
                                 for (const ExPolygon poly : intersect) {
+                                    throw_if_cancelled(run_ctx);
                                     uint16_t priority = 1;
                                     StoredExPolygonCollection dense(storage, poly);
                                     for (uint32_t idx_dense = 0; idx_dense < dense_polys.size(); ++idx_dense) {
+                                        if ((idx_dense & 63u) == 0)
+                                            throw_if_cancelled(run_ctx);
                                         const double area_before = area_sum(dense.readonly());
                                         StoredExPolygonCollection dense_test =
                                             clipper_diff_with_safety_offset(clipper(dense.readonly()), clipper(dense_polys[idx_dense])).to_expolygon_collection();
@@ -466,8 +501,11 @@ void process_surface_marker_surface(storage_handle *storage,
                                         dense = std::move(dense_test);
                                     }
                                     dense_polys.append_move_from(std::move(dense));
-                                    while (dense_priority.size() < dense_polys.size())
+                                    while (dense_priority.size() < dense_polys.size()) {
+                                        if ((dense_priority.size() & 63u) == 0)
+                                            throw_if_cancelled(run_ctx);
                                         dense_priority.push_back(priority);
+                                    }
                                 }
                                 //assign (copy)
                                 sparse_polys = std::move(sparse_surfaces);
@@ -496,6 +534,8 @@ void process_surface_marker_surface(storage_handle *storage,
                     // then put the leftover sparse area back as surfaces like
                     // the original. This keeps the island coverage intact.
                     for (uint32_t idx_dense = 0; idx_dense < dense_polys.size(); ++idx_dense) {
+                        if ((idx_dense & 63u) == 0)
+                            throw_if_cancelled(run_ctx);
                         ExPolygon dense_poly = dense_polys[idx_dense];
                         //remove overlap with perimeter
                         StoredExPolygonCollection offseted_dense_polys =
@@ -574,16 +614,21 @@ void process_surface_marker_layer(uint32_t layer_idx,
     assert(store->persistent_storage != nullptr);
     assert(ctx->print != nullptr);
     assert(ctx->object != nullptr);
+    throw_if_cancelled(store->run_ctx);
 
     const Print print(ctx->print);
     const Object object(ctx->object);
     const Layer layer = object.layer(layer_idx);
     for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
+        if ((island_idx & 63u) == 0)
+            throw_if_cancelled(store->run_ctx);
         const LayerIsland island = layer.island(island_idx);
         if (island.upper_island_count() == 0)
             continue;
 
         for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count(); ++region_island_idx) {
+            if ((region_island_idx & 63u) == 0)
+                throw_if_cancelled(store->run_ctx);
             const LayerRegionIsland region_island = island.region_island(region_island_idx);
             bool changed = false;
             StoredSurfaceCollection new_surfaces(scratch_storage);
@@ -596,9 +641,11 @@ void process_surface_marker_layer(uint32_t layer_idx,
                 settings.segregate(island.slice());
 
                 // check all surfaces to cover
-                for (const Surface surface : input)
+                for (const Surface surface : input) {
+                    throw_if_cancelled(store->run_ctx);
                     process_surface_marker_surface(scratch_storage, *store->hint_property, print, island, region_island, settings,
-                                                   surface, new_surfaces, changed);
+                                                   surface, new_surfaces, changed, store->run_ctx);
+                }
             }
             if (!changed)
                 continue;
@@ -610,7 +657,10 @@ void process_surface_marker_layer(uint32_t layer_idx,
             // worker may still read them as "upper solid" input.
             std::lock_guard<std::mutex> lock(store->mutex);
             StoredSurfaceCollection persistent(store->persistent_storage);
+            uint32_t result_idx = 0;
             for (const Surface surface : new_surfaces.readonly()) {
+                if ((result_idx++ & 63u) == 0)
+                    throw_if_cancelled(store->run_ctx);
                 if (surface.expolygon().contour().size() >= 3)
                     persistent.append_like(surface.expolygon(), surface);
             }
@@ -624,6 +674,7 @@ void run_surface_marker_monothread(const plugin_run_context *run_ctx,
                                    const PluginPropertyKey<SurfaceDenseInfillHint> &hint_property,
                                    PluginProgress &progress)
 {
+    throw_if_cancelled(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr || ctx->print == nullptr ||
         ctx->set_region_island_fill_surfaces == nullptr)
         return;
@@ -631,6 +682,7 @@ void run_surface_marker_monothread(const plugin_run_context *run_ctx,
     const Object object(ctx->object);
     DenseSurfaceMarkerStore store;
     store.ctx = ctx;
+    store.run_ctx = run_ctx;
     store.hint_property = &hint_property;
     store.persistent_storage = run_ctx->plugin_storage;
     parallel_for_storage_with_progress(
@@ -644,6 +696,7 @@ void run_surface_marker_monothread(const plugin_run_context *run_ctx,
 
     // now set the new surfaces
     for (DenseSurfaceMarkerResult &result : store.results) {
+        throw_if_cancelled(run_ctx);
         ctx->set_region_island_fill_surfaces(
             const_cast<layer_region_island_handle *>(result.region_island),
             result.surfaces.mutable_handle());
@@ -652,13 +705,20 @@ void run_surface_marker_monothread(const plugin_run_context *run_ctx,
 
 std::map<uint64_t, uint16_t> dense_priorities_for_island(
     const LayerIsland &island,
-    const PluginPropertyKey<SurfaceDenseInfillHint> &hint_property)
+    const PluginPropertyKey<SurfaceDenseInfillHint> &hint_property,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::map<uint64_t, uint16_t> out;
 
     for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count(); ++region_island_idx) {
+        if ((region_island_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         const LayerRegionIsland region_island = island.region_island(region_island_idx);
+        uint32_t surface_idx = 0;
         for (const Surface surface : region_island.fill_surfaces_collection()) {
+            if ((surface_idx++ & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             const SurfaceDenseInfillHint *hint = hint_property.get(surface.properties());
             if (hint != nullptr)
                 out.emplace(surface.id(), hint->priority);
@@ -673,13 +733,17 @@ struct DensePostInfillWork
     std::map<uint16_t, std::vector<StoredExtrusionEntity>> dense_children_by_priority;
 };
 
-void append_destination_regions(DensePostInfillWork &work, const LayerRegionIsland &region_island)
+void append_destination_regions(DensePostInfillWork &work,
+                                const LayerRegionIsland &region_island,
+                                const plugin_run_context *run_ctx)
 {
     // The destination LayerRegionIsland must be compatible with every dense
     // subtree that will be moved into it. The step callback accepts a list of
     // LayerRegion handles, so this helper builds the union while keeping the
     // order deterministic for tests and debug output.
+    throw_if_cancelled(run_ctx);
     for (const LayerRegion region : region_island.regions()) {
+        throw_if_cancelled(run_ctx);
         const layer_region_handle *handle = region.handle();
         if (std::find(work.destination_regions.begin(), work.destination_regions.end(), handle) ==
             work.destination_regions.end())
@@ -700,13 +764,15 @@ extruder_index_t normalized_infill_extruder(int32_t one_based_id,
 }
 
 extruder_index_t destination_infill_extruder_id(const DensePostInfillWork &work,
-                                                uint32_t extruder_count)
+                                                uint32_t extruder_count,
+                                                const plugin_run_context *run_ctx)
 {
     // The generic data-tree API receives an explicit extruder id. Dense infill
     // moves internal-infill subtrees, so the destination group must resolve to
     // one unique infill_extruder across every region it collected.
     extruder_index_t destination_extruder_id = EXTRUDER_ID_UNKNOWN;
     for (const layer_region_handle *handle : work.destination_regions) {
+        throw_if_cancelled(run_ctx);
         if (handle == nullptr)
             return EXTRUDER_ID_UNKNOWN;
 
@@ -732,14 +798,18 @@ extruder_index_t destination_infill_extruder_id(const DensePostInfillWork &work,
 bool extract_dense_children_from_root(storage_handle *storage,
                                       MutableExtrusionEntity root,
                                       const std::map<uint64_t, uint16_t> &priorities,
-                                      DensePostInfillWork &work)
+                                      DensePostInfillWork &work,
+                                      const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (priorities.empty() || root.child_count() == 0)
         return false;
 
     std::vector<uint32_t> normal_children;
     std::map<uint16_t, std::vector<uint32_t>> dense_indices_by_priority;
     for (uint32_t child_idx = 0; child_idx < root.child_count(); ++child_idx) {
+        if ((child_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = root.child(child_idx);
         const EPropertyInfill *infill = child.get(EPropertyInfill::key);
         if (infill == nullptr) {
@@ -762,9 +832,13 @@ bool extract_dense_children_from_root(storage_handle *storage,
     // stable, which lets us rebuild the source root with only normal infill
     // while copying dense subtrees into the cross-region priority buckets.
     StoredExtrusionEntity original(storage, root.readonly());
-    for (const auto &[priority, child_indices] : dense_indices_by_priority)
-        for (uint32_t child_idx : child_indices)
+    for (const auto &[priority, child_indices] : dense_indices_by_priority) {
+        throw_if_cancelled(run_ctx);
+        for (uint32_t child_idx : child_indices) {
+            throw_if_cancelled(run_ctx);
             work.dense_children_by_priority[priority].emplace_back(storage, original.child(child_idx));
+        }
+    }
 
     if (normal_children.empty()) {
         // clear_content() would leave the host bucket as a generic nop entity.
@@ -779,8 +853,11 @@ bool extract_dense_children_from_root(storage_handle *storage,
         root.remove_child(0);
     } else {
         root.clear_content();
-        for (uint32_t child_idx : normal_children)
+        for (uint32_t child_idx : normal_children) {
+            if ((child_idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             root.append_child_copy(original.child(child_idx));
+        }
     }
 
     return true;
@@ -790,14 +867,16 @@ void publish_dense_children_by_priority(const run_ctx_post_infill_generation &ct
                                         storage_handle *storage,
                                         const LayerIsland &island,
                                         DensePostInfillWork &work,
-                                        uint32_t extruder_count)
+                                        uint32_t extruder_count,
+                                        const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (work.dense_children_by_priority.empty() ||
         ctx.get_region_island_mutable_extrusion == nullptr)
         return;
 
     const extruder_index_t destination_extruder_id =
-        destination_infill_extruder_id(work, extruder_count);
+        destination_infill_extruder_id(work, extruder_count, run_ctx);
     if (destination_extruder_id == EXTRUDER_ID_UNKNOWN)
         return;
 
@@ -825,10 +904,13 @@ void publish_dense_children_by_priority(const run_ctx_post_infill_generation &ct
     // are appended their internal order must stay exactly as the surface pass
     // computed it: lower priority first, then higher priority.
     for (const auto &[priority, dense_children] : work.dense_children_by_priority) {
+        throw_if_cancelled(run_ctx);
         (void)priority;
         StoredExtrusionEntity group(storage);
-        for (const StoredExtrusionEntity &child : dense_children)
+        for (const StoredExtrusionEntity &child : dense_children) {
+            throw_if_cancelled(run_ctx);
             group.append_child_copy(child.readonly());
+        }
         group.disable_sort();
         group.disable_reverse();
         destination_root.append_child_move(group.mutable_view());
@@ -838,25 +920,31 @@ void publish_dense_children_by_priority(const run_ctx_post_infill_generation &ct
 void process_post_infill_layer(uint32_t layer_idx,
                                storage_handle *scratch_storage,
                                const run_ctx_post_infill_generation *ctx,
-                               const PluginPropertyKey<SurfaceDenseInfillHint> *hint_property)
+                               const PluginPropertyKey<SurfaceDenseInfillHint> *hint_property,
+                               const plugin_run_context *run_ctx)
 {
     assert(ctx != nullptr);
     assert(hint_property != nullptr);
     assert(ctx->object != nullptr);
     assert(ctx->get_region_island_mutable_extrusion != nullptr);
+    throw_if_cancelled(run_ctx);
 
     const Object object(ctx->object);
     const uint32_t extruder_count = Print(ctx->print).config().get(k_nozzle_diameter_key).size();
     const Layer layer = object.layer(layer_idx);
     for (uint32_t island_idx = 0; island_idx < layer.island_count(); ++island_idx) {
+        if ((island_idx & 63u) == 0)
+            throw_if_cancelled(run_ctx);
         const LayerIsland island = layer.island(island_idx);
         const std::map<uint64_t, uint16_t> priorities =
-            dense_priorities_for_island(island, *hint_property);
+            dense_priorities_for_island(island, *hint_property, run_ctx);
         if (priorities.empty())
             continue;
 
         DensePostInfillWork work;
         for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count(); ++region_island_idx) {
+            if ((region_island_idx & 63u) == 0)
+                throw_if_cancelled(run_ctx);
             const LayerRegionIsland region_island = island.region_island(region_island_idx);
             if (!region_island.has_extrusion(RAW_EXTRUSION_ROLE_INTERNAL_INFILL))
                 continue;
@@ -871,10 +959,11 @@ void process_post_infill_layer(uint32_t layer_idx,
                     scratch_storage,
                     MutableExtrusionEntity(root_handle),
                     priorities,
-                    work))
-                append_destination_regions(work, region_island);
+                    work,
+                    run_ctx))
+                append_destination_regions(work, region_island, run_ctx);
         }
-        publish_dense_children_by_priority(*ctx, scratch_storage, island, work, extruder_count);
+        publish_dense_children_by_priority(*ctx, scratch_storage, island, work, extruder_count, run_ctx);
     }
 }
 
@@ -917,6 +1006,7 @@ int32_t DenseInfillSurfaceMarker::used_config_keys(raw_used_config_key *keys) co
 
 void DenseInfillSurfaceMarker::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_surface_generation *ctx = plugin_ctx_as_surface_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr)
         return;
@@ -925,6 +1015,7 @@ void DenseInfillSurfaceMarker::setup_run_impl(const plugin_run_context *run_ctx)
 
 void DenseInfillSurfaceMarker::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_surface_generation *ctx = plugin_ctx_as_surface_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr || ctx->print == nullptr)
         return;
@@ -957,6 +1048,7 @@ int32_t DenseInfillRecipeModifier::priority_impl() const noexcept { return 0; }
 
 void DenseInfillRecipeModifier::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_infill_surface_recipe_modifier *ctx =
         plugin_ctx_as_infill_surface_recipe_modifier(run_ctx);
     if (ctx == nullptr || ctx->surface == nullptr || ctx->params == nullptr)
@@ -1003,6 +1095,7 @@ const char *DenseInfillPostInfillOrder::progress_message_format_impl() const noe
 
 void DenseInfillPostInfillOrder::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_infill_generation *ctx = plugin_ctx_as_post_infill_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr)
         return;
@@ -1011,6 +1104,7 @@ void DenseInfillPostInfillOrder::setup_run_impl(const plugin_run_context *run_ct
 
 void DenseInfillPostInfillOrder::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_post_infill_generation *ctx = plugin_ctx_as_post_infill_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr || ctx->print == nullptr ||
         ctx->get_region_island_mutable_extrusion == nullptr)
@@ -1024,7 +1118,8 @@ void DenseInfillPostInfillOrder::run_impl(const plugin_run_context *run_ctx) con
         &progress(),
         process_post_infill_layer,
         ctx,
-        &m_hint_property);
+        &m_hint_property,
+        run_ctx);
 }
 
 void register_dense_infill_plugins(orchestrator_handle *orch)

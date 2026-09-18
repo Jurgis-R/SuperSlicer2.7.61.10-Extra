@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from slic3r_api import (
     EPropertyAttributes,
+    PluginCancelled,
     PluginBase,
     RAW_CO_FLOAT,
     RAW_CO_INT,
@@ -42,6 +43,7 @@ from slic3r_api import (
     make_point,
     norm,
     scale_i,
+    throw_if_cancelled,
     unscaled,
     used_config_key,
 )
@@ -142,7 +144,15 @@ def _sampling_for_layer(layer_idx: int, layer_height_scaled: int, settings: Hair
     return LayerSampling(spacing_scaled=spacing_scaled, start_offset_scaled=spacing_scaled * jitter)
 
 
-def _sample_hairs_on_polyline(island_area, polyline, settings: HairSettings, sampling: LayerSampling, ccw: bool):
+def _sample_hairs_on_polyline(
+    island_area,
+    polyline,
+    settings: HairSettings,
+    sampling: LayerSampling,
+    ccw: bool,
+    run_ctx_address: int,
+):
+    throw_if_cancelled(run_ctx_address)
     points = polyline.points()
     if len(points) < 2:
         return []
@@ -150,6 +160,8 @@ def _sample_hairs_on_polyline(island_area, polyline, settings: HairSettings, sam
     hairs = []
     next_distance = sampling.start_offset_scaled
     for idx in range(1, len(points)):
+        if idx % 64 == 0:
+            throw_if_cancelled(run_ctx_address)
         a = points[idx - 1]
         b = points[idx]
         dx = float(b.x - a.x)
@@ -159,6 +171,8 @@ def _sample_hairs_on_polyline(island_area, polyline, settings: HairSettings, sam
             continue
 
         while next_distance <= segment_length:
+            if len(hairs) % 64 == 0:
+                throw_if_cancelled(run_ctx_address)
             start = _point_lerp(a, b, next_distance / segment_length)
             end = _normal_endpoint(island_area, start, dx, dy, settings.length_scaled, ccw)
             if end is not None and not _points_equal(start, end):
@@ -247,7 +261,8 @@ def _contour_piece_collection(api, storage: int, contour, paint_expolygons):
         line.free_from_storage()
 
 
-def _build_hair_group(api, storage: int, hairs, settings: HairSettings):
+def _build_hair_group(api, storage: int, hairs, settings: HairSettings, run_ctx_address: int):
+    throw_if_cancelled(run_ctx_address)
     group = StoredExtrusionEntity(api, storage)
     group.set_flags(RAW_EXTRUSION_FLAG_SORTABLE)
 
@@ -258,7 +273,9 @@ def _build_hair_group(api, storage: int, hairs, settings: HairSettings):
     attributes.height = float(settings.height_mm)
     attributes.no_seam = 1
 
-    for start, end in hairs:
+    for hair_idx, (start, end) in enumerate(hairs):
+        if hair_idx % 64 == 0:
+            throw_if_cancelled(run_ctx_address)
         hair = StoredExtrusionEntity(api, storage, [start, end])
         hair.set_flags(0)
         hair_attributes = hair.property(EPropertyAttributes)
@@ -362,23 +379,26 @@ class HairyObjectPlugin(PluginBase):
         )
 
     def run(self, run_ctx_address: int) -> None:
+        throw_if_cancelled(run_ctx_address)
         ctx = self.api.post_perimeter_context(run_ctx_address)
         if ctx is None:
             return
 
         try:
-            self._run(ctx)
+            self._run(ctx, run_ctx_address)
+        except PluginCancelled:
+            raise
         except Exception as exc:
             ctx.report_error(f"HairyObject failed: {exc}")
 
-    def _run(self, ctx) -> None:
+    def _run(self, ctx, run_ctx_address: int) -> None:
+        throw_if_cancelled(run_ctx_address)
         storage = ctx.plugin_storage()
         obj = ctx.post_perimeter_object()
         painted_by_layer = ctx.project_painting_to_polygons(PAINT_KEY, RAW_FACET_PAINTING_ENFORCER)
         try:
             for layer_idx, layer in enumerate(obj.layers()):
-                if ctx.is_cancelled():
-                    return
+                throw_if_cancelled(run_ctx_address)
                 if layer_idx >= len(painted_by_layer) or painted_by_layer[layer_idx].empty():
                     continue
 
@@ -386,15 +406,22 @@ class HairyObjectPlugin(PluginBase):
                 if paint_expolygons is None:
                     continue
                 try:
-                    for island in layer.islands():
-                        self._process_island(ctx, storage, layer_idx, layer, island, paint_expolygons)
+                    for island_idx, island in enumerate(layer.islands()):
+                        if island_idx % 64 == 0:
+                            throw_if_cancelled(run_ctx_address)
+                        self._process_island(
+                            ctx, storage, layer_idx, layer, island, paint_expolygons, run_ctx_address
+                        )
                 finally:
                     paint_expolygons.free_from_storage()
         finally:
             for polygons in painted_by_layer:
                 polygons.free_from_storage()
 
-    def _process_island(self, ctx, storage: int, layer_idx: int, layer, island, paint_expolygons) -> None:
+    def _process_island(
+        self, ctx, storage: int, layer_idx: int, layer, island, paint_expolygons, run_ctx_address: int
+    ) -> None:
+        throw_if_cancelled(run_ctx_address)
         regions = list(island.regions())
         if not regions:
             return
@@ -417,13 +444,21 @@ class HairyObjectPlugin(PluginBase):
             hairs = []
             ccw = contour.is_counter_clockwise()
             island_area = island.slice()
-            for piece in clipped:
-                hairs.extend(_sample_hairs_on_polyline(island_area, piece, settings, sampling, ccw))
+            for piece_idx, piece in enumerate(clipped):
+                if piece_idx % 64 == 0:
+                    throw_if_cancelled(run_ctx_address)
+                hairs.extend(
+                    _sample_hairs_on_polyline(
+                        island_area, piece, settings, sampling, ccw, run_ctx_address
+                    )
+                )
             if not hairs:
                 return
 
             root = None
-            for region_island in island.region_islands():
+            for region_island_idx, region_island in enumerate(island.region_islands()):
+                if region_island_idx % 64 == 0:
+                    throw_if_cancelled(run_ctx_address)
                 root = ctx.post_perimeter_mutable_extrusion(
                     region_island, RAW_EXTRUSION_ROLE_PERIMETER
                 )
@@ -432,7 +467,7 @@ class HairyObjectPlugin(PluginBase):
             if root is None:
                 return
 
-            group = _build_hair_group(self.api, storage, hairs, settings)
+            group = _build_hair_group(self.api, storage, hairs, settings, run_ctx_address)
             try:
                 _make_root_append_only(self.api, storage, root)
                 root.add_child_move(group)

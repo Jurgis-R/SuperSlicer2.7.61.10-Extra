@@ -168,6 +168,7 @@ const char *SupportDemandPainting::progress_message_format_impl() const noexcept
 
 void SupportDemandPainting::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_support_demand *ctx = plugin_ctx_as_support_demand(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr)
         return;
@@ -179,6 +180,7 @@ void SupportDemandPainting::setup_run_impl(const plugin_run_context *run_ctx) co
 
 void SupportDemandPainting::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_support_demand *ctx = plugin_ctx_as_support_demand(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr || ctx->demand == nullptr)
         return;

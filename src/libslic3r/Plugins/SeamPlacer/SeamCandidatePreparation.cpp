@@ -30,6 +30,7 @@ publish their own immutable results afterward.
 #include "libslic3r/Api/plugin/cpp/properties/ExtrusionProperties.hpp"
 #include "SeamCostModel.hpp"
 #include "SeamPlacementConstraints.hpp"
+#include "SeamInitializationCancellation.hpp"
 
 namespace slic3r_api { namespace SeamPlacement { namespace CandidatePreparation {
 
@@ -58,7 +59,8 @@ void update_attributes(const ExtrusionEntity &entity, raw_extrusion_role &role,
 TreeSummary collect_tree(const ExtrusionEntity &entity,
                          raw_extrusion_role role, double width,
                          bool perimeter,
-                         std::vector<CollectedLoop> &loops);
+                         std::vector<CollectedLoop> &loops,
+                         const plugin_run_context *run_context);
 
 /* Find the LayerIsland containing a source LayerRegionIsland. */
 LayerIsland parent_island(const Layer &layer,
@@ -81,13 +83,15 @@ bool inside_boundary_zone(const StoredExPolygonCollection &zone,
 void add_boundary_candidates(
     storage_handle *storage, const SeamPlacementConstraints &constraints,
     const LayerRegionIsland &island, const ExtrusionEntity &loop,
-    c_point shift, double width, std::vector<Candidate> &out);
+    c_point shift, double width, std::vector<Candidate> &out,
+    const plugin_run_context *run_context);
 
 /* Add the endpoints of every painted-constraint portion. */
 void add_constraint_candidates(const SeamPlacementConstraints &constraints,
-                               const ExtrusionEntity &loop,
-                               const LayerRegion &region, c_point shift,
-                               double width, std::vector<Candidate> &out);
+                                const ExtrusionEntity &loop,
+                                const LayerRegion &region, c_point shift,
+                                double width, std::vector<Candidate> &out,
+                                const plugin_run_context *run_context);
 
 /* Project a target onto every real segment in an extrusion tree. */
 std::pair<c_point, double> project_onto_loop_impl(const ExtrusionEntity &entity,
@@ -98,7 +102,8 @@ std::pair<c_point, double> project_onto_loop_impl(const ExtrusionEntity &entity,
 /* Collect every non-empty perimeter loop, classify its effective role, and
    retain the external width when its subtree supplies candidate geometry. */
 std::vector<CollectedLoop> collect_perimeter_loops(
-    const ExtrusionEntity &root, raw_extrusion_role inherited_role);
+    const ExtrusionEntity &root, raw_extrusion_role inherited_role,
+    const plugin_run_context *run_context);
 
 /* Build the loop's original vertices, painted-constraint endpoints, and
    neighboring-region transitions in discovery order. Coordinates are stored in
@@ -106,17 +111,20 @@ std::vector<CollectedLoop> collect_perimeter_loops(
 std::vector<Candidate> prepare_loop_candidates(
     storage_handle *storage, const SeamPlacementConstraints &constraints,
     const LayerRegionIsland &island, const ExtrusionEntity &loop,
-    const LayerRegion &region, c_point shift, double width, double nozzle);
+    const LayerRegion &region, c_point shift, double width, double nozzle,
+    const plugin_run_context *run_context);
 
 /* Enrich candidates with legacy overhang from the previous layer, embedding
    from the current layer, and neighboring-region boundary membership. */
 void calculate_layer_attributes(const LayerRegionIsland &island,
-                               std::vector<Candidate> &candidates);
+                                std::vector<Candidate> &candidates,
+                                const plugin_run_context *run_context);
 
 /* Apply the common ordered blocker, enforcer, boundary, support, and embedding
    policy while preserving discovery order. The all-blocked fallback is kept so
    a provider always retains a usable source candidate. */
-void filter_candidates(std::vector<Candidate> &candidates);
+void filter_candidates(std::vector<Candidate> &candidates,
+                       const plugin_run_context *run_context);
 
 /* Project a scaled platter-coordinate target onto line and arc geometry. */
 std::pair<c_point, double> project_onto_loop(const ExtrusionEntity &entity,
@@ -143,8 +151,10 @@ void update_attributes(const ExtrusionEntity &entity, raw_extrusion_role &role,
 TreeSummary collect_tree(const ExtrusionEntity &entity,
                          raw_extrusion_role role, double width,
                          bool perimeter,
-                         std::vector<CollectedLoop> &loops)
+                         std::vector<CollectedLoop> &loops,
+                         const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     update_attributes(entity, role, width);
     if (entity.property_data(EXTRUSION_PROPERTY_TYPE_PERIMETER) != nullptr)
         perimeter = true;
@@ -160,7 +170,7 @@ TreeSummary collect_tree(const ExtrusionEntity &entity,
     const size_t first_nested_loop = loops.size();
     for (uint32_t index = 0; index < entity.child_count(); ++index) {
         const TreeSummary child = collect_tree(
-            entity.child(index), role, width, perimeter, loops);
+            entity.child(index), role, width, perimeter, loops, run_context);
         summary.has_perimeter_marker =
             summary.has_perimeter_marker || child.has_perimeter_marker;
         summary.has_perimeter_role =
@@ -186,10 +196,11 @@ TreeSummary collect_tree(const ExtrusionEntity &entity,
 } // namespace
 
 std::vector<CollectedLoop> collect_perimeter_loops(
-    const ExtrusionEntity &root, raw_extrusion_role inherited_role)
+    const ExtrusionEntity &root, raw_extrusion_role inherited_role,
+    const plugin_run_context *run_context)
 {
     std::vector<CollectedLoop> loops;
-    collect_tree(root, inherited_role, 0, false, loops);
+    collect_tree(root, inherited_role, 0, false, loops, run_context);
     return loops;
 }
 
@@ -277,8 +288,10 @@ bool inside_boundary_zone(const StoredExPolygonCollection &zone,
 void add_boundary_candidates(
     storage_handle *storage, const SeamPlacementConstraints &constraints,
     const LayerRegionIsland &island, const ExtrusionEntity &loop,
-    c_point shift, double width, std::vector<Candidate> &out)
+    c_point shift, double width, std::vector<Candidate> &out,
+    const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     const StoredExPolygonCollection zone =
         boundary_zone(storage, island, scale_d(width / 2));
     if (zone.empty()) return;
@@ -286,6 +299,8 @@ void add_boundary_candidates(
     visit = [&](const ExtrusionEntity &node) {
         for (uint32_t segment_index = 0;
              segment_index < node.segment_count(); ++segment_index) {
+            InitializationCancellation::check_periodic(
+                run_context, segment_index);
             c_extrusion_segment segment = node.segment(segment_index);
             segment.point_a.x -= shift.x;
             segment.point_a.y -= shift.y;
@@ -299,6 +314,8 @@ void add_boundary_candidates(
                     [&](const Polygon &edge_loop) {
                         for (size_t edge_index = 0;
                              edge_index < edge_loop.size(); ++edge_index) {
+                            InitializationCancellation::check_periodic(
+                                run_context, edge_index);
                             c_extrusion_segment edge{};
                             edge.point_a = edge_loop[edge_index];
                             edge.point_b =
@@ -322,7 +339,10 @@ void add_boundary_candidates(
                        cuts.end());
             const double epsilon = curve.length() > 0 ?
                 std::min(1e-4, 1.0 / curve.length()) : 0;
+            size_t cut_index = 0;
             for (const double cut : cuts) {
+                InitializationCancellation::check_periodic(
+                    run_context, cut_index++);
                 if (cut < 0 || cut > 1) continue;
                 const bool before = inside_boundary_zone(
                     zone, curve.point(std::max(0.0, cut - epsilon)));
@@ -345,8 +365,11 @@ void add_boundary_candidates(
             }
         }
         for (uint32_t child_index = 0; child_index < node.child_count();
-             ++child_index)
+             ++child_index) {
+            InitializationCancellation::check_periodic(
+                run_context, child_index);
             visit(node.child(child_index));
+        }
     };
     visit(loop);
 }
@@ -354,8 +377,10 @@ void add_boundary_candidates(
 void add_constraint_candidates(const SeamPlacementConstraints &constraints,
                                const ExtrusionEntity &loop,
                                const LayerRegion &region, c_point shift,
-                               double width, std::vector<Candidate> &out)
+                               double width, std::vector<Candidate> &out,
+                               const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     const SeamPlacementConstraints::Result portions =
         constraints.portions(loop, region, true);
     for (const SeamPlacementConstraints::Portion &portion :
@@ -381,8 +406,10 @@ void add_constraint_candidates(const SeamPlacementConstraints &constraints,
 std::vector<Candidate> prepare_loop_candidates(
     storage_handle *storage, const SeamPlacementConstraints &constraints,
     const LayerRegionIsland &island, const ExtrusionEntity &loop,
-    const LayerRegion &region, c_point shift, double width, double nozzle)
+    const LayerRegion &region, c_point shift, double width, double nozzle,
+    const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     const std::vector<c_point> path = loop.collect_points();
     std::vector<c_point> points;
     points.reserve(path.size());
@@ -395,6 +422,7 @@ std::vector<Candidate> prepare_loop_candidates(
     std::vector<Candidate> candidates;
     candidates.reserve(points.size());
     for (size_t point_index = 0; point_index < points.size(); ++point_index) {
+        InitializationCancellation::check_periodic(run_context, point_index);
         Candidate candidate;
         const c_point point = points[point_index];
         candidate.point = {point.x - shift.x, point.y - shift.y};
@@ -411,9 +439,9 @@ std::vector<Candidate> prepare_loop_candidates(
         candidates.push_back(candidate);
     }
     add_constraint_candidates(constraints, loop, region, shift, width,
-                              candidates);
+                              candidates, run_context);
     add_boundary_candidates(storage, constraints, island, loop, shift, width,
-                            candidates);
+                            candidates, run_context);
     for (size_t index = 0; index < candidates.size(); ++index) {
         candidates[index].nozzle = nozzle;
         candidates[index].stable_order = index;
@@ -422,8 +450,10 @@ std::vector<Candidate> prepare_loop_candidates(
 }
 
 void calculate_layer_attributes(const LayerRegionIsland &island,
-                               std::vector<Candidate> &candidates)
+                                std::vector<Candidate> &candidates,
+                                const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     if (island.region_count() == 0) return;
     const Layer layer = island.region(0).layer();
     const LineDistancer current(layer.slices());
@@ -454,7 +484,11 @@ void calculate_layer_attributes(const LayerRegionIsland &island,
         }
         break;
     }
-    for (Candidate &candidate : candidates) {
+    for (size_t candidate_index = 0;
+         candidate_index < candidates.size(); ++candidate_index) {
+        InitializationCancellation::check_periodic(
+            run_context, candidate_index);
+        Candidate &candidate = candidates[candidate_index];
         if (has_previous)
             candidate.overhang = std::max(
                 0.0, unscaled(previous.distance_from_lines(
@@ -469,17 +503,21 @@ void calculate_layer_attributes(const LayerRegionIsland &island,
     }
 }
 
-void filter_candidates(std::vector<Candidate> &candidates)
+void filter_candidates(std::vector<Candidate> &candidates,
+                       const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     const std::vector<Candidate> original = candidates;
     candidates.erase(std::remove_if(
         candidates.begin(), candidates.end(),
         [](const Candidate &candidate) { return candidate.blocked; }),
         candidates.end());
+    InitializationCancellation::check(run_context);
     if (candidates.empty()) candidates = original;
     const bool enforced = std::any_of(
         candidates.begin(), candidates.end(),
         [](const Candidate &candidate) { return candidate.enforced; });
+    InitializationCancellation::check(run_context);
     if (enforced)
         candidates.erase(std::remove_if(
             candidates.begin(), candidates.end(),
@@ -488,6 +526,7 @@ void filter_candidates(std::vector<Candidate> &candidates)
     const bool boundary = std::any_of(
         candidates.begin(), candidates.end(),
         [](const Candidate &candidate) { return candidate.boundary; });
+    InitializationCancellation::check(run_context);
     if (boundary)
         candidates.erase(std::remove_if(
             candidates.begin(), candidates.end(),
@@ -496,6 +535,7 @@ void filter_candidates(std::vector<Candidate> &candidates)
     const bool supported = std::any_of(
         candidates.begin(), candidates.end(),
         [](const Candidate &candidate) { return candidate.overhang == 0; });
+    InitializationCancellation::check(run_context);
     if (supported)
         candidates.erase(std::remove_if(
             candidates.begin(), candidates.end(),

@@ -759,19 +759,27 @@ void generate_default_skirt(const plugin_run_context *run_ctx, orchestrator_hand
     if (print_config.get("complete_objects").get_bool() &&
         !print_config.get("complete_objects_one_skirt").get_bool()) {
         for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx) {
+            throw_if_cancelled(run_ctx);
             const Object object = print.object(object_idx);
             SkirtOutput output = make_skirt(storage, step, print, std::vector<Object>{ object }, true);
+            throw_if_cancelled(run_ctx);
             publish_object_skirt(storage, orchestrator, print, object, output);
+            throw_if_cancelled(run_ctx);
         }
         return;
     }
 
     std::vector<Object> objects;
     objects.reserve(print.object_count());
-    for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx)
+    for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx) {
+        throw_if_cancelled(run_ctx);
         objects.push_back(print.object(object_idx));
+    }
+    throw_if_cancelled(run_ctx);
     SkirtOutput output = make_skirt(storage, step, print, objects, false);
+    throw_if_cancelled(run_ctx);
     publish_print_skirt(storage, orchestrator, print, objects, output);
+    throw_if_cancelled(run_ctx);
 }
 
 class DefaultSkirtGenerator : public PluginBase
@@ -813,6 +821,7 @@ private:
 
     void run_impl(const plugin_run_context *run_ctx) const override
     {
+        throw_if_cancelled(run_ctx);
         generate_default_skirt(run_ctx, m_orchestrator);
     }
 };

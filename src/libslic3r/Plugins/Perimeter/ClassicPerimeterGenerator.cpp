@@ -211,8 +211,10 @@ StoredExPolygonCollection create_island_overhang_area(storage_handle *storage,
                                                       const LayerIsland &island,
                                                       const ExPolygon &root_area,
                                                       const RegionSettingsValue &values,
-                                                      const c_flow &reference_flow)
+                                                      const c_flow &reference_flow,
+                                                      const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection empty(storage);
     const bool enabled = values.get_bool(k_overhangs_key) && values.is_enabled(k_overhangs_flow_ratio_key);
     if (!enabled || island.lower_islands().empty())
@@ -225,16 +227,21 @@ StoredExPolygonCollection create_island_overhang_area(storage_handle *storage,
     ClipperOperand lower_area = clipper.empty();
     for (LayerIsland lower_island : island.lower_islands())
         lower_area += clipper(lower_island.slice());
+    throw_if_cancelled(run_ctx);
     lower_area = clipper_union(lower_area);
+    throw_if_cancelled(run_ctx);
 
     const coord_t overhang_width = overhang_width_from_config(values, reference_flow);
 
     // First find the truly unsupported part of the current region group. The
     // small offset2 cleans boundary noise before the optional width expansion
     // below, matching the intent of the legacy process_classic preparation.
+    throw_if_cancelled(run_ctx);
     ClipperOperand unsupported =
         clipper_diff_with_safety_offset(clipper(root_area), lower_area);
+    throw_if_cancelled(run_ctx);
     unsupported = clipper_offset2(unsupported, double(SCALED_EPSILON * 10), double(SCALED_EPSILON * 10));
+    throw_if_cancelled(run_ctx);
 
     if (unsupported.empty() || overhang_width <= 0)
         return unsupported.to_expolygon_collection();
@@ -243,8 +250,11 @@ StoredExPolygonCollection create_island_overhang_area(storage_handle *storage,
     // island/region, then intersects the grown selector with the raw unsupported
     // area. With one already-split region group this reduces to a conservative
     // cleanup that keeps only overhang material belonging to this root area.
+    throw_if_cancelled(run_ctx);
     ClipperOperand expanded = clipper_intersection(clipper_offset(unsupported, double(overhang_width)), clipper(root_area));
+    throw_if_cancelled(run_ctx);
     ClipperOperand shrunk_selector = clipper_offset(expanded, double(overhang_width));
+    throw_if_cancelled(run_ctx);
     return clipper_intersection(shrunk_selector, unsupported).to_expolygon_collection();
 }
 
@@ -252,14 +262,18 @@ ClipperOperand move_overhangs(storage_handle *storage,
                               ClipperOperand &&last,
                               const ExPolygonCollection &last_overhang,
                               coord_t overhang_spacing,
-                              coord_t perimeter_spacing)
+                              coord_t perimeter_spacing,
+                              const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (overhang_spacing <= 0 || last_overhang.empty() ||
         !scaled_values_differ(overhang_spacing, perimeter_spacing))
         return std::move(last);
 
     ClipperContext clipper(storage);
+    throw_if_cancelled(run_ctx);
     ClipperOperand overhang = clipper_intersection(last, clipper(last_overhang));
+    throw_if_cancelled(run_ctx);
     if (overhang.empty() || overhang_spacing >= perimeter_spacing)
         return std::move(last);
 
@@ -268,7 +282,9 @@ ClipperOperand move_overhangs(storage_handle *storage,
     // so the later inward offset creates those extra centerlines locally.
     const coord_t expand_value = perimeter_spacing - overhang_spacing;
     ClipperOperand contracted = clipper_offset(overhang, -double(expand_value));
+    throw_if_cancelled(run_ctx);
     ClipperOperand expanded = clipper_offset(contracted, double(expand_value * 2), CLIPPER_JOIN_SQUARE, 0.0);
+    throw_if_cancelled(run_ctx);
     return clipper_union2(last, expanded);
 }
 
@@ -276,8 +292,10 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
                      storage_handle *storage,
                      StoredExPolygonCollection &&gaps,
                      const RegionSettingsValue &gap_fill_config,
-                     const c_flow &perimeter_flow)
+                     const c_flow &perimeter_flow,
+                     const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (gaps.empty() || perimeter_flow.width <= 0 || perimeter_flow.spacing <= 0)
         return;
 
@@ -323,24 +341,30 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
         scale_d(scale_d(gap_fill_config.get_effective_value(reference_area, k_gap_fill_min_area_key))) :
         0.0;
 
+    throw_if_cancelled(run_ctx);
     ClipperOperand too_big = clipper_offset2(clipper(gaps), double(-max_width / 2.0), double(max_width / 2.0));
+    throw_if_cancelled(run_ctx);
     if (!too_big.empty()) {
         gaps = clipper_diff_with_safety_offset(clipper(gaps), too_big).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
     }
 
     // Each gap is shrink-tested before medial-axis generation. If a shrink
     // splits a gap into many tiny pieces, a stronger shrink is tried and kept
     // only when it significantly reduces the number of candidate islands.
     for (const ExPolygon &gap : gaps) {
+        throw_if_cancelled(run_ctx);
         if (gap.area() <= min_area)
             continue;
 
         const coordf_t offset_test = min_width * 0.5;
         StoredExPolygonCollection shrunk =
             clipper_offset(clipper(gap), -double(offset_test)).to_expolygon_collection();
+        throw_if_cancelled(run_ctx);
 
         if (shrunk.size() > 1) {
             for (int32_t idx = 0; idx < int32_t(shrunk.size()); ++idx) {
+                throw_if_cancelled(run_ctx);
                 if (shrunk[idx].area() < double(SCALED_EPSILON * SCALED_EPSILON * 4)) {
                     shrunk.erase(uint32_t(idx));
                     --idx;
@@ -349,6 +373,7 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
 
                 StoredExPolygonCollection wider =
                     clipper_offset(clipper(shrunk[idx]), double(offset_test)).to_expolygon_collection();
+                throw_if_cancelled(run_ctx);
                 if (wider.empty() || wider.front().area() < min_area) {
                     shrunk.erase(uint32_t(idx));
                     --idx;
@@ -358,7 +383,9 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
             const coordf_t stronger_offset_test = min_width * 0.8;
             StoredExPolygonCollection stronger_shrunk =
                 clipper_offset(clipper(gap), -double(stronger_offset_test)).to_expolygon_collection();
+            throw_if_cancelled(run_ctx);
             for (int32_t idx = 0; idx < int32_t(stronger_shrunk.size()); ++idx) {
+                throw_if_cancelled(run_ctx);
                 if (stronger_shrunk[idx].area() < double(SCALED_EPSILON * SCALED_EPSILON * 4)) {
                     stronger_shrunk.erase(uint32_t(idx));
                     --idx;
@@ -367,6 +394,7 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
 
                 StoredExPolygonCollection wider =
                     clipper_offset(clipper(stronger_shrunk[idx]), double(stronger_offset_test)).to_expolygon_collection();
+                throw_if_cancelled(run_ctx);
                 if (wider.empty() || wider.front().area() < min_area) {
                     stronger_shrunk.erase(uint32_t(idx));
                     --idx;
@@ -376,15 +404,18 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
             if (double(shrunk.size()) / 1.42 > double(stronger_shrunk.size())) {
                 StoredExPolygonCollection restored =
                     clipper_offset(clipper(stronger_shrunk.readonly()), double(stronger_offset_test)).to_expolygon_collection();
+                throw_if_cancelled(run_ctx);
                 printable_gaps.append_move_from(restored);
             } else {
                 StoredExPolygonCollection restored =
                     clipper_offset(clipper(shrunk.readonly()), double(offset_test)).to_expolygon_collection();
+                throw_if_cancelled(run_ctx);
                 printable_gaps.append_move_from(restored);
             }
         } else {
             StoredExPolygonCollection restored =
                 clipper_offset(clipper(shrunk.readonly()), double(offset_test)).to_expolygon_collection();
+            throw_if_cancelled(run_ctx);
             printable_gaps.append_move_from(restored);
         }
     }
@@ -396,6 +427,7 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
     gap_fill_flow.spacing_ratio = float(gap_fill_config.get_effective_value(1.0, k_gap_fill_overlap_key));
 
     for (const ExPolygon &gap : printable_gaps) {
+        throw_if_cancelled(run_ctx);
         StoredExtrusionEntity gap_fill =
             medial_axis_gap_fill(gap_fill_flow)
                 .medial_widths(coord_t(min_width), coord_t(natural_max_width))
@@ -404,6 +436,7 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
                 .endpoint_extension(extension_length)
                 .can_reverse(true)
                 .build(storage, gap);
+        throw_if_cancelled(run_ctx);
         if (!gap_fill.empty())
             gaps_extrusions.emplace_back(std::move(gap_fill));
     }
@@ -416,6 +449,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
                                  PerimeterNodeView &node,
                                  expolygon_collection_handle *inner_areas_out,
                                  expolygon_collection_handle *inner_fill_areas_out) {
+    throw_if_cancelled(params.run_context());
     storage_handle *storage = params.storage();
     ClipperContext clipper(storage);
     ClipperOperand next_onion(storage);
@@ -435,7 +469,9 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
     // do overhangs_extrusion_width
     if (classic_params.is_overhangs && classic_params.overhang_spacing > 0) {
         last = move_overhangs(storage, std::move(last), classic_params.overhang_area.readonly(),
-                              classic_params.overhang_spacing / 2, external_flow.width / 2);
+                              classic_params.overhang_spacing / 2, external_flow.width / 2,
+                              params.run_context());
+        throw_if_cancelled(params.run_context());
     }
 
     // compute next onion
@@ -451,11 +487,13 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
         next_onion = clipper_offset2(last, -(float) (good_spacing + overlap_spacing - 1),
                                      +(float) (overlap_spacing - 1), CLIPPER_JOIN_MITER, 3);
     }
+    throw_if_cancelled(params.run_context());
     if (thin_perimeter < 0.7) {
         // offset2_ex can create artifacts, if too big. see superslicer#2428
         next_onion = clipper_intersection(next_onion,
                                           clipper_offset(last, -(float) (external_flow.width / 2), CLIPPER_JOIN_MITER,
                                                          3));
+        throw_if_cancelled(params.run_context());
     }
 
     RegionSettings thin_wall_settings = params.region_settings(
@@ -473,6 +511,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
             const coordf_t overlap_spacing = (1 - thin_perimeter) * external_flow.spacing / 2;
             for (size_t idx_variations = 0; next_onion.path_count() > 1 && idx_variations < variations.size();
                  idx_variations++) {
+                throw_if_cancelled(params.run_context());
                 const coordf_t spacing_change = external_flow.spacing * variations[idx_variations];
                 // don't go over 100% overlap
                 if (overlap_spacing + spacing_change < 1) {
@@ -484,6 +523,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
                                                                       -(float) (good_spacing + overlap_spacing +
                                                                                 spacing_change - 1),
                                                                       +(float) (overlap_spacing + spacing_change) - 1);
+                throw_if_cancelled(params.run_context());
                 if (next_onion.path_count() > next_onion_secondTry.path_count() * 1.2 &&
                     next_onion.path_count() > next_onion_secondTry.path_count() + 2) {
                     next_onion = std::move(next_onion_secondTry);
@@ -495,6 +535,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
     std::vector<StoredExtrusionEntity> thin_wall_extrusions;
     // look for thin walls
     for (auto const &[thin_walls_config, areas] : thin_wall_settings.get_areas(k_thin_walls_key)) {
+        throw_if_cancelled(params.run_context());
         if (thin_walls_config.get_bool()) {
             StoredExPolygonCollection last_good_areas = areas.intersections(node.area());
 
@@ -524,6 +565,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
             StoredExPolygonCollection thins(storage);
             // compute a bit of overlap to anchor thin walls inside the print.
             for (const ExPolygon &half_thin : half_thins.to_expolygon_collection()) {
+                throw_if_cancelled(params.run_context());
                 // growing back the polygon
                 StoredExPolygonCollection thin = clipper_offset(clipper(half_thin), double(min_width / 2))
                                                      .to_expolygon_collection();
@@ -569,6 +611,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
                                 .endpoint_taper(thin_walls_overlap)
                                 .min_centerline_length(external_flow.width + external_flow.spacing)
                                 .build(storage, thin[0]);
+                        throw_if_cancelled(params.run_context());
                         if (!thin_wall.empty())
                             thin_wall_extrusions.emplace_back(std::move(thin_wall));
                         break;
@@ -602,6 +645,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
             // next_onion.ensure_valid(std::max<coord_t>(SCALED_EPSILON, external_flow.width / 20));
             // mask
             next_onion = clipper_intersection(next_onion, last);
+            throw_if_cancelled(params.run_context());
         }
     }
 
@@ -642,6 +686,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
     }
 
     // give back the extrusions to the caller.
+    throw_if_cancelled(params.run_context());
     extrusion_move_from(node.mutable_handle()->extrusions, final_extrusion_root.mutable_handle());
 
     // offset again to have the next & fill area
@@ -652,6 +697,7 @@ void generate_external_perimeter(const PerimeterGenerationContextView &params,
     // put next onion as children
     StoredExPolygonCollection inner_fill_areas = clipper_offset(next_onion, -0.5 * double(external_flow.spacing))
                                                      .to_expolygon_collection();
+    throw_if_cancelled(params.run_context());
     expolygons_move(inner_areas_out, inner_fill_areas.mutable_handle());
 }
 
@@ -661,6 +707,7 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
                                  expolygon_collection_handle *inner_areas_out,
                                  expolygon_collection_handle *inner_fill_areas_out)
 {
+    throw_if_cancelled(params.run_context());
     storage_handle *storage = params.storage();
     ClipperContext clipper(storage);
     ClipperOperand next_onion(storage);
@@ -685,7 +732,9 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
     // do overhangs_extrusion_width
     if (classic_params.is_overhangs && classic_params.overhang_spacing > 0) {
         last = move_overhangs(storage, std::move(last), classic_params.overhang_area.readonly(),
-                              classic_params.overhang_spacing / 2, previous_flow.spacing / 2);
+                              classic_params.overhang_spacing / 2, previous_flow.spacing / 2,
+                              params.run_context());
+        throw_if_cancelled(params.run_context());
     }
 
     // FIXME Is this offset correct if the line width of the inner perimeters differs
@@ -703,7 +752,8 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
                                      +(float) (overlap_spacing - 1),
                                      (classic_params.perimeter_round_corners ? CLIPPER_JOIN_ROUND :
                                                                                CLIPPER_JOIN_MITER),
-                                     (classic_params.perimeter_round_corners ? internal_flow.width / 10 : 3));
+                                                                               (classic_params.perimeter_round_corners ? internal_flow.width / 10 : 3));
+        throw_if_cancelled(params.run_context());
         if (allow_perimeter_anti_hysteresis) {
             // now try with different min spacing if we fear some hysteresis
             // TODO, do that for each polygon from last, instead to do for all of them in one go.
@@ -720,6 +770,7 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
                  (next_onion.path_count() > no_thin_onion.path_count() || (new_area != 0 && last_area > new_area * 100)) &&
                  idx_variations < variations.size();
                  idx_variations++) {
+                throw_if_cancelled(params.run_context());
                 const coordf_t spacing_change = half_spacing * variations[idx_variations];
                 // use a sightly bigger spacing to try to drastically improve the split, that can lead to very thick gapfill
                 ClipperOperand next_onion_secondTry =
@@ -727,6 +778,7 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
                                     +(float) (overlap_spacing + spacing_change - 1),
                                     (classic_params.perimeter_round_corners ? CLIPPER_JOIN_ROUND : CLIPPER_JOIN_MITER),
                                     (classic_params.perimeter_round_corners ? internal_flow.width / 10 : 3));
+                throw_if_cancelled(params.run_context());
                 if (next_onion.path_count() > next_onion_secondTry.path_count() * 1.2 &&
                     next_onion.path_count() > next_onion_secondTry.path_count() + 2) {
                     // don't get it if it creates too many
@@ -750,12 +802,15 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
         next_onion = clipper_offset(last, double(-half_spacing),
                                      (classic_params.perimeter_round_corners ? CLIPPER_JOIN_ROUND :
                                                                                CLIPPER_JOIN_MITER),
-                                     (classic_params.perimeter_round_corners ? internal_flow.width / 10 : 3));
+                                                                               (classic_params.perimeter_round_corners ? internal_flow.width / 10 : 3));
+        throw_if_cancelled(params.run_context());
     }
     // do overhangs_extrusion_width
     if (classic_params.is_overhangs && classic_params.overhang_spacing > 0) {
         next_onion = move_overhangs(storage, std::move(next_onion), classic_params.overhang_area.readonly(),
-                              classic_params.overhang_spacing / 2, previous_flow.spacing / 2);
+                              classic_params.overhang_spacing / 2, previous_flow.spacing / 2,
+                              params.run_context());
+        throw_if_cancelled(params.run_context());
     }
 
     // look for gaps
@@ -778,15 +833,18 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
         ClipperOperand no_last_gapfill = clipper_offset(next_onion, 0.5f * internal_flow.spacing + 30,
                                                         (classic_params.perimeter_round_corners ? CLIPPER_JOIN_ROUND :
                                                                                                   CLIPPER_JOIN_MITER),
-                                                        (classic_params.perimeter_round_corners ? internal_flow.width / 10 : 3));
+                                                                                                  (classic_params.perimeter_round_corners ? internal_flow.width / 10 : 3));
+        throw_if_cancelled(params.run_context());
         StoredExPolygonCollection gapfill =
             clipper_diff(clipper_offset(last, -0.5f * previous_flow.spacing + 30),
                          no_last_gapfill).to_expolygon_collection();
+        throw_if_cancelled(params.run_context());
 
         // RegionSettings gives one clip per compatible config value. A single
         // global config produces an accept-all clip, so this same loop covers
         // the fast path and the modifier/region-split path.
         for (const auto &[gap_fill_config, areas] : gap_fill_settings.get_areas(k_gap_fill_enabled_key)) {
+            throw_if_cancelled(params.run_context());
             if (!gap_fill_config.get_bool(k_gap_fill_enabled_key))
                 continue;
 
@@ -795,7 +853,8 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
                   (gap_fill_config.get_bool(k_gap_fill_last_key) && node.perimeter_idx() == node.perimeter_needed())))
                 continue;
 
-            create_gap_fill(gaps_extrusions, storage, std::move(areas.intersections(gapfill)), gap_fill_config, internal_flow);
+            create_gap_fill(gaps_extrusions, storage, std::move(areas.intersections(gapfill)), gap_fill_config,
+                            internal_flow, params.run_context());
         }
     }
 
@@ -838,6 +897,7 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
     }
 
     // give back the extrusions to the caller.
+    throw_if_cancelled(params.run_context());
     extrusion_move_from(node.mutable_handle()->extrusions, final_extrusion_root.mutable_handle());
 
     // offset again to have the next & fill area
@@ -848,6 +908,7 @@ void generate_internal_perimeter(const PerimeterGenerationContextView &params,
     // put next onion as children
     StoredExPolygonCollection inner_fill_areas = clipper_offset(next_onion, -0.5 * double(internal_flow.spacing))
                                                      .to_expolygon_collection();
+    throw_if_cancelled(params.run_context());
     expolygons_move(inner_areas_out, inner_fill_areas.mutable_handle());
 }
 
@@ -866,6 +927,7 @@ int32_t generate_one_perimeter(void *generator_context,
     storage_handle *storage = context->run_ctx->plugin_storage;
     PerimeterGenerationContextView context_view(context);
     PerimeterNodeView node_view(node);
+    throw_if_cancelled(context->run_ctx);
 
     if (!node_view.needs_more_perimeters()) {
         StoredExPolygonCollection inner_areas(storage, node_view.area());
@@ -881,6 +943,7 @@ int32_t generate_one_perimeter(void *generator_context,
     else
         generate_internal_perimeter(context_view, state, node_view, inner_areas_out, inner_fill_areas_out);
 
+    throw_if_cancelled(context->run_ctx);
     return 1;
 }
 
@@ -957,6 +1020,7 @@ const char *ClassicPerimeterGenerator::progress_message_format_impl() const noex
 
 void ClassicPerimeterGenerator::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_generate_perimeter *ctx = plugin_ctx_as_generate_perimeter(run_ctx);
     if (ctx != nullptr && ctx->island != nullptr)
         progress().add_max(1);
@@ -964,6 +1028,7 @@ void ClassicPerimeterGenerator::setup_run_impl(const plugin_run_context *run_ctx
 
 void ClassicPerimeterGenerator::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_generate_perimeter *ctx = plugin_ctx_as_generate_perimeter(run_ctx);
     if (ctx == nullptr || ctx->island == nullptr || ctx->run_region_group == nullptr ||
         run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
@@ -1016,14 +1081,17 @@ void ClassicPerimeterGenerator::run_impl(const plugin_run_context *run_ctx) cons
             state.internal_thin_perimeter =
                 normalized_thin_perimeter(float(values.get_effective_value(1.0, k_thin_perimeters_all_key)));
             state.overhang_area =
-                create_island_overhang_area(run_ctx->plugin_storage, island, root_area, values, state.perimeter_flow);
+                create_island_overhang_area(run_ctx->plugin_storage, island, root_area, values, state.perimeter_flow,
+                                            run_ctx);
 
+            throw_if_cancelled(run_ctx);
             ctx->run_region_group(ctx,
                                   handles.empty() ? nullptr : handles.data(),
                                   uint32_t(handles.size()),
                                   root_area.handle(),
                                   &state,
                                   &generate_one_perimeter);
+            throw_if_cancelled(run_ctx);
         }
     }
 

@@ -394,6 +394,7 @@ private:
 
     void run_impl(const plugin_run_context *run_ctx) const override
     {
+        throw_if_cancelled(run_ctx);
         trim_brim_against_skirt(run_ctx, m_orchestrator);
     }
 };

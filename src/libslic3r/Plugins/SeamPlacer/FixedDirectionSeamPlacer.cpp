@@ -4,6 +4,7 @@
 ///|/
 
 #include "FixedDirectionSeamPlacer.hpp"
+#include "SeamInitializationCancellation.hpp"
 #include "SeamPlacementConstraints.hpp"
 
 #include <array>
@@ -127,7 +128,10 @@ void select_vertex(const ExtrusionEntity &entity,
 class FixedDirectionSession final : public SeamPlacerSession
 {
 public:
-    explicit FixedDirectionSession(storage_handle *storage) : m_storage(storage) {}
+    explicit FixedDirectionSession(
+        storage_handle *storage,
+        const plugin_run_context *run_context = nullptr) :
+        m_storage(storage), m_run_context(run_context) {}
     /* Prepare immutable constraint caches before publishing the session. */
     void initialize(const PrintingPlan &plan,
                     const std::vector<PrintRegion> &print_regions) override;
@@ -142,6 +146,7 @@ public:
                        c_point start_position) const override;
 private:
     storage_handle *m_storage;
+    const plugin_run_context *m_run_context;
     SeamPlacementConstraints m_constraints;
 };
 
@@ -216,8 +221,10 @@ void FixedDirectionSession::initialize(const PrintingPlan &plan,
     // queries can run concurrently. Only borrowed plan identities are retained.
     if (!plan.valid())
         throw std::invalid_argument("Fixed-direction seam placement needs a valid PrintingPlan.");
-    m_constraints.initialize(plan, m_storage);
+    InitializationCancellation::check(m_run_context);
+    m_constraints.initialize(plan, m_storage, m_run_context);
     m_storage = nullptr;
+    m_run_context = nullptr;
 }
 
 float FixedDirectionSession::get_priority(const ExtrusionEntity &,
@@ -388,8 +395,10 @@ void FixedDirectionSeamPlacer::run_impl(const plugin_run_context *run_context) c
     print_regions.reserve(context->region_count);
     for (uint32_t region_idx = 0; region_idx < context->region_count; ++region_idx)
         print_regions.emplace_back(context->regions[region_idx]);
+    InitializationCancellation::check(run_context);
     context->instance = make_seam_placer_instance(
-        std::unique_ptr<SeamPlacerSession>(new FixedDirectionSession(run_context->plugin_storage)),
+        std::unique_ptr<SeamPlacerSession>(new FixedDirectionSession(
+            run_context->plugin_storage, run_context)),
         PrintingPlan(context->plan), print_regions);
 }
 

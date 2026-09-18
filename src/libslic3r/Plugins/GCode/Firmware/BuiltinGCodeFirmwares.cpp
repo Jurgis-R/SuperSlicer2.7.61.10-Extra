@@ -272,15 +272,21 @@ void BuiltinGCodeFirmwarePlugin::inilialize_impl(storage_handle *) const
 
 void BuiltinGCodeFirmwarePlugin::run_impl(const plugin_run_context *run_ctx) const
 {
+    // Firmware sessions are published for later STEP_GCODE calls and cannot
+    // retain this borrowed run context. Cancellation is therefore observed at
+    // the provider boundary and by the writer around every session call.
+    throw_if_cancelled(run_ctx);
     run_ctx_gcode_firmware *context = plugin_ctx_as_gcode_firmware(run_ctx);
     if (context == nullptr)
         return;
 
     // Session ownership moves to the host and ends after the selected output
     // writer completes. A fresh instance isolates every export's machine state.
+    throw_if_cancelled(run_ctx);
     const GCodeScriptProcessorView scripts = context->script_processor != nullptr ?
         GCodeScriptProcessorView(context->script_processor) : GCodeScriptProcessorView();
     std::unique_ptr<GCodeFirmwareSession> session = m_definition.factory(scripts, run_ctx->plugin_storage);
+    throw_if_cancelled(run_ctx);
     DefaultGCodeFirmwareSession &default_session =
         static_cast<DefaultGCodeFirmwareSession &>(*session);
     default_session.set_reader_state_id(m_reader_state_id);

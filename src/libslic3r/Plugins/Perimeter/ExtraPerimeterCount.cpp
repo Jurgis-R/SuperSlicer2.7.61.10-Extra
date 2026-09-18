@@ -307,6 +307,7 @@ const char *ExtraPerimeterCount::progress_message_format_impl() const noexcept
 
 void ExtraPerimeterCount::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     run_ctx_perimeter_generation_module *ctx = plugin_ctx_as_perimeter_generation_module(run_ctx);
     if (ctx == nullptr)
         return;

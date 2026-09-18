@@ -304,6 +304,7 @@ struct ReaderProbe
     std::vector<std::string_view> chunks;
     size_t next_chunk = 0;
     size_t cancel_after_chunks = 0;
+    size_t cancel_after_events = 0;
     std::vector<ObservedEvent> observed;
     std::optional<slic3r_api::GCodeStateTracker> final_state;
 };
@@ -372,6 +373,9 @@ void collect_event(void *context,
             diagnostic = static_cast<uint32_t>(item.value);
     }
     probe->observed.push_back({event->kind, line_number, std::move(items), marker, diagnostic});
+    if (probe->cancel_after_events != 0 &&
+        probe->observed.size() == probe->cancel_after_events)
+        Orchestrator::instance().request_plugin_cancel();
     result->status = RAW_GCODE_READER_STATUS_SUCCESS;
 }
 
@@ -2984,6 +2988,32 @@ TEST_CASE("G-code reader uses common plugin cancellation between chunks",
 
     CHECK(status == RAW_PLUGIN_EXECUTION_CANCELLED);
     CHECK(probe.next_chunk == 1);
+    CHECK_FALSE(probe.final_state);
+}
+
+TEST_CASE("G-code reader checks cancellation within one borrowed chunk",
+          "[plugins][gcode][reader][cancellation]")
+{
+    ensure_plugin_test_runtime_initialized();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    const raw_gcode_reader_state initial = initial_state(initial_items);
+    std::string source = "G1 X1\n";
+    for (size_t line = 0; line < 128; ++line)
+        source += "; long comment\n";
+    source += "G1 X9\n";
+
+    ReaderProbe probe;
+    probe.chunks = {source};
+    probe.cancel_after_events = 1;
+
+    Orchestrator &orchestrator = Orchestrator::instance();
+    orchestrator.reset_plugin_cancel();
+    const raw_plugin_execution_status status = execute_default_reader(probe, initial);
+    orchestrator.reset_plugin_cancel();
+
+    CHECK(status == RAW_PLUGIN_EXECUTION_CANCELLED);
+    CHECK(probe.next_chunk == 1);
+    CHECK(probe.observed.size() == 1);
     CHECK_FALSE(probe.final_state);
 }
 

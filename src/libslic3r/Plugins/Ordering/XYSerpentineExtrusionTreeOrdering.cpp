@@ -18,6 +18,7 @@
 #include "ExtrusionTreeOrderingGeometry.hpp"
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 #include "libslic3r/Plugins/PrintingPlan/EntryPointProperty.h"
@@ -103,13 +104,19 @@ void merge_bounds(EntityBounds &destination, const EntityBounds &source);
 
 /* Compute and cache one subtree box after recursively computing its children. */
 EntityBounds collect_entity_bounds(const ExtrusionEntity &entity,
-                                   EntityBoundsCache &cache);
+                                   EntityBoundsCache &cache,
+                                   const plugin_run_context *run_ctx);
 
 /* Populate boxes for every extrusion root in the plan. */
-void build_bounds_for_plan(const PrintingPlan &plan, EntityBoundsCache &cache);
+void build_bounds_for_plan(
+    const PrintingPlan &plan,
+    EntityBoundsCache &cache,
+    const plugin_run_context *run_ctx);
 
 /* Return a deterministic broad-S permutation of the supplied centres. */
-std::vector<uint32_t> serpentine_order(const std::vector<SpatialItem> &items);
+std::vector<uint32_t> serpentine_order(
+    const std::vector<SpatialItem> &items,
+    const plugin_run_context *run_ctx);
 
 /* Compare candidates whose floating-point scores are exactly equal. */
 bool deterministic_candidate_less(const SpatialItem &lhs,
@@ -118,31 +125,37 @@ bool deterministic_candidate_less(const SpatialItem &lhs,
 
 /* Reorder non-empty PrintingExtrusion values while preserving empty slots. */
 void spatially_order_tool_group(PrintingToolGroup tool_group,
-                                const EntityBoundsCache &cache);
+                                const EntityBoundsCache &cache,
+                                const plugin_run_context *run_ctx);
 
 /* Apply an original-index permutation to one PrintingExtrusion vector. */
 void apply_printing_extrusion_permutation(
     PrintingToolGroup tool_group,
-    const std::vector<uint32_t> &target_original_indices);
+    const std::vector<uint32_t> &target_original_indices,
+    const plugin_run_context *run_ctx);
 
 /* Reorder sortable descendants from cached centres; loops remain atomic. */
 void spatially_order_entity(MutableExtrusionEntity entity,
-                            const EntityBoundsCache &cache);
+                            const EntityBoundsCache &cache,
+                            const plugin_run_context *run_ctx);
 
 /* Reorder non-empty direct children while preserving empty child slots. */
 void apply_child_permutation(MutableExtrusionEntity parent,
                              const std::vector<const extrusion_entity_handle *> &handles,
-                             const std::vector<uint32_t> &order);
+                             const std::vector<uint32_t> &order,
+                             const plugin_run_context *run_ctx);
 
 /* Apply spatial ordering to every local vector and sortable collection. */
 void spatially_order_plan(const PrintingPlan &plan,
-                          const EntityBoundsCache &cache);
+                          const EntityBoundsCache &cache,
+                          const plugin_run_context *run_ctx);
 
 /* Fix one tree using each loop's precomputed regional provider route. */
 c_point finalize_entity(MutableExtrusionEntity entity,
                          c_point current_position,
                          const SeamPlacement::SeamPlacerRouter &seam_router,
-                         storage_handle *scratch_storage);
+                         storage_handle *scratch_storage,
+                         const plugin_run_context *run_ctx);
 
 /* Materialize seams/orientations and publish exact root endpoints. */
 void finalize_plan_geometry(
@@ -151,10 +164,13 @@ void finalize_plan_geometry(
     const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
-    PluginProgress &progress);
+    PluginProgress &progress,
+    const plugin_run_context *run_ctx);
 
 /* Count roots so progress represents both empty and geometric extrusions. */
-uint32_t extrusion_count(const PrintingPlan &plan);
+uint32_t extrusion_count(
+    const PrintingPlan &plan,
+    const plugin_run_context *run_ctx);
 
 /* Squared distance is sufficient for strict orientation comparisons. */
 double squared_distance(c_point lhs, c_point rhs);
@@ -192,59 +208,85 @@ void merge_bounds(EntityBounds &destination, const EntityBounds &source)
 }
 
 EntityBounds collect_entity_bounds(const ExtrusionEntity &entity,
-                                   EntityBoundsCache &cache)
+                                   EntityBoundsCache &cache,
+                                   const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     EntityBounds bounds;
-    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx)
+    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx) {
+        throw_if_cancelled(run_ctx);
         include_point(bounds, entity.point(point_idx));
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        merge_bounds(bounds, collect_entity_bounds(entity.child(child_idx), cache));
+    }
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        merge_bounds(
+            bounds, collect_entity_bounds(entity.child(child_idx), cache, run_ctx));
+    }
+    throw_if_cancelled(run_ctx);
     cache[entity.handle()] = bounds;
     return bounds;
 }
 
-void build_bounds_for_plan(const PrintingPlan &plan, EntityBoundsCache &cache)
+void build_bounds_for_plan(
+    const PrintingPlan &plan,
+    EntityBoundsCache &cache,
+    const plugin_run_context *run_ctx)
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0;
-                     extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx)
+                     extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+                    throw_if_cancelled(run_ctx);
                     collect_entity_bounds(
-                        tool_group.extrusion(extrusion_idx).root(), cache);
+                        tool_group.extrusion(extrusion_idx).root(), cache, run_ctx);
+                }
             }
         }
     }
 }
 
-std::vector<uint32_t> serpentine_order(const std::vector<SpatialItem> &items)
+std::vector<uint32_t> serpentine_order(
+    const std::vector<SpatialItem> &items,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::vector<uint32_t> result;
     if (items.empty())
         return result;
 
     std::vector<uint8_t> selected(items.size(), uint8_t(0));
     uint32_t current_idx = 0;
-    for (uint32_t idx = 1; idx < items.size(); ++idx)
+    for (uint32_t idx = 1; idx < items.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
         if (deterministic_candidate_less(items[idx], items[current_idx], true))
             current_idx = idx;
+    }
     selected[current_idx] = 1;
     result.push_back(current_idx);
     bool increasing_x = true;
 
     while (result.size() < items.size()) {
+        throw_if_cancelled(run_ctx);
         coord_t minimum_y = (std::numeric_limits<coord_t>::max)();
-        for (uint32_t idx = 0; idx < items.size(); ++idx)
+        for (uint32_t idx = 0; idx < items.size(); ++idx) {
+            throw_if_cancelled(run_ctx);
             if (selected[idx] == 0)
                 minimum_y = std::min(minimum_y, items[idx].center.y);
+        }
 
         uint32_t best_idx = uint32_t(items.size());
         double best_score = (std::numeric_limits<double>::max)();
         for (uint32_t pass = 0; pass < 2 && best_idx == items.size(); ++pass) {
+            throw_if_cancelled(run_ctx);
             for (uint32_t idx = 0; idx < items.size(); ++idx) {
+                throw_if_cancelled(run_ctx);
                 if (selected[idx] != 0)
                     continue;
                 const double delta_x = double(items[idx].center.x) -
@@ -290,13 +332,16 @@ bool deterministic_candidate_less(const SpatialItem &lhs,
 }
 
 void spatially_order_tool_group(PrintingToolGroup tool_group,
-                                const EntityBoundsCache &cache)
+                                const EntityBoundsCache &cache,
+                                const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     std::vector<SpatialItem> items;
     std::vector<uint32_t> non_empty_slots;
     items.reserve(tool_group.extrusion_count());
     non_empty_slots.reserve(tool_group.extrusion_count());
     for (uint32_t idx = 0; idx < tool_group.extrusion_count(); ++idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity root = tool_group.extrusion(idx).root();
         const EntityBoundsCache::const_iterator found = cache.find(root.handle());
         if (found == cache.end())
@@ -309,22 +354,26 @@ void spatially_order_tool_group(PrintingToolGroup tool_group,
     if (items.empty())
         return;
 
-    const std::vector<uint32_t> order = serpentine_order(items);
+    const std::vector<uint32_t> order = serpentine_order(items, run_ctx);
     std::vector<uint32_t> target_indices(tool_group.extrusion_count());
     std::iota(target_indices.begin(), target_indices.end(), 0u);
-    for (uint32_t ordered_idx = 0; ordered_idx < order.size(); ++ordered_idx)
+    for (uint32_t ordered_idx = 0; ordered_idx < order.size(); ++ordered_idx) {
+        throw_if_cancelled(run_ctx);
         target_indices[non_empty_slots[ordered_idx]] =
             items[order[ordered_idx]].original_index;
-    apply_printing_extrusion_permutation(tool_group, target_indices);
+    }
+    apply_printing_extrusion_permutation(tool_group, target_indices, run_ctx);
 }
 
 void apply_printing_extrusion_permutation(
     PrintingToolGroup tool_group,
-    const std::vector<uint32_t> &target_original_indices)
+    const std::vector<uint32_t> &target_original_indices,
+    const plugin_run_context *run_ctx)
 {
     std::vector<uint32_t> current(target_original_indices.size());
     std::iota(current.begin(), current.end(), 0u);
     for (uint32_t target_idx = 0; target_idx < target_original_indices.size(); ++target_idx) {
+        throw_if_cancelled(run_ctx);
         const std::vector<uint32_t>::iterator source = std::find(
             current.begin() + target_idx, current.end(),
             target_original_indices[target_idx]);
@@ -334,6 +383,7 @@ void apply_printing_extrusion_permutation(
         const uint32_t source_idx = uint32_t(source - current.begin());
         if (source_idx == target_idx)
             continue;
+        throw_if_cancelled(run_ctx);
         if (!tool_group.move_extrusion(source_idx, target_idx))
             throw std::runtime_error(
                 "The PrintingToolGroup rejected its XY-serpentine order.");
@@ -344,8 +394,10 @@ void apply_printing_extrusion_permutation(
 }
 
 void spatially_order_entity(MutableExtrusionEntity entity,
-                            const EntityBoundsCache &cache)
+                            const EntityBoundsCache &cache,
+                            const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (entity.empty() || entity.readonly().is_loop())
         return;
 
@@ -355,6 +407,7 @@ void spatially_order_entity(MutableExtrusionEntity entity,
         items.reserve(entity.child_count());
         handles.reserve(entity.child_count());
         for (uint32_t idx = 0; idx < entity.child_count(); ++idx) {
+            throw_if_cancelled(run_ctx);
             const ExtrusionEntity child = entity.child(idx);
             const EntityBoundsCache::const_iterator found = cache.find(child.handle());
             if (found == cache.end())
@@ -364,18 +417,23 @@ void spatially_order_entity(MutableExtrusionEntity entity,
             items.push_back(SpatialItem{idx, found->second.center()});
             handles.push_back(child.handle());
         }
-        apply_child_permutation(entity, handles, serpentine_order(items));
+        apply_child_permutation(
+            entity, handles, serpentine_order(items, run_ctx), run_ctx);
     }
 
-    for (uint32_t idx = 0; idx < entity.child_count(); ++idx)
-        spatially_order_entity(entity.child_mutable(idx), cache);
+    for (uint32_t idx = 0; idx < entity.child_count(); ++idx) {
+        throw_if_cancelled(run_ctx);
+        spatially_order_entity(entity.child_mutable(idx), cache, run_ctx);
+    }
 }
 
 void apply_child_permutation(
     MutableExtrusionEntity parent,
     const std::vector<const extrusion_entity_handle *> &handles,
-    const std::vector<uint32_t> &order)
+    const std::vector<uint32_t> &order,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (handles.size() != order.size())
         throw std::runtime_error("The child serpentine permutation is incomplete.");
     std::vector<const extrusion_entity_handle *> current;
@@ -385,6 +443,7 @@ void apply_child_permutation(
     target.reserve(parent.child_count());
     non_empty_slots.reserve(handles.size());
     for (uint32_t child_idx = 0; child_idx < parent.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = parent.child(child_idx);
         current.push_back(child.handle());
         target.push_back(child.handle());
@@ -394,6 +453,7 @@ void apply_child_permutation(
     if (non_empty_slots.size() != order.size())
         throw std::runtime_error("The child serpentine permutation is invalid.");
     for (uint32_t ordered_idx = 0; ordered_idx < order.size(); ++ordered_idx) {
+        throw_if_cancelled(run_ctx);
         if (order[ordered_idx] >= handles.size())
             throw std::runtime_error("The child serpentine permutation is invalid.");
         target[non_empty_slots[ordered_idx]] = handles[order[ordered_idx]];
@@ -401,12 +461,16 @@ void apply_child_permutation(
 
     /* Reconstruct the complete sequence so every empty child returns to its slot. */
     for (uint32_t target_idx = 0; target_idx < parent.child_count(); ++target_idx) {
+        throw_if_cancelled(run_ctx);
         if (current[target_idx] == target[target_idx])
             continue;
         uint32_t source_idx = target_idx + 1;
         while (source_idx < parent.child_count() &&
-               current[source_idx] != target[target_idx])
+               current[source_idx] != target[target_idx]) {
+            throw_if_cancelled(run_ctx);
             ++source_idx;
+        }
+        throw_if_cancelled(run_ctx);
         if (source_idx == parent.child_count() ||
             parent.move_child_from(target_idx, parent, source_idx) != target_idx)
             throw std::runtime_error(
@@ -418,19 +482,25 @@ void apply_child_permutation(
 }
 
 void spatially_order_plan(const PrintingPlan &plan,
-                          const EntityBoundsCache &cache)
+                          const EntityBoundsCache &cache,
+                          const plugin_run_context *run_ctx)
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
-                spatially_order_tool_group(tool_group, cache);
+                spatially_order_tool_group(tool_group, cache, run_ctx);
                 for (uint32_t extrusion_idx = 0;
-                     extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx)
+                     extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+                    throw_if_cancelled(run_ctx);
                     spatially_order_entity(
-                        tool_group.extrusion(extrusion_idx).mutable_root(), cache);
+                        tool_group.extrusion(extrusion_idx).mutable_root(), cache, run_ctx);
+                }
             }
         }
     }
@@ -439,31 +509,41 @@ void spatially_order_plan(const PrintingPlan &plan,
 c_point finalize_entity(MutableExtrusionEntity entity,
                         const c_point current_position,
                         const SeamPlacement::SeamPlacerRouter &seam_router,
-                        storage_handle *scratch_storage)
+                        storage_handle *scratch_storage,
+                        const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (entity.empty()) {
-        TreeOrderingGeometry::disable_ordering_flags_recursively(entity);
+        TreeOrderingGeometry::disable_ordering_flags_recursively(entity, run_ctx);
         return current_position;
     }
     if (entity.readonly().is_loop()) {
+        throw_if_cancelled(run_ctx);
         const c_point seam = seam_router.place_seam(
             entity.readonly(), current_position);
+        throw_if_cancelled(run_ctx);
         TreeOrderingGeometry::rotate_loop_to_seam(
-            scratch_storage, entity, seam);
-        TreeOrderingGeometry::disable_ordering_flags_recursively(entity);
+            scratch_storage, entity, seam, run_ctx);
+        throw_if_cancelled(run_ctx);
+        TreeOrderingGeometry::disable_ordering_flags_recursively(entity, run_ctx);
         return entity.back();
     }
 
     if (entity.readonly().reversible() &&
         squared_distance(current_position, entity.back()) <
-            squared_distance(current_position, entity.front()))
-        TreeOrderingGeometry::reverse_tree(entity);
+            squared_distance(current_position, entity.front())) {
+        throw_if_cancelled(run_ctx);
+        TreeOrderingGeometry::reverse_tree(entity, run_ctx);
+    }
 
     c_point position = current_position;
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         position = finalize_entity(
             entity.child_mutable(child_idx), position, seam_router,
-            scratch_storage);
+            scratch_storage, run_ctx);
+    }
+    throw_if_cancelled(run_ctx);
     entity.disable_sort();
     entity.disable_reverse();
     return entity.point_count() > 0 ? entity.back() : position;
@@ -475,27 +555,35 @@ void finalize_plan_geometry(
     const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
-    PluginProgress &progress)
+    PluginProgress &progress,
+    const plugin_run_context *run_ctx)
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0;
                      extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
+                    throw_if_cancelled(run_ctx);
                     const PrintingExtrusion extrusion =
                         tool_group.extrusion(extrusion_idx);
                     MutableExtrusionEntity root = extrusion.mutable_root();
                     if (root.empty()) {
+                        throw_if_cancelled(run_ctx);
                         entry_point_key.remove(root);
-                        TreeOrderingGeometry::disable_ordering_flags_recursively(root);
+                        TreeOrderingGeometry::disable_ordering_flags_recursively(
+                            root, run_ctx);
                         progress.increment();
                         continue;
                     }
                     current_position = finalize_entity(
-                        root, current_position, seam_router, scratch_storage);
+                        root, current_position, seam_router, scratch_storage, run_ctx);
+                    throw_if_cancelled(run_ctx);
                     EntryPointProperty &property = entry_point_key.get_or_add(root);
                     property.entry = root.front();
                     property.exit = root.back();
@@ -507,15 +595,21 @@ void finalize_plan_geometry(
     }
 }
 
-uint32_t extrusion_count(const PrintingPlan &plan)
+uint32_t extrusion_count(
+    const PrintingPlan &plan,
+    const plugin_run_context *run_ctx)
 {
     uint32_t count = 0;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
-            for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx)
+            for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                throw_if_cancelled(run_ctx);
                 count += layer.tool_group(tool_idx).extrusion_count();
+            }
         }
     }
     return count;
@@ -589,18 +683,21 @@ private:
             throw std::invalid_argument(
                 "XY-serpentine ordering needs a Print, PrintingPlan, and storage.");
 
+        throw_if_cancelled(run_ctx);
         const Print print(ctx->print);
         const PrintingPlan plan(ctx->plan);
+        throw_if_cancelled(run_ctx);
         const SeamPlacement::SeamPlacerRouter seam_router(
             m_orchestrator, print, plan, run_ctx->plugin_storage);
+        throw_if_cancelled(run_ctx);
         EntityBoundsCache bounds;
-        build_bounds_for_plan(plan, bounds);
-        spatially_order_plan(plan, bounds);
+        build_bounds_for_plan(plan, bounds, run_ctx);
+        spatially_order_plan(plan, bounds, run_ctx);
 
-        progress().add_max(extrusion_count(plan));
+        progress().add_max(extrusion_count(plan, run_ctx));
         finalize_plan_geometry(
             plan, initial_print_position(print), seam_router,
-            run_ctx->plugin_storage, m_entry_point_key, progress());
+            run_ctx->plugin_storage, m_entry_point_key, progress(), run_ctx);
     }
 
     PluginPropertyKey<EntryPointProperty> m_entry_point_key;

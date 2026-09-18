@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from slic3r_api import (
+    PluginCancelled,
     PluginBase,
     RAW_SURFACE_TYPE_DENS_SOLID,
     RAW_SURFACE_TYPE_DENS_SPARSE,
@@ -24,6 +25,7 @@ from slic3r_api import (
     RAW_SURFACE_TYPE_POS_INTERNAL,
     RAW_SURFACE_TYPE_POS_TOP,
     STEP_SURFACE_GENERATION,
+    throw_if_cancelled,
 )
 from slic3r_geometry_views import StoredExPolygonCollection
 
@@ -166,36 +168,49 @@ class PythonInitialTypedSurfaceBuilderPlugin(PluginBase):
         self.api = api
 
     def run(self, run_ctx_address: int) -> None:
+        throw_if_cancelled(run_ctx_address)
         ctx = self.api.surface_generation_context(run_ctx_address)
         if ctx is None:
             return
 
         try:
-            self._run_surface_generation(ctx)
+            self._run_surface_generation(ctx, run_ctx_address)
+        except PluginCancelled:
+            raise
         except Exception as exc:
             ctx.report_error(f"Python initial typed surface builder failed: {exc}")
 
-    def _run_surface_generation(self, ctx) -> None:
+    def _run_surface_generation(self, ctx, run_ctx_address: int) -> None:
+        throw_if_cancelled(run_ctx_address)
         storage = ctx.plugin_storage()
         object_view = ctx.surface_generation_object()
         for layer_idx, layer in enumerate(object_view.layers()):
-            if ctx.is_cancelled():
-                return
-            for island in layer.islands():
-                self._build_island_surfaces(ctx, storage, object_view, island, layer_idx == 0)
+            throw_if_cancelled(run_ctx_address)
+            for island_idx, island in enumerate(layer.islands()):
+                if island_idx % 64 == 0:
+                    throw_if_cancelled(run_ctx_address)
+                self._build_island_surfaces(
+                    ctx, storage, object_view, island, layer_idx == 0, run_ctx_address
+                )
 
-    def _build_island_surfaces(self, ctx, storage: int, object_view, island, is_first_layer: bool) -> None:
+    def _build_island_surfaces(
+        self, ctx, storage: int, object_view, island, is_first_layer: bool, run_ctx_address: int
+    ) -> None:
+        throw_if_cancelled(run_ctx_address)
         grouped_regions = _regions_by_infill_extruder(island)
         if not grouped_regions:
             return
 
         single_group = len(grouped_regions) == 1
-        for extruder_id, regions in grouped_regions.items():
+        for region_idx, (extruder_id, regions) in enumerate(grouped_regions.items()):
+            if region_idx % 64 == 0:
+                throw_if_cancelled(run_ctx_address)
             region_island = island.get_or_create_region_island(regions, extruder_id)
             if region_island is None:
                 continue
 
             if single_group:
+                throw_if_cancelled(run_ctx_address)
                 groups = _classify_areas(self.api, storage, object_view, island, island.infill_areas(), is_first_layer)
                 try:
                     ctx.set_fill_surface_groups(region_island, groups)
@@ -205,6 +220,7 @@ class PythonInitialTypedSurfaceBuilderPlugin(PluginBase):
 
             clipped_areas = _clip_infill_areas_to_regions(self.api, storage, island, regions)
             try:
+                throw_if_cancelled(run_ctx_address)
                 groups = _classify_areas(self.api, storage, object_view, island, clipped_areas, is_first_layer)
                 try:
                     ctx.set_fill_surface_groups(region_island, groups)

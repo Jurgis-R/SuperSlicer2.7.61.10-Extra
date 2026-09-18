@@ -248,6 +248,7 @@ private:
 
     void run_impl(const plugin_run_context *run_context) const override
     {
+        throw_if_cancelled(run_context);
         const run_ctx_extrusion_edition *context = plugin_ctx_as_extrusion_edition(run_context);
         assert(context != nullptr && context->print != nullptr && context->plan != nullptr);
         if (context == nullptr || context->print == nullptr || context->plan == nullptr ||
@@ -269,9 +270,13 @@ private:
         std::optional<extruder_index_t> last_tool;
 
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+            if ((group_idx & 63u) == 0)
+                throw_if_cancelled(run_context);
             const PrintingGroup group = plan.group(group_idx);
             const std::vector<std::vector<const CustomGCodeRow *>> layer_rows = rows_by_layer(table, group);
             for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+                if ((layer_idx & 63u) == 0)
+                    throw_if_cancelled(run_context);
                 const PrintingLayerGroup layer = group.layer_group(layer_idx);
                 if (layer_rows[layer_idx].empty()) {
                     if (layer.tool_group_count() > 0)
@@ -286,7 +291,10 @@ private:
                     layer.tool_group(0).extruder_id() :
                     last_tool.value_or(EXTRUDER_ID_UNKNOWN);
 
-                for (const CustomGCodeRow *row : layer_rows[layer_idx]) {
+                for (uint32_t row_idx = 0; row_idx < layer_rows[layer_idx].size(); ++row_idx) {
+                    if ((row_idx & 63u) == 0)
+                        throw_if_cancelled(run_context);
+                    const CustomGCodeRow *row = layer_rows[layer_idx][row_idx];
                     mapped_rows[row->source_row] = true;
                     const std::optional<extruder_index_t> color_tool =
                         color_event_tool(*row, print_mode, record_mode, extruder_count);
@@ -337,12 +345,15 @@ private:
             }
         }
 
-        for (uint32_t row_idx = 0; row_idx < mapped_rows.size(); ++row_idx)
+        for (uint32_t row_idx = 0; row_idx < mapped_rows.size(); ++row_idx) {
+            if ((row_idx & 63u) == 0)
+                throw_if_cancelled(run_context);
             if (!mapped_rows[row_idx]) {
                 const std::string warning = "Ignoring custom G-code marker above the last printing-plan layer (row " +
                     std::to_string(row_idx) + ").";
                 report_warning(run_context, warning.c_str());
             }
+        }
     }
 };
 

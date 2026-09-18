@@ -203,6 +203,7 @@ std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
                                               const TravelEndpoint &target,
                                               const extruder_index_t extruder_id)
 {
+    throw_if_cancelled(m_run_ctx);
     // Missing regional provenance is normal for support and print-level
     // auxiliary paths. Those gaps deliberately retain the direct travel.
     if (!source.region_island.valid() || source.region_island.region_count() == 0 ||
@@ -250,16 +251,20 @@ std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
         nozzle_radius,
         [this]() { throw_if_cancelled(m_run_ctx); }
     };
+    throw_if_cancelled(m_run_ctx);
     router.prepare_crossing_test(crossing_context);
+    throw_if_cancelled(m_run_ctx);
 
     Slic3r::Polyline direct;
     direct.points = {local_source, local_target};
+    throw_if_cancelled(m_run_ctx);
     if (!router.can_cross_perimeter(direct, true))
         return straight(source, target, extruder_id);
 
     const bool same_object_and_instance =
         source_object.handle() == target_object.handle() &&
         source.printing_catalog_id == target.printing_catalog_id;
+    throw_if_cancelled(m_run_ctx);
     router.use_external_mp(!same_object_and_instance);
 
     const c_float_or_percent max_detour = m_print_config.float_or_percent_or_default(
@@ -272,14 +277,18 @@ std::vector<c_point> LayerTravelPlanner::path(const TravelEndpoint &source,
         max_detour.value,
         max_detour.percent != 0
     };
+    throw_if_cancelled(m_run_ctx);
     const Slic3r::Polyline routed = router.travel_to(travel_context, local_target);
+    throw_if_cancelled(m_run_ctx);
     if (routed.size() < 2)
         return straight(source, target, extruder_id);
 
     std::vector<c_point> path;
     path.reserve(routed.size());
-    for (const Slic3r::Point &point : routed.points)
+    for (const Slic3r::Point &point : routed.points) {
+        throw_if_cancelled(m_run_ctx);
         path.push_back(c_point{point.x() + target_shift.x, point.y() + target_shift.y});
+    }
     path.front() = c_point{source.position.x, source.position.y};
     path.back() = c_point{target.position.x, target.position.y};
     return path;

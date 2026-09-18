@@ -74,8 +74,9 @@ private:
             0);
     }
 
-    void run_impl(const plugin_run_context *) const override
+    void run_impl(const plugin_run_context *run_ctx) const override
     {
+        throw_if_cancelled(run_ctx);
         /*
         A direct STEP_GCODE run means the caller bypassed
         Orchestrator::export_gcode(), where the legacy branch is handled. Fail

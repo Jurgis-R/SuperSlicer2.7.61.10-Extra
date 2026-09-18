@@ -18,6 +18,7 @@
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 #include "libslic3r/Plugins/PrintingPlan/EntryPointProperty.h"
@@ -53,13 +54,18 @@ struct ExtremePoints
 };
 
 /* Add all local vertices in one tree to the four deterministic extrema. */
-void collect_extreme_points(const ExtrusionEntity &entity, ExtremePoints &extremes);
+void collect_extreme_points(
+    const ExtrusionEntity &entity,
+    ExtremePoints &extremes,
+    const plugin_run_context *run_ctx);
 
 /* Compare one vertex with the extrema accumulated so far. */
 void include_extreme_point(c_point point, ExtremePoints &extremes);
 
 /* Build the distinct real entry/exit estimates for one non-empty root. */
-OrderingItem make_ordering_item(const ExtrusionEntity &root);
+OrderingItem make_ordering_item(
+    const ExtrusionEntity &root,
+    const plugin_run_context *run_ctx);
 
 /* Append one candidate unless the same point is already present. */
 void append_distinct_candidate(OrderingItem &item, c_point point);
@@ -74,22 +80,32 @@ longer describe printable geometry.
 c_point order_tool_group(const PrintingToolGroup &tool_group,
                          c_point initial_position,
                          const OrderingEngine &engine,
-                         const PluginPropertyKey<EntryPointProperty> &entry_point_key);
+                         const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+                         const plugin_run_context *run_ctx);
 
 /* Apply a full target permutation with the PrintingPlan's index-based mover. */
 void apply_permutation(const PrintingToolGroup &tool_group,
-                       const std::vector<uint32_t> &target_original_indices);
+                       const std::vector<uint32_t> &target_original_indices,
+                       const plugin_run_context *run_ctx);
 
 /* Convert the optional unscaled print start setting to plan coordinates. */
 c_point initial_print_position(const Print &print);
 
-void collect_extreme_points(const ExtrusionEntity &entity, ExtremePoints &extremes)
+void collect_extreme_points(
+    const ExtrusionEntity &entity,
+    ExtremePoints &extremes,
+    const plugin_run_context *run_ctx)
 {
-    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx)
+    throw_if_cancelled(run_ctx);
+    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx) {
+        throw_if_cancelled(run_ctx);
         include_extreme_point(entity.point(point_idx), extremes);
+    }
 
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        collect_extreme_points(entity.child(child_idx), extremes);
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        collect_extreme_points(entity.child(child_idx), extremes, run_ctx);
+    }
 }
 
 void include_extreme_point(const c_point point, ExtremePoints &extremes)
@@ -122,11 +138,13 @@ void include_extreme_point(const c_point point, ExtremePoints &extremes)
         extremes.top = point;
 }
 
-OrderingItem make_ordering_item(const ExtrusionEntity &root)
+OrderingItem make_ordering_item(
+    const ExtrusionEntity &root,
+    const plugin_run_context *run_ctx)
 {
     assert(!root.empty());
     ExtremePoints extremes;
-    collect_extreme_points(root, extremes);
+    collect_extreme_points(root, extremes, run_ctx);
     if (!extremes.valid)
         throw std::invalid_argument("A non-empty PrintingExtrusion has no geometric point.");
 
@@ -141,9 +159,10 @@ OrderingItem make_ordering_item(const ExtrusionEntity &root)
 
 void append_distinct_candidate(OrderingItem &item, const c_point point)
 {
-    for (const OrderingCandidate &candidate : item.candidates)
+    for (const OrderingCandidate &candidate : item.candidates) {
         if (points_equal(candidate.estimated_entry, point))
             return;
+    }
 
     OrderingCandidate candidate;
     candidate.estimated_entry = point;
@@ -154,8 +173,10 @@ void append_distinct_candidate(OrderingItem &item, const c_point point)
 c_point order_tool_group(const PrintingToolGroup &tool_group,
                          const c_point initial_position,
                          const OrderingEngine &engine,
-                         const PluginPropertyKey<EntryPointProperty> &entry_point_key)
+                         const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+                         const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const uint32_t extrusion_count = tool_group.extrusion_count();
     std::vector<OrderingItem> items;
     std::vector<uint32_t> non_empty_slots;
@@ -168,18 +189,21 @@ c_point order_tool_group(const PrintingToolGroup &tool_group,
     corresponding root unambiguously.
     */
     for (uint32_t extrusion_idx = 0; extrusion_idx < extrusion_count; ++extrusion_idx) {
+        throw_if_cancelled(run_ctx);
         MutableExtrusionEntity root = tool_group.extrusion(extrusion_idx).mutable_root();
         if (root.empty()) {
+            throw_if_cancelled(run_ctx);
             entry_point_key.remove(root);
             continue;
         }
         non_empty_slots.push_back(extrusion_idx);
-        items.push_back(make_ordering_item(root.readonly()));
+        items.push_back(make_ordering_item(root.readonly(), run_ctx));
     }
 
     if (items.empty())
         return initial_position;
 
+    throw_if_cancelled(run_ctx);
     const std::vector<OrderedItem> ordered = engine.order(items, initial_position);
     if (ordered.size() != items.size())
         throw std::runtime_error("The ordering engine returned an incomplete PrintingExtrusion permutation.");
@@ -189,6 +213,7 @@ c_point order_tool_group(const PrintingToolGroup &tool_group,
     std::vector<uint8_t> selected_items(items.size(), uint8_t(0));
 
     for (uint32_t order_idx = 0; order_idx < ordered.size(); ++order_idx) {
+        throw_if_cancelled(run_ctx);
         const OrderedItem &selection = ordered[order_idx];
         if (selection.item_index >= items.size() || selected_items[selection.item_index] != 0)
             throw std::runtime_error("The ordering engine returned an invalid PrintingExtrusion permutation.");
@@ -198,17 +223,20 @@ c_point order_tool_group(const PrintingToolGroup &tool_group,
         target_original_indices[non_empty_slots[order_idx]] = original_slot;
 
         MutableExtrusionEntity original_root = tool_group.extrusion(original_slot).mutable_root();
+        throw_if_cancelled(run_ctx);
         EntryPointProperty &entry_points = entry_point_key.get_or_add(original_root);
         entry_points.entry = selection.selected_candidate.estimated_entry;
         entry_points.exit = selection.selected_candidate.estimated_exit;
     }
 
-    apply_permutation(tool_group, target_original_indices);
+    throw_if_cancelled(run_ctx);
+    apply_permutation(tool_group, target_original_indices, run_ctx);
     return ordered.back().selected_candidate.estimated_exit;
 }
 
 void apply_permutation(const PrintingToolGroup &tool_group,
-                       const std::vector<uint32_t> &target_original_indices)
+                       const std::vector<uint32_t> &target_original_indices,
+                       const plugin_run_context *run_ctx)
 {
     std::vector<uint32_t> current_original_indices(target_original_indices.size());
     std::iota(current_original_indices.begin(), current_original_indices.end(), 0u);
@@ -219,6 +247,7 @@ void apply_permutation(const PrintingToolGroup &tool_group,
     insertion would invalidate.
     */
     for (uint32_t destination_idx = 0; destination_idx < target_original_indices.size(); ++destination_idx) {
+        throw_if_cancelled(run_ctx);
         const std::vector<uint32_t>::iterator source = std::find(
             current_original_indices.begin() + destination_idx,
             current_original_indices.end(),
@@ -229,6 +258,7 @@ void apply_permutation(const PrintingToolGroup &tool_group,
         const uint32_t source_idx = uint32_t(source - current_original_indices.begin());
         if (source_idx == destination_idx)
             continue;
+        throw_if_cancelled(run_ctx);
         if (!tool_group.move_extrusion(source_idx, destination_idx))
             throw std::runtime_error("Cannot move a PrintingExtrusion to its ordered position.");
 
@@ -300,6 +330,7 @@ private:
         if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr)
             return;
 
+        throw_if_cancelled(run_ctx);
         c_point current_position = initial_print_position(Print(ctx->print));
         const PrintingPlan plan(ctx->plan);
 
@@ -309,13 +340,17 @@ private:
         to the current tool group's extrusion vector.
         */
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingGroup group = plan.group(group_idx);
             for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+                throw_if_cancelled(run_ctx);
                 const PrintingLayerGroup layer = group.layer_group(layer_idx);
-                for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx)
+                for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                    throw_if_cancelled(run_ctx);
                     current_position = order_tool_group(
                         layer.tool_group(tool_idx), current_position,
-                        m_ordering_engine, m_entry_point_key);
+                        m_ordering_engine, m_entry_point_key, run_ctx);
+                }
             }
         }
     }

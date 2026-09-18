@@ -48,6 +48,7 @@ geometry requires a new session. The service adapter owns session destruction.
 */
 
 #include "RandomSeamPlacer.hpp"
+#include "SeamInitializationCancellation.hpp"
 #include "SeamPlacementConstraints.hpp"
 
 #include <algorithm>
@@ -115,29 +116,41 @@ bool admissible_point(const SeamPlacementConstraints &constraints, const Loop &l
    draws; after 64 rejected rounded points, use a representable random vertex. */
 c_point random_seam(const SeamPlacementConstraints &constraints, const Loop &loop, bool vertices_only, uint64_t &state);
 /* Closest admissible curve point, returning its inherited internal width as well. */
-Candidate nearest(const SeamPlacementConstraints &constraints, const Loop &loop, c_point target);
+Candidate nearest(const SeamPlacementConstraints &constraints, const Loop &loop,
+                  c_point target, const plugin_run_context *run_context);
 /* Ray crossing splits arcs at their Y extrema, so half-open endpoints are counted once. */
-bool point_inside(const std::vector<Curve> &boundary, c_point point);
+bool point_inside(const std::vector<Curve> &boundary, c_point point,
+                  const plugin_run_context *run_context);
 /* Exact line/circle intersections partition the child before containment tests. */
-bool includes(const std::vector<Curve> &outer, const std::vector<Curve> &inner);
+bool includes(const std::vector<Curve> &outer, const std::vector<Curve> &inner,
+              const plugin_run_context *run_context);
 /* Signed Green integral on lines and arcs, used to select the smallest enclosure. */
-double area(const std::vector<Curve> &curves);
+double area(const std::vector<Curve> &curves,
+            const plugin_run_context *run_context);
 /* Snapshot all path segments recursively without linearizing arcs. */
-void collect_curves(const ExtrusionEntity &entity, std::vector<Curve> &curves);
+void collect_curves(const ExtrusionEntity &entity, std::vector<Curve> &curves,
+                    const plugin_run_context *run_context);
 /* Source slices are object-local; test a platter loop after removing instance shift. */
-bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region, c_point shift);
+bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region,
+                    c_point shift, const plugin_run_context *run_context);
 /* Reconstruct inherited tags before an atomic loop is recorded. */
 void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
                    uint16_t object_instance_idx,
                    raw_extrusion_role role, uint16_t flags, const RegionFilter &filter,
-                   std::vector<Loop> &loops);
+                   std::vector<Loop> &loops,
+                   const plugin_run_context *run_context);
 /* Align each internal loop against immutable external random seams. */
-void align_loops(const SeamPlacementConstraints &constraints, std::vector<Loop> &loops);
+void align_loops(const SeamPlacementConstraints &constraints,
+                 std::vector<Loop> &loops,
+                 const plugin_run_context *run_context);
 
 class RandomSession final : public SeamPlacerSession {
 public:
-    explicit RandomSession(storage_handle *storage, std::function<uint64_t()> entropy) :
-        m_storage(storage), m_entropy(std::move(entropy)) {}
+    explicit RandomSession(storage_handle *storage,
+                           std::function<uint64_t()> entropy,
+                           const plugin_run_context *run_context = nullptr) :
+        m_storage(storage), m_entropy(std::move(entropy)),
+        m_run_context(run_context) {}
     /* All allocations and entropy reads occur before publication. */
     void initialize(const PrintingPlan &plan, const std::vector<PrintRegion> &regions) override;
     /* Equal rank preserves source region order, as in FixedDirection. */
@@ -147,6 +160,7 @@ public:
 private:
     storage_handle *m_storage;
     std::function<uint64_t()> m_entropy;
+    const plugin_run_context *m_run_context;
     std::map<const extrusion_entity_handle *, std::pair<const layer_region_handle *, c_point>> m_results;
 };
 
@@ -286,15 +300,20 @@ c_point random_seam(const SeamPlacementConstraints &constraints, const Loop &loo
     throw std::runtime_error("Random seam has no representable admissible point.");
 }
 
-Candidate nearest(const SeamPlacementConstraints &constraints, const Loop &loop, c_point target)
+Candidate nearest(const SeamPlacementConstraints &constraints, const Loop &loop,
+                  c_point target, const plugin_run_context *run_context)
 {
     Candidate best;
     double best_distance=std::numeric_limits<double>::infinity();
+    size_t vertex_index=0;
     for (const Candidate &vertex:loop.domain.vertices) {
+        InitializationCancellation::check_periodic(run_context,vertex_index++);
         const double d=distance(vertex.point,target);
         if (d<best_distance) { best=vertex; best_distance=d; }
     }
+    size_t range_index=0;
     for (const Portion &range:loop.domain.ranges) {
+        InitializationCancellation::check_periodic(run_context,range_index++);
         const double inset=range.curve.length()>0 ? std::min((range.end-range.begin)/2,2/range.curve.length()) : 0;
         const double begin=range.begin+(range.include_begin?0:inset), end=range.end-(range.include_end?0:inset);
         const double t=range.curve.closest_parameter(target,begin,end);
@@ -309,10 +328,13 @@ Candidate nearest(const SeamPlacementConstraints &constraints, const Loop &loop,
     return best;
 }
 
-bool point_inside(const std::vector<Curve> &boundary, c_point point)
+bool point_inside(const std::vector<Curve> &boundary, c_point point,
+                  const plugin_run_context *run_context)
 {
     bool inside=false;
+    size_t curve_index=0;
     for (const Curve &curve:boundary) {
+        InitializationCancellation::check_periodic(run_context,curve_index++);
         if (distance(curve.point(curve.closest_parameter(point)),point)<=1) return true;
         std::vector<double> cuts={0,1};
         if (curve.radius>0) {
@@ -339,25 +361,36 @@ bool point_inside(const std::vector<Curve> &boundary, c_point point)
     return inside;
 }
 
-bool includes(const std::vector<Curve> &outer, const std::vector<Curve> &inner)
+bool includes(const std::vector<Curve> &outer, const std::vector<Curve> &inner,
+              const plugin_run_context *run_context)
 {
     if (outer.empty() || inner.empty()) return false;
+    size_t curve_index=0;
     for (const Curve &curve:inner) {
+        InitializationCancellation::check_periodic(run_context,curve_index++);
         std::vector<double> cuts={0,1};
-        for (const Curve &edge:outer) curve.intersection_cuts(edge,cuts);
+        size_t edge_index=0;
+        for (const Curve &edge:outer) {
+            InitializationCancellation::check_periodic(run_context,edge_index++);
+            curve.intersection_cuts(edge,cuts);
+        }
         std::sort(cuts.begin(),cuts.end());
         for (size_t i=0;i<cuts.size();++i) {
-            if (!point_inside(outer,curve.point(cuts[i]))) return false;
-            if (i>0 && !point_inside(outer,curve.point((cuts[i-1]+cuts[i])/2))) return false;
+            InitializationCancellation::check_periodic(run_context,i);
+            if (!point_inside(outer,curve.point(cuts[i]),run_context)) return false;
+            if (i>0 && !point_inside(outer,curve.point((cuts[i-1]+cuts[i])/2),run_context)) return false;
         }
     }
     return true;
 }
 
-double area(const std::vector<Curve> &curves)
+double area(const std::vector<Curve> &curves,
+            const plugin_run_context *run_context)
 {
     long double sum=0;
+    size_t curve_index=0;
     for (const Curve &curve:curves) {
+        InitializationCancellation::check_periodic(run_context,curve_index++);
         const c_point a=curve.segment.point_a,b=curve.segment.point_b;
         if (curve.radius==0) sum+=static_cast<long double>(a.x)*b.y-static_cast<long double>(a.y)*b.x;
         else sum+=curve.cx*(double(b.y)-a.y)-curve.cy*(double(b.x)-a.x)+curve.radius*curve.radius*curve.sweep;
@@ -365,25 +398,35 @@ double area(const std::vector<Curve> &curves)
     return double(std::abs(sum)/2);
 }
 
-void collect_curves(const ExtrusionEntity &entity, std::vector<Curve> &curves)
+void collect_curves(const ExtrusionEntity &entity, std::vector<Curve> &curves,
+                    const plugin_run_context *run_context)
 {
-    for (uint32_t i=0;i<entity.segment_count();++i) curves.push_back(Curve::from_segment(entity.segment(i)));
+    for (uint32_t i=0;i<entity.segment_count();++i) {
+        InitializationCancellation::check_periodic(run_context,i);
+        curves.push_back(Curve::from_segment(entity.segment(i)));
+    }
     if (entity.segment_count()==0 && entity.point_count()==1) {
         c_extrusion_segment segment{};
         segment.point_a=segment.point_b=entity.point(0);
         curves.push_back(Curve::from_segment(segment));
     }
-    for (uint32_t i=0;i<entity.child_count();++i) collect_curves(entity.child(i),curves);
+    for (uint32_t i=0;i<entity.child_count();++i) {
+        InitializationCancellation::check_periodic(run_context,i);
+        collect_curves(entity.child(i),curves,run_context);
+    }
 }
 
-bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region, c_point shift)
+bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region,
+                    c_point shift, const plugin_run_context *run_context)
 {
     const ExPolygonCollection slices=region.slices();
     for (uint32_t i=0;i<slices.size();++i) {
+        InitializationCancellation::check_periodic(run_context,i);
         const ExPolygon shape=slices.at(i);
         std::vector<Curve> edges;
         const std::function<void(const Polygon &)> append=[&](const Polygon &polygon) {
             for (uint32_t j=0;j<polygon.size();++j) {
+                InitializationCancellation::check_periodic(run_context,j);
                 c_extrusion_segment segment{};
                 segment.point_a=polygon.at(j); segment.point_b=polygon.at((j+1)%polygon.size());
                 edges.push_back(Curve::from_segment(segment));
@@ -391,15 +434,23 @@ bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region,
         };
         append(shape.contour());
         for (const Polygon &hole:shape.holes()) append(hole);
+        size_t curve_index=0;
         for (Curve curve:curves) {
+            InitializationCancellation::check_periodic(run_context,curve_index++);
             curve.segment.point_a.x-=shift.x; curve.segment.point_a.y-=shift.y;
             curve.segment.point_b.x-=shift.x; curve.segment.point_b.y-=shift.y;
             curve.cx-=shift.x; curve.cy-=shift.y;
             std::vector<double> cuts={0,1};
-            for (const Curve &edge:edges) curve.intersection_cuts(edge,cuts);
+            size_t edge_index=0;
+            for (const Curve &edge:edges) {
+                InitializationCancellation::check_periodic(run_context,edge_index++);
+                curve.intersection_cuts(edge,cuts);
+            }
             std::sort(cuts.begin(),cuts.end());
-            for (size_t j=0;j<cuts.size();++j)
+            for (size_t j=0;j<cuts.size();++j) {
+                InitializationCancellation::check_periodic(run_context,j);
                 if (shape.contains(curve.point(cuts[j])) || (j>0 && shape.contains(curve.point((cuts[j-1]+cuts[j])/2)))) return true;
+            }
         }
     }
     return false;
@@ -436,15 +487,20 @@ bool region_is_assigned(const LayerRegion &region, const RegionFilter &filter)
 void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
                    const uint16_t object_instance_idx,
                    raw_extrusion_role role, uint16_t flags, const RegionFilter &filter,
-                   std::vector<Loop> &loops)
+                   std::vector<Loop> &loops,
+                   const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     const c_extrusion_property_attributes *attributes=static_cast<const c_extrusion_property_attributes *>(entity.property_data(EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
     const c_extrusion_property_perimeter *perimeter=static_cast<const c_extrusion_property_perimeter *>(entity.property_data(EXTRUSION_PROPERTY_TYPE_PERIMETER));
     if (attributes!=nullptr) role=attributes->role;
     if (perimeter!=nullptr) flags=perimeter->perimeter_flags;
     if (!entity.is_loop()) {
-        for (uint32_t i=0;i<entity.child_count();++i)
-            collect_loops(source,entity.child(i),object_instance_idx,role,flags,filter,loops);
+        for (uint32_t i=0;i<entity.child_count();++i) {
+            InitializationCancellation::check_periodic(run_context,i);
+            collect_loops(source,entity.child(i),object_instance_idx,role,flags,
+                          filter,loops,run_context);
+        }
         return;
     }
     const LayerRegionIsland island=source.region_island();
@@ -454,47 +510,60 @@ void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entit
     loop.instance=object_instance_idx;
     loop.external=RAW_EXTRUSION_ROLE_IS_EXTERNAL_PERIMETER(role);
     loop.hole=(flags&C_EXTRUSION_PERIMETER_FLAG_HOLE)!=0;
-    collect_curves(entity,loop.curves);
+    collect_curves(entity,loop.curves,run_context);
     const Object object=island.region(0).layer().object();
     const c_point shift=object.instance_shift(loop.instance);
     // A provider only prepares regions assigned to it. Within that set equal
     // policy priorities preserve source-island order, including boundary hits.
     LayerRegion fallback;
     for (uint32_t i=0;i<island.region_count();++i) {
+        InitializationCancellation::check_periodic(run_context,i);
         const LayerRegion candidate=island.region(i);
         if (!region_is_assigned(candidate,filter)) continue;
         if (!fallback.valid()) fallback=candidate;
-        if (touches_region(loop.curves,candidate,shift)) { loop.region=candidate; break; }
+        if (touches_region(loop.curves,candidate,shift,run_context)) { loop.region=candidate; break; }
     }
     if (!loop.region.valid()) loop.region=fallback;
     if (loop.region.valid()) loops.push_back(std::move(loop));
 }
 
-void align_loops(const SeamPlacementConstraints &constraints, std::vector<Loop> &loops)
+void align_loops(const SeamPlacementConstraints &constraints,
+                 std::vector<Loop> &loops,
+                 const plugin_run_context *run_context)
 {
     // A plan may contain thousands of layers. Limit geometric comparisons to
     // external loops on the same layer and instance, rather than scanning it all.
     using Location = std::pair<const layer_handle *,uint16_t>;
     std::map<Location,std::vector<const Loop *>> externals;
-    for (const Loop &loop:loops)
+    size_t loop_index=0;
+    for (const Loop &loop:loops) {
+        InitializationCancellation::check_periodic(run_context,loop_index++);
         if (loop.external) externals[{loop.region.layer().handle(),loop.instance}].push_back(&loop);
+    }
+    loop_index=0;
     for (Loop &loop:loops) {
+        InitializationCancellation::check_periodic(run_context,loop_index++);
         if (loop.external || !loop.align) continue;
         const Loop *contour=nullptr, *hole=nullptr;
         Candidate contour_projection, hole_projection;
         double contour_area=std::numeric_limits<double>::infinity(), hole_distance=std::numeric_limits<double>::infinity();
         const std::map<Location,std::vector<const Loop *>>::const_iterator location=externals.find({loop.region.layer().handle(),loop.instance});
         if (location==externals.end()) continue;
+        size_t external_index=0;
         for (const Loop *external:location->second) {
+            InitializationCancellation::check_periodic(
+                run_context,external_index++);
             const Loop &other=*external;
-            if (!other.hole && includes(other.curves,loop.curves)) {
-                const double candidate_area=area(other.curves);
+            if (!other.hole && includes(other.curves,loop.curves,run_context)) {
+                const double candidate_area=area(other.curves,run_context);
                 if (candidate_area<contour_area) {
                     contour=&other; contour_area=candidate_area;
-                    contour_projection=nearest(constraints,loop,other.seam);
+                    contour_projection=nearest(
+                        constraints,loop,other.seam,run_context);
                 }
-            } else if (other.hole && includes(loop.curves,other.curves)) {
-                const Candidate projection=nearest(constraints,loop,other.seam);
+            } else if (other.hole && includes(loop.curves,other.curves,run_context)) {
+                const Candidate projection=nearest(
+                    constraints,loop,other.seam,run_context);
                 const double d=distance(projection.point,other.seam);
                 if (d<hole_distance) { hole=&other; hole_distance=d; hole_projection=projection; }
             }
@@ -509,7 +578,10 @@ void align_loops(const SeamPlacementConstraints &constraints, std::vector<Loop> 
         // applies even when vertex-only random selection was requested.
         double closest=std::numeric_limits<double>::infinity();
         loop.seam=projection.point;
+        size_t vertex_index=0;
         for (const Candidate &vertex:loop.domain.vertices) {
+            InitializationCancellation::check_periodic(
+                run_context,vertex_index++);
             const double d=distance(vertex.point,reference->seam);
             if (d<vertex.width*3 && d<closest) { closest=d; loop.seam=vertex.point; }
         }
@@ -519,21 +591,24 @@ void align_loops(const SeamPlacementConstraints &constraints, std::vector<Loop> 
 void RandomSession::initialize(const PrintingPlan &plan, const std::vector<PrintRegion> &regions)
 {
     if (!plan.valid() || m_storage==nullptr) throw std::invalid_argument("Random seam needs a plan and temporary storage.");
+    InitializationCancellation::check(m_run_context);
     SeamPlacementConstraints constraints;
     // A factory call with no assigned regions is the historical all-regions
     // mode. An explicit nonempty assignment must filter preparation as well as
     // loop collection, so foreign provider data cannot break this session.
-    if (regions.empty()) constraints.initialize(plan,m_storage);
-    else constraints.initialize_for_regions(plan,m_storage,regions);
+    if (regions.empty()) constraints.initialize(plan,m_storage,m_run_context);
+    else constraints.initialize_for_regions(plan,m_storage,regions,m_run_context);
     const RegionFilter filter=make_region_filter(regions);
     std::vector<Loop> loops;
     for (uint32_t g=0;g<plan.group_count();++g) {
+        InitializationCancellation::check(m_run_context);
         const PrintingGroup group=plan.group(g);
         for (uint32_t l=0;l<group.layer_group_count();++l) {
             const PrintingLayerGroup layer=group.layer_group(l);
             for (uint32_t t=0;t<layer.tool_group_count();++t) {
                 const PrintingToolGroup tool=layer.tool_group(t);
                 for (uint32_t e=0;e<tool.extrusion_count();++e) {
+                    InitializationCancellation::check_periodic(m_run_context,e);
                     const PrintingExtrusion extrusion=tool.extrusion(e);
                     // Reject foreign-provider work before consulting its
                     // object-instance metadata. Such work is outside this
@@ -543,13 +618,14 @@ void RandomSession::initialize(const PrintingPlan &plan, const std::vector<Print
                     if (object_instance_idx == size_t(-1) || object_instance_idx > std::numeric_limits<uint16_t>::max())
                         throw std::runtime_error("Random seam extrusion has no valid printing-plan instance.");
                     collect_loops(extrusion,extrusion.root(),static_cast<uint16_t>(object_instance_idx),
-                                  extrusion.role(),0,filter,loops);
+                                  extrusion.role(),0,filter,loops,m_run_context);
                 }
             }
         }
     }
     std::map<const object_handle *,uint64_t> streams;
     for (Loop &loop:loops) {
+        InitializationCancellation::check(m_run_context);
         const Object object=loop.region.layer().object();
         if (streams.find(object.handle())==streams.end()) {
             const int32_t configured=object.config().int_or_default(keys[2],42);
@@ -571,7 +647,8 @@ void RandomSession::initialize(const PrintingPlan &plan, const std::vector<Print
         loop.align=config.bool_or_default(keys[1],true);
         loop.seam=random_seam(constraints,loop,config.bool_or_default(keys[0],true),state);
     }
-    align_loops(constraints,loops);
+    align_loops(constraints,loops,m_run_context);
+    InitializationCancellation::check(m_run_context);
     for (const Loop &loop:loops)
         if (!m_results.emplace(loop.entity.handle(),std::make_pair(loop.region.handle(),loop.seam)).second)
             throw std::invalid_argument("Random seam loop occurs more than once in the initialized plan.");
@@ -579,6 +656,7 @@ void RandomSession::initialize(const PrintingPlan &plan, const std::vector<Print
     // the remaining handle keys are non-owning identities valid for this plan.
     m_storage=nullptr;
     m_entropy={};
+    m_run_context=nullptr;
 }
 
 c_point RandomSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &region, c_point) const
@@ -635,8 +713,11 @@ void RandomProvider::run_impl(const plugin_run_context *context) const
         throw std::invalid_argument("Random seam received an invalid run context.");
     std::vector<PrintRegion> regions;
     for (uint32_t i=0;i<payload->region_count;++i) regions.emplace_back(payload->regions[i]);
-    payload->instance=make_seam_placer_instance(make_random_seam_session(context->plugin_storage),
-                                               PrintingPlan(payload->plan),regions);
+    InitializationCancellation::check(context);
+    payload->instance=make_seam_placer_instance(
+        std::unique_ptr<SeamPlacerSession>(new RandomSession(
+            context->plugin_storage, std::function<uint64_t()>(), context)),
+                                                PrintingPlan(payload->plan),regions);
 }
 } // namespace
 

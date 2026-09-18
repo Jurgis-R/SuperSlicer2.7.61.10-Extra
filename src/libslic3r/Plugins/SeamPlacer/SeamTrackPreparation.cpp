@@ -4,6 +4,7 @@
 ///|/
 
 #include "SeamTrackPreparation.hpp"
+#include "SeamInitializationCancellation.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -80,8 +81,10 @@ Data prepare(const PrintingPlan &plan,
              const std::vector<PrintRegion> &regions,
              storage_handle *storage,
              const SeamPlacementConstraints &constraints,
-             const char *provider_name)
+             const char *provider_name,
+             const plugin_run_context *run_context)
 {
+    InitializationCancellation::check(run_context);
     if (!plan.valid() || storage == nullptr || provider_name == nullptr)
         throw std::invalid_argument(
             "Seam track preparation needs a valid plan, storage, and provider name.");
@@ -101,6 +104,7 @@ Data prepare(const PrintingPlan &plan,
        addresses or the order of graph links. */
     for (uint32_t group_index = 0; group_index < plan.group_count();
          ++group_index) {
+        InitializationCancellation::check(run_context);
         const PrintingGroup group = plan.group(group_index);
         for (uint32_t layer_group_index = 0;
              layer_group_index < group.layer_group_count();
@@ -114,13 +118,15 @@ Data prepare(const PrintingPlan &plan,
                 for (uint32_t extrusion_index = 0;
                      extrusion_index < tool.extrusion_count();
                      ++extrusion_index) {
+                    InitializationCancellation::check_periodic(
+                        run_context, extrusion_index);
                     const PrintingExtrusion extrusion =
                         tool.extrusion(extrusion_index);
                     const LayerRegionIsland region_island =
                         extrusion.region_island();
                     const std::vector<CP::CollectedLoop> collected =
                         CP::collect_perimeter_loops(
-                            extrusion.root(), extrusion.role());
+                            extrusion.root(), extrusion.role(), run_context);
                     const bool has_scored_loop = std::any_of(
                         collected.begin(), collected.end(),
                         [](const CP::CollectedLoop &loop) {
@@ -177,10 +183,14 @@ Data prepare(const PrintingPlan &plan,
                     if (indexed_objects.insert(object.handle()).second) {
                         for (uint32_t layer_index = 0;
                              layer_index < object.layer_count(); ++layer_index) {
+                            InitializationCancellation::check_periodic(
+                                run_context, layer_index);
                             const Layer object_layer = object.layer(layer_index);
                             for (uint32_t island_index = 0;
                                  island_index < object_layer.island_count();
                                  ++island_index) {
+                                InitializationCancellation::check_periodic(
+                                    run_context, island_index);
                                 const LayerIsland island =
                                     object_layer.island(island_index);
                                 LayerIslandNode node;
@@ -190,16 +200,22 @@ Data prepare(const PrintingPlan &plan,
                                 node.layer = layer_index;
                                 for (uint32_t index = 0;
                                      index < island.lower_island_count();
-                                     ++index)
+                                     ++index) {
+                                    InitializationCancellation::check_periodic(
+                                        run_context, index);
                                     if (island.lower_island(index).valid())
                                         node.lower.push_back(
                                             island.lower_island(index).handle());
+                                }
                                 for (uint32_t index = 0;
                                      index < island.upper_island_count();
-                                     ++index)
+                                     ++index) {
+                                    InitializationCancellation::check_periodic(
+                                        run_context, index);
                                     if (island.upper_island(index).valid())
                                         node.upper.push_back(
                                             island.upper_island(index).handle());
+                                }
                                 data.islands.emplace(island.handle(),
                                                      std::move(node));
                             }
@@ -212,25 +228,35 @@ Data prepare(const PrintingPlan &plan,
                     const LayerIsland parent =
                         parent_island(layer, region_island);
                     for (uint32_t index = 0; index < object.layer_count();
-                         ++index)
+                         ++index) {
+                        InitializationCancellation::check_periodic(
+                            run_context, index);
                         if (object.layer(index).handle() == layer.handle()) {
                             layer_index = index;
                             break;
                         }
+                    }
                     for (uint32_t index = 0; index < layer.island_count();
-                         ++index)
+                         ++index) {
+                        InitializationCancellation::check_periodic(
+                            run_context, index);
                         if (layer.island(index).handle() == parent.handle()) {
                             island_index = index;
                             break;
                         }
-                    if (parent.valid())
+                    }
+                    if (parent.valid()) {
                         for (uint32_t index = 0;
-                             index < parent.region_island_count(); ++index)
+                             index < parent.region_island_count(); ++index) {
+                            InitializationCancellation::check_periodic(
+                                run_context, index);
                             if (parent.region_island(index).handle() ==
                                 region_island.handle()) {
                                 region_island_index = index;
                                 break;
                             }
+                        }
+                    }
                     if (!parent.valid() || layer_index == size_t(-1) ||
                         island_index == size_t(-1) ||
                         region_island_index == size_t(-1))
@@ -279,9 +305,10 @@ Data prepare(const PrintingPlan &plan,
                             source.external_width : fallback_width;
                         track.candidates = CP::prepare_loop_candidates(
                             storage, constraints, region_island, loop, region,
-                            shift, width, nozzle);
+                            shift, width, nozzle, run_context);
                         CP::calculate_layer_attributes(region_island,
-                                                       track.candidates);
+                                                       track.candidates,
+                                                       run_context);
                         if (track.candidates.empty())
                             throw preparation_error(
                                 provider_name,

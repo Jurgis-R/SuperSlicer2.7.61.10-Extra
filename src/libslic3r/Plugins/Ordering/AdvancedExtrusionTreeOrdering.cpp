@@ -146,7 +146,8 @@ struct ToolGroupOrderingJob
 std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
     const PrintingPlan &plan,
     c_point initial_position,
-    const PluginPropertyKey<EntryPointProperty> &entry_point_key);
+    const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+    const plugin_run_context *run_ctx);
 
 /* Return the configured print start in scaled PrintingPlan coordinates. */
 c_point initial_print_position(const Print &print);
@@ -161,30 +162,35 @@ std::vector<ToolGroupOrderingJob> reorder_printing_extrusions_and_make_jobs(
     const PrintingPlan &plan,
     c_point initial_position,
     const OrderingEngine &ordering_engine,
-    const PluginPropertyKey<EntryPointProperty> &entry_point_key);
+    const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+    const plugin_run_context *run_ctx);
 
 /* Order one tool-group vector from its published concrete root endpoints. */
 c_point reorder_printing_extrusions(
     PrintingToolGroup tool_group,
     c_point start_position,
     const OrderingEngine &ordering_engine,
-    const PluginPropertyKey<EntryPointProperty> &entry_point_key);
+    const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+    const plugin_run_context *run_ctx);
 
 /* Apply an index permutation while keeping empty extrusions in their slots. */
 void apply_printing_extrusion_permutation(
     PrintingToolGroup tool_group,
-    const std::vector<uint32_t> &target_original_indices);
+    const std::vector<uint32_t> &target_original_indices,
+    const plugin_run_context *run_ctx);
 
 /* Analyze one complete tree and require a usable estimate for its root. */
 EntryExitEstimateCache build_entry_exit_estimates(
     const ExtrusionEntity &root,
-    const SeamPlacement::SeamPlacerRouter &seam_router);
+    const SeamPlacement::SeamPlacerRouter &seam_router,
+    const plugin_run_context *run_ctx);
 
 /* Populate estimates below entity, then publish entity's own post-order result. */
 void estimate_entity_entry_exit(
     const ExtrusionEntity &entity,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    EntryExitEstimateCache &estimates);
+    EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx);
 
 /*
 Ask the seam service for up to four distinct entries of one atomic loop.
@@ -194,7 +200,8 @@ a fixed provider may intentionally collapse all four probes to one seam.
 */
 EntryExitEstimates estimate_loop_entry_exit(
     const ExtrusionEntity &loop,
-    const SeamPlacement::SeamPlacerRouter &seam_router);
+    const SeamPlacement::SeamPlacerRouter &seam_router,
+    const plugin_run_context *run_ctx);
 
 /* Describe the current direction alternatives of one open leaf. */
 EntryExitEstimates estimate_leaf_entry_exit(const ExtrusionEntity &leaf);
@@ -203,23 +210,27 @@ EntryExitEstimates estimate_leaf_entry_exit(const ExtrusionEntity &leaf);
 EntryExitEstimates estimate_fixed_node_entry_exit(
     const ExtrusionEntity &node,
     const ExtremePoints &extremes,
-    const EntryExitEstimateCache &estimates);
+    const EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx);
 
 /* Reduce every child endpoint of a sortable node to one cardinal point set. */
 EntryExitEstimates estimate_sortable_node_entry_exit(
     const ExtrusionEntity &node,
     const ExtremePoints &extremes,
-    const EntryExitEstimateCache &estimates);
+    const EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx);
 
 /* Keep at most four candidates representing the entity's cardinal directions. */
 void reduce_to_cardinal_points(
     const ExtremePoints &extremes,
-    std::vector<c_point> &points);
+    std::vector<c_point> &points,
+    const plugin_run_context *run_ctx);
 
 /* Read all local vertices recursively without allocating a flattened point list. */
 void collect_extreme_points(
     const ExtrusionEntity &entity,
-    ExtremePoints &extremes);
+    ExtremePoints &extremes,
+    const plugin_run_context *run_ctx);
 
 /* Merge one vertex into the deterministic left/right/bottom/top extrema. */
 void include_extreme_point(c_point point, ExtremePoints &extremes);
@@ -250,24 +261,28 @@ c_point coarsely_order_entity_descending(
     EntryExitEstimateCache &estimates,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage);
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx);
 
 /* Build at most sixteen approximate entry/exit pairs for each non-empty child. */
 std::vector<OrderingItem> build_child_ordering_items(
     const MutableExtrusionEntity &parent,
     const EntryExitEstimateCache &estimates,
-    std::vector<const extrusion_entity_handle *> &ordered_handles);
+    std::vector<const extrusion_entity_handle *> &ordered_handles,
+    const plugin_run_context *run_ctx);
 
 /* Reject a partial or duplicated engine result before changing the child list. */
 void validate_child_order(
     const std::vector<OrderedItem> &order,
-    uint32_t item_count);
+    uint32_t item_count,
+    const plugin_run_context *run_ctx);
 
 /* Reorder child handles while restoring empty children to their original slots. */
 void apply_child_permutation(
     MutableExtrusionEntity parent,
     const std::vector<const extrusion_entity_handle *> &non_empty_handles,
-    const std::vector<OrderedItem> &order);
+    const std::vector<OrderedItem> &order,
+    const plugin_run_context *run_ctx);
 
 /*
 Reverse one complete subtree.
@@ -277,12 +292,14 @@ final pass passes null because it no longer consumes speculative estimates.
 */
 void reverse_entity_tree(
     MutableExtrusionEntity entity,
-    EntryExitEstimateCache *estimates);
+    EntryExitEstimateCache *estimates,
+    const plugin_run_context *run_ctx);
 
 /* Exchange cached entry/exit lists after the corresponding tree was reversed. */
 void reverse_cached_estimates(
     const ExtrusionEntity &entity,
-    EntryExitEstimateCache &estimates);
+    EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx);
 
 /*
 Fix one subtree using its current concrete endpoints and return its final exit.
@@ -295,20 +312,23 @@ c_point finalize_entity_descending(
     c_point current_position,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage);
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx);
 
 /* Reorder direct children from current endpoints and optionally apply reversal. */
 void reorder_children_with_current_endpoints(
     MutableExtrusionEntity parent,
     c_point start_position,
     bool allow_reverse,
-    const OrderingEngine &ordering_engine);
+    const OrderingEngine &ordering_engine,
+    const plugin_run_context *run_ctx);
 
 /* Describe each non-empty direct child with its current legal orientations. */
 std::vector<OrderingItem> build_current_endpoint_items(
     const MutableExtrusionEntity &parent,
     bool allow_reverse,
-    std::vector<const extrusion_entity_handle *> &ordered_handles);
+    std::vector<const extrusion_entity_handle *> &ordered_handles,
+    const plugin_run_context *run_ctx);
 
 /* Return whether an engine selection chose the child's reversed endpoints. */
 bool selected_candidate_reverses(
@@ -330,7 +350,8 @@ void coarsely_order_printing_extrusion(
     c_point start_position,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage);
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx);
 
 /* Process one pre-described tool visit without accessing another job. */
 void coarsely_order_tool_group_job(
@@ -339,7 +360,8 @@ void coarsely_order_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacement::SeamPlacerRouter *seam_router);
+    const SeamPlacement::SeamPlacerRouter *seam_router,
+    const plugin_run_context *run_ctx);
 
 /* Finalize one root and publish the exact entry and exit left by that pass. */
 void finalize_printing_extrusion(
@@ -348,7 +370,8 @@ void finalize_printing_extrusion(
     c_point start_position,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage);
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx);
 
 /* Process one rebuilt tool-group job during the final parallel pass. */
 void finalize_tool_group_job(
@@ -357,12 +380,14 @@ void finalize_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacement::SeamPlacerRouter *seam_router);
+    const SeamPlacement::SeamPlacerRouter *seam_router,
+    const plugin_run_context *run_ctx);
 
 std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
     const PrintingPlan &plan,
     const c_point initial_position,
-    const PluginPropertyKey<EntryPointProperty> &entry_point_key)
+    const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+    const plugin_run_context *run_ctx)
 {
     std::vector<ToolGroupOrderingJob> jobs;
     c_point current_position = initial_position;
@@ -374,15 +399,19 @@ std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
     mirrors the PrintingPlan exactly.
     */
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 jobs.push_back(ToolGroupOrderingJob{tool_group, current_position});
 
                 for (uint32_t extrusion_idx = tool_group.extrusion_count();
                      extrusion_idx > 0; --extrusion_idx) {
+                    throw_if_cancelled(run_ctx);
                     const ExtrusionEntity root =
                         tool_group.extrusion(extrusion_idx - 1).root();
                     if (root.empty())
@@ -415,7 +444,8 @@ std::vector<ToolGroupOrderingJob> reorder_printing_extrusions_and_make_jobs(
     const PrintingPlan &plan,
     const c_point initial_position,
     const OrderingEngine &ordering_engine,
-    const PluginPropertyKey<EntryPointProperty> &entry_point_key)
+    const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+    const plugin_run_context *run_ctx)
 {
     std::vector<ToolGroupOrderingJob> jobs;
     c_point current_position = initial_position;
@@ -426,15 +456,18 @@ std::vector<ToolGroupOrderingJob> reorder_printing_extrusions_and_make_jobs(
     before the preceding vector has selected its final root order.
     */
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+                throw_if_cancelled(run_ctx);
                 const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 jobs.push_back(ToolGroupOrderingJob{tool_group, current_position});
                 current_position = reorder_printing_extrusions(
                     tool_group, current_position, ordering_engine,
-                    entry_point_key);
+                    entry_point_key, run_ctx);
             }
         }
     }
@@ -445,7 +478,8 @@ c_point reorder_printing_extrusions(
     const PrintingToolGroup tool_group,
     const c_point start_position,
     const OrderingEngine &ordering_engine,
-    const PluginPropertyKey<EntryPointProperty> &entry_point_key)
+    const PluginPropertyKey<EntryPointProperty> &entry_point_key,
+    const plugin_run_context *run_ctx)
 {
     const uint32_t extrusion_count = tool_group.extrusion_count();
     std::vector<OrderingItem> items;
@@ -455,6 +489,7 @@ c_point reorder_printing_extrusions(
 
     /* Every candidate now describes one concrete root traversal. */
     for (uint32_t extrusion_idx = 0; extrusion_idx < extrusion_count; ++extrusion_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity root = tool_group.extrusion(extrusion_idx).root();
         if (root.empty())
             continue;
@@ -477,7 +512,8 @@ c_point reorder_printing_extrusions(
 
     const std::vector<OrderedItem> order = ordering_engine.order(
         items, start_position);
-    validate_child_order(order, uint32_t(items.size()));
+    throw_if_cancelled(run_ctx);
+    validate_child_order(order, uint32_t(items.size()), run_ctx);
 
     std::vector<uint32_t> target_original_indices(extrusion_count);
     for (uint32_t extrusion_idx = 0; extrusion_idx < extrusion_count; ++extrusion_idx)
@@ -487,13 +523,14 @@ c_point reorder_printing_extrusions(
             non_empty_slots[order[ordered_idx].item_index];
 
     apply_printing_extrusion_permutation(
-        tool_group, target_original_indices);
+        tool_group, target_original_indices, run_ctx);
     return order.back().selected_candidate.estimated_exit;
 }
 
 void apply_printing_extrusion_permutation(
     const PrintingToolGroup tool_group,
-    const std::vector<uint32_t> &target_original_indices)
+    const std::vector<uint32_t> &target_original_indices,
+    const plugin_run_context *run_ctx)
 {
     if (target_original_indices.size() != tool_group.extrusion_count())
         throw std::invalid_argument(
@@ -503,7 +540,10 @@ void apply_printing_extrusion_permutation(
         target_original_indices.size());
     for (uint32_t extrusion_idx = 0;
          extrusion_idx < current_original_indices.size(); ++extrusion_idx)
+    {
+        throw_if_cancelled(run_ctx);
         current_original_indices[extrusion_idx] = extrusion_idx;
+    }
 
     /*
     Fix the vector from left to right. Indices are tracked separately because
@@ -511,16 +551,21 @@ void apply_printing_extrusion_permutation(
     */
     for (uint32_t target_idx = 0;
          target_idx < target_original_indices.size(); ++target_idx) {
+        throw_if_cancelled(run_ctx);
         uint32_t source_idx = target_idx;
         while (source_idx < current_original_indices.size() &&
                current_original_indices[source_idx] !=
-                   target_original_indices[target_idx])
+               target_original_indices[target_idx])
+        {
+            throw_if_cancelled(run_ctx);
             ++source_idx;
+        }
         if (source_idx == current_original_indices.size())
             throw std::runtime_error(
                 "Cannot reconstruct the PrintingExtrusion permutation.");
         if (source_idx == target_idx)
             continue;
+        throw_if_cancelled(run_ctx);
         if (!tool_group.move_extrusion(source_idx, target_idx))
             throw std::runtime_error(
                 "The PrintingToolGroup rejected its extrusion permutation.");
@@ -535,10 +580,12 @@ void apply_printing_extrusion_permutation(
 
 EntryExitEstimateCache build_entry_exit_estimates(
     const ExtrusionEntity &root,
-    const SeamPlacement::SeamPlacerRouter &seam_router)
+    const SeamPlacement::SeamPlacerRouter &seam_router,
+    const plugin_run_context *run_ctx)
 {
     EntryExitEstimateCache estimates;
-    estimate_entity_entry_exit(root, seam_router, estimates);
+    throw_if_cancelled(run_ctx);
+    estimate_entity_entry_exit(root, seam_router, estimates, run_ctx);
 
     const EntryExitEstimateCache::const_iterator root_estimate =
         estimates.find(root.handle());
@@ -553,8 +600,10 @@ EntryExitEstimateCache build_entry_exit_estimates(
 void estimate_entity_entry_exit(
     const ExtrusionEntity &entity,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    EntryExitEstimateCache &estimates)
+    EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (entity.empty())
         return;
 
@@ -566,7 +615,7 @@ void estimate_entity_entry_exit(
     if (entity.is_loop()) {
         estimates.emplace(
             entity.handle(), estimate_loop_entry_exit(
-                entity, seam_router));
+                entity, seam_router, run_ctx));
         return;
     }
 
@@ -574,9 +623,11 @@ void estimate_entity_entry_exit(
     Child estimates are completed before a collection summarizes them. This is
     the post-order invariant that lets a parent read only small bounded lists.
     */
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         estimate_entity_entry_exit(
-            entity.child(child_idx), seam_router, estimates);
+            entity.child(child_idx), seam_router, estimates, run_ctx);
+    }
 
     /*
     Reuse child extrema while unwinding the post-order recursion. Local points
@@ -584,9 +635,12 @@ void estimate_entity_entry_exit(
     local geometry with children.
     */
     ExtremePoints entity_extremes;
-    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx)
+    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx) {
+        throw_if_cancelled(run_ctx);
         include_extreme_point(entity.point(point_idx), entity_extremes);
+    }
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = entity.child(child_idx);
         const EntryExitEstimateCache::const_iterator found =
             estimates.find(child.handle());
@@ -602,10 +656,10 @@ void estimate_entity_entry_exit(
         entity_estimates = estimate_leaf_entry_exit(entity);
     else if (entity.sortable())
         entity_estimates = estimate_sortable_node_entry_exit(
-            entity, entity_extremes, estimates);
+            entity, entity_extremes, estimates, run_ctx);
     else
         entity_estimates = estimate_fixed_node_entry_exit(
-            entity, entity_extremes, estimates);
+            entity, entity_extremes, estimates, run_ctx);
 
     if (entity_estimates.entries.empty() || entity_estimates.exits.empty())
         throw std::runtime_error(
@@ -616,10 +670,11 @@ void estimate_entity_entry_exit(
 
 EntryExitEstimates estimate_loop_entry_exit(
     const ExtrusionEntity &loop,
-    const SeamPlacement::SeamPlacerRouter &seam_router)
+    const SeamPlacement::SeamPlacerRouter &seam_router,
+    const plugin_run_context *run_ctx)
 {
     ExtremePoints extremes;
-    collect_extreme_points(loop, extremes);
+    collect_extreme_points(loop, extremes, run_ctx);
     if (!extremes.valid)
         throw std::runtime_error(
             "A non-empty extrusion loop contains no geometric point.");
@@ -627,9 +682,12 @@ EntryExitEstimates estimate_loop_entry_exit(
     EntryExitEstimates result;
     result.entries.reserve(4);
     const std::array<c_point, 4> probes = cardinal_probe_points(extremes);
-    for (const c_point probe : probes)
-        append_distinct_point(
-            result.entries, seam_router.place_seam(loop, probe));
+    for (const c_point probe : probes) {
+        throw_if_cancelled(run_ctx);
+        const c_point seam = seam_router.place_seam(loop, probe);
+        throw_if_cancelled(run_ctx);
+        append_distinct_point(result.entries, seam);
+    }
 
     /* A closed loop exits at the selected seam, so both bounded sets match. */
     result.exits = result.entries;
@@ -656,13 +714,15 @@ EntryExitEstimates estimate_leaf_entry_exit(const ExtrusionEntity &leaf)
 EntryExitEstimates estimate_fixed_node_entry_exit(
     const ExtrusionEntity &node,
     const ExtremePoints &extremes,
-    const EntryExitEstimateCache &estimates)
+    const EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx)
 {
     const EntryExitEstimates *first = nullptr;
     const EntryExitEstimates *last = nullptr;
 
     /* Empty children do not contribute to the physical beginning or end. */
     for (uint32_t child_idx = 0; child_idx < node.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = node.child(child_idx);
         const EntryExitEstimateCache::const_iterator found =
             estimates.find(child.handle());
@@ -681,12 +741,16 @@ EntryExitEstimates estimate_fixed_node_entry_exit(
 
     /* Whole-node reversal exchanges the possibilities at the two boundaries. */
     if (node.reversible()) {
-        for (const c_point point : last->exits)
+        for (const c_point point : last->exits) {
+            throw_if_cancelled(run_ctx);
             append_distinct_point(result.entries, point);
-        for (const c_point point : first->entries)
+        }
+        for (const c_point point : first->entries) {
+            throw_if_cancelled(run_ctx);
             append_distinct_point(result.exits, point);
-        reduce_to_cardinal_points(extremes, result.entries);
-        reduce_to_cardinal_points(extremes, result.exits);
+        }
+        reduce_to_cardinal_points(extremes, result.entries, run_ctx);
+        reduce_to_cardinal_points(extremes, result.exits, run_ctx);
     }
     return result;
 }
@@ -694,7 +758,8 @@ EntryExitEstimates estimate_fixed_node_entry_exit(
 EntryExitEstimates estimate_sortable_node_entry_exit(
     const ExtrusionEntity &node,
     const ExtremePoints &extremes,
-    const EntryExitEstimateCache &estimates)
+    const EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx)
 {
     std::vector<c_point> child_points;
     child_points.reserve(size_t(node.child_count()) * 8u);
@@ -705,18 +770,23 @@ EntryExitEstimates estimate_sortable_node_entry_exit(
     deferred until the coarse ordering phase.
     */
     for (uint32_t child_idx = 0; child_idx < node.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = node.child(child_idx);
         const EntryExitEstimateCache::const_iterator found =
             estimates.find(child.handle());
         if (found == estimates.end())
             continue;
-        for (const c_point point : found->second.entries)
+        for (const c_point point : found->second.entries) {
+            throw_if_cancelled(run_ctx);
             append_distinct_point(child_points, point);
-        for (const c_point point : found->second.exits)
+        }
+        for (const c_point point : found->second.exits) {
+            throw_if_cancelled(run_ctx);
             append_distinct_point(child_points, point);
+        }
     }
 
-    reduce_to_cardinal_points(extremes, child_points);
+    reduce_to_cardinal_points(extremes, child_points, run_ctx);
     EntryExitEstimates result;
     result.entries = child_points;
     result.exits = std::move(child_points);
@@ -725,7 +795,8 @@ EntryExitEstimates estimate_sortable_node_entry_exit(
 
 void reduce_to_cardinal_points(
     const ExtremePoints &extremes,
-    std::vector<c_point> &points)
+    std::vector<c_point> &points,
+    const plugin_run_context *run_ctx)
 {
     if (points.size() <= 4)
         return;
@@ -737,9 +808,11 @@ void reduce_to_cardinal_points(
     std::vector<c_point> selected;
     selected.reserve(4);
     for (const c_point probe : probes) {
+        throw_if_cancelled(run_ctx);
         uint32_t best_idx = 0;
         double best_distance = (std::numeric_limits<double>::max)();
         for (uint32_t point_idx = 0; point_idx < points.size(); ++point_idx) {
+            throw_if_cancelled(run_ctx);
             const double distance = squared_distance(points[point_idx], probe);
             const bool deterministic_tie =
                 distance == best_distance &&
@@ -758,12 +831,18 @@ void reduce_to_cardinal_points(
 
 void collect_extreme_points(
     const ExtrusionEntity &entity,
-    ExtremePoints &extremes)
+    ExtremePoints &extremes,
+    const plugin_run_context *run_ctx)
 {
-    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx)
+    throw_if_cancelled(run_ctx);
+    for (uint32_t point_idx = 0; point_idx < entity.point_count(); ++point_idx) {
+        throw_if_cancelled(run_ctx);
         include_extreme_point(entity.point(point_idx), extremes);
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        collect_extreme_points(entity.child(child_idx), extremes);
+    }
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        collect_extreme_points(entity.child(child_idx), extremes, run_ctx);
+    }
 }
 
 void include_extreme_point(const c_point point, ExtremePoints &extremes)
@@ -842,8 +921,10 @@ c_point coarsely_order_entity_descending(
     EntryExitEstimateCache &estimates,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage)
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (entity.empty())
         return current_position;
 
@@ -853,10 +934,12 @@ c_point coarsely_order_entity_descending(
     seams used by the post-order pass with the seam that will actually print.
     */
     if (entity.is_loop()) {
+        throw_if_cancelled(run_ctx);
         const c_point seam = seam_router.place_seam(
             entity.readonly(), current_position);
+        throw_if_cancelled(run_ctx);
         TreeOrderingGeometry::rotate_loop_to_seam(
-            scratch_storage, entity, seam);
+            scratch_storage, entity, seam, run_ctx);
         return entity.back();
     }
 
@@ -865,7 +948,10 @@ c_point coarsely_order_entity_descending(
         if (entity.readonly().reversible() &&
             squared_distance(current_position, entity.back()) <
                 squared_distance(current_position, entity.front()))
-            reverse_entity_tree(entity, &estimates);
+        {
+            throw_if_cancelled(run_ctx);
+            reverse_entity_tree(entity, &estimates, run_ctx);
+        }
         return entity.back();
     }
 
@@ -878,13 +964,18 @@ c_point coarsely_order_entity_descending(
         if (entity.readonly().reversible() &&
             squared_distance(current_position, entity.back()) <
                 squared_distance(current_position, entity.front()))
-            reverse_entity_tree(entity, &estimates);
+        {
+            throw_if_cancelled(run_ctx);
+            reverse_entity_tree(entity, &estimates, run_ctx);
+        }
 
         c_point child_position = current_position;
-        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+            throw_if_cancelled(run_ctx);
             child_position = coarsely_order_entity_descending(
                 entity.child_mutable(child_idx), child_position, estimates,
-                ordering_engine, seam_router, scratch_storage);
+                ordering_engine, seam_router, scratch_storage, run_ctx);
+        }
         return child_position;
     }
 
@@ -895,26 +986,32 @@ c_point coarsely_order_entity_descending(
     */
     std::vector<const extrusion_entity_handle *> non_empty_handles;
     const std::vector<OrderingItem> items = build_child_ordering_items(
-        entity, estimates, non_empty_handles);
+        entity, estimates, non_empty_handles, run_ctx);
     if (!items.empty()) {
+        throw_if_cancelled(run_ctx);
         const std::vector<OrderedItem> order = ordering_engine.order(
             items, current_position);
-        validate_child_order(order, uint32_t(items.size()));
-        apply_child_permutation(entity, non_empty_handles, order);
+        throw_if_cancelled(run_ctx);
+        validate_child_order(order, uint32_t(items.size()), run_ctx);
+        throw_if_cancelled(run_ctx);
+        apply_child_permutation(entity, non_empty_handles, order, run_ctx);
     }
 
     c_point child_position = current_position;
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         child_position = coarsely_order_entity_descending(
             entity.child_mutable(child_idx), child_position, estimates,
-            ordering_engine, seam_router, scratch_storage);
+            ordering_engine, seam_router, scratch_storage, run_ctx);
+    }
     return child_position;
 }
 
 std::vector<OrderingItem> build_child_ordering_items(
     const MutableExtrusionEntity &parent,
     const EntryExitEstimateCache &estimates,
-    std::vector<const extrusion_entity_handle *> &ordered_handles)
+    std::vector<const extrusion_entity_handle *> &ordered_handles,
+    const plugin_run_context *run_ctx)
 {
     std::vector<OrderingItem> items;
     items.reserve(parent.child_count());
@@ -922,6 +1019,7 @@ std::vector<OrderingItem> build_child_ordering_items(
     ordered_handles.reserve(parent.child_count());
 
     for (uint32_t child_idx = 0; child_idx < parent.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = parent.child(child_idx);
         if (child.empty())
             continue;
@@ -937,9 +1035,12 @@ std::vector<OrderingItem> build_child_ordering_items(
         item.candidates.reserve(
             found->second.entries.size() * found->second.exits.size());
         for (const c_point entry : found->second.entries) {
+            throw_if_cancelled(run_ctx);
             for (const c_point exit : found->second.exits) {
+                throw_if_cancelled(run_ctx);
                 bool duplicate = false;
                 for (const OrderingCandidate &candidate : item.candidates) {
+                    throw_if_cancelled(run_ctx);
                     if (points_equal(candidate.estimated_entry, entry) &&
                         points_equal(candidate.estimated_exit, exit)) {
                         duplicate = true;
@@ -966,7 +1067,8 @@ std::vector<OrderingItem> build_child_ordering_items(
 
 void validate_child_order(
     const std::vector<OrderedItem> &order,
-    const uint32_t item_count)
+    const uint32_t item_count,
+    const plugin_run_context *run_ctx)
 {
     if (order.size() != item_count)
         throw std::runtime_error(
@@ -974,6 +1076,7 @@ void validate_child_order(
 
     std::vector<uint8_t> seen(item_count, uint8_t(0));
     for (const OrderedItem &ordered : order) {
+        throw_if_cancelled(run_ctx);
         if (ordered.item_index >= item_count || seen[ordered.item_index] != 0)
             throw std::runtime_error(
                 "The ordering engine returned an invalid child permutation.");
@@ -984,7 +1087,8 @@ void validate_child_order(
 void apply_child_permutation(
     MutableExtrusionEntity parent,
     const std::vector<const extrusion_entity_handle *> &non_empty_handles,
-    const std::vector<OrderedItem> &order)
+    const std::vector<OrderedItem> &order,
+    const plugin_run_context *run_ctx)
 {
     const uint32_t child_count = parent.child_count();
     std::vector<const extrusion_entity_handle *> current_handles;
@@ -1000,6 +1104,7 @@ void apply_child_permutation(
     that every empty child returns to its original final index.
     */
     for (uint32_t child_idx = 0; child_idx < child_count; ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = parent.child(child_idx);
         current_handles.push_back(child.handle());
         target_handles.push_back(child.handle());
@@ -1011,26 +1116,33 @@ void apply_child_permutation(
         throw std::runtime_error(
             "The child permutation does not match the sortable node.");
 
-    for (uint32_t ordered_idx = 0; ordered_idx < order.size(); ++ordered_idx)
+    for (uint32_t ordered_idx = 0; ordered_idx < order.size(); ++ordered_idx) {
+        throw_if_cancelled(run_ctx);
         target_handles[non_empty_slots[ordered_idx]] =
             non_empty_handles[order[ordered_idx].item_index];
+    }
 
     /*
     Fix the sequence from left to right. Once a prefix matches target_handles,
     the wanted handle for the next slot must be in the remaining suffix.
     */
     for (uint32_t target_idx = 0; target_idx < child_count; ++target_idx) {
+        throw_if_cancelled(run_ctx);
         if (current_handles[target_idx] == target_handles[target_idx])
             continue;
 
         uint32_t source_idx = target_idx + 1;
         while (source_idx < child_count &&
                current_handles[source_idx] != target_handles[target_idx])
+        {
+            throw_if_cancelled(run_ctx);
             ++source_idx;
+        }
         if (source_idx == child_count)
             throw std::runtime_error(
                 "A child handle disappeared while applying its permutation.");
 
+        throw_if_cancelled(run_ctx);
         const uint32_t moved_idx = parent.move_child_from(
             target_idx, parent, source_idx);
         if (moved_idx != target_idx)
@@ -1045,19 +1157,26 @@ void apply_child_permutation(
 
 void reverse_entity_tree(
     MutableExtrusionEntity entity,
-    EntryExitEstimateCache *estimates)
+    EntryExitEstimateCache *estimates,
+    const plugin_run_context *run_ctx)
 {
-    TreeOrderingGeometry::reverse_tree(entity);
+    throw_if_cancelled(run_ctx);
+    TreeOrderingGeometry::reverse_tree(entity, run_ctx);
+    throw_if_cancelled(run_ctx);
     if (estimates != nullptr)
-        reverse_cached_estimates(entity.readonly(), *estimates);
+        reverse_cached_estimates(entity.readonly(), *estimates, run_ctx);
 }
 
 void reverse_cached_estimates(
     const ExtrusionEntity &entity,
-    EntryExitEstimateCache &estimates)
+    EntryExitEstimateCache &estimates,
+    const plugin_run_context *run_ctx)
 {
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        reverse_cached_estimates(entity.child(child_idx), estimates);
+    throw_if_cancelled(run_ctx);
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        reverse_cached_estimates(entity.child(child_idx), estimates, run_ctx);
+    }
     const EntryExitEstimateCache::iterator found = estimates.find(entity.handle());
     if (found != estimates.end())
         std::swap(found->second.entries, found->second.exits);
@@ -1068,9 +1187,12 @@ c_point finalize_entity_descending(
     const c_point current_position,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage)
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (entity.empty()) {
+        throw_if_cancelled(run_ctx);
         entity.disable_sort();
         entity.disable_reverse();
         return current_position;
@@ -1082,11 +1204,14 @@ c_point finalize_entity_descending(
     produced the complete final subtree.
     */
     if (entity.is_loop()) {
+        throw_if_cancelled(run_ctx);
         const c_point seam = seam_router.place_seam(
             entity.readonly(), current_position);
+        throw_if_cancelled(run_ctx);
         TreeOrderingGeometry::rotate_loop_to_seam(
-            scratch_storage, entity, seam);
-        TreeOrderingGeometry::disable_ordering_flags_recursively(entity);
+            scratch_storage, entity, seam, run_ctx);
+        throw_if_cancelled(run_ctx);
+        TreeOrderingGeometry::disable_ordering_flags_recursively(entity, run_ctx);
         return entity.back();
     }
 
@@ -1094,7 +1219,11 @@ c_point finalize_entity_descending(
         if (entity.readonly().reversible() &&
             squared_distance(current_position, entity.back()) <
                 squared_distance(current_position, entity.front()))
-            reverse_entity_tree(entity, nullptr);
+        {
+            throw_if_cancelled(run_ctx);
+            reverse_entity_tree(entity, nullptr, run_ctx);
+        }
+        throw_if_cancelled(run_ctx);
         entity.disable_sort();
         entity.disable_reverse();
         return entity.back();
@@ -1108,13 +1237,19 @@ c_point finalize_entity_descending(
         if (entity.readonly().reversible() &&
             squared_distance(current_position, entity.back()) <
                 squared_distance(current_position, entity.front()))
-            reverse_entity_tree(entity, nullptr);
+        {
+            throw_if_cancelled(run_ctx);
+            reverse_entity_tree(entity, nullptr, run_ctx);
+        }
 
         c_point child_position = current_position;
-        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+            throw_if_cancelled(run_ctx);
             child_position = finalize_entity_descending(
                 entity.child_mutable(child_idx), child_position,
-                ordering_engine, seam_router, scratch_storage);
+                ordering_engine, seam_router, scratch_storage, run_ctx);
+        }
+        throw_if_cancelled(run_ctx);
         entity.disable_sort();
         entity.disable_reverse();
         return child_position;
@@ -1125,12 +1260,14 @@ c_point finalize_entity_descending(
     Recursion then replaces provisional seams and orientations with real ones.
     */
     reorder_children_with_current_endpoints(
-        entity, current_position, true, ordering_engine);
+        entity, current_position, true, ordering_engine, run_ctx);
     c_point child_position = current_position;
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         child_position = finalize_entity_descending(
             entity.child_mutable(child_idx), child_position,
-            ordering_engine, seam_router, scratch_storage);
+            ordering_engine, seam_router, scratch_storage, run_ctx);
+    }
 
     /*
     The second order sees final child geometry. It may move complete children,
@@ -1138,7 +1275,8 @@ c_point finalize_entity_descending(
     preserved even when the local route changes once more.
     */
     reorder_children_with_current_endpoints(
-        entity, current_position, false, ordering_engine);
+        entity, current_position, false, ordering_engine, run_ctx);
+    throw_if_cancelled(run_ctx);
     entity.disable_sort();
     entity.disable_reverse();
     return entity.back();
@@ -1148,18 +1286,21 @@ void reorder_children_with_current_endpoints(
     MutableExtrusionEntity parent,
     const c_point start_position,
     const bool allow_reverse,
-    const OrderingEngine &ordering_engine)
+    const OrderingEngine &ordering_engine,
+    const plugin_run_context *run_ctx)
 {
     std::vector<const extrusion_entity_handle *> non_empty_handles;
     const std::vector<OrderingItem> items = build_current_endpoint_items(
-        parent, allow_reverse, non_empty_handles);
+        parent, allow_reverse, non_empty_handles, run_ctx);
     if (items.empty())
         return;
 
     const std::vector<OrderedItem> order = ordering_engine.order(
         items, start_position);
-    validate_child_order(order, uint32_t(items.size()));
-    apply_child_permutation(parent, non_empty_handles, order);
+    throw_if_cancelled(run_ctx);
+    validate_child_order(order, uint32_t(items.size()), run_ctx);
+    throw_if_cancelled(run_ctx);
+    apply_child_permutation(parent, non_empty_handles, order, run_ctx);
 
     /*
     Empty slots remain fixed, so the Nth non-empty child after permutation
@@ -1167,13 +1308,17 @@ void reorder_children_with_current_endpoints(
     */
     uint32_t ordered_idx = 0;
     for (uint32_t child_idx = 0; child_idx < parent.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         MutableExtrusionEntity child = parent.child_mutable(child_idx);
         if (child.empty())
             continue;
         if (selected_candidate_reverses(
                 child.readonly(), order[ordered_idx].selected_candidate,
                 allow_reverse))
-            reverse_entity_tree(child, nullptr);
+        {
+            throw_if_cancelled(run_ctx);
+            reverse_entity_tree(child, nullptr, run_ctx);
+        }
         ++ordered_idx;
     }
     if (ordered_idx != order.size())
@@ -1184,7 +1329,8 @@ void reorder_children_with_current_endpoints(
 std::vector<OrderingItem> build_current_endpoint_items(
     const MutableExtrusionEntity &parent,
     const bool allow_reverse,
-    std::vector<const extrusion_entity_handle *> &ordered_handles)
+    std::vector<const extrusion_entity_handle *> &ordered_handles,
+    const plugin_run_context *run_ctx)
 {
     std::vector<OrderingItem> items;
     items.reserve(parent.child_count());
@@ -1192,6 +1338,7 @@ std::vector<OrderingItem> build_current_endpoint_items(
     ordered_handles.reserve(parent.child_count());
 
     for (uint32_t child_idx = 0; child_idx < parent.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         const ExtrusionEntity child = parent.child(child_idx);
         if (child.empty())
             continue;
@@ -1244,21 +1391,24 @@ void coarsely_order_printing_extrusion(
     const c_point start_position,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage)
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx)
 {
     /*
     Keep this cache local to the independent PrintingExtrusion job. The router
     has already associated every atomic loop with its own source LayerRegion,
     so this pass retains only estimates and borrowed entity handles.
     */
+    throw_if_cancelled(run_ctx);
     EntryExitEstimateCache estimates = build_entry_exit_estimates(
-        extrusion.root(), seam_router);
+        extrusion.root(), seam_router, run_ctx);
     MutableExtrusionEntity root = extrusion.mutable_root();
     coarsely_order_entity_descending(
         root, start_position, estimates, ordering_engine,
-        seam_router, scratch_storage);
+        seam_router, scratch_storage, run_ctx);
 
     /* Publish only endpoints that now exist in the mutated root geometry. */
+    throw_if_cancelled(run_ctx);
     entry_points.entry = root.front();
     entry_points.exit = root.back();
 }
@@ -1269,7 +1419,8 @@ void coarsely_order_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacement::SeamPlacerRouter *seam_router)
+    const SeamPlacement::SeamPlacerRouter *seam_router,
+    const plugin_run_context *run_ctx)
 {
     assert(jobs != nullptr);
     assert(entry_point_key != nullptr);
@@ -1287,6 +1438,7 @@ void coarsely_order_tool_group_job(
     */
     for (uint32_t extrusion_idx = 0;
          extrusion_idx < job.tool_group.extrusion_count(); ++extrusion_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingExtrusion extrusion =
             job.tool_group.extrusion(extrusion_idx);
         MutableExtrusionEntity root = extrusion.mutable_root();
@@ -1300,7 +1452,8 @@ void coarsely_order_tool_group_job(
 
         coarsely_order_printing_extrusion(
             extrusion, *entry_points, current_position,
-            *ordering_engine, *seam_router, scratch_storage);
+            *ordering_engine, *seam_router, scratch_storage, run_ctx);
+        throw_if_cancelled(run_ctx);
         current_position = entry_points->exit;
     }
 }
@@ -1311,13 +1464,16 @@ void finalize_printing_extrusion(
     const c_point start_position,
     const OrderingEngine &ordering_engine,
     const SeamPlacement::SeamPlacerRouter &seam_router,
-    storage_handle *scratch_storage)
+    storage_handle *scratch_storage,
+    const plugin_run_context *run_ctx)
 {
     MutableExtrusionEntity root = extrusion.mutable_root();
+    throw_if_cancelled(run_ctx);
     finalize_entity_descending(
-        root, start_position, ordering_engine, seam_router, scratch_storage);
+        root, start_position, ordering_engine, seam_router, scratch_storage, run_ctx);
 
     /* The barrier estimates are replaced by the completely fixed root ends. */
+    throw_if_cancelled(run_ctx);
     entry_points.entry = root.front();
     entry_points.exit = root.back();
 }
@@ -1328,7 +1484,8 @@ void finalize_tool_group_job(
     const std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
-    const SeamPlacement::SeamPlacerRouter *seam_router)
+    const SeamPlacement::SeamPlacerRouter *seam_router,
+    const plugin_run_context *run_ctx)
 {
     assert(jobs != nullptr);
     assert(entry_point_key != nullptr);
@@ -1345,6 +1502,7 @@ void finalize_tool_group_job(
     */
     for (uint32_t extrusion_idx = 0;
          extrusion_idx < job.tool_group.extrusion_count(); ++extrusion_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingExtrusion extrusion =
             job.tool_group.extrusion(extrusion_idx);
         MutableExtrusionEntity root = extrusion.mutable_root();
@@ -1358,7 +1516,8 @@ void finalize_tool_group_job(
 
         finalize_printing_extrusion(
             extrusion, *entry_points, current_position,
-            *ordering_engine, *seam_router, scratch_storage);
+            *ordering_engine, *seam_router, scratch_storage, run_ctx);
+        throw_if_cancelled(run_ctx);
         current_position = entry_points->exit;
     }
 }
@@ -1418,18 +1577,22 @@ private:
     {
         const run_ctx_extrusion_ordering *ctx =
             plugin_ctx_as_extrusion_ordering(run_ctx);
-        if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr)
+        if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr ||
+            run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
             throw std::invalid_argument(
                 "Advanced extrusion-tree ordering needs a Print and PrintingPlan.");
 
+        throw_if_cancelled(run_ctx);
         const Print print(ctx->print);
         const PrintingPlan plan(ctx->plan);
+        throw_if_cancelled(run_ctx);
         const SeamPlacement::SeamPlacerRouter seam_router(
             m_orchestrator, print, plan, run_ctx->plugin_storage);
+        throw_if_cancelled(run_ctx);
         const KDTreeOrderingEngine ordering_engine;
         const c_point print_start = initial_print_position(print);
         const std::vector<ToolGroupOrderingJob> coarse_jobs =
-            make_tool_group_jobs(plan, print_start, m_entry_point_key);
+            make_tool_group_jobs(plan, print_start, m_entry_point_key, run_ctx);
 
         /*
         Each parallel helper is a barrier: it returns only after every worker
@@ -1440,11 +1603,12 @@ private:
         parallel_for_storage_with_progress(
             0, uint32_t(coarse_jobs.size()), run_ctx, &progress(),
             coarsely_order_tool_group_job, &coarse_jobs, &m_entry_point_key,
-            &ordering_engine, &seam_router);
+            &ordering_engine, &seam_router, run_ctx);
 
+        throw_if_cancelled(run_ctx);
         const std::vector<ToolGroupOrderingJob> final_jobs =
             reorder_printing_extrusions_and_make_jobs(
-                plan, print_start, ordering_engine, m_entry_point_key);
+                plan, print_start, ordering_engine, m_entry_point_key, run_ctx);
         if (final_jobs.size() != coarse_jobs.size())
             throw std::runtime_error(
                 "The PrintingPlan tool-group count changed during advanced ordering.");
@@ -1452,7 +1616,7 @@ private:
         parallel_for_storage_with_progress(
             0, uint32_t(final_jobs.size()), run_ctx, &progress(),
             finalize_tool_group_job, &final_jobs, &m_entry_point_key,
-            &ordering_engine, &seam_router);
+            &ordering_engine, &seam_router, run_ctx);
     }
 
     PluginPropertyKey<EntryPointProperty> m_entry_point_key;

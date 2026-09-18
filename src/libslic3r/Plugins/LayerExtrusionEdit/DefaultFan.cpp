@@ -30,6 +30,7 @@ fan_speed_percent and decides whether a physical fan command is necessary.
 
 #include "ExtrusionProcessParameterHelpers.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanTimeEstimator.hpp"
 #include "libslic3r/Plugins/PrintingPlan/PrintingLayerTimeProperty.h"
@@ -113,21 +114,25 @@ float dynamic_overhang_fan(const Config &config,
                            const EffectiveTreeState &state,
                            const LayerFanPolicy &policy);
 void remove_generated_fields(MutableExtrusionEntity entity,
-                             const PluginPropertyKey<GeneratedFanMarker> &marker);
+                             const PluginPropertyKey<GeneratedFanMarker> &marker,
+                             const plugin_run_context *run_ctx);
 void mark_generated_fields(MutableExtrusionEntity entity,
                            const PluginPropertyKey<GeneratedFanMarker> &marker,
-                           const std::set<extrusion_entity_handle *> &generated);
+                           const std::set<extrusion_entity_handle *> &generated,
+                           const plugin_run_context *run_ctx);
 void assign_fan_tree(MutableExtrusionEntity entity,
                      const EffectiveTreeState &parent_state,
                      const Config &config,
                      extruder_index_t extruder_id,
                      const LayerFanPolicy &policy,
-                     EPropertySpeedFieldEditor &editor);
+                     EPropertySpeedFieldEditor &editor,
+                     const plugin_run_context *run_ctx);
 void edit_extrusion(const PrintingExtrusion &extrusion,
                     const Config &config,
                     extruder_index_t extruder_id,
                     const LayerFanPolicy &policy,
-                    const PluginPropertyKey<GeneratedFanMarker> &marker);
+                    const PluginPropertyKey<GeneratedFanMarker> &marker,
+                    const plugin_run_context *run_ctx);
 
 class DefaultFan : public PluginBase
 {
@@ -372,32 +377,46 @@ float dynamic_overhang_fan(const Config &config,
 }
 
 void remove_generated_fields(MutableExtrusionEntity entity,
-                             const PluginPropertyKey<GeneratedFanMarker> &marker)
+                             const PluginPropertyKey<GeneratedFanMarker> &marker,
+                             const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     // A marker means only the fan field on this exact node belongs to this
     // plugin. Other process fields and unmarked fan overrides are untouched.
     if (marker.has(entity)) {
+        throw_if_cancelled(run_ctx);
         if (EPropertySpeed *process = entity.get_mutable(EPropertySpeed::key)) {
             process->fan_speed_percent = -1.f;
             const bool empty = process->speed_mm_per_s < 0.f && process->accel_mm_per_s2 < 0.f &&
                 process->pressure_adv < 0.f && process->fan_speed_percent < 0.f && process->temperature_C < 0.f;
-            if (empty)
+            if (empty) {
+                throw_if_cancelled(run_ctx);
                 entity.remove(EPropertySpeed::key);
+            }
         }
+        throw_if_cancelled(run_ctx);
         marker.remove(entity);
     }
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        remove_generated_fields(entity.child_mutable(child_idx), marker);
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        remove_generated_fields(entity.child_mutable(child_idx), marker, run_ctx);
+    }
 }
 
 void mark_generated_fields(MutableExtrusionEntity entity,
                            const PluginPropertyKey<GeneratedFanMarker> &marker,
-                           const std::set<extrusion_entity_handle *> &generated)
+                           const std::set<extrusion_entity_handle *> &generated,
+                           const plugin_run_context *run_ctx)
 {
-    if (generated.count(entity.mutable_handle()) > 0)
+    throw_if_cancelled(run_ctx);
+    if (generated.count(entity.mutable_handle()) > 0) {
+        throw_if_cancelled(run_ctx);
         marker.get_or_add(entity) = GeneratedFanMarker{};
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        mark_generated_fields(entity.child_mutable(child_idx), marker, generated);
+    }
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        mark_generated_fields(entity.child_mutable(child_idx), marker, generated, run_ctx);
+    }
 }
 
 void assign_fan_tree(MutableExtrusionEntity entity,
@@ -405,12 +424,18 @@ void assign_fan_tree(MutableExtrusionEntity entity,
                      const Config &config,
                      extruder_index_t extruder_id,
                      const LayerFanPolicy &policy,
-                     EPropertySpeedFieldEditor &editor)
+                     EPropertySpeedFieldEditor &editor,
+                     const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     const EffectiveTreeState state = effective_state(entity, parent_state);
     if (entity.child_count() > 0) {
-        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-            assign_fan_tree(entity.child_mutable(child_idx), state, config, extruder_id, policy, editor);
+        for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+            throw_if_cancelled(run_ctx);
+            assign_fan_tree(
+                entity.child_mutable(child_idx), state, config, extruder_id, policy,
+                editor, run_ctx);
+        }
         return;
     }
 
@@ -425,6 +450,7 @@ void assign_fan_tree(MutableExtrusionEntity entity,
     float value = float(policy.speed[role_index(resolved_role)]);
     if (RAW_EXTRUSION_ROLE_IS_PERIMETER(role) && RAW_EXTRUSION_ROLE_HAS(role, RAW_EXTRUSION_ROLE_BRIDGE))
         value = dynamic_overhang_fan(config, extruder_id, role, state, policy);
+    throw_if_cancelled(run_ctx);
     editor.set_value(entity, value);
 }
 
@@ -432,17 +458,22 @@ void edit_extrusion(const PrintingExtrusion &extrusion,
                     const Config &config,
                     extruder_index_t extruder_id,
                     const LayerFanPolicy &policy,
-                    const PluginPropertyKey<GeneratedFanMarker> &marker)
+                    const PluginPropertyKey<GeneratedFanMarker> &marker,
+                    const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     MutableExtrusionEntity root = extrusion.mutable_root();
-    remove_generated_fields(root, marker);
+    remove_generated_fields(root, marker, run_ctx);
 
     // Recompute from the upstream tree after removing only our previous pass,
     // then compact equal leaf values without changing geometry or ordering.
     EPropertySpeedFieldEditor editor(EPropertySpeedField::FanSpeed);
-    assign_fan_tree(root, EffectiveTreeState{}, config, extruder_id, policy, editor);
+    assign_fan_tree(
+        root, EffectiveTreeState{}, config, extruder_id, policy, editor, run_ctx);
+    throw_if_cancelled(run_ctx);
     editor.hoist(root);
-    mark_generated_fields(root, marker, editor.modified_entities());
+    throw_if_cancelled(run_ctx);
+    mark_generated_fields(root, marker, editor.modified_entities(), run_ctx);
 }
 
 DefaultFan &DefaultFan::instance(orchestrator_handle *orch)
@@ -489,6 +520,7 @@ const char *DefaultFan::progress_message_format_impl() const noexcept
 
 void DefaultFan::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
 {
+    throw_if_cancelled(run_ctx);
     m_setup_valid = false;
     m_layer_durations.clear();
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
@@ -500,9 +532,11 @@ void DefaultFan::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
     m_layer_durations.resize(plan.group_count());
     bool needs_estimate = false;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
+        throw_if_cancelled(run_ctx);
         m_layer_durations[group_idx].resize(plan.group(group_idx).layer_group_count(), 0.0);
         const PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerTimeProperty *time =
                 m_layer_time_property.get(group.layer_group(layer_idx).properties());
             if (time != nullptr && time->origin != RAW_PRINTING_LAYER_TIME_ORIGIN_ESTIMATED &&
@@ -522,9 +556,11 @@ void DefaultFan::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
     // covered every layer. Otherwise one ordered pass supplies all missing or
     // replaceable estimates while preserving continuity between layers.
     if (needs_estimate) {
+        throw_if_cancelled(run_ctx);
         const std::vector<PrintingLayerTimeEstimate> estimates =
             PrintingPlanTimeEstimator(print.config()).estimate(plan);
         for (const PrintingLayerTimeEstimate &estimate : estimates) {
+            throw_if_cancelled(run_ctx);
             const PrintingLayerTimeProperty *time = m_layer_time_property.get(
                 plan.group(estimate.group_idx).layer_group(estimate.layer_group_idx).properties());
             if (time == nullptr || !time->is_final())
@@ -543,10 +579,12 @@ void DefaultFan::setup_run_impl(const plugin_run_context *run_ctx) const
         ctx->layer_group_idx >= m_layer_durations[ctx->group_idx].size())
         return;
 
+    throw_if_cancelled(run_ctx);
     const PrintingLayerGroup layer(ctx->layer_group);
     PluginProperties properties = layer.properties();
     PrintingLayerTimeProperty *time = m_layer_time_property.get_mutable(properties);
     if (time == nullptr || !time->is_final()) {
+        throw_if_cancelled(run_ctx);
         PrintingLayerTimeProperty &published = m_layer_time_property.get_or_add(properties);
         published.duration_seconds = m_layer_durations[ctx->group_idx][ctx->layer_group_idx];
         published.origin = RAW_PRINTING_LAYER_TIME_ORIGIN_ESTIMATED;
@@ -561,6 +599,7 @@ void DefaultFan::run_impl(const plugin_run_context *run_ctx) const
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
     if (ctx == nullptr || ctx->print == nullptr || ctx->layer_group == nullptr)
         return;
+    throw_if_cancelled(run_ctx);
 
     const Print print(ctx->print);
     const Config config = print.config();
@@ -570,14 +609,16 @@ void DefaultFan::run_impl(const plugin_run_context *run_ctx) const
         throw std::runtime_error("Printing layer fan calculation needs a valid layer duration.");
 
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
+        throw_if_cancelled(run_ctx);
         const PrintingToolGroup tool = layer.tool_group(tool_idx);
         if (tool.extruder_id() == EXTRUDER_ID_UNKNOWN)
             throw std::runtime_error("Printing layer fan calculation needs a concrete extruder id.");
         const LayerFanPolicy policy = layer_fan_policy(
             config, tool.extruder_id(), ctx->layer_group_idx, time->duration_seconds);
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
+            throw_if_cancelled(run_ctx);
             edit_extrusion(tool.extrusion(extrusion_idx), config, tool.extruder_id(), policy,
-                           m_generated_marker);
+                           m_generated_marker, run_ctx);
             progress().increment();
         }
     }

@@ -106,7 +106,9 @@ void insert_config_extruder_idx(std::set<extruder_index_t> &extruders,
         extruders.insert(idx);
 }
 
-std::set<extruder_index_t> object_extruders(Print print, Object object)
+std::set<extruder_index_t> object_extruders(Print print,
+                                    Object object,
+                                    const plugin_run_context *run_ctx)
 {
     // Layer height limits are constrained by every extruder that may print this
     // object. Scan all print regions and collect the extruders used by
@@ -117,6 +119,8 @@ std::set<extruder_index_t> object_extruders(Print print, Object object)
     const ConfigOption nozzle_diameter = print_config.get("nozzle_diameter");
 
     for (uint32_t region_idx = 0; region_idx < object.print_region_count(); ++region_idx) {
+        if ((region_idx & 63u) == 0u)
+            throw_if_cancelled(run_ctx);
         const PrintRegion region = object.print_region(region_idx);
         const Config region_config = region.config();
 
@@ -174,14 +178,18 @@ coord_t max_layer_height_from_nozzle(const Config &print_config, extruder_index_
     return check_z_step(std::max(min_layer_height, scale_i(value)), scale_i(print_config.get("z_step").get_float()));
 }
 
-LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, Object object, coord_t max_z)
+LayerHeightSlicingParameters make_layer_height_slicing_parameters(
+    Print print,
+    Object object,
+    coord_t max_z,
+    const plugin_run_context *run_ctx)
 {
     // Reconstruct the layer-height constraints normally owned by the host:
     // default height, first-layer behavior, object print height, z_step and the
     // tightest min/max layer height range across all relevant extruders.
     const Config print_config = print.config();
     const Config object_config = object.config();
-    const std::set<extruder_index_t> extruders = object_extruders(print, object);
+    const std::set<extruder_index_t> extruders = object_extruders(print, object, run_ctx);
 
     LayerHeightSlicingParameters out;
     out.z_step = scale_i(print_config.get("z_step").get_float());
@@ -196,6 +204,7 @@ LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, O
         // extruder can print the first layer.
         first_layer_height = std::numeric_limits<coord_t>::max();
         for (extruder_index_t extruder_idx : extruders) {
+            throw_if_cancelled(run_ctx);
             if (extruder_idx == EXTRUDER_ID_UNKNOWN ||
                 uint32_t(extruder_idx) >= nozzle_diameter_opt.size())
                 continue;
@@ -253,6 +262,7 @@ LayerHeightSlicingParameters make_layer_height_slicing_parameters(Print print, O
         max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, 0));
     } else {
         for (extruder_index_t extruder_idx : extruders) {
+            throw_if_cancelled(run_ctx);
             min_layer_height = std::max(min_layer_height, min_layer_height_from_nozzle(print_config, extruder_idx));
             max_layer_height = std::min(max_layer_height, max_layer_height_from_nozzle(print_config, extruder_idx));
         }
@@ -314,7 +324,8 @@ bool triangle_is_horizontal(c_vec3f a, c_vec3f b, c_vec3f c)
 void collect_flat_surfaces_from_volume(const Volume &volume,
                                        c_matrix4d object_transform,
                                        const LayerHeightSlicingParameters &params,
-                                       std::map<coord_t, double> &area_by_z)
+                                       std::map<coord_t, double> &area_by_z,
+                                       const plugin_run_context *run_ctx)
 {
     // Only model-part volumes define printable geometry. Modifier volumes and
     // support-enforcer/blocker volumes may also contain horizontal triangles,
@@ -328,6 +339,8 @@ void collect_flat_surfaces_from_volume(const Volume &volume,
 
     const c_matrix4d transform = matrix4d_mul(object_transform, volume.matrix());
     for (uint32_t triangle_idx = 0; triangle_idx < mesh.triangle_count(); ++triangle_idx) {
+        if ((triangle_idx & 63u) == 0u)
+            throw_if_cancelled(run_ctx);
         const c_triangle_indices indices = mesh.triangle(triangle_idx);
         const c_vec3f a = transform_point(transform, mesh.vertex(indices.a));
         const c_vec3f b = transform_point(transform, mesh.vertex(indices.b));
@@ -362,19 +375,24 @@ void collect_flat_surfaces_from_volume(const Volume &volume,
 std::vector<FlatSurface> collect_flat_surfaces(Object object,
                                                const LayerHeightSlicingParameters &params,
                                                double min_flat_area,
-                                               PluginProgress &progress)
+                                               PluginProgress &progress,
+                                               const plugin_run_context *run_ctx)
 {
     std::map<coord_t, double> area_by_z;
     const c_matrix4d object_transform = object.transform_centered();
     for (uint32_t volume_idx = 0; volume_idx < object.volume_count(); ++volume_idx) {
+        throw_if_cancelled(run_ctx);
         const Volume volume = object.volume(volume_idx);
-        collect_flat_surfaces_from_volume(volume, object_transform, params, area_by_z);
+        collect_flat_surfaces_from_volume(volume, object_transform, params, area_by_z, run_ctx);
         progress.increment(ProgressScanVolumes);
     }
 
     std::vector<FlatSurface> flat_surfaces;
     flat_surfaces.reserve(area_by_z.size());
+    uint32_t candidate_idx = 0;
     for (const std::pair<const coord_t, double> &entry : area_by_z) {
+        if ((candidate_idx++ & 63u) == 0u)
+            throw_if_cancelled(run_ctx);
         // Small shelves and tiny mesh artifacts would make the optimizer chase
         // too many anchors. Filter them before sorting candidates by priority.
         if (entry.second >= min_flat_area)
@@ -424,18 +442,24 @@ bool interval_can_be_layered(coord_t lo, coord_t hi, const LayerHeightSlicingPar
     return min_layers <= max_layers;
 }
 
-bool anchors_can_be_layered(const std::vector<coord_t> &anchors, const LayerHeightSlicingParameters &params)
+bool anchors_can_be_layered(const std::vector<coord_t> &anchors,
+                            const LayerHeightSlicingParameters &params,
+                            const plugin_run_context *run_ctx)
 {
     // Anchors are accepted only if every consecutive interval can later be
     // expanded into real layer boundaries.
-    for (size_t idx = 1; idx < anchors.size(); ++idx)
+    for (size_t idx = 1; idx < anchors.size(); ++idx) {
+        if ((idx & 63u) == 0u)
+            throw_if_cancelled(run_ctx);
         if (!interval_can_be_layered(anchors[idx - 1], anchors[idx], params))
             return false;
+    }
     return true;
 }
 
 std::vector<coord_t> select_flat_surface_anchors(const std::vector<FlatSurface> &flat_surfaces,
-                                                 const LayerHeightSlicingParameters &params)
+                                                 const LayerHeightSlicingParameters &params,
+                                                 const plugin_run_context *run_ctx)
 {
     // Start with anchors that are always required: bed, object top, and
     // optionally the fixed first object layer. Candidate flat surfaces are then
@@ -448,7 +472,10 @@ std::vector<coord_t> select_flat_surface_anchors(const std::vector<FlatSurface> 
     std::sort(anchors.begin(), anchors.end());
     anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
 
+    uint32_t surface_idx = 0;
     for (const FlatSurface &surface : flat_surfaces) {
+        if ((surface_idx++ & 63u) == 0u)
+            throw_if_cancelled(run_ctx);
         if (std::binary_search(anchors.begin(), anchors.end(), surface.z))
             continue;
 
@@ -458,7 +485,7 @@ std::vector<coord_t> select_flat_surface_anchors(const std::vector<FlatSurface> 
         std::vector<coord_t> candidate = anchors;
         candidate.push_back(surface.z);
         std::sort(candidate.begin(), candidate.end());
-        if (anchors_can_be_layered(candidate, params))
+        if (anchors_can_be_layered(candidate, params, run_ctx))
             anchors = std::move(candidate);
     }
 
@@ -468,7 +495,8 @@ std::vector<coord_t> select_flat_surface_anchors(const std::vector<FlatSurface> 
 void append_interval_layers(std::vector<coord_t> &boundaries,
                             coord_t lo,
                             coord_t hi,
-                            const LayerHeightSlicingParameters &params)
+                            const LayerHeightSlicingParameters &params,
+                            const plugin_run_context *run_ctx)
 {
     // Expand one anchor-to-anchor interval into concrete layer boundaries. The
     // generated heights are as close as possible to the preferred layer height,
@@ -512,6 +540,8 @@ void append_interval_layers(std::vector<coord_t> &boundaries,
 
     coord_t current = lo;
     for (int64_t layer_idx = 0; layer_idx < layer_count; ++layer_idx) {
+        if ((layer_idx & 63) == 0)
+            throw_if_cancelled(run_ctx);
         const int64_t height_units = base_height + (layer_idx < remainder ? 1 : 0);
         current += coord_t(height_units * unit);
         boundaries.push_back(current);
@@ -520,7 +550,8 @@ void append_interval_layers(std::vector<coord_t> &boundaries,
 }
 
 std::vector<coord_t> make_layer_boundaries(const std::vector<coord_t> &anchors,
-                                           const LayerHeightSlicingParameters &params)
+                                           const LayerHeightSlicingParameters &params,
+                                           const plugin_run_context *run_ctx)
 {
     // Convert mandatory anchors into the full sorted list of layer boundary Zs.
     // Each interval is independent, so every selected flat surface remains an
@@ -528,14 +559,17 @@ std::vector<coord_t> make_layer_boundaries(const std::vector<coord_t> &anchors,
     std::vector<coord_t> boundaries;
     boundaries.reserve(anchors.size() * 2);
     boundaries.push_back(anchors.front());
-    for (size_t idx = 1; idx < anchors.size(); ++idx)
-        append_interval_layers(boundaries, anchors[idx - 1], anchors[idx], params);
+    for (size_t idx = 1; idx < anchors.size(); ++idx) {
+        throw_if_cancelled(run_ctx);
+        append_interval_layers(boundaries, anchors[idx - 1], anchors[idx], params, run_ctx);
+    }
     boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
     return boundaries;
 }
 
 std::vector<coord_t> layer_descriptors_from_boundaries(const std::vector<coord_t> &boundaries,
-                                                       const LayerHeightSlicingParameters &params)
+                                                       const LayerHeightSlicingParameters &params,
+                                                       const plugin_run_context *run_ctx)
 {
     // Translate explicit layer boundaries into the STEP_LAYER_HEIGHT payload:
     // [layer_top_z, layer_height, ...]. Boundaries normally contain at least
@@ -546,12 +580,14 @@ std::vector<coord_t> layer_descriptors_from_boundaries(const std::vector<coord_t
     if (usable_boundaries.size() < 2) {
         usable_boundaries.clear();
         usable_boundaries.push_back(0);
-        append_interval_layers(usable_boundaries, 0, params.object_print_z_height, params);
+        append_interval_layers(usable_boundaries, 0, params.object_print_z_height, params, run_ctx);
     }
 
     std::vector<coord_t> descriptors;
     descriptors.reserve(usable_boundaries.size() * 2);
     for (size_t idx = 1; idx < usable_boundaries.size(); ++idx) {
+        if ((idx & 63u) == 0u)
+            throw_if_cancelled(run_ctx);
         const coord_t lo = usable_boundaries[idx - 1];
         const coord_t hi = usable_boundaries[idx];
         const coord_t height = hi - lo;
@@ -566,7 +602,8 @@ std::vector<coord_t> layer_descriptors_from_boundaries(const std::vector<coord_t
 std::vector<coord_t> make_flat_area_layer_descriptors(Object object,
                                                       const LayerHeightSlicingParameters &params,
                                                       double min_flat_area,
-                                                      PluginProgress &progress)
+                                                      PluginProgress &progress,
+                                                      const plugin_run_context *run_ctx)
 {
     // Main algorithm:
     // 1. collect horizontal surface candidates from model volumes;
@@ -575,10 +612,11 @@ std::vector<coord_t> make_flat_area_layer_descriptors(Object object,
     // The host receives explicit [layer_top_z, layer_height] pairs. This keeps
     // enough information to represent non-contiguous layers if a future
     // generator needs to leave an empty interval.
-    std::vector<FlatSurface> flat_surfaces = collect_flat_surfaces(object, params, min_flat_area, progress);
-    std::vector<coord_t> anchors = select_flat_surface_anchors(flat_surfaces, params);
-    std::vector<coord_t> boundaries = make_layer_boundaries(anchors, params);
-    return layer_descriptors_from_boundaries(boundaries, params);
+    std::vector<FlatSurface> flat_surfaces = collect_flat_surfaces(
+        object, params, min_flat_area, progress, run_ctx);
+    std::vector<coord_t> anchors = select_flat_surface_anchors(flat_surfaces, params, run_ctx);
+    std::vector<coord_t> boundaries = make_layer_boundaries(anchors, params, run_ctx);
+    return layer_descriptors_from_boundaries(boundaries, params, run_ctx);
 }
 
 } // namespace
@@ -682,6 +720,7 @@ void FlatAreaLayerHeight::inilialize_impl(storage_handle *) const
 
 void FlatAreaLayerHeight::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_layer_height_generation *ctx = plugin_ctx_as_layer_height_generation(run_ctx);
     if (ctx == nullptr || ctx->object == nullptr)
         return;
@@ -693,6 +732,7 @@ void FlatAreaLayerHeight::setup_run_impl(const plugin_run_context *run_ctx) cons
 
 void FlatAreaLayerHeight::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_layer_height_generation *ctx = plugin_ctx_as_layer_height_generation(run_ctx);
     if (ctx == nullptr || ctx->print == nullptr || ctx->object == nullptr || ctx->set_layer_height_profile == nullptr)
         return;
@@ -710,13 +750,15 @@ void FlatAreaLayerHeight::run_impl(const plugin_run_context *run_ctx) const
     const Object object(ctx->object);
     const Config print_config = print.config();
     const double min_flat_area = print_config.get("layer_height_min_flat_area").get_float();
-    const LayerHeightSlicingParameters params = make_layer_height_slicing_parameters(print, object, ctx->max_z);
+    const LayerHeightSlicingParameters params = make_layer_height_slicing_parameters(
+        print, object, ctx->max_z, run_ctx);
     std::vector<coord_t> layer_descriptors =
-        make_flat_area_layer_descriptors(object, params, min_flat_area, progress());
+        make_flat_area_layer_descriptors(object, params, min_flat_area, progress(), run_ctx);
 
     // A non-empty descriptor list is transferred as borrowed memory for the
     // duration of the callback only; the host copies it before returning from
     // set_layer_height_profile().
+    throw_if_cancelled(run_ctx);
     if (!layer_descriptors.empty())
         ctx->set_layer_height_profile(ctx->object, layer_descriptors.data(), uint32_t(layer_descriptors.size()));
     else

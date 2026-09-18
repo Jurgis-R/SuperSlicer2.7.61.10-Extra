@@ -422,6 +422,10 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
                                        const run_ctx_gcode_reader &context,
                                        GCodeStateTracker &state) const
 {
+    // A Reader may receive a very large host chunk. Check at the callback
+    // boundary and again while that chunk is split into physical lines so a
+    // stream without event-producing commands still stops promptly.
+    throw_if_cancelled(&run_context);
     validate_private_state(state);
     // Chunks may split anywhere, including in CRLF and numeric parameters.
     // Retain only bytes after the last complete newline between pulls.
@@ -432,7 +436,10 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
         pending.append(chunk.data(), chunk.size());
         size_t consumed = 0;
         size_t line_end = 0;
+        uint64_t processed_lines = 0;
         while ((line_end = pending.find('\n', consumed)) != std::string::npos) {
+            if ((processed_lines++ & 63u) == 0u)
+                throw_if_cancelled(&run_context);
             const size_t line_begin = consumed;
             const size_t text_size = line_end > 0 && pending[line_end - 1] == '\r' ? line_end - 1 : line_end;
             const size_t line_size = text_size - line_begin;
@@ -450,8 +457,10 @@ void BuiltinGCodeReaderBase::read_impl(const plugin_run_context &run_context,
             pending.erase(0, consumed);
         }
     }
-    if (!pending.empty())
+    if (!pending.empty()) {
+        throw_if_cancelled(&run_context);
         consume_line(run_context, context, state, pending, pending_action);
+    }
     validate_private_state(state);
 }
 
@@ -529,6 +538,8 @@ void BuiltinGCodeReaderBase::publish_unknown(const plugin_run_context &run_conte
     const raw_gcode_reader_state &snapshot = state.state();
     std::vector<raw_gcode_reader_event_item> items;
     for (uint32_t index = 0; index < snapshot.item_count; ++index) {
+        if ((index & 63u) == 0u)
+            throw_if_cancelled(&run_context);
         const raw_gcode_reader_event_item &item = snapshot.items[index];
         if (item.type != RAW_GCODE_READER_ITEM_LINE_NUMBER &&
             item.type != RAW_GCODE_READER_ITEM_READER_ID)
@@ -736,6 +747,9 @@ void BuiltinGCodeReaderBase::consume_line(const plugin_run_context &run_context,
                                          std::string_view text,
                                          std::optional<raw_gcode_reader_marker_type> &pending_action) const
 {
+    // Empty/comment-only lines do not publish an event, so the outer line
+    // splitter cannot rely on publish() to observe cancellation for them.
+    throw_if_cancelled(&run_context);
     // Convert one parsed command into the shared event vocabulary. Commands
     // outside the common subset and the derived dialect hooks invalidate
     // portable state so later output never relies on guessed machine values.

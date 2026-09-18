@@ -91,7 +91,8 @@ Data prepare(const PrintingPlan &plan,
              const std::vector<PrintRegion> &regions,
              storage_handle *storage,
              const SeamPlacementConstraints &constraints,
-             const char *provider_name);
+             const char *provider_name,
+             const plugin_run_context *run_context = nullptr);
 
 /* Stable traversal identity is the only ordering key; borrowed pointer values
    and graph insertion order never decide a tie. */

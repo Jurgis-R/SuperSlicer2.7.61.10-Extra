@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 
 namespace slic3r_api { namespace Ordering { namespace TreeOrderingGeometry {
@@ -37,12 +38,14 @@ the selected region is passed to a SeamPlacer.
 bool projected_point_on_entity(const ExtrusionEntity &entity,
                                c_point requested,
                                c_point &projected,
-                               double &distance_squared);
+                               double &distance_squared,
+                               const plugin_run_context *run_ctx);
 
 /* Rotate a loop stored as one local polyline by splitting at its seam. */
 void rotate_local_loop_to_seam(storage_handle *scratch_storage,
                                MutableExtrusionEntity loop,
-                               c_point seam);
+                               c_point seam,
+                               const plugin_run_context *run_ctx);
 
 /* Compare two points without converting their scaled coordinates. */
 double squared_distance(c_point lhs, c_point rhs);
@@ -61,8 +64,10 @@ bool entity_intersects_region(storage_handle *scratch_storage,
 bool projected_point_on_entity(const ExtrusionEntity &entity,
                                const c_point requested,
                                c_point &projected,
-                               double &distance_squared_out)
+                               double &distance_squared_out,
+                               const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     bool found_projection = false;
     double best_distance = (std::numeric_limits<double>::max)();
     c_point best_point = {};
@@ -83,10 +88,11 @@ bool projected_point_on_entity(const ExtrusionEntity &entity,
     }
 
     for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         c_point child_point = {};
         double child_distance = (std::numeric_limits<double>::max)();
         if (projected_point_on_entity(
-                entity.child(child_idx), requested, child_point, child_distance) &&
+                entity.child(child_idx), requested, child_point, child_distance, run_ctx) &&
             (!found_projection || child_distance < best_distance)) {
             best_point = child_point;
             best_distance = child_distance;
@@ -103,8 +109,10 @@ bool projected_point_on_entity(const ExtrusionEntity &entity,
 
 void rotate_local_loop_to_seam(storage_handle *scratch_storage,
                                MutableExtrusionEntity loop,
-                               const c_point seam)
+                               const c_point seam,
+                               const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     StoredExtrusionEntity before(scratch_storage, loop.readonly());
     StoredExtrusionEntity after(scratch_storage, loop.readonly());
     if (extrusion_polyline_split_at_point(
@@ -194,33 +202,45 @@ bool entity_intersects_region(storage_handle *scratch_storage,
 
 } // namespace
 
-void reverse_tree(MutableExtrusionEntity entity)
+void reverse_tree(MutableExtrusionEntity entity, const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (entity.point_count() > 0) {
+        throw_if_cancelled(run_ctx);
         if (!entity.reverse())
             throw std::runtime_error("The extrusion polyline could not be reversed.");
         return;
     }
 
     /* Reverse every path first, then reverse child order as one unit. */
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        reverse_tree(entity.child_mutable(child_idx));
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        reverse_tree(entity.child_mutable(child_idx), run_ctx);
+    }
 
     std::vector<const extrusion_entity_handle *> desired;
     std::vector<const extrusion_entity_handle *> current;
     desired.reserve(entity.child_count());
     current.reserve(entity.child_count());
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         current.push_back(entity.child(child_idx).handle());
-    for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx)
+    }
+    for (uint32_t child_idx = entity.child_count(); child_idx > 0; --child_idx) {
+        throw_if_cancelled(run_ctx);
         desired.push_back(entity.child(child_idx - 1).handle());
+    }
 
     for (uint32_t target_idx = 0; target_idx < desired.size(); ++target_idx) {
+        throw_if_cancelled(run_ctx);
         if (current[target_idx] == desired[target_idx])
             continue;
         uint32_t source_idx = target_idx + 1;
-        while (source_idx < current.size() && current[source_idx] != desired[target_idx])
+        while (source_idx < current.size() && current[source_idx] != desired[target_idx]) {
+            throw_if_cancelled(run_ctx);
             ++source_idx;
+        }
+        throw_if_cancelled(run_ctx);
         if (source_idx == current.size() ||
             entity.move_child_from(target_idx, entity, source_idx) != target_idx)
             throw std::runtime_error(
@@ -233,10 +253,12 @@ void reverse_tree(MutableExtrusionEntity entity)
 
 void rotate_loop_to_seam(storage_handle *scratch_storage,
                          MutableExtrusionEntity loop,
-                         const c_point seam)
+                         const c_point seam,
+                         const plugin_run_context *run_ctx)
 {
+    throw_if_cancelled(run_ctx);
     if (loop.point_count() > 0) {
-        rotate_local_loop_to_seam(scratch_storage, loop, seam);
+        rotate_local_loop_to_seam(scratch_storage, loop, seam, run_ctx);
         return;
     }
     if (loop.child_count() == 0)
@@ -255,6 +277,7 @@ void rotate_loop_to_seam(storage_handle *scratch_storage,
     MutableExtrusionEntity nested_loop;
     bool has_other_geometry = false;
     for (uint32_t child_idx = 0; child_idx < loop.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         MutableExtrusionEntity child = loop.child_mutable(child_idx);
         if (child.empty())
             continue;
@@ -265,7 +288,7 @@ void rotate_loop_to_seam(storage_handle *scratch_storage,
         nested_loop = child;
     }
     if (nested_loop.valid() && !has_other_geometry) {
-        rotate_loop_to_seam(scratch_storage, nested_loop, seam);
+        rotate_loop_to_seam(scratch_storage, nested_loop, seam, run_ctx);
         return;
     }
 
@@ -274,10 +297,11 @@ void rotate_loop_to_seam(storage_handle *scratch_storage,
     c_point projected = {};
     double best_distance = (std::numeric_limits<double>::max)();
     for (uint32_t child_idx = 0; child_idx < loop.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
         c_point child_projection = {};
         double child_distance = (std::numeric_limits<double>::max)();
         if (projected_point_on_entity(
-                loop.child(child_idx), seam, child_projection, child_distance) &&
+                loop.child(child_idx), seam, child_projection, child_distance, run_ctx) &&
             child_distance < best_distance) {
             containing_idx = child_idx;
             projected = child_projection;
@@ -313,26 +337,34 @@ void rotate_loop_to_seam(storage_handle *scratch_storage,
             start_idx = containing_idx;
         }
     } else {
-        rotate_loop_to_seam(scratch_storage, child, projected);
+        rotate_loop_to_seam(scratch_storage, child, projected, run_ctx);
     }
 
     /* Move the original prefix behind the selected child without cloning it. */
     for (uint32_t moved_count = 0; moved_count < start_idx; ++moved_count) {
+        throw_if_cancelled(run_ctx);
         const uint32_t moved_idx = loop.move_child_from(loop.child_count(), loop, 0);
         if (moved_idx == EXTRUSION_INDEX_INVALID)
             throw std::runtime_error(
                 "The extrusion loop rejected its seam rotation.");
     }
+    throw_if_cancelled(run_ctx);
     if (closing_piece != nullptr &&
         loop.append_child_move(closing_piece->mutable_view()) == EXTRUSION_INDEX_INVALID)
         throw std::runtime_error(
             "The extrusion loop rejected its closing seam fragment.");
 }
 
-void disable_ordering_flags_recursively(MutableExtrusionEntity entity)
+void disable_ordering_flags_recursively(
+    MutableExtrusionEntity entity,
+    const plugin_run_context *run_ctx)
 {
-    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
-        disable_ordering_flags_recursively(entity.child_mutable(child_idx));
+    throw_if_cancelled(run_ctx);
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx) {
+        throw_if_cancelled(run_ctx);
+        disable_ordering_flags_recursively(entity.child_mutable(child_idx), run_ctx);
+    }
+    throw_if_cancelled(run_ctx);
     entity.disable_sort();
     entity.disable_reverse();
 }

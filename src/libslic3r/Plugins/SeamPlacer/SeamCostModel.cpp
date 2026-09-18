@@ -55,6 +55,7 @@ float dot(c_vec3f a, c_vec3f b);
 c_vec3f cross(c_vec3f a, c_vec3f b);
 float norm(c_vec3f a);
 c_vec3f normalized(c_vec3f a);
+void throw_if_mesh_cancelled(const mesh_query_cancel *cancel);
 // Wrap the angle-sampling walk around a closed polyline.
 size_t prev_idx_modulo(size_t i, size_t n);
 size_t next_idx_modulo(size_t i, size_t n);
@@ -65,6 +66,13 @@ float dot(c_vec3f a,c_vec3f b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
 c_vec3f cross(c_vec3f a,c_vec3f b) { return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; }
 float norm(c_vec3f a) { return std::sqrt(dot(a,a)); }
 c_vec3f normalized(c_vec3f a) { return mul(a,1.f/norm(a)); }
+void throw_if_mesh_cancelled(const mesh_query_cancel *cancel)
+{
+    if (cancel != nullptr && cancel->is_cancelled != nullptr &&
+        cancel->is_cancelled(cancel->context) != 0)
+        throw MeshQueryError(MESH_QUERY_CANCELLED,
+                             "Cost visibility initialization was cancelled.");
+}
 size_t prev_idx_modulo(size_t i,size_t n) { return i ? i-1 : n-1; }
 size_t next_idx_modulo(size_t i,size_t n) { return i+1 == n ? 0 : i+1; }
 struct CoordinateFunctor {
@@ -123,9 +131,11 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
                                {negatives.handle(),object.transform_centered(),1}},cancel);
     }();
     const MeshSurfaceSamples sampled=scene.sample(kVisibilitySamplesCount,cancel);
+    throw_if_mesh_cancelled(cancel);
     model.samples=sampled.values();
     if (model.samples.empty()) return;
     model.tree.build(model.samples.size());
+    throw_if_mesh_cancelled(cancel);
     const float density=float(kVisibilitySamplesCount)/float(sampled.area());
     model.radius=std::sqrt(4.f/(-std::log(.9f)*density)/float(PI));
     model.visibility.assign(model.samples.size(),1.f);
@@ -138,6 +148,7 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
         for (size_t y=0; y<kRaysPerSampleAxis; ++y)
             directions.push_back(hemisphere(float(x)*step+step/2,float(y)*step+step/2));
     for (size_t begin=0; begin<model.samples.size(); begin+=256) {
+        throw_if_mesh_cancelled(cancel);
         const size_t end=std::min(model.samples.size(),begin+256);
         std::vector<mesh_query_ray> rays;
         rays.reserve((end-begin)*rays_per_sample);
@@ -152,6 +163,7 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
         }
         const MeshRayHits intersections=scene.cast(rays,negative,cancel);
         for (size_t r=0; r<rays.size(); ++r) {
+            if (r % 256 == 0) throw_if_mesh_cancelled(cancel);
             const std::vector<mesh_query_hit> hits=intersections.ray(r);
             if (hits.empty()) continue;
             const c_vec3f direction{float(rays[r].direction.x),float(rays[r].direction.y),float(rays[r].direction.z)};
@@ -159,7 +171,10 @@ void build_visibility_model(const Object &object, VisibilityModel &model, const 
             if (!negative) occluded=dot(hits.front().normal,direction)<=0;
             else {
                 int counter=0;
+                size_t hit_index=0;
                 for (std::vector<mesh_query_hit>::const_reverse_iterator hit=hits.rbegin(); hit!=hits.rend(); ++hit) {
+                    if (hit_index++ % 256 == 0)
+                        throw_if_mesh_cancelled(cancel);
                     const float orientation=dot(hit->normal,direction);
                     const int sign=int(orientation>0)-int(orientation<0);
                     counter += hit->geometry_id==1 ? -sign : sign;
@@ -289,8 +304,10 @@ std::vector<float> calculate_cost_visibility(const slic3r_api::Object &object,
     build_visibility_model(object, model, cancel);
     std::vector<float> visibility;
     visibility.reserve(points.size());
-    for (const c_vec3f point : points)
-        visibility.push_back(calculate_point_visibility(model, point));
+    for (size_t index = 0; index < points.size(); ++index) {
+        if (index % 64 == 0) throw_if_mesh_cancelled(cancel);
+        visibility.push_back(calculate_point_visibility(model, points[index]));
+    }
     return visibility;
 }
 

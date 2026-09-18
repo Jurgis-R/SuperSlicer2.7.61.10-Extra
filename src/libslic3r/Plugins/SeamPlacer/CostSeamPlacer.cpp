@@ -5,6 +5,7 @@
 
 #include "CostSeamPlacer.hpp"
 #include "SeamCandidatePreparation.hpp"
+#include "SeamInitializationCancellation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -67,7 +68,9 @@ mutates these maps; this does not freeze host geometry between placement calls.
 class CostSession final : public SeamPlacerSession
 {
 public:
-    explicit CostSession(storage_handle *storage, const mesh_query_cancel *cancel = nullptr) : m_storage(storage), m_cancel(cancel) {}
+    explicit CostSession(storage_handle *storage,
+                         const plugin_run_context *run_context = nullptr) :
+        m_storage(storage), m_run_context(run_context) {}
     void initialize(const PrintingPlan &plan, const std::vector<PrintRegion> &regions) override;
     // Cost has no regional preference; the router keeps the first region on equal priorities.
     float get_priority(const ExtrusionEntity &, const LayerRegion &) const override { return 50.f; }
@@ -76,7 +79,7 @@ public:
 
 private:
     storage_handle *m_storage;
-    const mesh_query_cancel *m_cancel;
+    const plugin_run_context *m_run_context;
     bool m_initialization_started = false;
     std::set<const print_region_handle *> m_regions;
     std::map<const extrusion_entity_handle *, std::vector<SeamCandidate>> m_loop_candidates;
@@ -197,10 +200,11 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         throw std::logic_error(
             "Cost-based seam placement sessions may only be initialized once.");
     m_initialization_started = true;
+    InitializationCancellation::check(m_run_context);
     if (!plan.valid() || m_storage == nullptr)
         throw std::invalid_argument("Cost-based seam placement needs a valid plan and temporary storage.");
     SeamPlacementConstraints constraints;
-    constraints.initialize_for_regions(plan, m_storage, regions);
+    constraints.initialize_for_regions(plan, m_storage, regions, m_run_context);
     std::map<RegionIslandKey, IslandWork> work;
     for (const PrintRegion &region : regions)
         if (region.valid()) m_regions.insert(region.handle());
@@ -211,17 +215,20 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
     prepared when any of its PrintRegions belongs to this provider session.
     */
     for (uint32_t group_index = 0; group_index < plan.group_count(); ++group_index) {
+        InitializationCancellation::check(m_run_context);
         const PrintingGroup group = plan.group(group_index);
         for (uint32_t layer_index = 0; layer_index < group.layer_group_count(); ++layer_index) {
             const PrintingLayerGroup layer_group = group.layer_group(layer_index);
             for (uint32_t tool_index = 0; tool_index < layer_group.tool_group_count(); ++tool_index) {
                 const PrintingToolGroup tool = layer_group.tool_group(tool_index);
                 for (uint32_t extrusion_index = 0; extrusion_index < tool.extrusion_count(); ++extrusion_index) {
+                    InitializationCancellation::check_periodic(
+                        m_run_context, extrusion_index);
                     const PrintingExtrusion extrusion = tool.extrusion(extrusion_index);
                     const LayerRegionIsland island = extrusion.region_island();
                     const std::vector<CandidatePreparation::CollectedLoop> collected =
                         CandidatePreparation::collect_perimeter_loops(
-                            extrusion.root(), extrusion.role());
+                            extrusion.root(), extrusion.role(), m_run_context);
                     if (!island.valid() || island.region_count() == 0) {
                         if (!collected.empty())
                             throw std::runtime_error(
@@ -267,7 +274,8 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
                             CandidatePreparation::prepare_loop_candidates(
                                 m_storage, constraints, island_work.island,
                                 loop, region, shift, width,
-                                unscaled(external_flow.nozzle_diameter));
+                                unscaled(external_flow.nozzle_diameter),
+                                m_run_context);
                         island_work.external_loops.push_back(std::move(external_loop));
                     }
                 }
@@ -282,6 +290,7 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
     internal perimeter receives a simple concatenation of the finalized vectors.
     */
     for (auto &[key, island_work] : work) {
+        InitializationCancellation::check(m_run_context);
         if (!island_work.has_perimeter_loop) continue;
         if (island_work.external_loops.empty()) {
             if (island_work.requires_island_fallback)
@@ -306,12 +315,14 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         angle_weight = angle_weight / island_work.island.region_count();
         std::vector<SeamCandidate> fallback;
         for (ExternalLoopWork &external_loop : island_work.external_loops) {
+            InitializationCancellation::check(m_run_context);
             if (external_loop.candidates.empty())
                 throw std::runtime_error(
                     "Cost-based seam placement found an external perimeter without candidates.");
             CandidatePreparation::calculate_layer_attributes(
-                island_work.island, external_loop.candidates);
-            CandidatePreparation::filter_candidates(external_loop.candidates);
+                island_work.island, external_loop.candidates, m_run_context);
+            CandidatePreparation::filter_candidates(
+                external_loop.candidates, m_run_context);
             if (external_loop.candidates.empty())
                 throw std::runtime_error(
                     "Cost-based seam placement found an external perimeter without candidates.");
@@ -327,12 +338,27 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
                     points.push_back({float(unscaled(candidate.point.x)),
                                       float(unscaled(candidate.point.y)),
                                       float(unscaled(layer.slice_z()))});
-                visibility = Slic3r::SeamCostModel::calculate_cost_visibility(
-                    object, points, m_cancel);
+                const mesh_query_cancel cancel{
+                    const_cast<plugin_run_context *>(m_run_context),
+                    [](void *opaque) -> int32_t {
+                        const plugin_run_context *context =
+                            static_cast<const plugin_run_context *>(opaque);
+                        return is_cancelled(context) ? 1 : 0;
+                    }};
+                try {
+                    visibility = Slic3r::SeamCostModel::calculate_cost_visibility(
+                        object, points, m_run_context == nullptr ? nullptr : &cancel);
+                } catch (const MeshQueryError &error) {
+                    if (error.status == MESH_QUERY_CANCELLED)
+                        throw PluginCancelled();
+                    throw;
+                }
             }
             std::vector<SeamCandidate> prepared;
             prepared.reserve(external_loop.candidates.size());
             for (size_t index = 0; index < external_loop.candidates.size(); ++index) {
+                InitializationCancellation::check_periodic(
+                    m_run_context, index);
                 const CandidatePreparation::Candidate &candidate =
                     external_loop.candidates[index];
                 const double overhang_penalty = candidate.overhang > 0 && candidate.width > 0 ?
@@ -368,7 +394,7 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
         }
     }
     m_storage = nullptr;
-    m_cancel = nullptr;
+    m_run_context = nullptr;
 }
 
 c_point CostSession::place_seam(const ExtrusionEntity &loop, const LayerRegion &region,
@@ -505,18 +531,10 @@ void CostSeamPlacer::run_impl(const plugin_run_context *run_context) const
         throw std::invalid_argument("Cost-based seam placement received an invalid run context.");
     std::vector<PrintRegion> regions;
     for (uint32_t index = 0; index < context->region_count; ++index) regions.emplace_back(context->regions[index]);
-    const mesh_query_cancel cancel{const_cast<plugin_run_context *>(run_context), [](void *opaque) -> int32_t {
-        const plugin_run_context *ctx=static_cast<const plugin_run_context *>(opaque);
-        return ctx->is_cancelled && ctx->is_cancelled(ctx->host_context);
-    }};
-    try {
-        context->instance = make_seam_placer_instance(
-            std::unique_ptr<SeamPlacerSession>(new CostSession(run_context->plugin_storage, &cancel)),
-            PrintingPlan(context->plan), regions);
-    } catch (const MeshQueryError &error) {
-        if (error.status == MESH_QUERY_CANCELLED) throw PluginCancelled();
-        throw;
-    }
+    InitializationCancellation::check(run_context);
+    context->instance = make_seam_placer_instance(
+        make_cost_seam_session(run_context->plugin_storage, run_context),
+        PrintingPlan(context->plan), regions);
 }
 
 } // namespace
@@ -524,6 +542,13 @@ void CostSeamPlacer::run_impl(const plugin_run_context *run_context) const
 std::unique_ptr<SeamPlacerSession> make_cost_seam_session(storage_handle *storage)
 {
     return std::unique_ptr<SeamPlacerSession>(new CostSession(storage));
+}
+
+std::unique_ptr<SeamPlacerSession> make_cost_seam_session(
+    storage_handle *storage, const plugin_run_context *run_context)
+{
+    return std::unique_ptr<SeamPlacerSession>(
+        new CostSession(storage, run_context));
 }
 
 void register_cost_seam_placer_plugin(orchestrator_handle *orchestrator)

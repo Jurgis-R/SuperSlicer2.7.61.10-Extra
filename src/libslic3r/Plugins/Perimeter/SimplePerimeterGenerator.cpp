@@ -76,10 +76,15 @@ const char *k_no_dependencies[] = { nullptr };
 constexpr uint16_t k_perimeter_flags_loop = uint16_t(C_EXTRUSION_PERIMETER_FLAG_LOOP);
 constexpr uint16_t k_perimeter_flags_hole = uint16_t(C_EXTRUSION_PERIMETER_FLAG_LOOP | C_EXTRUSION_PERIMETER_FLAG_HOLE);
 
-StoredExPolygonCollection offset_area(storage_handle *storage, const ExPolygon &area, double delta)
+StoredExPolygonCollection offset_area(storage_handle *storage,
+                                      const ExPolygon &area,
+                                      double delta,
+                                      const plugin_run_context *run_ctx)
 {
     ClipperOperand subject(storage, area);
+    throw_if_cancelled(run_ctx);
     StoredExPolygonCollection out = clipper_offset(subject, delta).to_expolygon_collection();
+    throw_if_cancelled(run_ctx);
     out.ensure_valid();
     return out;
 }
@@ -116,12 +121,14 @@ StoredExtrusionEntity make_perimeter_extrusion(storage_handle *storage,
                                                const ExPolygon &area,
                                                const c_flow &flow,
                                                uint16_t perimeter_idx,
-                                               double line_offset)
+                                               double line_offset,
+                                               const plugin_run_context *run_ctx)
 {
     StoredExtrusionEntity extrusion(storage);
     extrusion.disable_reverse().disable_sort();
 
-    StoredExPolygonCollection loops = offset_area(storage, area, line_offset);
+    StoredExPolygonCollection loops = offset_area(storage, area, line_offset, run_ctx);
+    throw_if_cancelled(run_ctx);
     for (ExPolygon loop : loops) {
         append_perimeter_loop(extrusion, loop.contour(), flow, perimeter_idx, k_perimeter_flags_loop);
         for (Polygon hole : loop.holes())
@@ -150,6 +157,7 @@ int32_t generate_node(void *generator_context,
     const SimpleGeneratorState &state = *reinterpret_cast<const SimpleGeneratorState *>(generator_context);
     storage_handle *storage = context->run_ctx->plugin_storage;
     PerimeterNodeView node_view(node);
+    throw_if_cancelled(context->run_ctx);
 
     if (state.perimeter_count > 0)
         node_view.set_perimeter_needed(std::max(node_view.perimeter_needed(), state.perimeter_count));
@@ -170,20 +178,23 @@ int32_t generate_node(void *generator_context,
                                                  -0.5 * double(state.flow.spacing);
     const uint16_t perimeter_idx = uint16_t(std::min<uint32_t>(node_view.perimeter_idx(), UINT16_MAX));
     StoredExtrusionEntity extrusion = make_perimeter_extrusion(
-        storage, node_view.area(), state.flow, perimeter_idx, line_offset);
+        storage, node_view.area(), state.flow, perimeter_idx, line_offset, context->run_ctx);
+    throw_if_cancelled(context->run_ctx);
     extrusion_move_from(node->extrusions, extrusion.mutable_handle());
 
     const double inner_offset = first_perimeter ? -0.5 * double(state.flow.width + state.flow.spacing) :
                                                   -double(state.flow.spacing);
     StoredExPolygonCollection inner_areas =
-        offset_area(storage, node_view.area(), inner_offset);
+        offset_area(storage, node_view.area(), inner_offset, context->run_ctx);
+    throw_if_cancelled(context->run_ctx);
     expolygons_move(inner_areas_out, inner_areas.mutable_handle());
 
     // The fill/anchor area is slightly larger than the next perimeter area,
     // matching the old "perimeter spacing minus 25%" anchoring convention.
     const double fill_offset = inner_offset + 0.25 * double(state.flow.spacing);
     StoredExPolygonCollection inner_fill_areas =
-        offset_area(storage, node_view.area(), fill_offset);
+        offset_area(storage, node_view.area(), fill_offset, context->run_ctx);
+    throw_if_cancelled(context->run_ctx);
     expolygons_move(inner_fill_areas_out, inner_fill_areas.mutable_handle());
 
     return 1;
@@ -238,6 +249,7 @@ const char *SimplePerimeterGenerator::progress_message_format_impl() const noexc
 
 void SimplePerimeterGenerator::setup_run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_generate_perimeter *ctx = plugin_ctx_as_generate_perimeter(run_ctx);
     if (ctx != nullptr && ctx->island != nullptr)
         progress().add_max(1);
@@ -245,6 +257,7 @@ void SimplePerimeterGenerator::setup_run_impl(const plugin_run_context *run_ctx)
 
 void SimplePerimeterGenerator::run_impl(const plugin_run_context *run_ctx) const
 {
+    throw_if_cancelled(run_ctx);
     const run_ctx_generate_perimeter *ctx = plugin_ctx_as_generate_perimeter(run_ctx);
     if (ctx == nullptr || ctx->island == nullptr || ctx->run_region_group == nullptr)
         return;
@@ -263,12 +276,14 @@ void SimplePerimeterGenerator::run_impl(const plugin_run_context *run_ctx) const
     SimpleGeneratorState state;
     state.flow = external_perimeter_flow(island);
     state.perimeter_count = perimeter_count(island);
+    throw_if_cancelled(run_ctx);
     ctx->run_region_group(ctx,
                           regions.empty() ? nullptr : regions.data(),
                           uint32_t(regions.size()),
                           island.slice().handle(),
                           &state,
                           &generate_node);
+    throw_if_cancelled(run_ctx);
 
     progress().increment();
 }

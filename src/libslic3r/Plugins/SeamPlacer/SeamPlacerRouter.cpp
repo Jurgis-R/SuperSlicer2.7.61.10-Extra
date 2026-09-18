@@ -15,6 +15,7 @@
 
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h"
 #include "libslic3r/Api/plugin/cpp/OrchestratorViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/SeamPlacerViews.hpp"
 #include "libslic3r/Plugins/Ordering/ExtrusionTreeOrderingGeometry.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
@@ -262,6 +263,8 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
         // that point.
         const raw_plugin_execution_status status = orchestrator_view.execute(
             batch.provider, print.handle(), context);
+        if (status == RAW_PLUGIN_EXECUTION_CANCELLED)
+            throw PluginCancelled();
         if (status != RAW_PLUGIN_EXECUTION_SUCCESS)
             throw std::runtime_error(
                 "SEAM_PLACER provider '" + batch.provider.id() +

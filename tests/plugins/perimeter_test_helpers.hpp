@@ -164,7 +164,8 @@ void require_simple_generator_first_child_area_partition(const PerimeterRunCaptu
 size_t run_remove_gap_fill_module(const DynamicPrintConfig &config,
                                   bool use_region_override,
                                   double *length_out = nullptr,
-                                  size_t layer_idx = 0);
+                                  size_t layer_idx = 0,
+                                  bool cancel_before_after = false);
 
 SeparateHoleContourDirectResult run_separate_hole_contour_module_direct(
     const DynamicPrintConfig &config,
