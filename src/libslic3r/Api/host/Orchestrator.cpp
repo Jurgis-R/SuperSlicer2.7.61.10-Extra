@@ -17,6 +17,8 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
 #include <boost/filesystem.hpp>
@@ -1452,9 +1454,61 @@ std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
     int32_t current_index,
     const std::string &group) const
 {
+
     // Rules from different groups are ANDed on the same target. Inside one
     // group, ENABLE rules are ANDed and ENABLE_ANY rules are ORed.
     std::map<std::string, std::map<PluginGuiRuleTarget, PluginGuiRuleTargetState>> enabled_by_group;
+
+    // Per-call caches. The clause memo removes the duplication created by the
+    // per-target expansion of the rule builders: the same condition is often
+    // evaluated for dozens of targets. The option cache removes the repeated
+    // string map lookups for target and condition keys. Both borrow their
+    // strings from m_gui_rules, which is stable for the whole call.
+    struct ClauseCacheKey
+    {
+        raw_gui_rule_condition condition;
+        int32_t condition_index;
+        double condition_float_value;
+        std::string_view condition_key;
+
+        bool operator==(const ClauseCacheKey &rhs) const
+        {
+            return condition == rhs.condition &&
+                   condition_index == rhs.condition_index &&
+                   condition_float_value == rhs.condition_float_value &&
+                   condition_key == rhs.condition_key;
+        }
+    };
+    struct ClauseCacheHash
+    {
+        size_t operator()(const ClauseCacheKey &key) const
+        {
+            size_t seed = 0;
+            config_hash_combine(seed, int32_t(key.condition));
+            config_hash_combine(seed, key.condition_index);
+            config_hash_combine(seed, key.condition_float_value);
+            config_hash_combine(seed, key.condition_key);
+            return seed;
+        }
+    };
+    enum class ClauseResult : uint8_t
+    {
+        False,
+        True,
+        Invalid
+    };
+    std::unordered_map<ClauseCacheKey, ClauseResult, ClauseCacheHash> clause_cache;
+    std::unordered_map<std::string_view, const ConfigOption *> option_cache;
+
+    const auto option_for = [&config, &option_cache](const std::string &key) -> const ConfigOption * {
+        const std::string_view view(key);
+        const auto existing = option_cache.find(view);
+        if (existing != option_cache.end())
+            return existing->second;
+        const ConfigOption *option = config.optptr(key);
+        option_cache.emplace(view, option);
+        return option;
+    };
 
     for (const PluginGuiRule &rule : m_gui_rules) {
         // This function currently only applies enable/disable rules.
@@ -1469,19 +1523,16 @@ std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
 
         // Missing keys mean "not applicable to this config". A rule only
         // participates when its target and every clause option exist.
-        if (!config.has(rule.target_key))
+        const ConfigOption *target_option = option_for(rule.target_key);
+        if (target_option == nullptr)
             continue;
         bool applicable = true;
         for (const PluginGuiRuleClause &clause : rule.clauses)
-            if (clause.condition_key.empty() || !config.has(clause.condition_key)) {
+            if (clause.condition_key.empty() || option_for(clause.condition_key) == nullptr) {
                 applicable = false;
                 break;
             }
         if (!applicable)
-            continue;
-
-        const ConfigOption *target_option = config.optptr(rule.target_key);
-        if (target_option == nullptr)
             continue;
 
         int target_index = -1;
@@ -1489,19 +1540,38 @@ std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
             continue;
 
         bool condition_enabled = true;
-        try {
-            for (const PluginGuiRuleClause &clause : rule.clauses) {
-                const ConfigOption *condition_option = config.optptr(clause.condition_key);
-                if (condition_option == nullptr ||
-                    !gui_rule_condition_value(*condition_option, clause, current_index)) {
-                    condition_enabled = false;
-                    break;
+        bool rule_skipped = false;
+        for (const PluginGuiRuleClause &clause : rule.clauses) {
+            const ClauseCacheKey cache_key{
+                clause.condition, clause.condition_index, clause.condition_float_value, clause.condition_key };
+            ClauseResult result = ClauseResult::False;
+            const auto cached = clause_cache.find(cache_key);
+            if (cached != clause_cache.end()) {
+                result = cached->second;
+            } else {
+                try {
+                    const ConfigOption *condition_option = option_for(clause.condition_key);
+                    result = condition_option != nullptr &&
+                             gui_rule_condition_value(*condition_option, clause, current_index)
+                                 ? ClauseResult::True : ClauseResult::False;
+                } catch (...) {
+                    // Malformed plugin input must not crash the GUI refresh.
+                    result = ClauseResult::Invalid;
                 }
+                clause_cache.emplace(cache_key, result);
             }
-        } catch (...) {
-            // Malformed plugin input must not crash the GUI refresh.
-            continue;
+
+            if (result == ClauseResult::Invalid) {
+                rule_skipped = true;
+                break;
+            }
+            if (result == ClauseResult::False) {
+                condition_enabled = false;
+                break;
+            }
         }
+        if (rule_skipped)
+            continue;
 
         const PluginGuiRuleTarget target(rule.target_key, target_index);
         enabled_by_group[rule.group][target].add(rule.action, condition_enabled);
@@ -1525,6 +1595,7 @@ std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
         application.enabled = entry.second;
         out.emplace_back(std::move(application));
     }
+
     return out;
 }
 
