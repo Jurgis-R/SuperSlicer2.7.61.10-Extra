@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from slic3r_api import (
     CPoint,
+    GuiRule,
     PluginCancelled,
     PluginBase,
     RAW_CO_BOOL,
@@ -29,8 +30,6 @@ from slic3r_api import (
     RAW_CONFIG_OPTION_MODE_EXPERT,
     RAW_CONFIG_OPTION_MODE_SUSI,
     RAW_CONTAINER_TYPE_REGION,
-    RAW_GUI_RULE_ACTION_ENABLE,
-    RAW_GUI_RULE_CONDITION_BOOL_TRUE,
     RAW_OPTION_CATEGORY_SLICING,
     RAW_PRESET_TYPE_FFF_PRINT,
     RAW_PT_FFF,
@@ -244,18 +243,8 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
             "end_line\n",
             priority=0,
         )
-        self.api.add_gui_rule(
-            target_key=POLYHOLES_THRESHOLD_KEY,
-            condition_key=POLYHOLES_KEY,
-            action=RAW_GUI_RULE_ACTION_ENABLE,
-            condition=RAW_GUI_RULE_CONDITION_BOOL_TRUE,
-        )
-        self.api.add_gui_rule(
-            target_key=POLYHOLES_TWISTED_KEY,
-            condition_key=POLYHOLES_KEY,
-            action=RAW_GUI_RULE_ACTION_ENABLE,
-            condition=RAW_GUI_RULE_CONDITION_BOOL_TRUE,
-        )
+        GuiRule.enable(POLYHOLES_THRESHOLD_KEY).when_true(POLYHOLES_KEY).add_to(self.api)
+        GuiRule.enable(POLYHOLES_TWISTED_KEY).when_true(POLYHOLES_KEY).add_to(self.api)
 
     def run(self, run_ctx_address: int) -> None:
         throw_if_cancelled(run_ctx_address)

@@ -107,6 +107,7 @@ from slic3r_printing_plan_views import *
 from slic3r_print_helpers import *
 from slic3r_bridge_detector_views import *
 from slic3r_orchestrator_views import *
+from slic3r_gui_rule_helpers import *
 from slic3r_run_context import *
 from steps.layer_height import *
 from steps.slicing import *

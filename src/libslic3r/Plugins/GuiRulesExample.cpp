@@ -10,6 +10,7 @@
 
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Config/FFFPrintConfig.hpp"
 
 /*
@@ -22,7 +23,7 @@ place them in the GUI, and exercise the available GUI-rule conditions.
 
 Initialization creates the test settings with create_rule_test_option(), adds
 one print.ui fragment containing those settings, and registers the rules with
-add_enable_rule(). The host evaluates those rules when the configuration or
+GuiRule. The host evaluates those rules when the configuration or
 the referenced setting changes; the plugin does not evaluate them in
 run_impl(), which is intentionally empty.
 
@@ -34,7 +35,7 @@ The normal call flow is:
             `-- GuiRulesExample::inilialize_impl()
                 |-- create_rule_test_option() for each test setting
                 |-- orchestrator_add_ui_fragment("print.ui", ...)
-                `-- add_enable_rule() for each activation condition
+                `-- GuiRule::enable(...).when_*() for each activation condition
 
 The settings cover boolean, non-zero, enabled/disabled, integer-comparison,
 and chained conditions. The plugin is therefore useful for testing the GUI
@@ -89,25 +90,6 @@ void create_rule_test_option(orchestrator_handle *orchestrator,
     def.can_be_disabled = can_be_disabled ? 1 : 0;
     def.default_serialized_value = default_value;
     orchestrator_create_option_def(orchestrator, &def);
-}
-
-void add_enable_rule(orchestrator_handle *orchestrator,
-                     const char *target_key,
-                     raw_gui_rule_condition condition,
-                     const char *condition_key,
-                     double condition_value = 0.0)
-{
-    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
-    clause.condition = condition;
-    clause.condition_key = condition_key;
-    clause.condition_float_value = condition_value;
-
-    raw_gui_rule rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE;
-    rule.target_key = target_key;
-    rule.clauses = &clause;
-    rule.clause_count = 1;
-    orchestrator_add_gui_rule(orchestrator, &rule);
 }
 
 } // namespace
@@ -221,19 +203,37 @@ void GuiRulesExample::inilialize_impl(storage_handle *) const
                                  GuiRulesExample::print_ui_fragment(),
                                  0);
 
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_bool_true_target", RAW_GUI_RULE_CONDITION_BOOL_TRUE, "plugin_gui_rule_test_bool_true_condition");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_bool_false_target", RAW_GUI_RULE_CONDITION_BOOL_FALSE, "plugin_gui_rule_test_bool_false_condition");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_value_nonzero_target", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "plugin_gui_rule_test_value_nonzero_condition");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_option_enabled_target", RAW_GUI_RULE_CONDITION_OPTION_ENABLED, "plugin_gui_rule_test_option_enabled_condition");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_option_disabled_target", RAW_GUI_RULE_CONDITION_OPTION_DISABLED, "plugin_gui_rule_test_option_disabled_condition");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_int_equals_target", RAW_GUI_RULE_CONDITION_INT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Classic));
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_int_not_equals_target", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Classic));
+    GuiRule::enable("plugin_gui_rule_test_bool_true_target")
+        .when_true("plugin_gui_rule_test_bool_true_condition")
+        .add_to(m_orchestrator);
+    GuiRule::enable("plugin_gui_rule_test_bool_false_target")
+        .when_false("plugin_gui_rule_test_bool_false_condition")
+        .add_to(m_orchestrator);
+    GuiRule::enable("plugin_gui_rule_test_value_nonzero_target")
+        .when_non_zero("plugin_gui_rule_test_value_nonzero_condition")
+        .add_to(m_orchestrator);
+    GuiRule::enable("plugin_gui_rule_test_option_enabled_target")
+        .when_enabled("plugin_gui_rule_test_option_enabled_condition")
+        .add_to(m_orchestrator);
+    GuiRule::enable("plugin_gui_rule_test_option_disabled_target")
+        .when_disabled("plugin_gui_rule_test_option_disabled_condition")
+        .add_to(m_orchestrator);
+    GuiRule::enable("plugin_gui_rule_test_int_equals_target")
+        .when_int_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Classic))
+        .add_to(m_orchestrator);
+    GuiRule::enable("plugin_gui_rule_test_int_not_equals_target")
+        .when_int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Classic))
+        .add_to(m_orchestrator);
 
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "perimeters");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Arachne));
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls_min_width", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "perimeters");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls_min_width", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Arachne));
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls_min_width", RAW_GUI_RULE_CONDITION_BOOL_TRUE, "plugin_gui_rule_test_thin_walls");
+    GuiRule::enable("plugin_gui_rule_test_thin_walls")
+        .when_non_zero("perimeters")
+        .when_int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Arachne))
+        .add_to(m_orchestrator);
+    GuiRule::enable("plugin_gui_rule_test_thin_walls_min_width")
+        .when_non_zero("perimeters")
+        .when_int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Arachne))
+        .when_true("plugin_gui_rule_test_thin_walls")
+        .add_to(m_orchestrator);
 }
 
 void GuiRulesExample::run_impl(const plugin_run_context *) const

@@ -103,6 +103,9 @@ if (TARGET Python3::Python)
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_orchestrator_views.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_orchestrator_views.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_gui_rule_helpers.py"
+            "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_gui_rule_helpers.py"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/../libslic3r/Api/plugin/python/slic3r_printing_plan_views.py"
             "$<TARGET_FILE_DIR:python_plugin_loader>/python/slic3r_printing_plan_views.py"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

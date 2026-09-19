@@ -164,6 +164,8 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/ExtrusionTreeVisitors.hpp
 	Api/plugin/cpp/ExtrusionViews.hpp
 	Api/plugin/cpp/GeometryViews.hpp
+	Api/plugin/cpp/GuiRuleHelpers.cpp
+	Api/plugin/cpp/GuiRuleHelpers.hpp
 	Api/plugin/cpp/PluginPropertyKey.hpp
 	Api/plugin/cpp/properties/DataTreeProperties.hpp
 	Api/plugin/cpp/properties/ExtrusionProperties.hpp

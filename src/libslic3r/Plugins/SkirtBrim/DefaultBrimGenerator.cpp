@@ -20,6 +20,7 @@
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_skirt_brim.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Brim.hpp"
@@ -149,12 +150,6 @@ struct DefaultBrimSettings
 // Read the five settings owned by this plugin from an object's API config view.
 DefaultBrimSettings read_default_brim_settings(const PrintObject &object);
 
-// Register one GUI activation rule for a setting owned by this plugin.
-void add_enable_rule(orchestrator_handle *orchestrator,
-                     const char *target_key,
-                     raw_gui_rule_condition condition,
-                     const char *condition_key);
-
 // Register the option definitions, layout fragment and activation rules.
 void initialize_default_brim_settings(orchestrator_handle *orchestrator);
 
@@ -240,23 +235,6 @@ DefaultBrimSettings read_default_brim_settings(const PrintObject &object)
     settings.geometry.ear_pattern = config.enum_or_default("brim_ears_pattern", 0) == 1 ?
         BrimEarPattern::Rectilinear : BrimEarPattern::Concentric;
     return settings;
-}
-
-void add_enable_rule(orchestrator_handle *orchestrator,
-                     const char *target_key,
-                     const raw_gui_rule_condition condition,
-                     const char *condition_key)
-{
-    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
-    clause.condition = condition;
-    clause.condition_key = condition_key;
-
-    raw_gui_rule rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE;
-    rule.target_key = target_key;
-    rule.clauses = &clause;
-    rule.clause_count = 1;
-    orchestrator_add_gui_rule(orchestrator, &rule);
 }
 
 void initialize_default_brim_settings(orchestrator_handle *orchestrator)
@@ -373,19 +351,28 @@ void initialize_default_brim_settings(orchestrator_handle *orchestrator)
         0);
 
     /*
-    Multiple ENABLE rules for one target are combined with AND. The GUI thus
-    mirrors the geometric preconditions without hardcoded option names in
-    ConfigManipulation.
+    Registering a conjunction for one target mirrors the geometric
+    preconditions without hardcoded option names in ConfigManipulation.
     */
-    add_enable_rule(orchestrator, "brim_ears", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "brim_width");
-    add_enable_rule(orchestrator, "brim_inside_holes", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "brim_width");
-    add_enable_rule(orchestrator, "brim_inside_holes", RAW_GUI_RULE_CONDITION_BOOL_FALSE, "brim_width_interior");
-    add_enable_rule(orchestrator, "brim_ears_max_angle", RAW_GUI_RULE_CONDITION_BOOL_TRUE, "brim_ears");
-    add_enable_rule(orchestrator, "brim_ears_max_angle", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "brim_width");
-    add_enable_rule(orchestrator, "brim_ears_detection_length", RAW_GUI_RULE_CONDITION_BOOL_TRUE, "brim_ears");
-    add_enable_rule(orchestrator, "brim_ears_detection_length", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "brim_width");
-    add_enable_rule(orchestrator, "brim_ears_pattern", RAW_GUI_RULE_CONDITION_BOOL_TRUE, "brim_ears");
-    add_enable_rule(orchestrator, "brim_ears_pattern", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "brim_width");
+    GuiRule::enable("brim_ears")
+        .when_non_zero("brim_width")
+        .add_to(orchestrator);
+    GuiRule::enable("brim_inside_holes")
+        .when_non_zero("brim_width")
+        .when_false("brim_width_interior")
+        .add_to(orchestrator);
+    GuiRule::enable("brim_ears_max_angle")
+        .when_true("brim_ears")
+        .when_non_zero("brim_width")
+        .add_to(orchestrator);
+    GuiRule::enable("brim_ears_detection_length")
+        .when_true("brim_ears")
+        .when_non_zero("brim_width")
+        .add_to(orchestrator);
+    GuiRule::enable("brim_ears_pattern")
+        .when_true("brim_ears")
+        .when_non_zero("brim_width")
+        .add_to(orchestrator);
 }
 
 TemporaryObjectInstances::TemporaryObjectInstances(PrintObject &object) :
