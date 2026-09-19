@@ -26,9 +26,13 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <initializer_list>
+#include <vector>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/nowide/iostream.hpp>
+
+#include "libslic3r/Api/host/Orchestrator.hpp"
 
 #include "Flow.hpp"
 #include "PointUtils.hpp"
@@ -613,6 +617,7 @@ void initialize_fff_print_config_cache()
 {
     static const int initialized = fff_print_config_static_initializer();
     (void)initialized;
+    initialize_fff_print_gui_rules();
 }
 
 static Points to_points(const std::vector<Vec2d> &dpts)
@@ -9099,6 +9104,922 @@ void init_fff_params(PrintConfigDef &definition)
         assert(!def->default_value->is_enabled());
     }
 
+}
+
+// GUI activation rules for the FFF print settings.
+//
+// These rules replace the enable/disable logic of the legacy
+// ConfigManipulation::toggle_print_fff_options(). Each target is expressed as a
+// disjunction (DNF) of clause conjunctions registered in its own rule group, so
+// it is ANDed with unrelated plugin ownership rules instead of merging with
+// them. The verbatim legacy reference is copied below, commented out.
+namespace {
+
+using FffGuiClauses = std::vector<raw_gui_rule_clause>;
+
+raw_gui_rule_clause fff_clause(raw_gui_rule_condition condition, const char *condition_key,
+                               int32_t int_value = 0, double float_value = 0.0)
+{
+    raw_gui_rule_clause out = raw_gui_rule_clause_init();
+    out.condition = condition;
+    out.condition_key = condition_key;
+    out.condition_int_value = int_value;
+    out.condition_float_value = float_value;
+    return out;
+}
+
+raw_gui_rule_clause fff_non_zero(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, key); }
+raw_gui_rule_clause fff_true(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_BOOL_TRUE, key); }
+raw_gui_rule_clause fff_false(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_BOOL_FALSE, key); }
+raw_gui_rule_clause fff_enabled(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_OPTION_ENABLED, key); }
+raw_gui_rule_clause fff_int_eq(const char *key, int32_t value) { return fff_clause(RAW_GUI_RULE_CONDITION_INT_EQUALS, key, value); }
+raw_gui_rule_clause fff_int_ne(const char *key, int32_t value) { return fff_clause(RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, key, value); }
+raw_gui_rule_clause fff_float_eq(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_EQUALS, key, 0, value); }
+raw_gui_rule_clause fff_float_lt(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN, key, 0, value); }
+raw_gui_rule_clause fff_float_ge(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL, key, 0, value); }
+raw_gui_rule_clause fff_is_percent(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_IS_PERCENT, key); }
+raw_gui_rule_clause fff_vector_empty(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_VECTOR_EMPTY, key); }
+
+// Concatenate conjunctions to build one disjunct.
+FffGuiClauses fff_all(std::initializer_list<FffGuiClauses> parts)
+{
+    FffGuiClauses out;
+    for (const FffGuiClauses &part : parts)
+        out.insert(out.end(), part.begin(), part.end());
+    return out;
+}
+
+FffGuiClauses fff_one(const raw_gui_rule_clause &clause_value)
+{
+    return FffGuiClauses{ clause_value };
+}
+
+// Register every disjunct of one target.
+void fff_add_any(const char *target_key, const std::vector<FffGuiClauses> &disjuncts)
+{
+    for (const FffGuiClauses &disjunct : disjuncts) {
+        if (disjunct.empty())
+            continue;
+        raw_gui_rule rule = raw_gui_rule_init();
+        rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
+        rule.target_key = target_key;
+        rule.scope = RAW_PRESET_TYPE_FFF_PRINT;
+        rule.rule_group = FFF_PRINT_GUI_RULE_GROUP;
+        rule.clauses = disjunct.data();
+        rule.clause_count = uint32_t(disjunct.size());
+        Orchestrator::instance().add_gui_rule(&rule);
+    }
+}
+
+void fff_add_any_for(const std::initializer_list<const char *> &target_keys,
+                     const std::vector<FffGuiClauses> &disjuncts)
+{
+    for (const char *target_key : target_keys)
+        fff_add_any(target_key, disjuncts);
+}
+
+void fff_add_one(const char *target_key, const FffGuiClauses &disjunct)
+{
+    fff_add_any(target_key, std::vector<FffGuiClauses>{ disjunct });
+}
+
+void fff_add_one_for(const std::initializer_list<const char *> &target_keys, const FffGuiClauses &disjunct)
+{
+    for (const char *target_key : target_keys)
+        fff_add_one(target_key, disjunct);
+}
+
+// Shared clause sets. Names follow the legacy local variables where possible.
+const FffGuiClauses k_P = fff_one(fff_non_zero("perimeters"));
+const FffGuiClauses k_H = fff_one(fff_non_zero("fill_density"));
+const FffGuiClauses k_T = fff_one(fff_non_zero("top_solid_layers"));
+const FffGuiClauses k_B = fff_one(fff_non_zero("bottom_solid_layers"));
+const FffGuiClauses k_S = fff_one(fff_int_eq("solid_infill_every_layers", 1));
+const FffGuiClauses k_D = fff_one(fff_non_zero("solid_infill_every_layers"));
+const FffGuiClauses k_E = fff_one(fff_non_zero("solid_infill_below_area"));
+const FffGuiClauses k_spiral = fff_one(fff_true("spiral_vase"));
+const FffGuiClauses k_not_P = fff_one(fff_false("perimeters"));
+const FffGuiClauses k_arachne = fff_one(fff_int_eq("perimeter_generator", int(PerimeterGeneratorType::Arachne)));
+const FffGuiClauses k_not_arachne = fff_one(fff_int_ne("perimeter_generator", int(PerimeterGeneratorType::Arachne)));
+const FffGuiClauses k_supp = fff_one(fff_true("support_material"));
+const FffGuiClauses k_raft = fff_one(fff_non_zero("raft_layers"));
+const FffGuiClauses k_skirt = fff_one(fff_non_zero("skirts"));
+const FffGuiClauses k_brim = fff_one(fff_non_zero("brim_width"));
+const FffGuiClauses k_brim_inner = fff_one(fff_non_zero("brim_width_interior"));
+const FffGuiClauses k_ensure = fff_one(fff_int_ne("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)));
+const FffGuiClauses k_enforce = fff_one(fff_non_zero("support_material_enforce_layers"));
+const FffGuiClauses k_style_organic = fff_one(fff_int_eq("support_material_style", int(SupportMaterialStyle::smsOrganic)));
+const FffGuiClauses k_style_snug = fff_one(fff_int_eq("support_material_style", int(SupportMaterialStyle::smsSnug)));
+const FffGuiClauses k_external_first = fff_one(fff_true("external_perimeters_first"));
+const FffGuiClauses k_not_loop = fff_one(fff_false("perimeter_loop"));
+const FffGuiClauses k_loop = fff_one(fff_true("perimeter_loop"));
+const FffGuiClauses k_overhangs = fff_one(fff_true("overhangs"));
+const FffGuiClauses k_scarf = fff_one(fff_int_ne("seam_slope_type", int(SeamScarfType::None)));
+const FffGuiClauses k_default_accel = fff_one(fff_non_zero("default_acceleration"));
+const FffGuiClauses k_contact_none = fff_one(fff_int_eq("support_material_contact_distance_type", int(zdNone)));
+
+const std::vector<FffGuiClauses> k_has_top = {
+    k_T,
+    fff_all({ k_P, k_spiral }),
+    k_S
+};
+const std::vector<FffGuiClauses> k_has_bottom = { k_B, k_S };
+const std::vector<FffGuiClauses> k_has_solid = {
+    k_T,
+    fff_all({ k_P, k_spiral }),
+    k_S,
+    k_B,
+    fff_all({ k_H, k_D }),
+    fff_all({ k_H, k_E })
+};
+const std::vector<FffGuiClauses> k_have_support = { k_supp, k_raft };
+const std::vector<FffGuiClauses> k_have_brim = { k_brim, k_brim_inner };
+const std::vector<FffGuiClauses> k_have_interface = {
+    fff_all({ k_supp, fff_one(fff_non_zero("support_material_interface_layers")) }),
+    fff_all({ k_supp, fff_one(fff_non_zero("support_material_bottom_interface_layers")) }),
+    fff_all({ k_raft, fff_one(fff_non_zero("support_material_interface_layers")) }),
+    fff_all({ k_raft, fff_one(fff_non_zero("support_material_bottom_interface_layers")) })
+};
+const std::vector<FffGuiClauses> k_has_organic = {
+    fff_all({ k_style_organic, k_supp }),
+    fff_all({ k_style_organic, k_enforce })
+};
+
+// base AND NOT(has_organic_supports):
+// NOT(style == organic AND (support OR enforce > 0)).
+std::vector<FffGuiClauses> fff_not_organic(const std::vector<FffGuiClauses> &base)
+{
+    std::vector<FffGuiClauses> out;
+    for (const FffGuiClauses &disjunct : base) {
+        out.push_back(fff_all({
+            disjunct,
+            fff_one(fff_int_ne("support_material_style", int(SupportMaterialStyle::smsOrganic)))
+        }));
+        out.push_back(fff_all({
+            disjunct,
+            fff_one(fff_false("support_material")),
+            fff_one(fff_int_eq("support_material_enforce_layers", 0))
+        }));
+    }
+    return out;
+}
+
+} // namespace
+
+// Legacy reference copy of ConfigManipulation::toggle_print_fff_options().
+// It is disabled in ConfigManipulation.cpp; this copy stays commented for review.
+//     bool have_perimeters = config->opt_int("perimeters") > 0;
+//     for (auto el : {
+//         "extra_perimeters", "extra_perimeters_below_area", "extra_perimeters_count", "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs",
+//         "external_perimeters_first", "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing","external_perimeter_extrusion_change_odd_layers",
+//         "overhangs",
+//         "seam_position","staggered_inner_seams",
+//         "perimeter_speed", "perimeter_reverse", "perimeter_generator",
+//         "external_perimeter_speed", "small_perimeter_speed",
+//         "overhangs_dynamic_flow", "overhangs_dynamic_speed",
+//         "small_perimeter_min_length", " small_perimeter_max_length", "spiral_vase",
+//         "seam_notch_all", "seam_notch_inner", "seam_notch_outer"})
+//         toggle_field(el, have_perimeters);
+//
+//     bool has_spiral_vase = have_perimeters && config->opt_bool("spiral_vase");
+//
+//     toggle_field("perimeter_generator", have_perimeters);
+//     bool have_arachne = have_perimeters && config->opt_enum<PerimeterGeneratorType>("perimeter_generator") == PerimeterGeneratorType::Arachne;
+//     bool have_perimeter_hole = !have_arachne && (config->opt_int("perimeters") == config->opt_int("perimeters_hole") || !config->is_enabled("perimeters_hole"));
+//     for (auto el : {"wall_transition_length", "wall_transition_filter_deviation", "wall_transition_angle",
+//                     "wall_distribution_count", "min_feature_size", "min_bead_width"}) {
+//         toggle_field(el, have_arachne);
+//     }
+//     toggle_field("perimeters_hole", !have_arachne);
+//     toggle_field("overhangs_extrusion_spacing", !have_arachne);
+//
+//     for (auto el : {"perimeter_loop", "thin_perimeters", "perimeter_round_corners"})
+//         toggle_field(el, have_perimeters && !have_arachne);
+//
+//     bool have_perimeter_loop = config->opt_bool("perimeter_loop") && !have_arachne;
+//
+//     bool has_external_peri_not_loop = config->opt_bool("external_perimeters_first") && !have_perimeter_loop;
+//     toggle_field("seam_slope_type", has_external_peri_not_loop);
+//     for (auto el : { "seam_slope_min_height", "seam_slope_max_length"})
+//         toggle_field(el, has_external_peri_not_loop && config->option<ConfigOptionEnum<SeamScarfType>>("seam_slope_type")->value != SeamScarfType::None);
+//     toggle_field("external_perimeters_first_force", has_external_peri_not_loop && !have_arachne );
+//     bool is_ext_forced = config->opt_bool("external_perimeters_first_force");
+//     for (auto el : { "external_perimeters_nothole", "external_perimeters_hole"})
+//         toggle_field(el, has_external_peri_not_loop && !have_arachne && !is_ext_forced);
+//
+//     toggle_field("perimeter_bonding", config->opt_bool("external_perimeters_first") && !have_arachne && config->option("perimeter_overlap")->get_float() == 100.f && config->option("external_perimeter_overlap")->get_float() == 100.f);
+//
+//
+//     toggle_field("no_perimeter_unsupported_algo", have_perimeters);
+//     toggle_field("only_one_perimeter_top", have_perimeters);
+//     toggle_field("only_one_perimeter_first_layer", config->opt_int("perimeters") > 1);
+//     bool have_overhangs = have_perimeters &&config->opt_bool("overhangs");
+//     bool can_have_overhangs_reverse =  !have_arachne && have_overhangs && !config->opt_bool("perimeter_reverse");
+//     toggle_field("overhangs_reverse", can_have_overhangs_reverse);
+//     toggle_field("overhangs_reverse_threshold", can_have_overhangs_reverse && config->opt_bool("overhangs_reverse"));
+//     toggle_field("overhangs_speed_enforce", have_overhangs && !have_perimeter_loop && have_overhangs);
+//     for (auto el : { "overhangs_speed", "overhangs_width_speed", "overhangs_dynamic_speed", "overhangs_flow_ratio" })
+//         toggle_field(el, have_overhangs);
+//     bool have_overhangs_flow = have_overhangs && config->option("overhangs_flow_ratio")->is_enabled();
+//     for (auto el : { "overhangs_width", "overhangs_dynamic_flow" })
+//         toggle_field(el, have_overhangs_flow);
+//
+//
+//     toggle_field("min_width_top_surface", have_perimeters && config->opt_bool("only_one_perimeter_top"));
+//     toggle_field("thin_perimeters_all", have_perimeters && config->option("thin_perimeters")->get_float() != 0 && !have_arachne);
+//     bool have_thin_wall = !have_arachne && have_perimeters;
+//     toggle_field("thin_walls", have_thin_wall);
+//     for (auto el : { "thin_walls_min_width", "thin_walls_overlap", "thin_walls_merge" })
+//         toggle_field(el, have_thin_wall && config->opt_bool("thin_walls"));
+//
+//     const bool seam_cost_enabled = have_perimeters &&
+//         config->option<ConfigOptionEnum<SeamPosition>>("seam_position")->value == SeamPosition::spCost;
+//     for (const char *el : { "seam_angle_cost", "seam_travel_cost" }) {
+//         if (config->option(el) != nullptr)
+//             toggle_field(el, seam_cost_enabled);
+//     }
+//     if (config->option("seam_visibility") != nullptr)
+//         toggle_field("seam_visibility", seam_cost_enabled);
+//
+//     toggle_field("perimeter_loop_seam", have_perimeter_loop);
+//
+//     bool have_notch = have_perimeters && (config->option("seam_notch_all")->get_float() != 0 ||
+//                                           config->option("seam_notch_inner")->get_float() != 0 ||
+//                                           config->option("seam_notch_outer")->get_float() != 0);
+//     toggle_field("seam_notch_angle", have_notch);
+//
+//     bool have_gap_fill = !have_arachne;
+//     toggle_field("gap_fill_enabled", have_gap_fill);
+//     have_gap_fill = have_gap_fill && config->opt_bool("gap_fill_enabled");
+//     for (auto el : { "gap_fill_last"})
+//         toggle_field(el, have_gap_fill);
+//     for (auto el : { "gap_fill_no_overhang" })
+//         toggle_field(el, have_gap_fill);
+//     if (!have_gap_fill) {
+//         have_gap_fill = config->opt_bool("infill_filled_bottom") || config->opt_bool("infill_filled_solid") || config->opt_bool("infill_filled_top");
+//     }
+//     for (auto el : { "gap_fill_extension", "gap_fill_max_width", "gap_fill_min_area", "gap_fill_min_length", "gap_fill_min_width" })
+//         toggle_field(el, have_gap_fill);
+//     // gap fill  can appear in infill
+//     //toggle_field("gap_fill_speed", have_perimeters && config->opt_bool("gap_fill_enabled"));
+//
+//     for (auto el : { "fuzzy_skin_thickness", "fuzzy_skin_point_dist" })
+//         toggle_field(el, config->option<ConfigOptionEnum<FuzzySkinType>>("fuzzy_skin")->value != FuzzySkinType::None);
+//
+//     bool have_infill = config->option<ConfigOptionPercent>("fill_density")->value > 0;
+//     // infill_extruder uses the same logic as in Print::extruders()
+//     for (auto el : { "fill_aligned_z", "fill_pattern", "infill_connection", "infill_every_layers", "infill_only_where_needed",
+//                     "solid_infill_every_layers", "solid_infill_below_area", "solid_infill_below_layer_area", "solid_infill_below_width",
+//                     "infill_extruder", "infill_anchor_max" })
+//         toggle_field(el, have_infill);
+//     // Only allow configuration of open anchors if the anchoring is enabled.
+//     bool has_infill_anchors = have_infill && config->option<ConfigOptionEnum<InfillConnection>>("infill_connection")->value != InfillConnection::icNotConnected;
+//     toggle_field("infill_anchor_max", has_infill_anchors);
+//     has_infill_anchors = has_infill_anchors && config->option<ConfigOptionFloatOrPercent>("infill_anchor_max")->value > 0;
+//     toggle_field("infill_anchor", has_infill_anchors);
+//
+//     bool can_have_infill_dense = config->option<ConfigOptionPercent>("fill_density")->value < 50;
+//     for (auto el : { "infill_dense" })
+//         toggle_field(el, can_have_infill_dense);
+//
+//     bool have_infill_dense = config->opt_bool("infill_dense") && can_have_infill_dense;
+//     for (auto el : { "infill_dense_algo" })
+//         toggle_field(el, have_infill_dense);
+//     if(have_infill)
+//         for (auto el : { "infill_every_layers", "infill_only_where_needed" })
+//             toggle_field(el, !have_infill_dense);
+//
+//     bool has_top_solid_infill 	 = config->opt_int("top_solid_layers") > 0 || has_spiral_vase || config->opt_int("solid_infill_every_layers") == 1;
+//     bool has_bottom_solid_infill = config->opt_int("bottom_solid_layers") > 0 || config->opt_int("solid_infill_every_layers") == 1;
+//     bool has_solid_infill 		 = has_top_solid_infill || has_bottom_solid_infill || (have_infill && (config->opt_int("solid_infill_every_layers") > 0 || config->opt_float("solid_infill_below_area") > 0));
+//     // solid_infill_extruder uses the same logic as in Print::extruders()
+//     for (auto el : { "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", "enforce_full_fill_volume", "external_infill_margin", "bridged_infill_margin",
+//         "solid_infill_extruder", "solid_infill_extrusion_width", "solid_nfill_extrusion_change_odd_layers", "solid_infill_extrusion_spacing", "solid_infill_speed" })
+//         toggle_field(el, has_solid_infill);
+//
+//     toggle_field("infill_first", (has_solid_infill || have_infill));
+//
+//     for (auto el : {"fill_angle_cross","fill_angle_follow_model","fill_angle_increment", "fill_angle_template", "bridge_angle", "infill_extrusion_width",
+//                     "infill_extrusion_spacing", "infill_extrusion_change_odd_layers", "infill_speed" })
+//         toggle_field(el, have_infill || has_solid_infill);
+//
+//     toggle_field("fill_angle", (have_infill || has_solid_infill) && ((ConfigOptionVectorBase*)config->option("fill_angle_template"))->size() == 0);
+//
+//     const bool has_ensure_vertical_shell_thickness = config->opt_enum<EnsureVerticalShellThickness>("ensure_vertical_shell_thickness") != EnsureVerticalShellThickness::Disabled;
+//     toggle_field("top_solid_min_thickness", ! has_spiral_vase && has_top_solid_infill && has_ensure_vertical_shell_thickness);
+//     toggle_field("bottom_solid_min_thickness", ! has_spiral_vase && has_bottom_solid_infill && has_ensure_vertical_shell_thickness);
+//
+//     //speed
+//     for (auto el : { "small_perimeter_min_length", "small_perimeter_max_length" })
+//         toggle_field(el, config->option("small_perimeter_speed")->get_float() > 0);
+//
+//     bool has_ironing_pattern = config->opt_enum<InfillPattern>("top_fill_pattern") == InfillPattern::ipSmooth
+//         || config->opt_enum<InfillPattern>("bottom_fill_pattern") == InfillPattern::ipSmooth
+//         || config->opt_enum<InfillPattern>("solid_fill_pattern") == InfillPattern::ipSmooth;
+//     for (auto el : {"fill_smooth_width, fill_smooth_distribution" })
+//         toggle_field(el, has_ironing_pattern);
+//
+//     for (auto el : { "ironing", "top_fill_pattern", "infill_connection_top",  "top_infill_extrusion_width",  "top_infill_extrusion_spacing", "top_solid_infill_speed" })
+//         toggle_field(el, has_top_solid_infill || (has_spiral_vase && has_bottom_solid_infill));
+//
+//     for (auto el : { "bottom_fill_pattern", "infill_connection_bottom" })
+//         toggle_field(el, has_bottom_solid_infill);
+//
+//     for (auto el : { "solid_fill_pattern", "infill_connection_solid", "bridge_fill_pattern", "infill_connection_bridge" })
+//         toggle_field(el, has_solid_infill); // should be top_solid_layers") > 1 || bottom_solid_layers") > 1
+//
+//     bool have_skirt = config->opt_int("skirts") > 0;
+//     toggle_field("skirt_height", have_skirt && config->opt_enum<DraftShield>("draft_shield") != dsEnabled);
+//     toggle_field("skirt_width", have_skirt);
+//     for (auto el : { "skirt_brim", "skirt_distance", "skirt_distance_from_brim", "draft_shield", "min_skirt_length" })
+//         toggle_field(el, have_skirt);
+//
+//     bool have_brim = config->opt_float("brim_width") > 0 || config->opt_float("brim_width_interior") > 0;
+//     toggle_field("brim_separation", have_brim);
+//     // perimeter_extruder uses the same logic as in Print::extruders()
+//     toggle_field("perimeter_extruder", have_perimeters || have_brim);
+//
+//     bool have_raft = config->opt_int("raft_layers") > 0;
+//     bool have_support_material = config->opt_bool("support_material") || have_raft;
+//     bool have_support_material_auto = have_support_material && config->opt_bool("support_material_auto");
+//     bool have_support_interface = have_support_material && (config->opt_int("support_material_interface_layers") > 0 || config->opt_int("support_material_bottom_interface_layers") > 0);
+//     bool have_support_soluble = have_support_material && ((ConfigOptionEnumGeneric*)config->option("support_material_contact_distance_type"))->value == zdNone;
+//     auto support_material_style = config->opt_enum<SupportMaterialStyle>("support_material_style");
+//     for (auto el : { "support_material_style", "support_material_pattern", "support_material_with_sheath",
+//                     "support_material_spacing", "support_material_angle", "support_material_angle_height",
+//                     "support_material_bottom_interface_layers", "support_material_interface_layers",
+//                     "support_material_extrusion_width",
+//                     "support_material_contact_distance_type",
+//                     "support_material_xy_spacing",
+//                     "support_material_layer_height"})
+//         toggle_field(el, have_support_material);
+//     toggle_field("support_material_threshold", have_support_material_auto);
+//     toggle_field("support_material_bottom_contact_distance", have_support_material && ! have_support_soluble);
+//     toggle_field("support_material_closing_radius", have_support_material && support_material_style == smsSnug);
+//
+//     const bool has_organic_supports = support_material_style == smsOrganic &&
+//                                      (config->opt_bool("support_material") ||
+//                                       config->opt_int("support_material_enforce_layers") > 0);
+//     for (const std::string& key : { "support_tree_angle", "support_tree_angle_slow", "support_tree_branch_diameter",
+//                                     "support_tree_branch_diameter_angle", "support_tree_branch_diameter_double_wall",
+//                                     "support_tree_tip_diameter", "support_tree_branch_distance", "support_tree_top_rate" })
+//         toggle_field(key, has_organic_supports);
+//
+//     for (auto el : { "support_material_contact_distance", "support_material_bottom_contact_distance" })
+//         toggle_field(el, have_support_material && !have_support_soluble);
+//
+//     for (auto el : { "support_material_bottom_interface_pattern", "support_material_top_interface_pattern", "support_material_interface_spacing", "support_material_interface_extruder",
+//                     "support_material_interface_speed", "support_material_interface_contact_loops", "support_material_interface_layer_height"
+//                     "support_material_interface_angle", "support_material_interface_angle_increment", "support_material_bottom_interface_expansion"})
+//         toggle_field(el, have_support_material && have_support_interface);
+//     toggle_field("support_material_synchronize_layers", have_support_soluble);
+//
+//     // organic suport don't use soem fields, force disable them.
+//     if (has_organic_supports) {
+//         for (const std::string &key :
+//              {"support_material_interface_layer_height", "support_material_bottom_interface_pattern",
+//               "support_material_interface_contact_loops", "support_material_with_sheath", "support_material_pattern",
+//               "support_material_spacing", "support_material_angle", "support_material_angle_height", "support_material_layer_height",
+//               "support_material_bottom_interface_pattern"})
+//             toggle_field(key, false);
+//     }
+//
+//     toggle_field("perimeter_extrusion_width", have_perimeters || have_brim);
+//     toggle_field("perimeter_extrusion_spacing", have_perimeters || have_brim);
+//     toggle_field("perimeter_extrusion_change_odd_layers", have_perimeters || have_brim);
+//     toggle_field("skirt_extrusion_width", have_skirt);
+//     toggle_field("support_material_extruder", have_support_material || have_skirt);
+//     toggle_field("support_material_speed", have_support_material || have_skirt || have_brim);
+//     toggle_field("brim_speed", have_brim || have_skirt);
+//
+//     bool have_raft_soluble = have_support_material && ((ConfigOptionEnumGeneric*)config->option("raft_contact_distance_type"))->value == zdNone;
+//     toggle_field("raft_contact_distance", have_raft && !have_raft_soluble);
+//     for (auto el : { "raft_expansion", "first_layer_acceleration_over_raft", "first_layer_speed_over_raft",
+//         "raft_layer_height", "raft_interface_layer_height"})
+//         toggle_field(el, have_raft);
+//
+//     //for default_extrusion_width/spacing, you need to ahve at least an extrusion_width with 0
+//     auto opt_first_layer_width = config->option("first_layer_extrusion_width");
+//     auto opt_first_layer_infill_width = config->option("first_layer_infill_extrusion_width");
+//     assert(opt_first_layer_width);
+//     assert(opt_first_layer_infill_width);
+//     bool have_default_width =
+//         (opt_first_layer_width->is_enabled() && opt_first_layer_width->get_float() == 0) ||
+//         (opt_first_layer_infill_width->is_enabled() && opt_first_layer_infill_width->get_float() == 0) ||
+//         (config->option("perimeter_extrusion_width")->get_float() == 0 && (have_perimeters || have_brim)) ||
+//         (config->option("external_perimeter_extrusion_width")->get_float() == 0 && have_perimeters) ||
+//         (config->option("infill_extrusion_width")->get_float() == 0 && (have_infill || has_solid_infill)) ||
+//         (config->option("solid_infill_extrusion_width")->get_float() == 0 && has_solid_infill) ||
+//         (config->option("top_infill_extrusion_width")->get_float() == 0 && has_top_solid_infill) ||
+//         (config->option("support_material_extrusion_width")->get_float() == 0 && have_support_material) ||
+//         (config->option("skirt_extrusion_width")->get_float() == 0 && have_skirt);
+//     toggle_field("extrusion_width", have_default_width);
+//     toggle_field("extrusion_spacing", have_default_width);
+//
+//     toggle_field("first_layer_extrusion_spacing", opt_first_layer_width->is_enabled());
+//     toggle_field("first_layer_infill_extrusion_spacing", opt_first_layer_infill_width->is_enabled());
+//
+//
+//     bool has_PP_ironing = has_top_solid_infill && config->opt_bool("ironing");
+//     for (auto el : { "ironing_type", "ironing_flowrate", "ironing_spacing", "ironing_angle" })
+//         toggle_field(el, has_PP_ironing);
+//
+//     bool has_ironing = has_PP_ironing || has_ironing_pattern;
+//     for (auto el : { "ironing_speed" })
+//         toggle_field(el, has_ironing);
+//
+//
+//     bool have_sequential_printing = config->opt_bool("complete_objects") || config->opt_float("parallel_objects_step") > 0;
+//     for (auto el : { /*"extruder_clearance_radius", "extruder_clearance_height",*/ "complete_objects_one_skirt",
+//         "complete_objects_sort"})
+//         toggle_field(el, have_sequential_printing);
+//     bool temp_complete_step = !config->opt_bool("complete_objects");
+//     toggle_field("parallel_objects_step", temp_complete_step);
+//     temp_complete_step = temp_complete_step && config->opt_float("parallel_objects_step") > 0;
+//     toggle_field("parallel_objects_step_max_z", temp_complete_step);
+//     toggle_field("parallel_islands", temp_complete_step);
+//     temp_complete_step = temp_complete_step && config->opt_bool("parallel_islands");
+//
+//     bool have_ooze_prevention = config->opt_bool("ooze_prevention");
+//     toggle_field("standby_temperature_delta", have_ooze_prevention);
+//
+//     bool have_wipe_tower = config->opt_float("parallel_objects_step") <= 0 || config->opt_bool("parallel_islands");
+//     toggle_field("wipe_tower", have_wipe_tower);
+//     have_wipe_tower = have_wipe_tower && config->opt_bool("wipe_tower");
+//     for (auto el : { "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle", "wipe_tower_brim_width",
+//                      "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
+//                      "wipe_tower_bridging", "wipe_tower_brim", "wipe_tower_no_sparse_layers", "single_extruder_multi_material_priming",
+//                      "wipe_tower_speed", "wipe_tower_wipe_starting_speed",
+//                      "wipe_tower_extrusion_width", "wipe_tower_rest_in_middle" })
+//         toggle_field(el, have_wipe_tower);
+//
+//     bool have_non_zero_mmu_segmented_region_max_width = config->opt_float("mmu_segmented_region_max_width") > 0.;
+//     toggle_field("mmu_segmented_region_interlocking_depth", have_non_zero_mmu_segmented_region_max_width);
+//
+//     toggle_field("avoid_crossing_curled_overhangs", !config->opt_bool("avoid_crossing_perimeters"));
+//     toggle_field("avoid_crossing_perimeters", !config->opt_bool("avoid_crossing_curled_overhangs"));
+//
+//     bool have_avoid_crossing_perimeters = config->opt_bool("avoid_crossing_perimeters");
+//     toggle_field("avoid_crossing_perimeters_max_detour", have_avoid_crossing_perimeters);
+//     toggle_field("avoid_crossing_not_first_layer", have_avoid_crossing_perimeters);
+//     toggle_field("avoid_crossing_top", have_avoid_crossing_perimeters);
+//     toggle_field("avoid_travel_island", have_avoid_crossing_perimeters);
+//     toggle_field("avoid_travel_island_weight", have_avoid_crossing_perimeters && config->opt_bool("avoid_travel_island"));
+//
+//     toggle_field("enforce_retract_first_layer", config->opt_bool("only_retract_when_crossing_perimeters"));
+//
+//
+//     for (auto el : { "fill_smooth_width", "fill_smooth_distribution" })
+//         toggle_field(el, (has_top_solid_infill && config->option<ConfigOptionEnum<InfillPattern>>("top_fill_pattern")->value == InfillPattern::ipSmooth)
+//             || (has_bottom_solid_infill && config->option<ConfigOptionEnum<InfillPattern>>("bottom_fill_pattern")->value == InfillPattern::ipSmooth)
+//             || (has_solid_infill && config->option<ConfigOptionEnum<InfillPattern>>("solid_fill_pattern")->value == InfillPattern::ipSmooth)
+//             || (have_support_material && config->option<ConfigOptionEnum<InfillPattern>>("support_material_top_interface_pattern")->value == InfillPattern::ipSmooth)
+//             || (have_support_material && config->option<ConfigOptionEnum<InfillPattern>>("support_material_bottom_interface_pattern")->value == InfillPattern::ipSmooth));
+//
+//     //TODO: can the milling_diameter or the milling_cutter be check to enable/disable this?
+//     for (auto el : { "milling_after_z", "milling_extra_size", "milling_speed" })
+//         toggle_field(el, config->opt_bool("milling_post_process"));
+//
+//     bool have_default_acceleration = config->option<ConfigOptionFloatOrPercent>("default_acceleration")->value > 0;
+//     for (auto el : { "perimeter_acceleration", "external_perimeter_acceleration", "thin_walls_acceleration" })
+//         toggle_field(el, have_default_acceleration && have_perimeters);
+//     toggle_field("infill_acceleration", have_default_acceleration && have_infill);
+//     toggle_field("solid_infill_acceleration", have_default_acceleration && has_solid_infill);
+//     toggle_field("top_solid_infill_acceleration", have_default_acceleration && has_top_solid_infill);
+//     toggle_field("ironing_acceleration", have_default_acceleration && has_ironing);
+//     toggle_field("support_material_acceleration", have_default_acceleration && (have_support_material || have_brim || have_skirt));
+//     toggle_field("support_material_interface_acceleration", have_default_acceleration && have_support_material && have_support_interface);
+//     toggle_field("brim_acceleration", have_default_acceleration && (have_brim || have_skirt));
+//     for (auto el : { "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration", "gap_fill_acceleration", "travel_acceleration", "travel_deceleration_use_target", "first_layer_acceleration" })
+//         toggle_field(el, have_default_acceleration);
+//
+//     // for default speed, it needs at least a dependent field with a %
+//     toggle_field("default_speed", config->option<ConfigOptionFloatOrPercent>("perimeter_speed")->percent ||
+//         config->option<ConfigOptionFloatOrPercent>("solid_infill_speed")->percent ||
+//         config->option<ConfigOptionFloatOrPercent>("bridge_speed")->percent ||
+//         config->option<ConfigOptionFloatOrPercent>("support_material_speed")->percent);
+//     toggle_field("max_print_speed", config->opt_float("max_volumetric_speed") != 0);
+//     toggle_field("autospeed_min_thin_flow", config->opt_float("max_volumetric_speed") != 0);
+
+void initialize_fff_print_gui_rules()
+{
+    static const bool initialized = []() {
+        // ----- perimeters ---------------------------------------------------
+        const std::vector<FffGuiClauses> p_only = { k_P };
+        fff_add_any_for({
+            "extra_perimeters", "extra_perimeters_below_area", "extra_perimeters_count",
+            "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs", "external_perimeters_first",
+            "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing",
+            "external_perimeter_extrusion_change_odd_layers", "overhangs", "seam_position",
+            "staggered_inner_seams", "perimeter_speed", "perimeter_reverse", "perimeter_generator",
+            "external_perimeter_speed", "small_perimeter_speed", "spiral_vase",
+            "seam_notch_all", "seam_notch_inner", "seam_notch_outer",
+            "no_perimeter_unsupported_algo", "only_one_perimeter_top"
+        }, p_only);
+
+        fff_add_one("overhangs_dynamic_speed", fff_all({ k_P, k_overhangs }));
+        fff_add_one_for({ "small_perimeter_min_length", "small_perimeter_max_length" },
+                        fff_one(fff_non_zero("small_perimeter_speed")));
+
+        fff_add_any_for({ "wall_transition_length", "wall_transition_filter_deviation", "wall_transition_angle",
+                          "wall_distribution_count", "min_feature_size", "min_bead_width" },
+                        { fff_all({ k_P, k_arachne }) });
+
+        const std::vector<FffGuiClauses> not_arachne = { k_not_P, k_not_arachne };
+        fff_add_any_for({ "perimeters_hole", "overhangs_extrusion_spacing" }, not_arachne);
+        fff_add_one_for({ "perimeter_loop", "thin_perimeters", "perimeter_round_corners" },
+                        fff_all({ k_P, k_not_arachne }));
+
+        // external perimeter / seam slope
+        fff_add_any("seam_slope_type", {
+            fff_all({ k_external_first, k_not_loop }),
+            fff_all({ k_external_first, k_P, k_arachne })
+        });
+        fff_add_any_for({ "seam_slope_min_height", "seam_slope_max_length" }, {
+            fff_all({ k_external_first, k_not_loop, k_scarf }),
+            fff_all({ k_external_first, k_P, k_arachne, k_scarf })
+        });
+        fff_add_any("external_perimeters_first_force", {
+            fff_all({ k_external_first, k_not_loop, k_not_P }),
+            fff_all({ k_external_first, k_not_loop, k_not_arachne })
+        });
+        fff_add_any_for({ "external_perimeters_nothole", "external_perimeters_hole" }, {
+            fff_all({ k_external_first, k_not_loop, k_not_P,
+                      fff_one(fff_false("external_perimeters_first_force")) }),
+            fff_all({ k_external_first, k_not_loop, k_not_arachne,
+                      fff_one(fff_false("external_perimeters_first_force")) })
+        });
+        // FLOAT_* clauses compare get_float(), which is a fraction for percent
+        // options, so 100% is 1.0. The legacy code compared the normalized
+        // value to 100 and could never enable perimeter_bonding; the migration
+        // keeps the documented intent.
+        fff_add_any("perimeter_bonding", {
+            fff_all({ k_external_first, k_not_P,
+                      fff_one(fff_float_eq("perimeter_overlap", 1.0)),
+                      fff_one(fff_float_eq("external_perimeter_overlap", 1.0)) }),
+            fff_all({ k_external_first, k_not_arachne,
+                      fff_one(fff_float_eq("perimeter_overlap", 1.0)),
+                      fff_one(fff_float_eq("external_perimeter_overlap", 1.0)) })
+        });
+        fff_add_one("only_one_perimeter_first_layer", fff_all({
+            fff_one(fff_int_ne("perimeters", 0)),
+            fff_one(fff_int_ne("perimeters", 1))
+        }));
+
+        // overhangs
+        const FffGuiClauses can_reverse = fff_all({ k_P, k_overhangs,
+            fff_one(fff_false("perimeter_reverse")), k_not_arachne });
+        fff_add_any("overhangs_reverse", { can_reverse });
+        fff_add_any("overhangs_reverse_threshold", {
+            fff_all({ can_reverse, fff_one(fff_true("overhangs_reverse")) })
+        });
+        fff_add_any("overhangs_speed_enforce", {
+            fff_all({ k_P, k_overhangs, k_not_loop }),
+            fff_all({ k_P, k_overhangs, k_arachne })
+        });
+        fff_add_one_for({ "overhangs_speed", "overhangs_width_speed", "overhangs_flow_ratio" },
+                        fff_all({ k_P, k_overhangs }));
+        fff_add_one_for({ "overhangs_width", "overhangs_dynamic_flow" },
+                        fff_all({ k_P, k_overhangs, fff_one(fff_enabled("overhangs_flow_ratio")) }));
+
+        // perimeter details
+        fff_add_one("min_width_top_surface",
+                    fff_all({ k_P, fff_one(fff_true("only_one_perimeter_top")) }));
+        fff_add_one("thin_perimeters_all",
+                    fff_all({ k_P, fff_one(fff_non_zero("thin_perimeters")), k_not_arachne }));
+        fff_add_one("thin_walls", fff_all({ k_P, k_not_arachne }));
+        fff_add_one_for({ "thin_walls_min_width", "thin_walls_overlap", "thin_walls_merge" },
+                        fff_all({ k_P, k_not_arachne, fff_one(fff_true("thin_walls")) }));
+
+        const FffGuiClauses seam_cost = fff_all({ k_P, fff_one(fff_int_eq("seam_position", int(spCost))) });
+        fff_add_one_for({ "seam_angle_cost", "seam_travel_cost", "seam_visibility" }, seam_cost);
+        fff_add_any("perimeter_loop_seam", {
+            fff_all({ k_loop, k_not_P }),
+            fff_all({ k_loop, k_not_arachne })
+        });
+        fff_add_any("seam_notch_angle", {
+            fff_all({ k_P, fff_one(fff_non_zero("seam_notch_all")) }),
+            fff_all({ k_P, fff_one(fff_non_zero("seam_notch_inner")) }),
+            fff_all({ k_P, fff_one(fff_non_zero("seam_notch_outer")) })
+        });
+
+        // ----- gap fill -----------------------------------------------------
+        fff_add_any("gap_fill_enabled", not_arachne);
+        const FffGuiClauses gap_enabled = fff_one(fff_true("gap_fill_enabled"));
+        const std::vector<FffGuiClauses> gap_base = {
+            fff_all({ k_not_P, gap_enabled }),
+            fff_all({ k_not_arachne, gap_enabled })
+        };
+        fff_add_any_for({ "gap_fill_last", "gap_fill_no_overhang" }, gap_base);
+
+        std::vector<FffGuiClauses> gap_extended = gap_base;
+        for (const char *filled : { "infill_filled_bottom", "infill_filled_solid", "infill_filled_top" })
+            gap_extended.push_back(fff_one(fff_true(filled)));
+        fff_add_any_for({ "gap_fill_extension", "gap_fill_max_width", "gap_fill_min_area",
+                          "gap_fill_min_length", "gap_fill_min_width" }, gap_extended);
+
+        // fuzzy skin
+        fff_add_one_for({ "fuzzy_skin_thickness", "fuzzy_skin_point_dist" },
+                        fff_one(fff_int_ne("fuzzy_skin", int(FuzzySkinType::None))));
+
+        // ----- infill -------------------------------------------------------
+        fff_add_any_for({ "fill_aligned_z", "fill_pattern", "infill_connection",
+                          "solid_infill_every_layers", "solid_infill_below_area",
+                          "solid_infill_below_layer_area", "solid_infill_below_width",
+                          "infill_extruder" }, { k_H });
+        fff_add_one("infill_anchor_max",
+                    fff_all({ k_H, fff_one(fff_int_ne("infill_connection", int(icNotConnected))) }));
+        fff_add_one("infill_anchor", fff_all({
+            k_H,
+            fff_one(fff_int_ne("infill_connection", int(icNotConnected))),
+            fff_one(fff_non_zero("infill_anchor_max"))
+        }));
+
+        // fill_density is a percent option: get_float() returns a fraction, so
+        // the 50% threshold is 0.5.
+        fff_add_one("infill_dense", fff_one(fff_float_lt("fill_density", 0.5)));
+        fff_add_one("infill_dense_algo", fff_all({
+            fff_one(fff_true("infill_dense")),
+            fff_one(fff_float_lt("fill_density", 0.5))
+        }));
+        fff_add_any_for({ "infill_every_layers", "infill_only_where_needed" }, {
+            fff_all({ k_H, fff_one(fff_false("infill_dense")) }),
+            fff_all({ k_H, fff_one(fff_float_ge("fill_density", 0.5)) })
+        });
+
+        fff_add_any_for({ "enforce_full_fill_volume", "external_infill_margin", "bridged_infill_margin",
+                          "solid_infill_extruder", "solid_infill_extrusion_width",
+                          "solid_infill_extrusion_spacing", "solid_infill_speed",
+                          "solid_infill_extrusion_change_odd_layers" }, k_has_solid);
+
+        std::vector<FffGuiClauses> has_infill_or_solid = k_has_solid;
+        has_infill_or_solid.push_back(k_H);
+        fff_add_any("infill_first", has_infill_or_solid);
+        fff_add_any_for({ "fill_angle_cross", "fill_angle_follow_model", "fill_angle_increment",
+                          "fill_angle_template", "bridge_angle", "infill_extrusion_width",
+                          "infill_extrusion_spacing", "infill_extrusion_change_odd_layers",
+                          "infill_speed" }, has_infill_or_solid);
+
+        std::vector<FffGuiClauses> fill_angle_disjuncts;
+        for (const FffGuiClauses &disjunct : has_infill_or_solid)
+            fill_angle_disjuncts.push_back(fff_all({ disjunct, fff_one(fff_vector_empty("fill_angle_template")) }));
+        fff_add_any("fill_angle", fill_angle_disjuncts);
+
+        fff_add_any("top_solid_min_thickness", {
+            fff_all({ k_T, k_ensure, k_not_P }),
+            fff_all({ k_T, k_ensure, fff_one(fff_false("spiral_vase")) }),
+            fff_all({ k_S, k_ensure, k_not_P }),
+            fff_all({ k_S, k_ensure, fff_one(fff_false("spiral_vase")) })
+        });
+        fff_add_any("bottom_solid_min_thickness", {
+            fff_all({ k_B, k_ensure, k_not_P }),
+            fff_all({ k_B, k_ensure, fff_one(fff_false("spiral_vase")) }),
+            fff_all({ k_S, k_ensure, k_not_P }),
+            fff_all({ k_S, k_ensure, fff_one(fff_false("spiral_vase")) })
+        });
+
+        // solid / top / bottom surfaces
+        fff_add_any_for({ "ironing", "top_fill_pattern", "infill_connection_top",
+                          "top_infill_extrusion_width", "top_infill_extrusion_spacing",
+                          "top_solid_infill_speed" }, k_has_top);
+        fff_add_any_for({ "bottom_fill_pattern", "infill_connection_bottom" }, k_has_bottom);
+        fff_add_any_for({ "solid_fill_pattern", "infill_connection_solid",
+                          "bridge_fill_pattern", "infill_connection_bridge" }, k_has_solid);
+
+        std::vector<FffGuiClauses> ironing_pp;
+        for (const FffGuiClauses &disjunct : k_has_top)
+            ironing_pp.push_back(fff_all({ disjunct, fff_one(fff_true("ironing")) }));
+        fff_add_any_for({ "ironing_type", "ironing_flowrate", "ironing_spacing", "ironing_angle" }, ironing_pp);
+
+        const std::vector<FffGuiClauses> smooth_pattern = {
+            fff_one(fff_int_eq("top_fill_pattern", int(InfillPattern::ipSmooth))),
+            fff_one(fff_int_eq("bottom_fill_pattern", int(InfillPattern::ipSmooth))),
+            fff_one(fff_int_eq("solid_fill_pattern", int(InfillPattern::ipSmooth)))
+        };
+        std::vector<FffGuiClauses> ironing_any = ironing_pp;
+        ironing_any.insert(ironing_any.end(), smooth_pattern.begin(), smooth_pattern.end());
+        fff_add_any("ironing_speed", ironing_any);
+
+        std::vector<FffGuiClauses> fill_smooth;
+        for (const FffGuiClauses &disjunct : k_has_top)
+            fill_smooth.push_back(fff_all({ disjunct, fff_one(fff_int_eq("top_fill_pattern", int(InfillPattern::ipSmooth))) }));
+        for (const FffGuiClauses &disjunct : k_has_bottom)
+            fill_smooth.push_back(fff_all({ disjunct, fff_one(fff_int_eq("bottom_fill_pattern", int(InfillPattern::ipSmooth))) }));
+        for (const FffGuiClauses &disjunct : k_has_solid)
+            fill_smooth.push_back(fff_all({ disjunct, fff_one(fff_int_eq("solid_fill_pattern", int(InfillPattern::ipSmooth))) }));
+        for (const FffGuiClauses &disjunct : k_have_support) {
+            fill_smooth.push_back(fff_all({ disjunct, fff_one(fff_int_eq("support_material_top_interface_pattern", int(InfillPattern::ipSmooth))) }));
+            fill_smooth.push_back(fff_all({ disjunct, fff_one(fff_int_eq("support_material_bottom_interface_pattern", int(InfillPattern::ipSmooth))) }));
+        }
+        fff_add_any_for({ "fill_smooth_width", "fill_smooth_distribution" }, fill_smooth);
+
+        // ----- skirt and brim -----------------------------------------------
+        fff_add_one_for({ "skirt_width", "skirt_brim", "skirt_distance", "skirt_distance_from_brim",
+                          "draft_shield", "min_skirt_length", "skirt_extrusion_width" }, k_skirt);
+        fff_add_one("skirt_height",
+                    fff_all({ k_skirt, fff_one(fff_int_ne("draft_shield", int(dsEnabled))) }));
+        fff_add_any("brim_separation", k_have_brim);
+
+        std::vector<FffGuiClauses> perim_or_brim = { k_P };
+        perim_or_brim.insert(perim_or_brim.end(), k_have_brim.begin(), k_have_brim.end());
+        fff_add_any("perimeter_extruder", perim_or_brim);
+        fff_add_any_for({ "perimeter_extrusion_width", "perimeter_extrusion_spacing",
+                          "perimeter_extrusion_change_odd_layers" }, perim_or_brim);
+
+        std::vector<FffGuiClauses> support_or_skirt = k_have_support;
+        support_or_skirt.push_back(k_skirt);
+        fff_add_any("support_material_extruder", support_or_skirt);
+
+        std::vector<FffGuiClauses> support_skirt_brim = k_have_support;
+        support_skirt_brim.push_back(k_skirt);
+        support_skirt_brim.insert(support_skirt_brim.end(), k_have_brim.begin(), k_have_brim.end());
+        fff_add_any("support_material_speed", support_skirt_brim);
+
+        std::vector<FffGuiClauses> brim_or_skirt = k_have_brim;
+        brim_or_skirt.push_back(k_skirt);
+        fff_add_any("brim_speed", brim_or_skirt);
+
+        // ----- support material and raft ------------------------------------
+        fff_add_any_for({ "support_material_style", "support_material_extrusion_width",
+                          "support_material_contact_distance_type", "support_material_xy_spacing",
+                          "support_material_bottom_interface_layers",
+                          "support_material_interface_layers" }, k_have_support);
+
+        std::vector<FffGuiClauses> support_auto;
+        for (const FffGuiClauses &disjunct : k_have_support)
+            support_auto.push_back(fff_all({ disjunct, fff_one(fff_true("support_material_auto")) }));
+        fff_add_any("support_material_threshold", support_auto);
+
+        const std::vector<FffGuiClauses> not_soluble = {
+            fff_all({ k_supp, fff_one(fff_int_ne("support_material_contact_distance_type", int(zdNone))) }),
+            fff_all({ k_raft, fff_one(fff_int_ne("support_material_contact_distance_type", int(zdNone))) })
+        };
+        fff_add_any_for({ "support_material_bottom_contact_distance", "support_material_contact_distance" },
+                        not_soluble);
+
+        std::vector<FffGuiClauses> closing;
+        for (const FffGuiClauses &disjunct : k_have_support)
+            closing.push_back(fff_all({ disjunct, k_style_snug }));
+        fff_add_any("support_material_closing_radius", closing);
+
+        fff_add_any_for({ "support_tree_angle", "support_tree_angle_slow", "support_tree_branch_diameter",
+                          "support_tree_branch_diameter_angle", "support_tree_branch_diameter_double_wall",
+                          "support_tree_tip_diameter", "support_tree_branch_distance", "support_tree_top_rate" },
+                        k_has_organic);
+
+        fff_add_any_for({ "support_material_interface_spacing", "support_material_interface_extruder",
+                          "support_material_interface_speed",
+                          "support_material_interface_angle_increment",
+                          "support_material_bottom_interface_expansion" }, k_have_interface);
+        fff_add_any_for({ "support_material_interface_layer_height", "support_material_interface_angle",
+                          "support_material_bottom_interface_pattern",
+                          "support_material_interface_contact_loops" }, fff_not_organic(k_have_interface));
+        fff_add_any_for({ "support_material_with_sheath", "support_material_pattern",
+                          "support_material_spacing", "support_material_angle",
+                          "support_material_angle_height", "support_material_layer_height" },
+                        fff_not_organic(k_have_support));
+
+        fff_add_any("support_material_synchronize_layers", {
+            fff_all({ k_supp, k_contact_none }),
+            fff_all({ k_raft, k_contact_none })
+        });
+
+        // raft
+        fff_add_one("raft_contact_distance", fff_all({
+            k_raft,
+            fff_one(fff_int_ne("raft_contact_distance_type", int(zdNone)))
+        }));
+        fff_add_one_for({ "raft_expansion", "first_layer_acceleration_over_raft",
+                          "first_layer_speed_over_raft", "raft_layer_height",
+                          "raft_interface_layer_height" }, k_raft);
+
+        // ----- extrusion widths ---------------------------------------------
+        std::vector<FffGuiClauses> default_width = {
+            fff_all({ fff_one(fff_enabled("first_layer_extrusion_width")),
+                      fff_one(fff_false("first_layer_extrusion_width")) }),
+            fff_all({ fff_one(fff_enabled("first_layer_infill_extrusion_width")),
+                      fff_one(fff_false("first_layer_infill_extrusion_width")) })
+        };
+        default_width.push_back(fff_all({ fff_one(fff_false("perimeter_extrusion_width")), k_P }));
+        default_width.push_back(fff_all({ fff_one(fff_false("perimeter_extrusion_width")), k_brim }));
+        default_width.push_back(fff_all({ fff_one(fff_false("perimeter_extrusion_width")), k_brim_inner }));
+        default_width.push_back(fff_all({ fff_one(fff_false("external_perimeter_extrusion_width")), k_P }));
+        for (const FffGuiClauses &disjunct : has_infill_or_solid)
+            default_width.push_back(fff_all({ fff_one(fff_false("infill_extrusion_width")), disjunct }));
+        for (const FffGuiClauses &disjunct : k_has_solid)
+            default_width.push_back(fff_all({ fff_one(fff_false("solid_infill_extrusion_width")), disjunct }));
+        for (const FffGuiClauses &disjunct : k_has_top)
+            default_width.push_back(fff_all({ fff_one(fff_false("top_infill_extrusion_width")), disjunct }));
+        for (const FffGuiClauses &disjunct : k_have_support)
+            default_width.push_back(fff_all({ fff_one(fff_false("support_material_extrusion_width")), disjunct }));
+        default_width.push_back(fff_all({ fff_one(fff_false("skirt_extrusion_width")), k_skirt }));
+        fff_add_any_for({ "extrusion_width", "extrusion_spacing" }, default_width);
+
+        fff_add_one("first_layer_extrusion_spacing", fff_one(fff_enabled("first_layer_extrusion_width")));
+        fff_add_one("first_layer_infill_extrusion_spacing", fff_one(fff_enabled("first_layer_infill_extrusion_width")));
+
+        // ----- sequential printing, wipe tower, MMU -------------------------
+        fff_add_any_for({ "complete_objects_one_skirt", "complete_objects_sort" }, {
+            fff_one(fff_true("complete_objects")),
+            fff_one(fff_non_zero("parallel_objects_step"))
+        });
+        fff_add_one("parallel_objects_step", fff_one(fff_false("complete_objects")));
+        const FffGuiClauses parallel_possible = fff_all({
+            fff_one(fff_false("complete_objects")),
+            fff_one(fff_non_zero("parallel_objects_step"))
+        });
+        fff_add_one_for({ "parallel_objects_step_max_z", "parallel_islands" }, parallel_possible);
+        fff_add_one_for({ "standby_temperature_delta" }, fff_one(fff_true("ooze_prevention")));
+
+        const std::vector<FffGuiClauses> wipe_available = {
+            fff_one(fff_false("parallel_objects_step")),
+            fff_one(fff_true("parallel_islands"))
+        };
+        fff_add_any("wipe_tower", wipe_available);
+        std::vector<FffGuiClauses> wipe_ready;
+        for (const FffGuiClauses &disjunct : wipe_available)
+            wipe_ready.push_back(fff_all({ disjunct, fff_one(fff_true("wipe_tower")) }));
+        fff_add_any_for({ "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
+                          "wipe_tower_brim_width", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
+                          "wipe_tower_bridging", "wipe_tower_brim", "wipe_tower_no_sparse_layers",
+                          "single_extruder_multi_material_priming", "wipe_tower_speed",
+                          "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width",
+                          "wipe_tower_rest_in_middle" }, wipe_ready);
+
+        fff_add_one("mmu_segmented_region_interlocking_depth",
+                    fff_one(fff_non_zero("mmu_segmented_region_max_width")));
+
+        // ----- avoid crossing -----------------------------------------------
+        fff_add_one("avoid_crossing_curled_overhangs", fff_one(fff_false("avoid_crossing_perimeters")));
+        fff_add_one("avoid_crossing_perimeters", fff_one(fff_false("avoid_crossing_curled_overhangs")));
+        fff_add_one_for({ "avoid_crossing_perimeters_max_detour", "avoid_crossing_not_first_layer",
+                          "avoid_crossing_top", "avoid_travel_island" },
+                        fff_one(fff_true("avoid_crossing_perimeters")));
+        fff_add_one("avoid_travel_island_weight", fff_all({
+            fff_one(fff_true("avoid_crossing_perimeters")),
+            fff_one(fff_true("avoid_travel_island"))
+        }));
+        fff_add_one("enforce_retract_first_layer", fff_one(fff_true("only_retract_when_crossing_perimeters")));
+
+        // ----- milling ------------------------------------------------------
+        fff_add_one_for({ "milling_after_z", "milling_extra_size", "milling_speed" },
+                        fff_one(fff_true("milling_post_process")));
+
+        // ----- accelerations -------------------------------------------------
+        fff_add_one_for({ "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
+                          "gap_fill_acceleration", "travel_acceleration", "travel_deceleration_use_target",
+                          "first_layer_acceleration" }, k_default_accel);
+        fff_add_one_for({ "perimeter_acceleration", "external_perimeter_acceleration", "thin_walls_acceleration" },
+                        fff_all({ k_default_accel, k_P }));
+        fff_add_one("infill_acceleration", fff_all({ k_default_accel, k_H }));
+
+        std::vector<FffGuiClauses> solid_accel;
+        for (const FffGuiClauses &disjunct : k_has_solid)
+            solid_accel.push_back(fff_all({ k_default_accel, disjunct }));
+        fff_add_any("solid_infill_acceleration", solid_accel);
+
+        std::vector<FffGuiClauses> top_accel;
+        for (const FffGuiClauses &disjunct : k_has_top)
+            top_accel.push_back(fff_all({ k_default_accel, disjunct }));
+        fff_add_any("top_solid_infill_acceleration", top_accel);
+
+        std::vector<FffGuiClauses> ironing_accel;
+        for (const FffGuiClauses &disjunct : ironing_any)
+            ironing_accel.push_back(fff_all({ k_default_accel, disjunct }));
+        fff_add_any("ironing_acceleration", ironing_accel);
+
+        std::vector<FffGuiClauses> support_accel = {
+            fff_all({ k_default_accel, k_supp }), fff_all({ k_default_accel, k_raft })
+        };
+        support_accel.push_back(fff_all({ k_default_accel, k_brim }));
+        support_accel.push_back(fff_all({ k_default_accel, k_brim_inner }));
+        support_accel.push_back(fff_all({ k_default_accel, k_skirt }));
+        fff_add_any("support_material_acceleration", support_accel);
+
+        std::vector<FffGuiClauses> support_iface_accel;
+        for (const FffGuiClauses &disjunct : k_have_interface)
+            support_iface_accel.push_back(fff_all({ k_default_accel, disjunct }));
+        fff_add_any("support_material_interface_acceleration", support_iface_accel);
+
+        fff_add_any("brim_acceleration", {
+            fff_all({ k_default_accel, k_brim }),
+            fff_all({ k_default_accel, k_brim_inner }),
+            fff_all({ k_default_accel, k_skirt })
+        });
+
+        // ----- speeds -------------------------------------------------------
+        fff_add_any("default_speed", {
+            fff_one(fff_is_percent("perimeter_speed")),
+            fff_one(fff_is_percent("solid_infill_speed")),
+            fff_one(fff_is_percent("bridge_speed")),
+            fff_one(fff_is_percent("support_material_speed"))
+        });
+        fff_add_one_for({ "max_print_speed", "autospeed_min_thin_flow" },
+                        fff_one(fff_non_zero("max_volumetric_speed")));
+
+        return true;
+    }();
+    (void)initialized;
 }
 
 

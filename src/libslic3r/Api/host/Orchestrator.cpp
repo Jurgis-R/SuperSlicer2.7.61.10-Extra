@@ -27,6 +27,7 @@
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/slic3r_plugin_types.h"
 #include "libslic3r/Config/ConfigDef.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/GCode.hpp"
@@ -1160,37 +1161,301 @@ std::string Orchestrator::merged_ui_layout(const std::string &target_file,
     return merger.merged();
 }
 
+namespace {
+
+using PluginGuiRuleTarget = std::pair<std::string, int32_t>;
+
+// A vector option sized like the extruder count can be indexed per extruder.
+// Other vectors keep their automatic "any item satisfies the clause" read.
+const ConfigOptionVectorBase *extruder_sized_vector(const ConfigOption *option)
+{
+    if (option == nullptr || !option->is_vector())
+        return nullptr;
+
+    const ConfigOptionVectorBase *vector_option = dynamic_cast<const ConfigOptionVectorBase *>(option);
+    return vector_option != nullptr && vector_option->is_extruder_size() ? vector_option : nullptr;
+}
+
+bool gui_rule_condition_value_at_index(const ConfigOption &condition_option,
+                                       const Orchestrator::PluginGuiRuleClause &clause,
+                                       int32_t condition_index)
+{
+    // Scalar get_bool() ignores the index. Vector get_bool() needs a real item
+    // index, so "-1 / unspecified" falls back to 0 only for this low-level read.
+    const size_t value_index = condition_index < 0 ? 0 : size_t(condition_index);
+
+    switch (clause.condition) {
+    case RAW_GUI_RULE_CONDITION_BOOL_TRUE:
+        return condition_option.get_bool(value_index);
+    case RAW_GUI_RULE_CONDITION_BOOL_FALSE:
+        return !condition_option.get_bool(value_index);
+    case RAW_GUI_RULE_CONDITION_OPTION_ENABLED:
+        return condition_option.is_enabled(condition_index);
+    case RAW_GUI_RULE_CONDITION_OPTION_DISABLED:
+        return !condition_option.is_enabled(condition_index);
+    case RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO:
+        return condition_option.get_bool(value_index);
+    case RAW_GUI_RULE_CONDITION_INT_EQUALS:
+        return condition_option.get_int(value_index) == clause.condition_int_value;
+    case RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS:
+        return condition_option.get_int(value_index) != clause.condition_int_value;
+    case RAW_GUI_RULE_CONDITION_FLOAT_EQUALS:
+        return condition_option.get_float(value_index) == clause.condition_float_value;
+    case RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN:
+        return condition_option.get_float(value_index) < clause.condition_float_value;
+    case RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL:
+        return condition_option.get_float(value_index) >= clause.condition_float_value;
+    case RAW_GUI_RULE_CONDITION_IS_PERCENT:
+        return condition_option.is_percent(value_index);
+    case RAW_GUI_RULE_CONDITION_VECTOR_EMPTY: {
+        const ConfigOptionVectorBase *vector_option =
+            dynamic_cast<const ConfigOptionVectorBase *>(&condition_option);
+        return vector_option != nullptr && vector_option->empty();
+    }
+    case RAW_GUI_RULE_CONDITION_NONE:
+    default:
+        return false;
+    }
+}
+
+bool gui_rule_condition_value(const ConfigOption &condition_option,
+                              const Orchestrator::PluginGuiRuleClause &clause,
+                              int current_index)
+{
+    // VECTOR_EMPTY describes the whole option, not one item, so it must not be
+    // routed through the "any item satisfies the clause" vector read.
+    if (clause.condition == RAW_GUI_RULE_CONDITION_VECTOR_EMPTY)
+        return gui_rule_condition_value_at_index(condition_option, clause, -1);
+
+    // Rule-provided index is always explicit and therefore wins.
+    if (clause.condition_index >= 0)
+        return gui_rule_condition_value_at_index(condition_option, clause, clause.condition_index);
+
+    if (clause.condition_index == RAW_GUI_RULE_INDEX_CURRENT) {
+        if (current_index < 0 || extruder_sized_vector(&condition_option) == nullptr)
+            return false;
+        return gui_rule_condition_value_at_index(condition_option, clause, current_index);
+    }
+
+    // If the caller is currently processing extruder i, and the condition is an
+    // extruder-sized vector, evaluate the same i-th item.
+    if (current_index >= 0 && extruder_sized_vector(&condition_option) != nullptr)
+        return gui_rule_condition_value_at_index(condition_option, clause, current_index);
+
+    // No explicit index and no usable current index: for a vector condition,
+    // enable the target if at least one vector item satisfies the clause. This
+    // is safer than silently reading item 0.
+    if (condition_option.is_vector()) {
+        for (size_t condition_index = 0; condition_index < condition_option.size(); ++condition_index)
+            if (gui_rule_condition_value_at_index(condition_option, clause, int32_t(condition_index)))
+                return true;
+        return false;
+    }
+
+    // Scalar condition, no index needed.
+    return gui_rule_condition_value_at_index(condition_option, clause, -1);
+}
+
+bool gui_rule_target_index_for_context(const ConfigOption &target_option,
+                                       const Orchestrator::PluginGuiRule &rule,
+                                       int current_index,
+                                       int &target_index)
+{
+    // Rule-provided target index is explicit and handled once by the global
+    // pass. Running it again in the per-extruder pass would duplicate the call.
+    target_index = rule.target_index;
+    if (target_index >= 0)
+        return current_index < 0;
+
+    // RAW_GUI_RULE_INDEX_CURRENT means "toggle the item currently processed by
+    // the extruder loop".
+    if (rule.target_index == RAW_GUI_RULE_INDEX_CURRENT) {
+        if (current_index < 0 || extruder_sized_vector(&target_option) == nullptr)
+            return false;
+
+        target_index = current_index;
+        return true;
+    }
+
+    // RAW_GUI_RULE_INDEX_ALL / default: apply the whole GUI field once during
+    // the global pass.
+    if (current_index >= 0)
+        return false;
+
+    target_index = RAW_GUI_RULE_INDEX_ALL;
+    return true;
+}
+
+bool gui_rule_matches_scope(raw_option_preset_type rule_scope, raw_option_preset_type scope)
+{
+    return rule_scope == RAW_PRESET_TYPE_NONE || rule_scope == scope;
+}
+
+struct PluginGuiRuleTargetState
+{
+    bool has_all_rules = false;
+    bool all_rules_enabled = true;
+    bool has_any_rules = false;
+    bool any_rule_enabled = false;
+
+    void add(raw_gui_rule_action action, bool condition_enabled)
+    {
+        if (action == RAW_GUI_RULE_ACTION_ENABLE) {
+            has_all_rules = true;
+            all_rules_enabled = all_rules_enabled && condition_enabled;
+        } else if (action == RAW_GUI_RULE_ACTION_ENABLE_ANY) {
+            has_any_rules = true;
+            any_rule_enabled = any_rule_enabled || condition_enabled;
+        }
+    }
+
+    bool enabled() const
+    {
+        return (!has_all_rules || all_rules_enabled) && (!has_any_rules || any_rule_enabled);
+    }
+};
+
+} // namespace
+
 // Validate and retain one GUI rule; an identical rule is not inserted twice.
 bool Orchestrator::add_gui_rule(const raw_gui_rule *rule)
 {
     if (rule == nullptr ||
+        rule->struct_size < sizeof(raw_gui_rule) ||
         rule->action == RAW_GUI_RULE_ACTION_NONE ||
-        rule->condition == RAW_GUI_RULE_CONDITION_NONE ||
         rule->target_key == nullptr || rule->target_key[0] == '\0' ||
-        rule->condition_key == nullptr || rule->condition_key[0] == '\0')
+        rule->clause_count == 0 || rule->clauses == nullptr)
         return false;
 
     PluginGuiRule gui_rule;
     gui_rule.action = rule->action;
-    gui_rule.condition = rule->condition;
     gui_rule.target_key = rule->target_key;
-    gui_rule.condition_key = rule->condition_key;
     gui_rule.target_index = rule->target_index;
-    gui_rule.condition_index = rule->condition_index;
-    gui_rule.condition_int_value = rule->condition_int_value;
-
-    for (const PluginGuiRule &existing : m_gui_rules)
-        if (existing.action == gui_rule.action &&
-            existing.condition == gui_rule.condition &&
-            existing.target_key == gui_rule.target_key &&
-            existing.condition_key == gui_rule.condition_key &&
-            existing.target_index == gui_rule.target_index &&
-            existing.condition_index == gui_rule.condition_index &&
-            existing.condition_int_value == gui_rule.condition_int_value)
+    gui_rule.scope = rule->scope;
+    gui_rule.group = rule->rule_group != nullptr ? rule->rule_group : std::string();
+    gui_rule.clauses.reserve(rule->clause_count);
+    for (uint32_t clause_idx = 0; clause_idx < rule->clause_count; ++clause_idx) {
+        const raw_gui_rule_clause &clause = rule->clauses[clause_idx];
+        if (clause.condition == RAW_GUI_RULE_CONDITION_NONE ||
+            clause.condition_key == nullptr || clause.condition_key[0] == '\0')
             return false;
+
+        PluginGuiRuleClause stored;
+        stored.condition = clause.condition;
+        stored.condition_key = clause.condition_key;
+        stored.condition_index = clause.condition_index;
+        stored.condition_int_value = clause.condition_int_value;
+        stored.condition_float_value = clause.condition_float_value;
+        gui_rule.clauses.emplace_back(std::move(stored));
+    }
+
+    for (const PluginGuiRule &existing : m_gui_rules) {
+        if (existing.action != gui_rule.action ||
+            existing.target_key != gui_rule.target_key ||
+            existing.target_index != gui_rule.target_index ||
+            existing.scope != gui_rule.scope ||
+            existing.group != gui_rule.group ||
+            existing.clauses.size() != gui_rule.clauses.size())
+            continue;
+
+        bool identical = true;
+        for (size_t clause_idx = 0; clause_idx < gui_rule.clauses.size() && identical; ++clause_idx) {
+            const PluginGuiRuleClause &lhs = existing.clauses[clause_idx];
+            const PluginGuiRuleClause &rhs = gui_rule.clauses[clause_idx];
+            identical = lhs.condition == rhs.condition &&
+                lhs.condition_key == rhs.condition_key &&
+                lhs.condition_index == rhs.condition_index &&
+                lhs.condition_int_value == rhs.condition_int_value &&
+                lhs.condition_float_value == rhs.condition_float_value;
+        }
+        if (identical)
+            return false;
+    }
 
     m_gui_rules.emplace_back(std::move(gui_rule));
     return true;
+}
+
+std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
+    const DynamicPrintConfig &config,
+    raw_option_preset_type scope,
+    int32_t current_index,
+    const std::string &group) const
+{
+    // Rules from different groups are ANDed on the same target. Inside one
+    // group, ENABLE rules are ANDed and ENABLE_ANY rules are ORed.
+    std::map<std::string, std::map<PluginGuiRuleTarget, PluginGuiRuleTargetState>> enabled_by_group;
+
+    for (const PluginGuiRule &rule : m_gui_rules) {
+        // This function currently only applies enable/disable rules.
+        if (rule.action != RAW_GUI_RULE_ACTION_ENABLE && rule.action != RAW_GUI_RULE_ACTION_ENABLE_ANY)
+            continue;
+        if (!gui_rule_matches_scope(rule.scope, scope))
+            continue;
+        if (!group.empty() && rule.group != group)
+            continue;
+        if (rule.clauses.empty())
+            continue;
+
+        // Missing keys mean "not applicable to this config". A rule only
+        // participates when its target and every clause option exist.
+        if (!config.has(rule.target_key))
+            continue;
+        bool applicable = true;
+        for (const PluginGuiRuleClause &clause : rule.clauses)
+            if (clause.condition_key.empty() || !config.has(clause.condition_key)) {
+                applicable = false;
+                break;
+            }
+        if (!applicable)
+            continue;
+
+        const ConfigOption *target_option = config.optptr(rule.target_key);
+        if (target_option == nullptr)
+            continue;
+
+        int target_index = -1;
+        if (!gui_rule_target_index_for_context(*target_option, rule, current_index, target_index))
+            continue;
+
+        bool condition_enabled = true;
+        try {
+            for (const PluginGuiRuleClause &clause : rule.clauses) {
+                const ConfigOption *condition_option = config.optptr(clause.condition_key);
+                if (condition_option == nullptr ||
+                    !gui_rule_condition_value(*condition_option, clause, current_index)) {
+                    condition_enabled = false;
+                    break;
+                }
+            }
+        } catch (...) {
+            // Malformed plugin input must not crash the GUI refresh.
+            continue;
+        }
+
+        const PluginGuiRuleTarget target(rule.target_key, target_index);
+        enabled_by_group[rule.group][target].add(rule.action, condition_enabled);
+    }
+
+    std::map<PluginGuiRuleTarget, bool> final_enabled;
+    for (const auto &group_entry : enabled_by_group) {
+        for (const auto &target_entry : group_entry.second) {
+            const std::map<PluginGuiRuleTarget, bool>::iterator existing = final_enabled.find(target_entry.first);
+            const bool previous = existing == final_enabled.end() ? true : existing->second;
+            final_enabled[target_entry.first] = previous && target_entry.second.enabled();
+        }
+    }
+
+    std::vector<GuiRuleApplication> out;
+    out.reserve(final_enabled.size());
+    for (const auto &entry : final_enabled) {
+        GuiRuleApplication application;
+        application.target_key = entry.first.first;
+        application.target_index = entry.first.second;
+        application.enabled = entry.second;
+        out.emplace_back(std::move(application));
+    }
+    return out;
 }
 
 // Assign or reuse a type ID after validating the descriptor; incompatible reuse is rejected.

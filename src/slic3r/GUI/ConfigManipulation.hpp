@@ -20,6 +20,8 @@
 
 #include <boost/any.hpp>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_types.h"
+
 #include "Field.hpp"
 
 class wxWindow;
@@ -46,7 +48,8 @@ class ConfigManipulation
     ModelConfig* local_config = nullptr;
     wxWindow*    m_msg_dlg_parent {nullptr};
 
-    void    apply_plugin_gui_rules(DynamicPrintConfig* config, int current_index = -1);
+    void    apply_plugin_gui_rules(DynamicPrintConfig* config, int current_index = -1,
+                                   raw_option_preset_type scope = RAW_PRESET_TYPE_FFF_PRINT);
 
 public:
     ConfigManipulation(std::function<void()> load_config,

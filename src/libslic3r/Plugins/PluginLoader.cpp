@@ -850,12 +850,16 @@ void add_exclusive_step_used_setting_rules(Orchestrator &orchestrator,
     for (size_t plugin_idx = 0; plugin_idx < plugins.size(); ++plugin_idx) {
         const Plugin *plugin = plugins[plugin_idx];
         for (const Plugin::UsedConfigKey &setting : plugin->get_used_config_keys()) {
+            raw_gui_rule_clause clause = raw_gui_rule_clause_init();
+            clause.condition = RAW_GUI_RULE_CONDITION_INT_EQUALS;
+            clause.condition_key = group.option_def.opt_key;
+            clause.condition_int_value = int32_t(plugin_idx);
+
             raw_gui_rule rule = raw_gui_rule_init();
             rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
-            rule.condition = RAW_GUI_RULE_CONDITION_INT_EQUALS;
             rule.target_key = setting.key.c_str();
-            rule.condition_key = group.option_def.opt_key;
-            rule.condition_int_value = int32_t(plugin_idx);
+            rule.clauses = &clause;
+            rule.clause_count = 1;
             orchestrator.add_gui_rule(&rule);
         }
     }

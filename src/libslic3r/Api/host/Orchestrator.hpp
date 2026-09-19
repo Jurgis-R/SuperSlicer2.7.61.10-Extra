@@ -41,6 +41,7 @@ class SurfaceCollection;
 class ExtrusionEntity;
 class PluginStorage;
 class DynamicConfig;
+class DynamicPrintConfig;
 namespace ApiClipper { class ClipperShapes; }
 
 // Referenced by Orchestrator's constructor so static-library linkers retain
@@ -224,15 +225,33 @@ public:
         uint64_t order = 0;
     };
 
-    struct PluginGuiRule
+    struct PluginGuiRuleClause
     {
-        raw_gui_rule_action action = RAW_GUI_RULE_ACTION_NONE;
         raw_gui_rule_condition condition = RAW_GUI_RULE_CONDITION_NONE;
-        std::string target_key;
         std::string condition_key;
-        int32_t target_index = RAW_GUI_RULE_INDEX_ALL;
         int32_t condition_index = RAW_GUI_RULE_INDEX_ALL;
         int32_t condition_int_value = 0;
+        double condition_float_value = 0.0;
+    };
+
+    struct PluginGuiRule
+    {
+        // The clauses of one rule are ANDed. Rules are then combined per target:
+        // rules from different groups are ANDed, while rules inside one group
+        // follow the action contract (ENABLE is ANDed, ENABLE_ANY is ORed).
+        raw_gui_rule_action action = RAW_GUI_RULE_ACTION_NONE;
+        std::string target_key;
+        int32_t target_index = RAW_GUI_RULE_INDEX_ALL;
+        raw_option_preset_type scope = RAW_PRESET_TYPE_NONE;
+        std::string group;
+        std::vector<PluginGuiRuleClause> clauses;
+    };
+
+    struct GuiRuleApplication
+    {
+        std::string target_key;
+        int32_t target_index = RAW_GUI_RULE_INDEX_ALL;
+        bool enabled = true;
     };
 
     struct ConfigOptionOwner
@@ -411,10 +430,20 @@ public:
     std::string merged_ui_layout(const std::string &target_file,
                                  const std::string &base_content,
                                  const std::unordered_set<std::string> &implemented_fragment_ids) const;
-    // Register a GUI activation rule after validating its fields.
+    // Register a GUI activation rule (conjunctive clauses, group and scope)
+    // after validating its fields.
     bool add_gui_rule(const raw_gui_rule *rule);
     // Return GUI rules by borrowed reference.
     const std::vector<PluginGuiRule> &gui_rules() const { return m_gui_rules; }
+    // Resolve the enabled state of every GUI target for one config snapshot.
+    //
+    // scope selects the refreshed GUI context: rules whose scope is neither
+    // RAW_PRESET_TYPE_NONE nor the requested scope are ignored. group filters
+    // the rule groups: an empty group evaluates every group.
+    std::vector<GuiRuleApplication> evaluate_gui_rules(const DynamicPrintConfig &config,
+                                                       raw_option_preset_type scope,
+                                                       int32_t current_index = -1,
+                                                       const std::string &group = std::string()) const;
 
     // Create a bridge-detector service handle from an ABI input.
     bridge_detector_instance create_bridge_detector(const bridge_detector_create_input &input);

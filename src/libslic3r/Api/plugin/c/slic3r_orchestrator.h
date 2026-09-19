@@ -5,8 +5,9 @@
 #ifndef slic3r_orchestrator_h_
 #define slic3r_orchestrator_h_
 
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 1u
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 5u
+/* Version 2 removes the version-1 single-condition GUI rule API. */
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 2u
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 0u
 
 /*
 Property registration guide:
@@ -412,7 +413,19 @@ typedef enum raw_gui_rule_condition {
     RAW_GUI_RULE_CONDITION_OPTION_DISABLED,
     RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO,
     RAW_GUI_RULE_CONDITION_INT_EQUALS,
-    RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS
+    RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS,
+    /*
+    float condition_float_value comparison; works on any numeric option.
+    The comparison reads the normalized value returned by ConfigOption::get_float(),
+    so a percent option compares against a fraction (for example 50% is 0.5).
+    */
+    RAW_GUI_RULE_CONDITION_FLOAT_EQUALS,
+    RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN,
+    RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL,
+    /* True when the option at condition_index stores a percentage. */
+    RAW_GUI_RULE_CONDITION_IS_PERCENT,
+    /* True when the option is a vector and holds no item. */
+    RAW_GUI_RULE_CONDITION_VECTOR_EMPTY
 } raw_gui_rule_condition;
 
 typedef enum raw_gui_rule_action {
@@ -437,53 +450,88 @@ Use it only for options whose value is sized like the extruder count.
 #define RAW_GUI_RULE_INDEX_ALL     (-1)
 #define RAW_GUI_RULE_INDEX_CURRENT (-2)
 
-typedef struct raw_gui_rule {
-    raw_gui_rule_action action;
+/*
+One condition clause of a GUI rule.
+
+A clause is a single predicate on one config option. condition_index and
+condition_int_value follow the index and integer contracts documented above.
+condition_float_value is used by RAW_GUI_RULE_CONDITION_FLOAT_EQUALS,
+RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN and
+RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL. IS_PERCENT and VECTOR_EMPTY
+ignore condition_int_value and condition_float_value.
+*/
+typedef struct raw_gui_rule_clause {
     raw_gui_rule_condition condition;
-    const char *target_key;
     const char *condition_key;
-    int32_t target_index;
     int32_t condition_index;
     int32_t condition_int_value;
+    double condition_float_value;
+} raw_gui_rule_clause;
+
+static inline raw_gui_rule_clause raw_gui_rule_clause_init()
+{
+    raw_gui_rule_clause clause = {0};
+    clause.condition_index = RAW_GUI_RULE_INDEX_ALL;
+    return clause;
+}
+
+/*
+GUI activation rule.
+
+Rules are evaluated by ConfigManipulation when a tab refreshes its enabled
+state.
+
+The clauses of one rule are combined with a logical AND. Several rules may
+share one target_key:
+
+- RAW_GUI_RULE_ACTION_ENABLE enables target_key when every ENABLE rule
+  registered for the same target and group is true.
+- RAW_GUI_RULE_ACTION_ENABLE_ANY enables target_key when at least one
+  ENABLE_ANY rule registered for the same target and group is true. It is
+  useful for OR conditions such as "support is enabled when support_material
+  is true or raft_layers is non-zero".
+- If both actions are used for the same target and group, the target is
+  enabled only when all ENABLE rules are true and at least one ENABLE_ANY rule
+  is true.
+- rule_group partitions rules into independent expressions. Rules from
+  different groups are ANDed on the same target, so a core feature can publish
+  a complete disjunctive expression in its own group without merging with
+  unrelated ENABLE_ANY rules registered by plugins. An empty or null
+  rule_group is the default group.
+- scope restricts a rule to GUI contexts that refresh one preset kind.
+  RAW_PRESET_TYPE_NONE applies to every context. The FFF print settings use
+  RAW_PRESET_TYPE_FFF_PRINT so their rules are never evaluated while the
+  printer or SLA tab refreshes.
+- target_index and the clause condition_index are used for vector/extruder
+  options. Use RAW_GUI_RULE_INDEX_ALL for scalar options or when the whole
+  field should be affected. Use RAW_GUI_RULE_INDEX_CURRENT for a target that
+  must be applied item by item in the current extruder loop.
+- struct_size must be set to sizeof(raw_gui_rule). It allows later
+  additions to the structure without breaking already compiled callers.
+
+Returns 1 when the rule was added, 0 when an identical rule was already
+registered, and a negative value on invalid arguments or internal failure.
+*/
+typedef struct raw_gui_rule {
+    uint32_t struct_size;
+    raw_gui_rule_action action;
+    const char *target_key;
+    int32_t target_index;
+    raw_option_preset_type scope;
+    const char *rule_group;
+    const raw_gui_rule_clause *clauses;
+    uint32_t clause_count;
 } raw_gui_rule;
 
 static inline raw_gui_rule raw_gui_rule_init()
 {
     raw_gui_rule rule = {0};
+    rule.struct_size = (uint32_t)sizeof(raw_gui_rule);
     rule.target_index = RAW_GUI_RULE_INDEX_ALL;
-    rule.condition_index = RAW_GUI_RULE_INDEX_ALL;
+    rule.scope = RAW_PRESET_TYPE_NONE;
     return rule;
 }
 
-/*
-Register a GUI state rule.
-
-Rules are evaluated by ConfigManipulation when a tab refreshes its enabled
-state.
-
-RAW_GUI_RULE_ACTION_ENABLE enables target_key when every ENABLE rule registered
-for the same target is true.
-
-RAW_GUI_RULE_ACTION_ENABLE_ANY enables target_key when at least one ENABLE_ANY
-rule registered for the same target is true. It is useful for legacy OR
-conditions such as "support is enabled when support_material is true or
-raft_layers is non-zero".
-
-If both actions are used for the same target, the target is enabled only when
-all ENABLE rules are true and at least one ENABLE_ANY rule is true.
-
-condition_index and target_index are used for vector/extruder options.
-Use RAW_GUI_RULE_INDEX_ALL for scalar options or when the whole field should be
-affected. Use RAW_GUI_RULE_INDEX_CURRENT for a target that must be applied item
-by item in the current extruder loop.
-
-condition_int_value is used by RAW_GUI_RULE_CONDITION_INT_EQUALS and
-RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS. This is the intended way to express enum
-conditions, because enum config options are read as integer values.
-
-Returns 1 when the rule was added, 0 when an identical rule was already
-registered, and a negative value on invalid arguments or internal failure.
-*/
 SLIC3R_HOST_API int32_t orchestrator_add_gui_rule(
     orchestrator_handle *orch,
     const raw_gui_rule *rule

@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import ctypes
 import math
+from collections.abc import Mapping
 from typing import Iterable, Optional
 
 try:
@@ -126,6 +127,54 @@ _registered_apis = []
 
 def _as_bytes(text: Optional[str]) -> Optional[bytes]:
     return None if text is None else text.encode("utf-8")
+
+
+def _gui_rule_clause(clause) -> "RawGuiRuleClause":
+    """Normalize one GUI rule clause specification.
+
+    A clause is either a RawGuiRuleClause, a mapping using the clause field
+    names, or a sequence (condition, condition_key[, condition_index
+    [, condition_int_value[, condition_float_value]]]). Missing fields keep
+    the native defaults.
+    """
+    if isinstance(clause, RawGuiRuleClause):
+        return clause
+
+    if isinstance(clause, Mapping):
+        condition_value = clause.get("condition", RAW_GUI_RULE_CONDITION_BOOL_TRUE)
+        condition_key = clause.get("condition_key")
+        condition_index_value = clause.get("condition_index", RAW_GUI_RULE_INDEX_ALL)
+        condition_int_value = clause.get("condition_int_value", 0)
+        condition_float_value = clause.get("condition_float_value", 0.0)
+    else:
+        try:
+            fields = tuple(clause)
+        except TypeError as exc:
+            raise ValueError(
+                "A GUI rule clause must be a RawGuiRuleClause, a mapping or a sequence."
+            ) from exc
+        if len(fields) < 2 or len(fields) > 5:
+            raise ValueError(
+                "A GUI rule clause sequence needs 2 to 5 items: "
+                "condition, condition_key[, condition_index[, condition_int_value"
+                "[, condition_float_value]]]."
+            )
+        condition_value = fields[0]
+        condition_key = fields[1]
+        condition_index_value = fields[2] if len(fields) > 2 else RAW_GUI_RULE_INDEX_ALL
+        condition_int_value = fields[3] if len(fields) > 3 else 0
+        condition_float_value = fields[4] if len(fields) > 4 else 0.0
+
+    if condition_key is None:
+        raise ValueError("A GUI rule clause needs a condition_key.")
+
+    return RawGuiRuleClause(
+        int(condition_value),
+        _as_bytes(str(condition_key)),
+        int(condition_index_value),
+        int(condition_int_value),
+        float(condition_float_value),
+    )
 
 
 def round_coord(value: float) -> int:
@@ -442,27 +491,67 @@ class Slic3rAPI:
             _as_bytes(locale_directory),
         ))
 
+    @abi_requires_headers("slic3r_orchestrator.h")
     def add_gui_rule(
         self,
         *,
         target_key: str,
-        condition_key: str,
+        condition_key: Optional[str] = None,
         action: int = RAW_GUI_RULE_ACTION_ENABLE,
         condition: int = RAW_GUI_RULE_CONDITION_BOOL_TRUE,
         target_index: int = RAW_GUI_RULE_INDEX_ALL,
         condition_index: int = RAW_GUI_RULE_INDEX_ALL,
         condition_int_value: int = 0,
+        condition_float_value: float = 0.0,
+        clauses: Optional[Iterable] = None,
+        rule_group: Optional[str] = None,
+        scope: int = RAW_PRESET_TYPE_NONE,
     ) -> int:
-        rule = RawGuiRule(
-            int(action),
-            int(condition),
-            _as_bytes(target_key),
-            _as_bytes(condition_key),
-            int(target_index),
-            int(condition_index),
-            int(condition_int_value),
-        )
-        return self.host.orchestrator_add_gui_rule(self.orchestrator, ctypes.byref(rule))
+        """Register one GUI activation rule.
+
+        The clauses of a rule are ANDed. Pass clauses as an iterable of
+        mappings or (condition, condition_key[, condition_index
+        [, condition_int_value[, condition_float_value]]]) sequences. When
+        clauses is omitted, one clause is built from condition_key and the
+        single-condition keyword arguments.
+
+        Rule groups are ANDed together on the same target, while rules inside
+        one group follow the action contract: ENABLE rules are ANDed and
+        ENABLE_ANY rules are ORed. scope restricts the rule to one preset kind
+        (RAW_PRESET_TYPE_NONE applies everywhere).
+        """
+        if clauses is None:
+            if condition_key is None:
+                raise ValueError("add_gui_rule needs condition_key or clauses.")
+            clause_inputs = [{
+                "condition": condition,
+                "condition_key": condition_key,
+                "condition_index": condition_index,
+                "condition_int_value": condition_int_value,
+                "condition_float_value": condition_float_value,
+            }]
+        else:
+            clause_inputs = list(clauses)
+            if not clause_inputs:
+                raise ValueError("add_gui_rule needs at least one clause.")
+
+        # Keep the clause instances and their contiguous array alive until the
+        # host has copied the complete rule.
+        clause_instances = [_gui_rule_clause(clause) for clause in clause_inputs]
+        clause_array = (RawGuiRuleClause * len(clause_instances))()
+        for index, instance in enumerate(clause_instances):
+            clause_array[index] = instance
+
+        rule = RawGuiRule()
+        rule.struct_size = ctypes.sizeof(RawGuiRule)
+        rule.action = int(action)
+        rule.target_key = _as_bytes(target_key)
+        rule.target_index = int(target_index)
+        rule.scope = int(scope)
+        rule.rule_group = _as_bytes(rule_group) if rule_group else None
+        rule.clauses = ctypes.cast(clause_array, ctypes.POINTER(RawGuiRuleClause))
+        rule.clause_count = len(clause_instances)
+        return int(self.host.orchestrator_add_gui_rule(self.orchestrator, ctypes.byref(rule)))
 
     @abi_requires_headers("slic3r_config_def.h", "slic3r_orchestrator.h")
     def create_option_def(self, **kwargs) -> int:

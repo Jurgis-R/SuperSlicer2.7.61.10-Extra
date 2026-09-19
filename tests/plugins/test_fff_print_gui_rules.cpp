@@ -1,0 +1,546 @@
+#include <catch2/catch.hpp>
+
+#include <map>
+#include <random>
+#include <string>
+#include <vector>
+
+#include "plugin_test_helpers.hpp"
+
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
+
+/*
+FFF print GUI rules tests
+=========================
+
+initialize_fff_print_gui_rules() replaces the enable/disable logic of the
+legacy ConfigManipulation::toggle_print_fff_options(). These tests compare the
+declarative rules with an imperative reference implementation of the legacy
+intent on curated scenarios and a seeded fuzz.
+*/
+
+using namespace Slic3r;
+
+namespace {
+
+using EnabledMap = std::map<std::string, bool>;
+
+// Reference implementation of the migrated legacy logic. It mirrors the final
+// net state of toggle_print_fff_options(), including the intentional
+// corrections applied during the migration.
+EnabledMap reference_enabled(const DynamicPrintConfig &config)
+{
+    EnabledMap out;
+    // Dynamic plugin options such as the seam cost settings are not part of the
+    // static full print config, so the reference skips absent targets exactly
+    // like the rule evaluator does.
+    const auto set = [&out, &config](const char *key, bool enabled) {
+        if (config.has(key))
+            out[key] = enabled;
+    };
+    const auto b = [&config](const char *key) { return config.opt_bool(key); };
+    const auto i = [&config](const char *key) { return config.opt_int(key); };
+    const auto fl = [&config](const char *key) { return config.opt_float(key); };
+    const auto en = [&config](const char *key) { return config.is_enabled(key); };
+
+    const bool P = i("perimeters") > 0;
+    const bool A = P &&
+        config.opt_enum<PerimeterGeneratorType>("perimeter_generator") == PerimeterGeneratorType::Arachne;
+    const bool not_A = !A;
+    const bool ext = b("external_perimeters_first");
+    const bool loop = b("perimeter_loop");
+    const bool loop_seam = loop && !A;
+    const bool H = fl("fill_density") > 0;
+    const bool T = i("top_solid_layers") > 0;
+    const bool B = i("bottom_solid_layers") > 0;
+    const bool S = i("solid_infill_every_layers") == 1;
+    const bool D = i("solid_infill_every_layers") > 0;
+    const bool E = fl("solid_infill_below_area") > 0;
+    const bool spiral = b("spiral_vase");
+    const bool has_spiral = P && spiral;
+    const bool has_top = T || has_spiral || S;
+    const bool has_bottom = B || S;
+    const bool has_solid = has_top || has_bottom || (H && (D || E));
+    const bool overhangs = P && b("overhangs");
+    const bool have_skirt = i("skirts") > 0;
+    const bool have_brim = fl("brim_width") > 0 || fl("brim_width_interior") > 0;
+    const bool supp = b("support_material");
+    const bool raft = i("raft_layers") > 0;
+    const bool have_support = supp || raft;
+    const bool have_iface = have_support &&
+        (i("support_material_interface_layers") > 0 || i("support_material_bottom_interface_layers") > 0);
+    const SupportMaterialStyle style = config.opt_enum<SupportMaterialStyle>("support_material_style");
+    const bool organic = style == SupportMaterialStyle::smsOrganic &&
+        (supp || i("support_material_enforce_layers") > 0);
+    const bool default_accel = fl("default_acceleration") > 0;
+    const bool pp_ironing = has_top && b("ironing");
+    const bool ironing_pattern =
+        config.opt_enum<InfillPattern>("top_fill_pattern") == InfillPattern::ipSmooth ||
+        config.opt_enum<InfillPattern>("bottom_fill_pattern") == InfillPattern::ipSmooth ||
+        config.opt_enum<InfillPattern>("solid_fill_pattern") == InfillPattern::ipSmooth;
+    const bool has_ironing = pp_ironing || ironing_pattern;
+    const bool ext_not_loop = ext && !loop_seam;
+    const bool can_reverse = !A && overhangs && !b("perimeter_reverse");
+    const bool soluble = have_support &&
+        config.opt_enum<SupportZDistanceType>("support_material_contact_distance_type") == zdNone;
+    const bool seam_cost = P && config.opt_enum<SeamPosition>("seam_position") == spCost;
+    const bool notch = P && (fl("seam_notch_all") != 0 || fl("seam_notch_inner") != 0 || fl("seam_notch_outer") != 0);
+    const bool gap = !A;
+    const bool have_gap = gap && b("gap_fill_enabled");
+    const bool gap_ext = have_gap || b("infill_filled_bottom") || b("infill_filled_solid") || b("infill_filled_top");
+    const bool seq = b("complete_objects") || fl("parallel_objects_step") > 0;
+    const bool parallel_ok = !b("complete_objects") && fl("parallel_objects_step") > 0;
+    const bool have_wipe = fl("parallel_objects_step") <= 0 || b("parallel_islands");
+    const bool wipe_ready = have_wipe && b("wipe_tower");
+    const bool avoid = b("avoid_crossing_perimeters");
+    const bool infill_or_solid = H || has_solid;
+    const bool smooth =
+        (has_top && config.opt_enum<InfillPattern>("top_fill_pattern") == InfillPattern::ipSmooth) ||
+        (has_bottom && config.opt_enum<InfillPattern>("bottom_fill_pattern") == InfillPattern::ipSmooth) ||
+        (has_solid && config.opt_enum<InfillPattern>("solid_fill_pattern") == InfillPattern::ipSmooth) ||
+        (have_support && config.opt_enum<InfillPattern>("support_material_top_interface_pattern") == InfillPattern::ipSmooth) ||
+        (have_support && config.opt_enum<InfillPattern>("support_material_bottom_interface_pattern") == InfillPattern::ipSmooth);
+    const bool default_width =
+        (en("first_layer_extrusion_width") && fl("first_layer_extrusion_width") == 0) ||
+        (en("first_layer_infill_extrusion_width") && fl("first_layer_infill_extrusion_width") == 0) ||
+        (fl("perimeter_extrusion_width") == 0 && (P || have_brim)) ||
+        (fl("external_perimeter_extrusion_width") == 0 && P) ||
+        (fl("infill_extrusion_width") == 0 && infill_or_solid) ||
+        (fl("solid_infill_extrusion_width") == 0 && has_solid) ||
+        (fl("top_infill_extrusion_width") == 0 && has_top) ||
+        (fl("support_material_extrusion_width") == 0 && have_support) ||
+        (fl("skirt_extrusion_width") == 0 && have_skirt);
+
+    const char *const have_perimeters_keys[] = {
+        "extra_perimeters", "extra_perimeters_below_area", "extra_perimeters_count",
+        "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs", "external_perimeters_first",
+        "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing",
+        "external_perimeter_extrusion_change_odd_layers", "overhangs", "seam_position",
+        "staggered_inner_seams", "perimeter_speed", "perimeter_reverse", "perimeter_generator",
+        "external_perimeter_speed", "small_perimeter_speed", "spiral_vase",
+        "seam_notch_all", "seam_notch_inner", "seam_notch_outer",
+        "no_perimeter_unsupported_algo", "only_one_perimeter_top"
+    };
+    for (const char *key : have_perimeters_keys)
+        set(key, P);
+
+    set("overhangs_dynamic_speed", overhangs);
+    set("overhangs_dynamic_flow", overhangs && en("overhangs_flow_ratio"));
+    set("small_perimeter_min_length", fl("small_perimeter_speed") > 0);
+    set("small_perimeter_max_length", fl("small_perimeter_speed") > 0);
+
+    const char *const arachne_keys[] = {
+        "wall_transition_length", "wall_transition_filter_deviation", "wall_transition_angle",
+        "wall_distribution_count", "min_feature_size", "min_bead_width"
+    };
+    for (const char *key : arachne_keys)
+        set(key, A);
+    set("perimeters_hole", not_A);
+    set("overhangs_extrusion_spacing", not_A);
+    set("perimeter_loop", P && !A);
+    set("thin_perimeters", P && !A);
+    set("perimeter_round_corners", P && !A);
+
+    set("seam_slope_type", ext_not_loop);
+    const bool scarf = config.opt_enum<SeamScarfType>("seam_slope_type") != SeamScarfType::None;
+    set("seam_slope_min_height", ext_not_loop && scarf);
+    set("seam_slope_max_length", ext_not_loop && scarf);
+    set("external_perimeters_first_force", ext_not_loop && !A);
+    set("external_perimeters_nothole", ext_not_loop && !A && !b("external_perimeters_first_force"));
+    set("external_perimeters_hole", ext_not_loop && !A && !b("external_perimeters_first_force"));
+    set("perimeter_bonding", ext && !A && fl("perimeter_overlap") == 100 && fl("external_perimeter_overlap") == 100);
+    set("only_one_perimeter_first_layer", i("perimeters") > 1);
+
+    set("overhangs_reverse", can_reverse);
+    set("overhangs_reverse_threshold", can_reverse && b("overhangs_reverse"));
+    set("overhangs_speed_enforce", overhangs && !loop_seam);
+    set("overhangs_speed", overhangs);
+    set("overhangs_width_speed", overhangs);
+    set("overhangs_flow_ratio", overhangs);
+    set("overhangs_width", overhangs && en("overhangs_flow_ratio"));
+
+    set("min_width_top_surface", P && b("only_one_perimeter_top"));
+    set("thin_perimeters_all", P && fl("thin_perimeters") != 0 && !A);
+    set("thin_walls", P && !A);
+    set("thin_walls_min_width", P && !A && b("thin_walls"));
+    set("thin_walls_overlap", P && !A && b("thin_walls"));
+    set("thin_walls_merge", P && !A && b("thin_walls"));
+
+    set("seam_angle_cost", seam_cost);
+    set("seam_travel_cost", seam_cost);
+    set("seam_visibility", seam_cost);
+    set("perimeter_loop_seam", loop_seam);
+    set("seam_notch_angle", notch);
+
+    set("gap_fill_enabled", gap);
+    set("gap_fill_last", have_gap);
+    set("gap_fill_no_overhang", have_gap);
+    set("gap_fill_extension", gap_ext);
+    set("gap_fill_max_width", gap_ext);
+    set("gap_fill_min_area", gap_ext);
+    set("gap_fill_min_length", gap_ext);
+    set("gap_fill_min_width", gap_ext);
+
+    const bool fuzzy = config.opt_enum<FuzzySkinType>("fuzzy_skin") != FuzzySkinType::None;
+    set("fuzzy_skin_thickness", fuzzy);
+    set("fuzzy_skin_point_dist", fuzzy);
+
+    const char *const have_infill_keys[] = {
+        "fill_aligned_z", "fill_pattern", "infill_connection", "solid_infill_every_layers",
+        "solid_infill_below_area", "solid_infill_below_layer_area", "solid_infill_below_width",
+        "infill_extruder"
+    };
+    for (const char *key : have_infill_keys)
+        set(key, H);
+    const bool anchors = H && config.opt_enum<InfillConnection>("infill_connection") != InfillConnection::icNotConnected;
+    set("infill_anchor_max", anchors);
+    set("infill_anchor", anchors && fl("infill_anchor_max") > 0);
+    set("infill_dense", fl("fill_density") < 50);
+    set("infill_dense_algo", b("infill_dense") && fl("fill_density") < 50);
+    set("infill_every_layers", H && !(b("infill_dense") && fl("fill_density") < 50));
+    set("infill_only_where_needed", H && !(b("infill_dense") && fl("fill_density") < 50));
+
+    const char *const solid_keys[] = {
+        "enforce_full_fill_volume", "external_infill_margin", "bridged_infill_margin",
+        "solid_infill_extruder", "solid_infill_extrusion_width", "solid_infill_extrusion_spacing",
+        "solid_infill_speed", "solid_infill_extrusion_change_odd_layers"
+    };
+    for (const char *key : solid_keys)
+        set(key, has_solid);
+
+    set("infill_first", infill_or_solid);
+    const char *const infill_or_solid_keys[] = {
+        "fill_angle_cross", "fill_angle_follow_model", "fill_angle_increment", "fill_angle_template",
+        "bridge_angle", "infill_extrusion_width", "infill_extrusion_spacing",
+        "infill_extrusion_change_odd_layers", "infill_speed"
+    };
+    for (const char *key : infill_or_solid_keys)
+        set(key, infill_or_solid);
+    set("fill_angle", infill_or_solid && config.option<ConfigOptionFloats>("fill_angle_template")->size() == 0);
+
+    const bool ensure = config.opt_enum<EnsureVerticalShellThickness>("ensure_vertical_shell_thickness") !=
+        EnsureVerticalShellThickness::Disabled;
+    set("top_solid_min_thickness", !has_spiral && has_top && ensure);
+    set("bottom_solid_min_thickness", !has_spiral && has_bottom && ensure);
+
+    const char *const top_keys[] = {
+        "ironing", "top_fill_pattern", "infill_connection_top", "top_infill_extrusion_width",
+        "top_infill_extrusion_spacing", "top_solid_infill_speed"
+    };
+    for (const char *key : top_keys)
+        set(key, has_top);
+    set("bottom_fill_pattern", has_bottom);
+    set("infill_connection_bottom", has_bottom);
+    set("solid_fill_pattern", has_solid);
+    set("infill_connection_solid", has_solid);
+    set("bridge_fill_pattern", has_solid);
+    set("infill_connection_bridge", has_solid);
+
+    set("ironing_type", pp_ironing);
+    set("ironing_flowrate", pp_ironing);
+    set("ironing_spacing", pp_ironing);
+    set("ironing_angle", pp_ironing);
+    set("ironing_speed", has_ironing);
+    set("fill_smooth_width", smooth);
+    set("fill_smooth_distribution", smooth);
+
+    const char *const skirt_keys[] = {
+        "skirt_width", "skirt_brim", "skirt_distance", "skirt_distance_from_brim",
+        "draft_shield", "min_skirt_length", "skirt_extrusion_width"
+    };
+    for (const char *key : skirt_keys)
+        set(key, have_skirt);
+    set("skirt_height", have_skirt && config.opt_enum<DraftShield>("draft_shield") != dsEnabled);
+    set("brim_separation", have_brim);
+    set("perimeter_extruder", P || have_brim);
+    set("perimeter_extrusion_width", P || have_brim);
+    set("perimeter_extrusion_spacing", P || have_brim);
+    set("perimeter_extrusion_change_odd_layers", P || have_brim);
+    set("support_material_extruder", have_support || have_skirt);
+    set("support_material_speed", have_support || have_skirt || have_brim);
+    set("brim_speed", have_brim || have_skirt);
+
+    const char *const support_keys[] = {
+        "support_material_style", "support_material_extrusion_width",
+        "support_material_contact_distance_type", "support_material_xy_spacing",
+        "support_material_bottom_interface_layers", "support_material_interface_layers"
+    };
+    for (const char *key : support_keys)
+        set(key, have_support);
+    set("support_material_threshold", have_support && b("support_material_auto"));
+    set("support_material_bottom_contact_distance", have_support && !soluble);
+    set("support_material_contact_distance", have_support && !soluble);
+    set("support_material_closing_radius", have_support && style == SupportMaterialStyle::smsSnug);
+
+    const char *const organic_keys[] = {
+        "support_tree_angle", "support_tree_angle_slow", "support_tree_branch_diameter",
+        "support_tree_branch_diameter_angle", "support_tree_branch_diameter_double_wall",
+        "support_tree_tip_diameter", "support_tree_branch_distance", "support_tree_top_rate"
+    };
+    for (const char *key : organic_keys)
+        set(key, organic);
+
+    const char *const iface_keys[] = {
+        "support_material_interface_spacing", "support_material_interface_extruder",
+        "support_material_interface_speed", "support_material_interface_angle_increment",
+        "support_material_bottom_interface_expansion"
+    };
+    for (const char *key : iface_keys)
+        set(key, have_iface);
+    set("support_material_interface_layer_height", have_iface && !organic);
+    set("support_material_interface_angle", have_iface && !organic);
+    set("support_material_bottom_interface_pattern", have_iface && !organic);
+    set("support_material_interface_contact_loops", have_iface && !organic);
+    set("support_material_with_sheath", have_support && !organic);
+    set("support_material_pattern", have_support && !organic);
+    set("support_material_spacing", have_support && !organic);
+    set("support_material_angle", have_support && !organic);
+    set("support_material_angle_height", have_support && !organic);
+    set("support_material_layer_height", have_support && !organic);
+
+    set("support_material_synchronize_layers", soluble);
+
+    const bool raft_soluble = config.opt_enum<SupportZDistanceType>("raft_contact_distance_type") == zdNone;
+    set("raft_contact_distance", raft && !raft_soluble);
+    set("raft_expansion", raft);
+    set("first_layer_acceleration_over_raft", raft);
+    set("first_layer_speed_over_raft", raft);
+    set("raft_layer_height", raft);
+    set("raft_interface_layer_height", raft);
+
+    set("extrusion_width", default_width);
+    set("extrusion_spacing", default_width);
+    set("first_layer_extrusion_spacing", en("first_layer_extrusion_width"));
+    set("first_layer_infill_extrusion_spacing", en("first_layer_infill_extrusion_width"));
+
+    set("complete_objects_one_skirt", seq);
+    set("complete_objects_sort", seq);
+    set("parallel_objects_step", !b("complete_objects"));
+    set("parallel_objects_step_max_z", parallel_ok);
+    set("parallel_islands", parallel_ok);
+    set("standby_temperature_delta", b("ooze_prevention"));
+    set("wipe_tower", have_wipe);
+    const char *const wipe_keys[] = {
+        "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
+        "wipe_tower_brim_width", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
+        "wipe_tower_bridging", "wipe_tower_brim", "wipe_tower_no_sparse_layers",
+        "single_extruder_multi_material_priming", "wipe_tower_speed",
+        "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width", "wipe_tower_rest_in_middle"
+    };
+    for (const char *key : wipe_keys)
+        set(key, wipe_ready);
+    set("mmu_segmented_region_interlocking_depth", fl("mmu_segmented_region_max_width") != 0);
+
+    set("avoid_crossing_curled_overhangs", !avoid);
+    set("avoid_crossing_perimeters", !b("avoid_crossing_curled_overhangs"));
+    set("avoid_crossing_perimeters_max_detour", avoid);
+    set("avoid_crossing_not_first_layer", avoid);
+    set("avoid_crossing_top", avoid);
+    set("avoid_travel_island", avoid);
+    set("avoid_travel_island_weight", avoid && b("avoid_travel_island"));
+    set("enforce_retract_first_layer", b("only_retract_when_crossing_perimeters"));
+    set("milling_after_z", b("milling_post_process"));
+    set("milling_extra_size", b("milling_post_process"));
+    set("milling_speed", b("milling_post_process"));
+
+    const char *const default_accel_keys[] = {
+        "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
+        "gap_fill_acceleration", "travel_acceleration", "travel_deceleration_use_target",
+        "first_layer_acceleration"
+    };
+    for (const char *key : default_accel_keys)
+        set(key, default_accel);
+    set("perimeter_acceleration", default_accel && P);
+    set("external_perimeter_acceleration", default_accel && P);
+    set("thin_walls_acceleration", default_accel && P);
+    set("infill_acceleration", default_accel && H);
+    set("solid_infill_acceleration", default_accel && has_solid);
+    set("top_solid_infill_acceleration", default_accel && has_top);
+    set("ironing_acceleration", default_accel && has_ironing);
+    set("support_material_acceleration", default_accel && (have_support || have_brim || have_skirt));
+    set("support_material_interface_acceleration", default_accel && have_iface);
+    set("brim_acceleration", default_accel && (have_brim || have_skirt));
+
+    const bool percent_speed =
+        config.option<ConfigOptionFloatOrPercent>("perimeter_speed")->percent ||
+        config.option<ConfigOptionFloatOrPercent>("solid_infill_speed")->percent ||
+        config.option<ConfigOptionFloatOrPercent>("bridge_speed")->percent ||
+        config.option<ConfigOptionFloatOrPercent>("support_material_speed")->percent;
+    set("default_speed", percent_speed);
+    set("max_print_speed", fl("max_volumetric_speed") != 0);
+    set("autospeed_min_thin_flow", fl("max_volumetric_speed") != 0);
+
+    return out;
+}
+
+EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConfig &config)
+{
+    EnabledMap out;
+    for (const Orchestrator::GuiRuleApplication &application :
+         orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, FFF_PRINT_GUI_RULE_GROUP))
+        out[application.target_key] = application.enabled;
+    return out;
+}
+
+void randomize(DynamicPrintConfig &config, std::mt19937 &rng)
+{
+    std::uniform_int_distribution<int> small(0, 3);
+    std::uniform_int_distribution<int> coin(0, 1);
+    std::uniform_int_distribution<int> percent(0, 3);
+    const double densities[] = { 0.0, 15.0, 50.0, 60.0 };
+    config.option<ConfigOptionInt>("perimeters")->value = small(rng);
+    config.option<ConfigOptionInt>("top_solid_layers")->value = small(rng);
+    config.option<ConfigOptionInt>("bottom_solid_layers")->value = small(rng);
+    config.option<ConfigOptionInt>("solid_infill_every_layers")->value = small(rng);
+    config.option<ConfigOptionInt>("skirts")->value = small(rng);
+    config.option<ConfigOptionInt>("raft_layers")->value = small(rng);
+    config.option<ConfigOptionInt>("support_material_interface_layers")->value = small(rng);
+    config.option<ConfigOptionInt>("support_material_bottom_interface_layers")->value = small(rng);
+    config.option<ConfigOptionInt>("support_material_enforce_layers")->value = small(rng);
+    config.option<ConfigOptionPercent>("fill_density")->value = densities[percent(rng)];
+    config.option<ConfigOptionPercent>("thin_perimeters")->value = percent(rng) == 0 ? 0.0 : 100.0;
+    config.option<ConfigOptionPercent>("perimeter_overlap")->value = percent(rng) == 0 ? 100.0 : 50.0;
+    config.option<ConfigOptionPercent>("external_perimeter_overlap")->value = percent(rng) == 0 ? 100.0 : 20.0;
+    config.option<ConfigOptionFloat>("brim_width")->value = coin(rng) ? 5.0 : 0.0;
+    config.option<ConfigOptionFloat>("brim_width_interior")->value = coin(rng) ? 3.0 : 0.0;
+    config.option<ConfigOptionFloat>("solid_infill_below_area")->value = coin(rng) ? 5.0 : 0.0;
+    config.option<ConfigOptionFloatOrPercent>("small_perimeter_speed")->value = coin(rng) ? 10.0 : 0.0;
+    config.option<ConfigOptionFloat>("max_volumetric_speed")->value = coin(rng) ? 5.0 : 0.0;
+    config.option<ConfigOptionFloat>("parallel_objects_step")->value = coin(rng) ? 1.0 : 0.0;
+    for (const char *key : { "first_layer_extrusion_width", "external_perimeter_extrusion_width",
+                             "perimeter_extrusion_width", "infill_extrusion_width",
+                             "solid_infill_extrusion_width", "top_infill_extrusion_width",
+                             "support_material_extrusion_width", "skirt_extrusion_width" })
+        config.option<ConfigOptionFloatOrPercent>(key)->value = coin(rng) ? 0.0 : 0.45;
+    config.option<ConfigOptionFloatOrPercent>("default_acceleration")->value = coin(rng) ? 1000.0 : 0.0;
+    config.option<ConfigOptionFloatOrPercent>("infill_anchor_max")->value = coin(rng) ? 5.0 : 0.0;
+    config.option("first_layer_extrusion_width")->set_enabled(coin(rng) != 0);
+    config.option("first_layer_infill_extrusion_width")->set_enabled(coin(rng) != 0);
+    config.option("overhangs_flow_ratio")->set_enabled(coin(rng) != 0);
+    for (const char *key : { "spiral_vase", "external_perimeters_first", "perimeter_loop",
+                             "overhangs", "perimeter_reverse", "thin_walls", "only_one_perimeter_top",
+                             "support_material", "support_material_auto", "ooze_prevention",
+                             "complete_objects", "avoid_crossing_perimeters",
+                             "avoid_crossing_curled_overhangs", "avoid_travel_island",
+                             "milling_post_process", "infill_dense", "gap_fill_enabled",
+                             "infill_filled_bottom", "infill_filled_solid", "infill_filled_top",
+                             "external_perimeters_first_force" })
+        config.option<ConfigOptionBool>(key)->value = coin(rng) != 0;
+
+    // Dynamic configs may store an enum as ConfigOptionEnum<T> or as
+    // ConfigOptionEnumGeneric, so write through the virtual int accessor.
+    const auto set_enum = [&config](const char *key, int value) { config.option(key)->set_int(value); };
+    set_enum("perimeter_generator", coin(rng) ? int(PerimeterGeneratorType::Arachne) : int(PerimeterGeneratorType::Classic));
+    set_enum("support_material_style", small(rng) % 4);
+    set_enum("fuzzy_skin", coin(rng) ? int(FuzzySkinType::External) : int(FuzzySkinType::None));
+    set_enum("seam_slope_type", coin(rng) ? int(SeamScarfType::External) : int(SeamScarfType::None));
+    set_enum("infill_connection", coin(rng) ? int(InfillConnection::icNotConnected) : int(InfillConnection::icConnected));
+    set_enum("ensure_vertical_shell_thickness", coin(rng) ? int(EnsureVerticalShellThickness::Enabled) : int(EnsureVerticalShellThickness::Disabled));
+    set_enum("draft_shield", coin(rng) ? int(dsEnabled) : int(dsDisabled));
+    set_enum("support_material_contact_distance_type", coin(rng) ? int(zdNone) : int(zdFilament));
+    set_enum("raft_contact_distance_type", coin(rng) ? int(zdNone) : int(zdFilament));
+    set_enum("seam_position", coin(rng) ? int(spCost) : int(spAligned));
+    set_enum("top_fill_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));
+    set_enum("bottom_fill_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));
+    set_enum("solid_fill_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));
+    set_enum("support_material_top_interface_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));
+    set_enum("support_material_bottom_interface_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));
+}
+
+} // namespace
+
+TEST_CASE("FFF print GUI rules match the legacy toggle logic", "[plugins][gui-rules][fff-print]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    bool has_fff_rules = false;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules())
+        has_fff_rules = has_fff_rules ||
+            (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.group == FFF_PRINT_GUI_RULE_GROUP);
+    REQUIRE(has_fff_rules);
+
+    // The rules are registered once: a second initialization must not add any.
+    const size_t rule_count = orchestrator.gui_rules().size();
+    initialize_fff_print_gui_rules();
+    CHECK(orchestrator.gui_rules().size() == rule_count);
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const EnabledMap expected = reference_enabled(config);
+    const EnabledMap actual = rule_enabled(orchestrator, config);
+    REQUIRE(actual.size() == expected.size());
+    for (const auto &entry : expected) {
+        const auto found = actual.find(entry.first);
+        REQUIRE(found != actual.end());
+        INFO("key " << entry.first);
+        CHECK(found->second == entry.second);
+    }
+}
+
+TEST_CASE("FFF print GUI rules match the legacy toggle logic on a seeded fuzz",
+          "[plugins][gui-rules][fff-print][fuzz]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const Orchestrator &orchestrator = Orchestrator::instance();
+
+    std::mt19937 rng(0x5eed1234u);
+    for (int iteration = 0; iteration < 800; ++iteration) {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        randomize(config, rng);
+
+        const EnabledMap expected = reference_enabled(config);
+        const EnabledMap actual = rule_enabled(orchestrator, config);
+        REQUIRE(actual.size() == expected.size());
+        for (const auto &entry : expected) {
+            const auto found = actual.find(entry.first);
+            REQUIRE(found != actual.end());
+            INFO("iteration " << iteration << " key " << entry.first);
+            REQUIRE(found->second == entry.second);
+        }
+    }
+}
+
+TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui-rules][abi]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    raw_gui_rule_clause clauses[1] = { raw_gui_rule_clause_init() };
+    clauses[0].condition = RAW_GUI_RULE_CONDITION_BOOL_TRUE;
+    clauses[0].condition_key = "spiral_vase";
+
+    raw_gui_rule rule = raw_gui_rule_init();
+    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
+    rule.target_key = "gui_rule_abi_test_target";
+    rule.scope = RAW_PRESET_TYPE_FFF_PRINT;
+    rule.rule_group = "gui_rule_abi_test_group";
+    rule.clauses = clauses;
+    rule.clause_count = 1;
+
+    CHECK(orchestrator.add_gui_rule(&rule));
+    CHECK_FALSE(orchestrator.add_gui_rule(&rule));
+
+    bool found = false;
+    for (const Orchestrator::PluginGuiRule &stored : orchestrator.gui_rules()) {
+        if (stored.target_key != "gui_rule_abi_test_target")
+            continue;
+        found = true;
+        CHECK(stored.group == "gui_rule_abi_test_group");
+        CHECK(stored.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        REQUIRE(stored.clauses.size() == 1);
+        CHECK(stored.clauses[0].condition == RAW_GUI_RULE_CONDITION_BOOL_TRUE);
+        CHECK(stored.clauses[0].condition_key == "spiral_vase");
+    }
+    CHECK(found);
+
+    // A clause without a condition key must be rejected.
+    clauses[0].condition_key = nullptr;
+    CHECK_FALSE(orchestrator.add_gui_rule(&rule));
+
+    // A truncated descriptor must be rejected.
+    clauses[0].condition_key = "spiral_vase";
+    rule.struct_size = sizeof(uint32_t);
+    CHECK_FALSE(orchestrator.add_gui_rule(&rule));
+}

@@ -381,22 +381,29 @@ TEST_CASE("STEP_SKIRT_BRIM exposes a brim exclusive group but is not exclusive i
     bool inside_holes_require_no_inner_brim = false;
     bool pattern_requires_ears = false;
     bool detection_requires_ears = false;
+    const auto has_clause = [](const Orchestrator::PluginGuiRule &rule, const char *condition_key,
+                               raw_gui_rule_condition condition) {
+        for (const Orchestrator::PluginGuiRuleClause &clause : rule.clauses)
+            if (clause.condition == condition && clause.condition_key == condition_key)
+                return true;
+        return false;
+    };
     for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules()) {
         ears_require_outer_brim = ears_require_outer_brim ||
-            (rule.target_key == "brim_ears" && rule.condition_key == "brim_width" &&
-             rule.condition == RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO);
+            (rule.target_key == "brim_ears" &&
+             has_clause(rule, "brim_width", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO));
         inside_holes_require_outer_brim = inside_holes_require_outer_brim ||
-            (rule.target_key == "brim_inside_holes" && rule.condition_key == "brim_width" &&
-             rule.condition == RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO);
+            (rule.target_key == "brim_inside_holes" &&
+             has_clause(rule, "brim_width", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO));
         inside_holes_require_no_inner_brim = inside_holes_require_no_inner_brim ||
-            (rule.target_key == "brim_inside_holes" && rule.condition_key == "brim_width_interior" &&
-             rule.condition == RAW_GUI_RULE_CONDITION_BOOL_FALSE);
+            (rule.target_key == "brim_inside_holes" &&
+             has_clause(rule, "brim_width_interior", RAW_GUI_RULE_CONDITION_BOOL_FALSE));
         pattern_requires_ears = pattern_requires_ears ||
-            (rule.target_key == "brim_ears_pattern" && rule.condition_key == "brim_ears" &&
-             rule.condition == RAW_GUI_RULE_CONDITION_BOOL_TRUE);
+            (rule.target_key == "brim_ears_pattern" &&
+             has_clause(rule, "brim_ears", RAW_GUI_RULE_CONDITION_BOOL_TRUE));
         detection_requires_ears = detection_requires_ears ||
-            (rule.target_key == "brim_ears_detection_length" && rule.condition_key == "brim_ears" &&
-             rule.condition == RAW_GUI_RULE_CONDITION_BOOL_TRUE);
+            (rule.target_key == "brim_ears_detection_length" &&
+             has_clause(rule, "brim_ears", RAW_GUI_RULE_CONDITION_BOOL_TRUE));
     }
     CHECK(ears_require_outer_brim);
     CHECK(inside_holes_require_outer_brim);

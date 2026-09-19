@@ -97,12 +97,16 @@ void add_enable_rule(orchestrator_handle *orchestrator,
                      const char *condition_key,
                      int32_t condition_int_value = 0)
 {
+    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
+    clause.condition = condition;
+    clause.condition_key = condition_key;
+    clause.condition_int_value = condition_int_value;
+
     raw_gui_rule rule = raw_gui_rule_init();
     rule.action = RAW_GUI_RULE_ACTION_ENABLE;
-    rule.condition = condition;
-    rule.condition_key = condition_key;
     rule.target_key = target_key;
-    rule.condition_int_value = condition_int_value;
+    rule.clauses = &clause;
+    rule.clause_count = 1;
     orchestrator_add_gui_rule(orchestrator, &rule);
 }
 

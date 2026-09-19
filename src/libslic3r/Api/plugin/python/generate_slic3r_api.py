@@ -186,6 +186,7 @@ CLASS_NAME_OVERRIDES = {
     "c_layer_config_range": "CLayerConfigRange",
     "c_triangle_indices": "CTriangleIndices",
     "c_mesh_slicing_params": "CMeshSlicingParams",
+    "raw_gui_rule_clause": "RawGuiRuleClause",
     "raw_gui_rule": "RawGuiRule",
     "raw_used_config_key": "RawUsedConfigKey",
 }

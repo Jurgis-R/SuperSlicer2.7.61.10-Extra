@@ -751,16 +751,16 @@ void append_destination_regions(DensePostInfillWork &work,
     }
 }
 
-extruder_index_t normalized_infill_extruder(int32_t one_based_id,
-                                            uint32_t extruder_count)
+// Convert the 1-based infill_extruder setting to a zero-based runtime id.
+extruder_index_t normalized_infill_extruder(const int32_t one_based, uint32_t extruder_count)
 {
-    if (one_based_id <= 0 || extruder_count == 0)
+    if (one_based <= 0 || extruder_count == 0)
         return EXTRUDER_ID_UNKNOWN;
-    const uint32_t candidate = uint32_t(one_based_id - 1);
-    if (candidate >= extruder_count ||
-        candidate > uint32_t((std::numeric_limits<extruder_index_t>::max)()))
+    const uint32_t zero_based = uint32_t(one_based - 1);
+    if (zero_based >= extruder_count ||
+        zero_based > uint32_t((std::numeric_limits<extruder_index_t>::max)()))
         return EXTRUDER_ID_UNKNOWN;
-    return static_cast<extruder_index_t>(candidate);
+    return static_cast<extruder_index_t>(zero_based);
 }
 
 extruder_index_t destination_infill_extruder_id(const DensePostInfillWork &work,

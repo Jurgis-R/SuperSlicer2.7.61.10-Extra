@@ -2852,7 +2852,8 @@ TEST_CASE("Built-in thumbnail providers expose one compatible exclusive selector
     const std::vector<Plugin::UsedConfigKey> used = settings_owner->get_used_config_keys();
     CHECK_FALSE(used.empty()); // Typed metadata is required for definition ownership.
     for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules())
-        CHECK(rule.condition_key != "thumbnails_format");
+        for (const Orchestrator::PluginGuiRuleClause &clause : rule.clauses)
+            CHECK(clause.condition_key != "thumbnails_format");
     for (size_t provider_idx = 1; provider_idx < provider_ids.size(); ++provider_idx) {
         const Plugin *plugin = orchestrator.get_plugin(provider_ids[provider_idx]);
         REQUIRE(plugin != nullptr);

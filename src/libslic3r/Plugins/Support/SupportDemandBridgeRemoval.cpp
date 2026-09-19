@@ -415,18 +415,21 @@ void SupportDemandBridgeRemoval::inilialize_impl(storage_handle *) const
                                  SupportDemandBridgeRemoval::print_ui_fragment(),
                                  0);
 
+    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
+    clause.condition = RAW_GUI_RULE_CONDITION_BOOL_TRUE;
+    clause.condition_key = "support_material";
+
     raw_gui_rule rule = raw_gui_rule_init();
     rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
-    rule.condition = RAW_GUI_RULE_CONDITION_BOOL_TRUE;
-    rule.condition_key = "support_material";
     rule.target_key = "dont_support_bridges";
+    rule.clauses = &clause;
+    rule.clause_count = 1;
     orchestrator_add_gui_rule(m_orchestrator, &rule);
 
-    rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
-    rule.condition = RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO;
-    rule.condition_key = "raft_layers";
-    rule.target_key = "dont_support_bridges";
+    clause = raw_gui_rule_clause_init();
+    clause.condition = RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO;
+    clause.condition_key = "raft_layers";
+    rule.clauses = &clause;
     orchestrator_add_gui_rule(m_orchestrator, &rule);
 }
 
