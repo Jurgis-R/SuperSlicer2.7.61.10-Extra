@@ -49,13 +49,9 @@ the C return code 0.
 
 The class owns every string and value referenced by the raw descriptor, so a
 GuiRule may be stored and registered later; only add_to() builds the short-lived
-raw view. The Orchestrator overload is defined in GuiRuleHelpers.cpp and is only
-available to host-side code; plugins use the C orchestrator_handle overload.
+raw view. Host-side code passes an orchestrator_handle obtained from
+Orchestrator::handle(); plugins pass the handle received at registration.
 */
-
-namespace Slic3r {
-class Orchestrator;
-}
 
 namespace slic3r_api {
 
@@ -185,6 +181,34 @@ inline GuiCondition all_of(std::vector<GuiCondition> conditions)
     return GuiCondition::make(GuiCondition::Kind::AllOf, std::move(conditions));
 }
 
+// Free leaf factories. They forward to GuiCondition and may be imported
+// directly by name, for example with "using slic3r_api::non_zero;", which keeps
+// rule expressions readable without the class qualifier.
+inline GuiCondition true_(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::true_(std::move(key), index); }
+inline GuiCondition false_(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::false_(std::move(key), index); }
+inline GuiCondition non_zero(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::non_zero(std::move(key), index); }
+inline GuiCondition enabled(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::enabled(std::move(key), index); }
+inline GuiCondition disabled(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::disabled(std::move(key), index); }
+inline GuiCondition int_equals(std::string key, int32_t value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::int_equals(std::move(key), value, index); }
+inline GuiCondition int_not_equals(std::string key, int32_t value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::int_not_equals(std::move(key), value, index); }
+inline GuiCondition float_equals(std::string key, double value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::float_equals(std::move(key), value, index); }
+inline GuiCondition float_less_than(std::string key, double value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::float_less_than(std::move(key), value, index); }
+inline GuiCondition float_greater_or_equal(std::string key, double value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::float_greater_or_equal(std::move(key), value, index); }
+inline GuiCondition percent(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::percent(std::move(key), index); }
+inline GuiCondition vector_empty(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::vector_empty(std::move(key), index); }
+
 class GuiRule
 {
 public:
@@ -285,9 +309,6 @@ public:
             }
         }
     }
-
-    // Host-side registration; defined in GuiRuleHelpers.cpp.
-    void add_to(Slic3r::Orchestrator &orchestrator) const;
 
 private:
     GuiRule(raw_gui_rule_action action, std::vector<std::string> targets) :
@@ -398,18 +419,7 @@ inline void add_gui_rule(orchestrator_handle *orchestrator, const GuiRule &rule)
     rule.add_to(orchestrator);
 }
 
-inline void add_gui_rule(Slic3r::Orchestrator &orchestrator, const GuiRule &rule)
-{
-    rule.add_to(orchestrator);
-}
-
 inline void add_gui_rules(orchestrator_handle *orchestrator, std::initializer_list<GuiRule> rules)
-{
-    for (const GuiRule &rule : rules)
-        rule.add_to(orchestrator);
-}
-
-inline void add_gui_rules(Slic3r::Orchestrator &orchestrator, std::initializer_list<GuiRule> rules)
 {
     for (const GuiRule &rule : rules)
         rule.add_to(orchestrator);

@@ -81,7 +81,7 @@ TEST_CASE("GuiRule helpers normalize expressions to DNF", "[plugins][gui-rules][
         }))
         .scope(RAW_PRESET_TYPE_NONE)
         .group(group)
-        .add_to(orchestrator);
+        .add_to(orchestrator.handle());
 
     const std::vector<const Orchestrator::PluginGuiRule *> rules = stored_rules(orchestrator, group);
     REQUIRE(rules.size() == 4);
@@ -125,7 +125,7 @@ TEST_CASE("GuiRule helpers normalize expressions to DNF", "[plugins][gui-rules][
             })
         }))
         .group(group)
-        .add_to(orchestrator);
+        .add_to(orchestrator.handle());
     CHECK(stored_rules(orchestrator, group).size() == 4);
 }
 
@@ -139,7 +139,7 @@ TEST_CASE("GuiRule helpers preserve index, scope and group", "[plugins][gui-rule
         .target_index(RAW_GUI_RULE_INDEX_CURRENT)
         .scope(RAW_PRESET_TYPE_FFF_PRINT)
         .group(group)
-        .add_to(orchestrator);
+        .add_to(orchestrator.handle());
 
     const std::vector<const Orchestrator::PluginGuiRule *> rules = stored_rules(orchestrator, group);
     REQUIRE(rules.size() == 1);
@@ -168,7 +168,7 @@ TEST_CASE("GuiRule helpers reject invalid input eagerly", "[plugins][gui-rules][
     CHECK_THROWS_AS(all_of({}), std::invalid_argument);
     CHECK_THROWS_AS((any_of({ GuiCondition{} })), std::invalid_argument);
 
-    CHECK_THROWS_AS(GuiRule::enable("gui_rule_target").add_to(orchestrator), std::invalid_argument);
+    CHECK_THROWS_AS(GuiRule::enable("gui_rule_target").add_to(orchestrator.handle()), std::invalid_argument);
     CHECK_THROWS_AS(GuiRule::enable("gui_rule_target").when(GuiCondition{}), std::invalid_argument);
     CHECK_THROWS_AS(GuiRule::enable("gui_rule_target").when_true("gui_rule_bool").target_index(-3),
                     std::invalid_argument);
@@ -180,7 +180,7 @@ TEST_CASE("GuiRule helpers reject invalid input eagerly", "[plugins][gui-rules][
     const GuiCondition disjunction = any_of({
         GuiCondition::true_("gui_rule_bool"),
         GuiCondition::int_equals("gui_rule_int", 1)
-    });    CHECK_THROWS_AS(GuiRule::enable("gui_rule_target").when(disjunction).add_to(orchestrator),
+    });    CHECK_THROWS_AS(GuiRule::enable("gui_rule_target").when(disjunction).add_to(orchestrator.handle()),
                     std::invalid_argument);
 
     orchestrator_handle *null_handle = nullptr;
@@ -204,7 +204,7 @@ TEST_CASE("GuiRule helpers drive evaluate_gui_rules", "[plugins][gui-rules][help
             GuiCondition::vector_empty("gui_rule_vector")
         }))
         .group(group)
-        .add_to(orchestrator);
+        .add_to(orchestrator.handle());
 
     // vector_empty keeps the target enabled while the vector holds no item.
     CHECK(evaluated_enabled(orchestrator, config, group, "gui_rule_target"));
@@ -233,7 +233,7 @@ TEST_CASE("GuiRule helpers drive evaluate_gui_rules", "[plugins][gui-rules][help
         .when(GuiCondition::non_zero("gui_rule_int"))
         .when_true("gui_rule_bool")
         .group(enable_group)
-        .add_to(orchestrator);
+        .add_to(orchestrator.handle());
     CHECK(evaluated_enabled(orchestrator, config, enable_group, "gui_rule_target"));
 
     config.option<ConfigOptionBool>("gui_rule_bool")->value = false;
@@ -243,7 +243,7 @@ TEST_CASE("GuiRule helpers drive evaluate_gui_rules", "[plugins][gui-rules][help
 TEST_CASE("GuiRule helpers register through the C ABI and free wrappers", "[plugins][gui-rules][helpers]")
 {
     Orchestrator &orchestrator = test_orchestrator();
-    orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
+    orchestrator_handle *handle = orchestrator.handle();
     const std::string group = "gui_rule_helpers.c_abi";
 
     GuiRule::enable("gui_rule_target")
@@ -253,8 +253,8 @@ TEST_CASE("GuiRule helpers register through the C ABI and free wrappers", "[plug
     CHECK(stored_rules(orchestrator, group).size() == 1);
 
     add_gui_rule(handle, GuiRule::enable("gui_rule_target_b").when_true("gui_rule_bool").group(group));
-    add_gui_rule(orchestrator, GuiRule::enable("gui_rule_target_c").when_true("gui_rule_bool").group(group));
-    add_gui_rules(orchestrator, {
+    add_gui_rule(orchestrator.handle(), GuiRule::enable("gui_rule_target_c").when_true("gui_rule_bool").group(group));
+    add_gui_rules(orchestrator.handle(), {
         GuiRule::enable("gui_rule_target_d").when_true("gui_rule_bool").group(group),
         GuiRule::enable("gui_rule_target_e").when_true("gui_rule_bool").group(group)
     });

@@ -290,6 +290,7 @@ public:
 
     // Return the process-wide orchestrator that owns registered plugins and host services.
     static Orchestrator &instance();
+    orchestrator_handle * handle() { return reinterpret_cast<orchestrator_handle *>(this); }
 
     // Return borrowed pointers to every registered plugin.
     std::vector<Plugin *> registered_plugins() const;

@@ -9121,60 +9121,56 @@ using slic3r_api::any_of;
 using slic3r_api::GuiCondition;
 using slic3r_api::GuiRule;
 
-// Shared clause sets. Names follow the legacy local variables where possible.
-const GuiCondition k_P = GuiCondition::non_zero("perimeters");
-const GuiCondition k_H = GuiCondition::non_zero("fill_density");
-const GuiCondition k_T = GuiCondition::non_zero("top_solid_layers");
-const GuiCondition k_B = GuiCondition::non_zero("bottom_solid_layers");
-const GuiCondition k_S = GuiCondition::int_equals("solid_infill_every_layers", 1);
-const GuiCondition k_D = GuiCondition::non_zero("solid_infill_every_layers");
-const GuiCondition k_E = GuiCondition::non_zero("solid_infill_below_area");
-const GuiCondition k_spiral = GuiCondition::true_("spiral_vase");
-const GuiCondition k_not_P = GuiCondition::false_("perimeters");
-const GuiCondition k_arachne = GuiCondition::int_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne));
-const GuiCondition k_not_arachne = GuiCondition::int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne));
-const GuiCondition k_supp = GuiCondition::true_("support_material");
-const GuiCondition k_raft = GuiCondition::non_zero("raft_layers");
-const GuiCondition k_skirt = GuiCondition::non_zero("skirts");
-const GuiCondition k_brim = GuiCondition::non_zero("brim_width");
-const GuiCondition k_brim_inner = GuiCondition::non_zero("brim_width_interior");
-const GuiCondition k_ensure = GuiCondition::int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled));
-const GuiCondition k_enforce = GuiCondition::non_zero("support_material_enforce_layers");
-const GuiCondition k_style_organic = GuiCondition::int_equals("support_material_style", int(SupportMaterialStyle::smsOrganic));
-const GuiCondition k_style_snug = GuiCondition::int_equals("support_material_style", int(SupportMaterialStyle::smsSnug));
-const GuiCondition k_external_first = GuiCondition::true_("external_perimeters_first");
-const GuiCondition k_not_loop = GuiCondition::false_("perimeter_loop");
-const GuiCondition k_loop = GuiCondition::true_("perimeter_loop");
-const GuiCondition k_overhangs = GuiCondition::true_("overhangs");
-const GuiCondition k_scarf = GuiCondition::int_not_equals("seam_slope_type", int(SeamScarfType::None));
-const GuiCondition k_default_accel = GuiCondition::non_zero("default_acceleration");
-const GuiCondition k_contact_none = GuiCondition::int_equals("support_material_contact_distance_type", int(zdNone));
+using slic3r_api::disabled;
+using slic3r_api::enabled;
+using slic3r_api::false_;
+using slic3r_api::float_equals;
+using slic3r_api::float_greater_or_equal;
+using slic3r_api::float_less_than;
+using slic3r_api::int_equals;
+using slic3r_api::int_not_equals;
+using slic3r_api::non_zero;
+using slic3r_api::percent;
+using slic3r_api::true_;
+using slic3r_api::vector_empty;
 
-const GuiCondition k_has_top = any_of({
-    k_T,
-    all_of({ k_P, k_spiral }),
-    k_S
+// Shared conjunctions. Names follow the legacy local variables where possible.
+const GuiCondition has_top = any_of({
+    non_zero("top_solid_layers"),
+    all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+    int_equals("solid_infill_every_layers", 1)
 });
-const GuiCondition k_has_bottom = any_of({ k_B, k_S });
-const GuiCondition k_has_solid = any_of({
-    k_T,
-    all_of({ k_P, k_spiral }),
-    k_S,
-    k_B,
-    all_of({ k_H, k_D }),
-    all_of({ k_H, k_E })
+const GuiCondition has_bottom = any_of({
+    non_zero("bottom_solid_layers"),
+    int_equals("solid_infill_every_layers", 1)
 });
-const GuiCondition k_have_support = any_of({ k_supp, k_raft });
-const GuiCondition k_have_brim = any_of({ k_brim, k_brim_inner });
-const GuiCondition k_have_interface = any_of({
-    all_of({ k_supp, GuiCondition::non_zero("support_material_interface_layers") }),
-    all_of({ k_supp, GuiCondition::non_zero("support_material_bottom_interface_layers") }),
-    all_of({ k_raft, GuiCondition::non_zero("support_material_interface_layers") }),
-    all_of({ k_raft, GuiCondition::non_zero("support_material_bottom_interface_layers") })
+const GuiCondition has_solid = any_of({
+    non_zero("top_solid_layers"),
+    all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+    int_equals("solid_infill_every_layers", 1),
+    non_zero("bottom_solid_layers"),
+    all_of({ non_zero("fill_density"), non_zero("solid_infill_every_layers") }),
+    all_of({ non_zero("fill_density"), non_zero("solid_infill_below_area") })
 });
-const GuiCondition k_has_organic = any_of({
-    all_of({ k_style_organic, k_supp }),
-    all_of({ k_style_organic, k_enforce })
+const GuiCondition have_support = any_of({
+    true_("support_material"),
+    non_zero("raft_layers")
+});
+const GuiCondition have_brim = any_of({
+    non_zero("brim_width"),
+    non_zero("brim_width_interior")
+});
+const GuiCondition have_interface = any_of({
+    all_of({ true_("support_material"), non_zero("support_material_interface_layers") }),
+    all_of({ true_("support_material"), non_zero("support_material_bottom_interface_layers") }),
+    all_of({ non_zero("raft_layers"), non_zero("support_material_interface_layers") }),
+    all_of({ non_zero("raft_layers"), non_zero("support_material_bottom_interface_layers") })
+});
+const GuiCondition has_organic = any_of({
+    all_of({ int_equals("support_material_style", int(SupportMaterialStyle::smsOrganic)),
+             true_("support_material") }),
+    all_of({ int_equals("support_material_style", int(SupportMaterialStyle::smsOrganic)),
+             non_zero("support_material_enforce_layers") })
 });
 
 // base AND NOT(has_organic_supports):
@@ -9184,10 +9180,10 @@ GuiCondition without_organic_supports(const GuiCondition &base)
     return all_of({
         base,
         any_of({
-            GuiCondition::int_not_equals("support_material_style", int(SupportMaterialStyle::smsOrganic)),
+            int_not_equals("support_material_style", int(SupportMaterialStyle::smsOrganic)),
             all_of({
-                GuiCondition::false_("support_material"),
-                GuiCondition::int_equals("support_material_enforce_layers", 0)
+                false_("support_material"),
+                int_equals("support_material_enforce_layers", 0)
             })
         })
     });
@@ -9540,7 +9536,7 @@ void initialize_fff_print_gui_rules()
                 .when(condition)
                 .scope(RAW_PRESET_TYPE_FFF_PRINT)
                 .group(FFF_PRINT_GUI_RULE_GROUP)
-                .add_to(Orchestrator::instance());
+                .add_to(Orchestrator::instance().handle());
         };
 
         // ----- perimeters ---------------------------------------------------
@@ -9553,146 +9549,146 @@ void initialize_fff_print_gui_rules()
             "external_perimeter_speed", "small_perimeter_speed", "spiral_vase",
             "seam_notch_all", "seam_notch_inner", "seam_notch_outer",
             "no_perimeter_unsupported_algo", "only_one_perimeter_top"
-        }, k_P);
+        }, non_zero("perimeters"));
 
-        add_rule({ "overhangs_dynamic_speed" }, all_of({ k_P, k_overhangs }));
+        add_rule({ "overhangs_dynamic_speed" }, all_of({ non_zero("perimeters"), true_("overhangs") }));
         add_rule({ "small_perimeter_min_length", "small_perimeter_max_length" },
-                 GuiCondition::non_zero("small_perimeter_speed"));
+                 non_zero("small_perimeter_speed"));
 
         add_rule({ "wall_transition_length", "wall_transition_filter_deviation", "wall_transition_angle",
                    "wall_distribution_count", "min_feature_size", "min_bead_width" },
-                 all_of({ k_P, k_arachne }));
+                 all_of({ non_zero("perimeters"), int_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
 
-        const GuiCondition not_arachne = any_of({ k_not_P, k_not_arachne });
+        const GuiCondition not_arachne = any_of({ false_("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) });
         add_rule({ "perimeters_hole", "overhangs_extrusion_spacing" }, not_arachne);
         add_rule({ "perimeter_loop", "thin_perimeters", "perimeter_round_corners" },
-                 all_of({ k_P, k_not_arachne }));
+                 all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
 
         // external perimeter / seam slope
         add_rule({ "seam_slope_type" }, any_of({
-            all_of({ k_external_first, k_not_loop }),
-            all_of({ k_external_first, k_P, k_arachne })
+            all_of({ true_("external_perimeters_first"), false_("perimeter_loop") }),
+            all_of({ true_("external_perimeters_first"), non_zero("perimeters"), int_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) })
         }));
         add_rule({ "seam_slope_min_height", "seam_slope_max_length" }, any_of({
-            all_of({ k_external_first, k_not_loop, k_scarf }),
-            all_of({ k_external_first, k_P, k_arachne, k_scarf })
+            all_of({ true_("external_perimeters_first"), false_("perimeter_loop"), int_not_equals("seam_slope_type", int(SeamScarfType::None)) }),
+            all_of({ true_("external_perimeters_first"), non_zero("perimeters"), int_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)), int_not_equals("seam_slope_type", int(SeamScarfType::None)) })
         }));
         add_rule({ "external_perimeters_first_force" }, any_of({
-            all_of({ k_external_first, k_not_loop, k_not_P }),
-            all_of({ k_external_first, k_not_loop, k_not_arachne })
+            all_of({ true_("external_perimeters_first"), false_("perimeter_loop"), false_("perimeters") }),
+            all_of({ true_("external_perimeters_first"), false_("perimeter_loop"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) })
         }));
         add_rule({ "external_perimeters_nothole", "external_perimeters_hole" }, any_of({
-            all_of({ k_external_first, k_not_loop, k_not_P,
-                     GuiCondition::false_("external_perimeters_first_force") }),
-            all_of({ k_external_first, k_not_loop, k_not_arachne,
-                     GuiCondition::false_("external_perimeters_first_force") })
+            all_of({ true_("external_perimeters_first"), false_("perimeter_loop"), false_("perimeters"),
+                     false_("external_perimeters_first_force") }),
+            all_of({ true_("external_perimeters_first"), false_("perimeter_loop"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)),
+                     false_("external_perimeters_first_force") })
         }));
         // FLOAT_* clauses compare get_float(), which is a fraction for percent
         // options, so 100% is 1.0. The legacy code compared the normalized
         // value to 100 and could never enable perimeter_bonding; the migration
         // keeps the documented intent.
         add_rule({ "perimeter_bonding" }, any_of({
-            all_of({ k_external_first, k_not_P,
-                     GuiCondition::float_equals("perimeter_overlap", 1.0),
-                     GuiCondition::float_equals("external_perimeter_overlap", 1.0) }),
-            all_of({ k_external_first, k_not_arachne,
-                     GuiCondition::float_equals("perimeter_overlap", 1.0),
-                     GuiCondition::float_equals("external_perimeter_overlap", 1.0) })
+            all_of({ true_("external_perimeters_first"), false_("perimeters"),
+                     float_equals("perimeter_overlap", 1.0),
+                     float_equals("external_perimeter_overlap", 1.0) }),
+            all_of({ true_("external_perimeters_first"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)),
+                     float_equals("perimeter_overlap", 1.0),
+                     float_equals("external_perimeter_overlap", 1.0) })
         }));
         add_rule({ "only_one_perimeter_first_layer" }, all_of({
-            GuiCondition::int_not_equals("perimeters", 0),
-            GuiCondition::int_not_equals("perimeters", 1)
+            int_not_equals("perimeters", 0),
+            int_not_equals("perimeters", 1)
         }));
 
         // overhangs
-        const GuiCondition can_reverse = all_of({ k_P, k_overhangs,
-            GuiCondition::false_("perimeter_reverse"), k_not_arachne });
+        const GuiCondition can_reverse = all_of({ non_zero("perimeters"), true_("overhangs"),
+            false_("perimeter_reverse"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) });
         add_rule({ "overhangs_reverse" }, can_reverse);
         add_rule({ "overhangs_reverse_threshold" },
-                 all_of({ can_reverse, GuiCondition::true_("overhangs_reverse") }));
+                 all_of({ can_reverse, true_("overhangs_reverse") }));
         add_rule({ "overhangs_speed_enforce" }, any_of({
-            all_of({ k_P, k_overhangs, k_not_loop }),
-            all_of({ k_P, k_overhangs, k_arachne })
+            all_of({ non_zero("perimeters"), true_("overhangs"), false_("perimeter_loop") }),
+            all_of({ non_zero("perimeters"), true_("overhangs"), int_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) })
         }));
         add_rule({ "overhangs_speed", "overhangs_width_speed", "overhangs_flow_ratio" },
-                 all_of({ k_P, k_overhangs }));
+                 all_of({ non_zero("perimeters"), true_("overhangs") }));
         add_rule({ "overhangs_width", "overhangs_dynamic_flow" },
-                 all_of({ k_P, k_overhangs, GuiCondition::enabled("overhangs_flow_ratio") }));
+                 all_of({ non_zero("perimeters"), true_("overhangs"), enabled("overhangs_flow_ratio") }));
 
         // perimeter details
         add_rule({ "min_width_top_surface" },
-                 all_of({ k_P, GuiCondition::true_("only_one_perimeter_top") }));
+                 all_of({ non_zero("perimeters"), true_("only_one_perimeter_top") }));
         add_rule({ "thin_perimeters_all" },
-                 all_of({ k_P, GuiCondition::non_zero("thin_perimeters"), k_not_arachne }));
-        add_rule({ "thin_walls" }, all_of({ k_P, k_not_arachne }));
+                 all_of({ non_zero("perimeters"), non_zero("thin_perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
+        add_rule({ "thin_walls" }, all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
         add_rule({ "thin_walls_min_width", "thin_walls_overlap", "thin_walls_merge" },
-                 all_of({ k_P, k_not_arachne, GuiCondition::true_("thin_walls") }));
+                 all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)), true_("thin_walls") }));
 
-        const GuiCondition seam_cost = all_of({ k_P, GuiCondition::int_equals("seam_position", int(spCost)) });
+        const GuiCondition seam_cost = all_of({ non_zero("perimeters"), int_equals("seam_position", int(spCost)) });
         add_rule({ "seam_angle_cost", "seam_travel_cost", "seam_visibility" }, seam_cost);
         add_rule({ "perimeter_loop_seam" }, any_of({
-            all_of({ k_loop, k_not_P }),
-            all_of({ k_loop, k_not_arachne })
+            all_of({ true_("perimeter_loop"), false_("perimeters") }),
+            all_of({ true_("perimeter_loop"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) })
         }));
         add_rule({ "seam_notch_angle" }, any_of({
-            all_of({ k_P, GuiCondition::non_zero("seam_notch_all") }),
-            all_of({ k_P, GuiCondition::non_zero("seam_notch_inner") }),
-            all_of({ k_P, GuiCondition::non_zero("seam_notch_outer") })
+            all_of({ non_zero("perimeters"), non_zero("seam_notch_all") }),
+            all_of({ non_zero("perimeters"), non_zero("seam_notch_inner") }),
+            all_of({ non_zero("perimeters"), non_zero("seam_notch_outer") })
         }));
 
         // ----- gap fill -----------------------------------------------------
         add_rule({ "gap_fill_enabled" }, not_arachne);
-        const GuiCondition gap_enabled = GuiCondition::true_("gap_fill_enabled");
+        const GuiCondition gap_enabled = true_("gap_fill_enabled");
         const GuiCondition gap_base = any_of({
-            all_of({ k_not_P, gap_enabled }),
-            all_of({ k_not_arachne, gap_enabled })
+            all_of({ false_("perimeters"), gap_enabled }),
+            all_of({ int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)), gap_enabled })
         });
         add_rule({ "gap_fill_last", "gap_fill_no_overhang" }, gap_base);
 
         const GuiCondition gap_extended = any_of({
             gap_base,
-            GuiCondition::true_("infill_filled_bottom"),
-            GuiCondition::true_("infill_filled_solid"),
-            GuiCondition::true_("infill_filled_top")
+            true_("infill_filled_bottom"),
+            true_("infill_filled_solid"),
+            true_("infill_filled_top")
         });
         add_rule({ "gap_fill_extension", "gap_fill_max_width", "gap_fill_min_area",
                    "gap_fill_min_length", "gap_fill_min_width" }, gap_extended);
 
         // fuzzy skin
         add_rule({ "fuzzy_skin_thickness", "fuzzy_skin_point_dist" },
-                 GuiCondition::int_not_equals("fuzzy_skin", int(FuzzySkinType::None)));
+                 int_not_equals("fuzzy_skin", int(FuzzySkinType::None)));
 
         // ----- infill -------------------------------------------------------
         add_rule({ "fill_aligned_z", "fill_pattern", "infill_connection",
                    "solid_infill_every_layers", "solid_infill_below_area",
                    "solid_infill_below_layer_area", "solid_infill_below_width",
-                   "infill_extruder" }, k_H);
+                   "infill_extruder" }, non_zero("fill_density"));
         add_rule({ "infill_anchor_max" },
-                 all_of({ k_H, GuiCondition::int_not_equals("infill_connection", int(icNotConnected)) }));
+                 all_of({ non_zero("fill_density"), int_not_equals("infill_connection", int(icNotConnected)) }));
         add_rule({ "infill_anchor" }, all_of({
-            k_H,
-            GuiCondition::int_not_equals("infill_connection", int(icNotConnected)),
-            GuiCondition::non_zero("infill_anchor_max")
+            non_zero("fill_density"),
+            int_not_equals("infill_connection", int(icNotConnected)),
+            non_zero("infill_anchor_max")
         }));
 
         // fill_density is a percent option: get_float() returns a fraction, so
         // the 50% threshold is 0.5.
-        add_rule({ "infill_dense" }, GuiCondition::float_less_than("fill_density", 0.5));
+        add_rule({ "infill_dense" }, float_less_than("fill_density", 0.5));
         add_rule({ "infill_dense_algo" }, all_of({
-            GuiCondition::true_("infill_dense"),
-            GuiCondition::float_less_than("fill_density", 0.5)
+            true_("infill_dense"),
+            float_less_than("fill_density", 0.5)
         }));
         add_rule({ "infill_every_layers", "infill_only_where_needed" }, any_of({
-            all_of({ k_H, GuiCondition::false_("infill_dense") }),
-            all_of({ k_H, GuiCondition::float_greater_or_equal("fill_density", 0.5) })
+            all_of({ non_zero("fill_density"), false_("infill_dense") }),
+            all_of({ non_zero("fill_density"), float_greater_or_equal("fill_density", 0.5) })
         }));
 
         add_rule({ "enforce_full_fill_volume", "external_infill_margin", "bridged_infill_margin",
                    "solid_infill_extruder", "solid_infill_extrusion_width",
                    "solid_infill_extrusion_spacing", "solid_infill_speed",
-                   "solid_infill_extrusion_change_odd_layers" }, k_has_solid);
+                   "solid_infill_extrusion_change_odd_layers" }, has_solid);
 
-        const GuiCondition has_infill_or_solid = any_of({ k_has_solid, k_H });
+        const GuiCondition has_infill_or_solid = any_of({ has_solid, non_zero("fill_density") });
         add_rule({ "infill_first" }, has_infill_or_solid);
         add_rule({ "fill_angle_cross", "fill_angle_follow_model", "fill_angle_increment",
                    "fill_angle_template", "bridge_angle", "infill_extrusion_width",
@@ -9700,156 +9696,156 @@ void initialize_fff_print_gui_rules()
                    "infill_speed" }, has_infill_or_solid);
 
         add_rule({ "fill_angle" },
-                 all_of({ has_infill_or_solid, GuiCondition::vector_empty("fill_angle_template") }));
+                 all_of({ has_infill_or_solid, vector_empty("fill_angle_template") }));
 
         add_rule({ "top_solid_min_thickness" }, any_of({
-            all_of({ k_T, k_ensure, k_not_P }),
-            all_of({ k_T, k_ensure, GuiCondition::false_("spiral_vase") }),
-            all_of({ k_S, k_ensure, k_not_P }),
-            all_of({ k_S, k_ensure, GuiCondition::false_("spiral_vase") })
+            all_of({ non_zero("top_solid_layers"), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("perimeters") }),
+            all_of({ non_zero("top_solid_layers"), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("spiral_vase") }),
+            all_of({ int_equals("solid_infill_every_layers", 1), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("perimeters") }),
+            all_of({ int_equals("solid_infill_every_layers", 1), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("spiral_vase") })
         }));
         add_rule({ "bottom_solid_min_thickness" }, any_of({
-            all_of({ k_B, k_ensure, k_not_P }),
-            all_of({ k_B, k_ensure, GuiCondition::false_("spiral_vase") }),
-            all_of({ k_S, k_ensure, k_not_P }),
-            all_of({ k_S, k_ensure, GuiCondition::false_("spiral_vase") })
+            all_of({ non_zero("bottom_solid_layers"), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("perimeters") }),
+            all_of({ non_zero("bottom_solid_layers"), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("spiral_vase") }),
+            all_of({ int_equals("solid_infill_every_layers", 1), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("perimeters") }),
+            all_of({ int_equals("solid_infill_every_layers", 1), int_not_equals("ensure_vertical_shell_thickness", int(EnsureVerticalShellThickness::Disabled)), false_("spiral_vase") })
         }));
 
         // solid / top / bottom surfaces
         add_rule({ "ironing", "top_fill_pattern", "infill_connection_top",
                    "top_infill_extrusion_width", "top_infill_extrusion_spacing",
-                   "top_solid_infill_speed" }, k_has_top);
-        add_rule({ "bottom_fill_pattern", "infill_connection_bottom" }, k_has_bottom);
+                   "top_solid_infill_speed" }, has_top);
+        add_rule({ "bottom_fill_pattern", "infill_connection_bottom" }, has_bottom);
         add_rule({ "solid_fill_pattern", "infill_connection_solid",
-                   "bridge_fill_pattern", "infill_connection_bridge" }, k_has_solid);
+                   "bridge_fill_pattern", "infill_connection_bridge" }, has_solid);
 
-        const GuiCondition ironing_pp = all_of({ k_has_top, GuiCondition::true_("ironing") });
+        const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
         add_rule({ "ironing_type", "ironing_flowrate", "ironing_spacing", "ironing_angle" }, ironing_pp);
 
         const GuiCondition ironing_any = any_of({
             ironing_pp,
-            GuiCondition::int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)),
-            GuiCondition::int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)),
-            GuiCondition::int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth))
+            int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)),
+            int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)),
+            int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth))
         });
         add_rule({ "ironing_speed" }, ironing_any);
 
         const GuiCondition fill_smooth = any_of({
-            all_of({ k_has_top, GuiCondition::int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)) }),
-            all_of({ k_has_bottom, GuiCondition::int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)) }),
-            all_of({ k_has_solid, GuiCondition::int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth)) }),
-            all_of({ k_have_support, GuiCondition::int_equals("support_material_top_interface_pattern", int(InfillPattern::ipSmooth)) }),
-            all_of({ k_have_support, GuiCondition::int_equals("support_material_bottom_interface_pattern", int(InfillPattern::ipSmooth)) })
+            all_of({ has_top, int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)) }),
+            all_of({ has_bottom, int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)) }),
+            all_of({ has_solid, int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth)) }),
+            all_of({ have_support, int_equals("support_material_top_interface_pattern", int(InfillPattern::ipSmooth)) }),
+            all_of({ have_support, int_equals("support_material_bottom_interface_pattern", int(InfillPattern::ipSmooth)) })
         });
         add_rule({ "fill_smooth_width", "fill_smooth_distribution" }, fill_smooth);
 
         // ----- skirt and brim -----------------------------------------------
         add_rule({ "skirt_width", "skirt_brim", "skirt_distance", "skirt_distance_from_brim",
-                   "draft_shield", "min_skirt_length", "skirt_extrusion_width" }, k_skirt);
+                   "draft_shield", "min_skirt_length", "skirt_extrusion_width" }, non_zero("skirts"));
         add_rule({ "skirt_height" },
-                 all_of({ k_skirt, GuiCondition::int_not_equals("draft_shield", int(dsEnabled)) }));
-        add_rule({ "brim_separation" }, k_have_brim);
+                 all_of({ non_zero("skirts"), int_not_equals("draft_shield", int(dsEnabled)) }));
+        add_rule({ "brim_separation" }, have_brim);
 
-        const GuiCondition perim_or_brim = any_of({ k_P, k_brim, k_brim_inner });
+        const GuiCondition perim_or_brim = any_of({ non_zero("perimeters"), non_zero("brim_width"), non_zero("brim_width_interior") });
         add_rule({ "perimeter_extruder" }, perim_or_brim);
         add_rule({ "perimeter_extrusion_width", "perimeter_extrusion_spacing",
                    "perimeter_extrusion_change_odd_layers" }, perim_or_brim);
 
-        const GuiCondition support_or_skirt = any_of({ k_have_support, k_skirt });
+        const GuiCondition support_or_skirt = any_of({ have_support, non_zero("skirts") });
         add_rule({ "support_material_extruder" }, support_or_skirt);
 
-        const GuiCondition support_skirt_brim = any_of({ k_have_support, k_skirt, k_brim, k_brim_inner });
+        const GuiCondition support_skirt_brim = any_of({ have_support, non_zero("skirts"), non_zero("brim_width"), non_zero("brim_width_interior") });
         add_rule({ "support_material_speed" }, support_skirt_brim);
 
-        const GuiCondition brim_or_skirt = any_of({ k_brim, k_brim_inner, k_skirt });
+        const GuiCondition brim_or_skirt = any_of({ non_zero("brim_width"), non_zero("brim_width_interior"), non_zero("skirts") });
         add_rule({ "brim_speed" }, brim_or_skirt);
 
         // ----- support material and raft ------------------------------------
         add_rule({ "support_material_style", "support_material_extrusion_width",
                    "support_material_contact_distance_type", "support_material_xy_spacing",
                    "support_material_bottom_interface_layers",
-                   "support_material_interface_layers" }, k_have_support);
+                   "support_material_interface_layers" }, have_support);
 
         add_rule({ "support_material_threshold" },
-                 all_of({ k_have_support, GuiCondition::true_("support_material_auto") }));
+                 all_of({ have_support, true_("support_material_auto") }));
 
         add_rule({ "support_material_bottom_contact_distance", "support_material_contact_distance" },
-                 all_of({ k_have_support,
-                          GuiCondition::int_not_equals("support_material_contact_distance_type", int(zdNone)) }));
+                 all_of({ have_support,
+                          int_not_equals("support_material_contact_distance_type", int(zdNone)) }));
 
-        add_rule({ "support_material_closing_radius" }, all_of({ k_have_support, k_style_snug }));
+        add_rule({ "support_material_closing_radius" }, all_of({ have_support, int_equals("support_material_style", int(SupportMaterialStyle::smsSnug)) }));
 
         add_rule({ "support_tree_angle", "support_tree_angle_slow", "support_tree_branch_diameter",
                    "support_tree_branch_diameter_angle", "support_tree_branch_diameter_double_wall",
                    "support_tree_tip_diameter", "support_tree_branch_distance", "support_tree_top_rate" },
-                 k_has_organic);
+                 has_organic);
 
         add_rule({ "support_material_interface_spacing", "support_material_interface_extruder",
                    "support_material_interface_speed",
                    "support_material_interface_angle_increment",
-                   "support_material_bottom_interface_expansion" }, k_have_interface);
+                   "support_material_bottom_interface_expansion" }, have_interface);
         add_rule({ "support_material_interface_layer_height", "support_material_interface_angle",
                    "support_material_bottom_interface_pattern",
-                   "support_material_interface_contact_loops" }, without_organic_supports(k_have_interface));
+                   "support_material_interface_contact_loops" }, without_organic_supports(have_interface));
         add_rule({ "support_material_with_sheath", "support_material_pattern",
                    "support_material_spacing", "support_material_angle",
                    "support_material_angle_height", "support_material_layer_height" },
-                 without_organic_supports(k_have_support));
+                 without_organic_supports(have_support));
 
         add_rule({ "support_material_synchronize_layers" }, any_of({
-            all_of({ k_supp, k_contact_none }),
-            all_of({ k_raft, k_contact_none })
+            all_of({ true_("support_material"), int_equals("support_material_contact_distance_type", int(zdNone)) }),
+            all_of({ non_zero("raft_layers"), int_equals("support_material_contact_distance_type", int(zdNone)) })
         }));
 
         // raft
         add_rule({ "raft_contact_distance" }, all_of({
-            k_raft,
-            GuiCondition::int_not_equals("raft_contact_distance_type", int(zdNone))
+            non_zero("raft_layers"),
+            int_not_equals("raft_contact_distance_type", int(zdNone))
         }));
         add_rule({ "raft_expansion", "first_layer_acceleration_over_raft",
                    "first_layer_speed_over_raft", "raft_layer_height",
-                   "raft_interface_layer_height" }, k_raft);
+                   "raft_interface_layer_height" }, non_zero("raft_layers"));
 
         // ----- extrusion widths ---------------------------------------------
         const GuiCondition default_width = any_of({
-            all_of({ GuiCondition::enabled("first_layer_extrusion_width"),
-                     GuiCondition::false_("first_layer_extrusion_width") }),
-            all_of({ GuiCondition::enabled("first_layer_infill_extrusion_width"),
-                     GuiCondition::false_("first_layer_infill_extrusion_width") }),
-            all_of({ GuiCondition::false_("perimeter_extrusion_width"), k_P }),
-            all_of({ GuiCondition::false_("perimeter_extrusion_width"), k_brim }),
-            all_of({ GuiCondition::false_("perimeter_extrusion_width"), k_brim_inner }),
-            all_of({ GuiCondition::false_("external_perimeter_extrusion_width"), k_P }),
-            all_of({ GuiCondition::false_("infill_extrusion_width"), has_infill_or_solid }),
-            all_of({ GuiCondition::false_("solid_infill_extrusion_width"), k_has_solid }),
-            all_of({ GuiCondition::false_("top_infill_extrusion_width"), k_has_top }),
-            all_of({ GuiCondition::false_("support_material_extrusion_width"), k_have_support }),
-            all_of({ GuiCondition::false_("skirt_extrusion_width"), k_skirt })
+            all_of({ enabled("first_layer_extrusion_width"),
+                     false_("first_layer_extrusion_width") }),
+            all_of({ enabled("first_layer_infill_extrusion_width"),
+                     false_("first_layer_infill_extrusion_width") }),
+            all_of({ false_("perimeter_extrusion_width"), non_zero("perimeters") }),
+            all_of({ false_("perimeter_extrusion_width"), non_zero("brim_width") }),
+            all_of({ false_("perimeter_extrusion_width"), non_zero("brim_width_interior") }),
+            all_of({ false_("external_perimeter_extrusion_width"), non_zero("perimeters") }),
+            all_of({ false_("infill_extrusion_width"), has_infill_or_solid }),
+            all_of({ false_("solid_infill_extrusion_width"), has_solid }),
+            all_of({ false_("top_infill_extrusion_width"), has_top }),
+            all_of({ false_("support_material_extrusion_width"), have_support }),
+            all_of({ false_("skirt_extrusion_width"), non_zero("skirts") })
         });
         add_rule({ "extrusion_width", "extrusion_spacing" }, default_width);
 
-        add_rule({ "first_layer_extrusion_spacing" }, GuiCondition::enabled("first_layer_extrusion_width"));
-        add_rule({ "first_layer_infill_extrusion_spacing" }, GuiCondition::enabled("first_layer_infill_extrusion_width"));
+        add_rule({ "first_layer_extrusion_spacing" }, enabled("first_layer_extrusion_width"));
+        add_rule({ "first_layer_infill_extrusion_spacing" }, enabled("first_layer_infill_extrusion_width"));
 
         // ----- sequential printing, wipe tower, MMU -------------------------
         add_rule({ "complete_objects_one_skirt", "complete_objects_sort" }, any_of({
-            GuiCondition::true_("complete_objects"),
-            GuiCondition::non_zero("parallel_objects_step")
+            true_("complete_objects"),
+            non_zero("parallel_objects_step")
         }));
-        add_rule({ "parallel_objects_step" }, GuiCondition::false_("complete_objects"));
+        add_rule({ "parallel_objects_step" }, false_("complete_objects"));
         const GuiCondition parallel_possible = all_of({
-            GuiCondition::false_("complete_objects"),
-            GuiCondition::non_zero("parallel_objects_step")
+            false_("complete_objects"),
+            non_zero("parallel_objects_step")
         });
         add_rule({ "parallel_objects_step_max_z", "parallel_islands" }, parallel_possible);
-        add_rule({ "standby_temperature_delta" }, GuiCondition::true_("ooze_prevention"));
+        add_rule({ "standby_temperature_delta" }, true_("ooze_prevention"));
 
         const GuiCondition wipe_available = any_of({
-            GuiCondition::false_("parallel_objects_step"),
-            GuiCondition::true_("parallel_islands")
+            false_("parallel_objects_step"),
+            true_("parallel_islands")
         });
         add_rule({ "wipe_tower" }, wipe_available);
-        const GuiCondition wipe_ready = all_of({ wipe_available, GuiCondition::true_("wipe_tower") });
+        const GuiCondition wipe_ready = all_of({ wipe_available, true_("wipe_tower") });
         add_rule({ "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
                    "wipe_tower_brim_width", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
                    "wipe_tower_bridging", "wipe_tower_brim", "wipe_tower_no_sparse_layers",
@@ -9858,51 +9854,51 @@ void initialize_fff_print_gui_rules()
                    "wipe_tower_rest_in_middle" }, wipe_ready);
 
         add_rule({ "mmu_segmented_region_interlocking_depth" },
-                 GuiCondition::non_zero("mmu_segmented_region_max_width"));
+                 non_zero("mmu_segmented_region_max_width"));
 
         // ----- avoid crossing -----------------------------------------------
-        add_rule({ "avoid_crossing_curled_overhangs" }, GuiCondition::false_("avoid_crossing_perimeters"));
-        add_rule({ "avoid_crossing_perimeters" }, GuiCondition::false_("avoid_crossing_curled_overhangs"));
+        add_rule({ "avoid_crossing_curled_overhangs" }, false_("avoid_crossing_perimeters"));
+        add_rule({ "avoid_crossing_perimeters" }, false_("avoid_crossing_curled_overhangs"));
         add_rule({ "avoid_crossing_perimeters_max_detour", "avoid_crossing_not_first_layer",
                    "avoid_crossing_top", "avoid_travel_island" },
-                 GuiCondition::true_("avoid_crossing_perimeters"));
+                 true_("avoid_crossing_perimeters"));
         add_rule({ "avoid_travel_island_weight" }, all_of({
-            GuiCondition::true_("avoid_crossing_perimeters"),
-            GuiCondition::true_("avoid_travel_island")
+            true_("avoid_crossing_perimeters"),
+            true_("avoid_travel_island")
         }));
-        add_rule({ "enforce_retract_first_layer" }, GuiCondition::true_("only_retract_when_crossing_perimeters"));
+        add_rule({ "enforce_retract_first_layer" }, true_("only_retract_when_crossing_perimeters"));
 
         // ----- milling ------------------------------------------------------
         add_rule({ "milling_after_z", "milling_extra_size", "milling_speed" },
-                 GuiCondition::true_("milling_post_process"));
+                 true_("milling_post_process"));
 
         // ----- accelerations -------------------------------------------------
         add_rule({ "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
                    "gap_fill_acceleration", "travel_acceleration", "travel_deceleration_use_target",
-                   "first_layer_acceleration" }, k_default_accel);
+                   "first_layer_acceleration" }, non_zero("default_acceleration"));
         add_rule({ "perimeter_acceleration", "external_perimeter_acceleration", "thin_walls_acceleration" },
-                 all_of({ k_default_accel, k_P }));
-        add_rule({ "infill_acceleration" }, all_of({ k_default_accel, k_H }));
+                 all_of({ non_zero("default_acceleration"), non_zero("perimeters") }));
+        add_rule({ "infill_acceleration" }, all_of({ non_zero("default_acceleration"), non_zero("fill_density") }));
 
-        add_rule({ "solid_infill_acceleration" }, all_of({ k_default_accel, k_has_solid }));
-        add_rule({ "top_solid_infill_acceleration" }, all_of({ k_default_accel, k_has_top }));
-        add_rule({ "ironing_acceleration" }, all_of({ k_default_accel, ironing_any }));
+        add_rule({ "solid_infill_acceleration" }, all_of({ non_zero("default_acceleration"), has_solid }));
+        add_rule({ "top_solid_infill_acceleration" }, all_of({ non_zero("default_acceleration"), has_top }));
+        add_rule({ "ironing_acceleration" }, all_of({ non_zero("default_acceleration"), ironing_any }));
 
         add_rule({ "support_material_acceleration" },
-                 all_of({ k_default_accel, any_of({ k_supp, k_raft, k_brim, k_brim_inner, k_skirt }) }));
-        add_rule({ "support_material_interface_acceleration" }, all_of({ k_default_accel, k_have_interface }));
+                 all_of({ non_zero("default_acceleration"), any_of({ true_("support_material"), non_zero("raft_layers"), non_zero("brim_width"), non_zero("brim_width_interior"), non_zero("skirts") }) }));
+        add_rule({ "support_material_interface_acceleration" }, all_of({ non_zero("default_acceleration"), have_interface }));
         add_rule({ "brim_acceleration" },
-                 all_of({ k_default_accel, any_of({ k_brim, k_brim_inner, k_skirt }) }));
+                 all_of({ non_zero("default_acceleration"), any_of({ non_zero("brim_width"), non_zero("brim_width_interior"), non_zero("skirts") }) }));
 
         // ----- speeds -------------------------------------------------------
         add_rule({ "default_speed" }, any_of({
-            GuiCondition::percent("perimeter_speed"),
-            GuiCondition::percent("solid_infill_speed"),
-            GuiCondition::percent("bridge_speed"),
-            GuiCondition::percent("support_material_speed")
+            percent("perimeter_speed"),
+            percent("solid_infill_speed"),
+            percent("bridge_speed"),
+            percent("support_material_speed")
         }));
         add_rule({ "max_print_speed", "autospeed_min_thin_flow" },
-                 GuiCondition::non_zero("max_volumetric_speed"));
+                 non_zero("max_volumetric_speed"));
 
         return true;
     }();
