@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <limits>
 #include <map>
 #include <random>
 #include <string>
@@ -519,8 +520,8 @@ TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui
     rule.clauses = clauses;
     rule.clause_count = 1;
 
-    CHECK(orchestrator.add_gui_rule(&rule));
-    CHECK_FALSE(orchestrator.add_gui_rule(&rule));
+    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Duplicate);
 
     bool found = false;
     for (const Orchestrator::PluginGuiRule &stored : orchestrator.gui_rules()) {
@@ -535,12 +536,96 @@ TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui
     }
     CHECK(found);
 
-    // A clause without a condition key must be rejected.
-    clauses[0].condition_key = nullptr;
-    CHECK_FALSE(orchestrator.add_gui_rule(&rule));
+    const size_t stored_count = orchestrator.gui_rules().size();
+    const auto expect_invalid = [&orchestrator, stored_count](raw_gui_rule &candidate, const char *reason) {
+        INFO(reason);
+        CHECK(orchestrator.add_gui_rule(&candidate) == Orchestrator::GuiRuleRegistration::Invalid);
+        CHECK(orchestrator.gui_rules().size() == stored_count);
+    };
 
-    // A truncated descriptor must be rejected.
-    clauses[0].condition_key = "spiral_vase";
-    rule.struct_size = sizeof(uint32_t);
-    CHECK_FALSE(orchestrator.add_gui_rule(&rule));
+    // Descriptor level validation: an unknown enum value must be rejected
+    // instead of being stored and silently ignored by the evaluator.
+    raw_gui_rule invalid = rule;
+    invalid.action = RAW_GUI_RULE_ACTION_NONE;
+    expect_invalid(invalid, "action NONE");
+
+    invalid = rule;
+    invalid.action = static_cast<raw_gui_rule_action>(99);
+    expect_invalid(invalid, "unknown action");
+
+    invalid = rule;
+    invalid.target_key = nullptr;
+    expect_invalid(invalid, "null target_key");
+
+    invalid = rule;
+    invalid.target_key = "";
+    expect_invalid(invalid, "empty target_key");
+
+    invalid = rule;
+    invalid.target_index = -3;
+    expect_invalid(invalid, "invalid target_index");
+
+    invalid = rule;
+    invalid.scope = static_cast<raw_option_preset_type>(RAW_PRESET_TYPE_COUNT + 10);
+    expect_invalid(invalid, "unknown scope");
+
+    invalid = rule;
+    invalid.clause_count = 0;
+    expect_invalid(invalid, "no condition clause");
+
+    invalid = rule;
+    invalid.clauses = nullptr;
+    expect_invalid(invalid, "null clause array");
+
+    invalid = rule;
+    invalid.struct_size = sizeof(uint32_t);
+    expect_invalid(invalid, "truncated struct_size");
+
+    // A real plugin compiled against an older descriptor may allocate only
+    // struct_size bytes. The rejection path must not read target_key from
+    // memory the caller never provided: only struct_size is readable here,
+    // so a regression is caught by sanitizer builds.
+    std::vector<uint32_t> short_storage(1, 0);
+    raw_gui_rule *short_rule = reinterpret_cast<raw_gui_rule *>(short_storage.data());
+    short_rule->struct_size = sizeof(uint32_t);
+    expect_invalid(*short_rule, "descriptor allocated shorter than its struct_size");
+
+    // Clause level validation.
+    raw_gui_rule_clause invalid_clause = clauses[0];
+    invalid = rule;
+    invalid.clauses = &invalid_clause;
+
+    invalid_clause.condition = RAW_GUI_RULE_CONDITION_NONE;
+    expect_invalid(invalid, "condition NONE");
+
+    invalid_clause = clauses[0];
+    invalid_clause.condition = static_cast<raw_gui_rule_condition>(99);
+    expect_invalid(invalid, "unknown condition");
+
+    invalid_clause = clauses[0];
+    invalid_clause.condition_key = nullptr;
+    expect_invalid(invalid, "null clause condition_key");
+
+    invalid_clause = clauses[0];
+    invalid_clause.condition_key = "";
+    expect_invalid(invalid, "empty clause condition_key");
+
+    invalid_clause = clauses[0];
+    invalid_clause.condition_index = -3;
+    expect_invalid(invalid, "invalid clause condition_index");
+
+    invalid_clause = clauses[0];
+    invalid_clause.condition = RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN;
+    invalid_clause.condition_float_value = std::numeric_limits<double>::quiet_NaN();
+    expect_invalid(invalid, "non-finite condition_float_value");
+
+    // The public C relay must distinguish added, duplicate and invalid.
+    orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
+    raw_gui_rule relay = rule;
+    relay.target_key = "gui_rule_c_relay_target";
+    CHECK(orchestrator_add_gui_rule(handle, &relay) == 1);
+    CHECK(orchestrator_add_gui_rule(handle, &relay) == 0);
+    relay.action = RAW_GUI_RULE_ACTION_NONE;
+    CHECK(orchestrator_add_gui_rule(handle, &relay) == -1);
+    CHECK(orchestrator_add_gui_rule(handle, nullptr) == -1);
 }

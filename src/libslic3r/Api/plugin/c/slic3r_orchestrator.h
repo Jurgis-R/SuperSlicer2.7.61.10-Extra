@@ -425,7 +425,9 @@ typedef enum raw_gui_rule_condition {
     /* True when the option at condition_index stores a percentage. */
     RAW_GUI_RULE_CONDITION_IS_PERCENT,
     /* True when the option is a vector and holds no item. */
-    RAW_GUI_RULE_CONDITION_VECTOR_EMPTY
+    RAW_GUI_RULE_CONDITION_VECTOR_EMPTY,
+    /* Number of declared condition kinds; unknown values are rejected. */
+    RAW_GUI_RULE_CONDITION_COUNT
 } raw_gui_rule_condition;
 
 typedef enum raw_gui_rule_action {
@@ -509,8 +511,18 @@ share one target_key:
 - struct_size must be set to sizeof(raw_gui_rule). It allows later
   additions to the structure without breaking already compiled callers.
 
-Returns 1 when the rule was added, 0 when an identical rule was already
-registered, and a negative value on invalid arguments or internal failure.
+Rejected descriptors are never stored and are reported through the host log.
+
+Returns:
+- 1 when the rule was added;
+- 0 when an identical rule was already registered;
+- -1 when the descriptor is invalid. Validation rejects a null descriptor or
+  a truncated struct_size, an unknown action, condition or scope, a negative
+  target_index or condition_index other than RAW_GUI_RULE_INDEX_ALL and
+  RAW_GUI_RULE_INDEX_CURRENT, a null or empty target_key or clause
+  condition_key, a null clause array or an empty clause list, and a
+  non-finite condition_float_value on a FLOAT_* condition;
+- -2 on internal failure.
 */
 typedef struct raw_gui_rule {
     uint32_t struct_size;

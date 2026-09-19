@@ -519,6 +519,11 @@ class Slic3rAPI:
         one group follow the action contract: ENABLE rules are ANDed and
         ENABLE_ANY rules are ORed. scope restricts the rule to one preset kind
         (RAW_PRESET_TYPE_NONE applies everywhere).
+
+        Returns 1 when the rule was added and 0 when an identical rule was
+        already registered. Raises ValueError when the host rejects the
+        descriptor (unknown enum value, invalid index, non-finite float
+        compare, ...) and RuntimeError on an internal host failure.
         """
         if clauses is None:
             if condition_key is None:
@@ -551,7 +556,16 @@ class Slic3rAPI:
         rule.rule_group = _as_bytes(rule_group) if rule_group else None
         rule.clauses = ctypes.cast(clause_array, ctypes.POINTER(RawGuiRuleClause))
         rule.clause_count = len(clause_instances)
-        return int(self.host.orchestrator_add_gui_rule(self.orchestrator, ctypes.byref(rule)))
+        result = int(self.host.orchestrator_add_gui_rule(self.orchestrator, ctypes.byref(rule)))
+        if result == -1:
+            raise ValueError(
+                f"The host rejected the GUI rule descriptor for target '{target_key}'."
+            )
+        if result < 0:
+            raise RuntimeError(
+                f"The host failed to register the GUI rule for target '{target_key}' (code {result})."
+            )
+        return result
 
     @abi_requires_headers("slic3r_config_def.h", "slic3r_orchestrator.h")
     def create_option_def(self, **kwargs) -> int:

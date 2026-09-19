@@ -254,6 +254,14 @@ public:
         bool enabled = true;
     };
 
+    // Result of add_gui_rule(). Values mirror the public C result codes.
+    enum class GuiRuleRegistration : int32_t
+    {
+        Invalid = -1,
+        Duplicate = 0,
+        Added = 1
+    };
+
     struct ConfigOptionOwner
     {
         // Tracks which plugin first introduced a dynamic option key.
@@ -430,9 +438,12 @@ public:
     std::string merged_ui_layout(const std::string &target_file,
                                  const std::string &base_content,
                                  const std::unordered_set<std::string> &implemented_fragment_ids) const;
-    // Register a GUI activation rule (conjunctive clauses, group and scope)
-    // after validating its fields.
-    bool add_gui_rule(const raw_gui_rule *rule);
+    // Register a GUI activation rule (conjunctive clauses, group and scope).
+    // The complete descriptor is validated before it is retained: unknown
+    // action, condition or scope values, invalid indexes, missing keys and
+    // non-finite float compares are rejected with GuiRuleRegistration::Invalid
+    // and a warning log instead of being stored and silently ignored later.
+    GuiRuleRegistration add_gui_rule(const raw_gui_rule *rule);
     // Return GUI rules by borrowed reference.
     const std::vector<PluginGuiRule> &gui_rules() const { return m_gui_rules; }
     // Resolve the enabled state of every GUI target for one config snapshot.

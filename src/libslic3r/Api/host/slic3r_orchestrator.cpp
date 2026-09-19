@@ -461,7 +461,7 @@ int32_t orchestrator_add_gui_rule(orchestrator_handle *orch, const raw_gui_rule 
                                                                reinterpret_cast<Slic3r::Orchestrator *>(orch);
         if (orchestrator == nullptr)
             return -1;
-        return orchestrator->add_gui_rule(rule) ? 1 : 0;
+        return int32_t(orchestrator->add_gui_rule(rule));
     } catch (...) {
         return -2;
     }

@@ -20,6 +20,7 @@
 #include <utility>
 
 #include <boost/filesystem.hpp>
+#include <boost/log/trivial.hpp>
 
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_gcode_reader.h"
@@ -1315,17 +1316,88 @@ struct PluginGuiRuleTargetState
     }
 };
 
+bool gui_rule_action_is_valid(raw_gui_rule_action action)
+{
+    return action == RAW_GUI_RULE_ACTION_ENABLE || action == RAW_GUI_RULE_ACTION_ENABLE_ANY;
+}
+
+bool gui_rule_condition_is_valid(raw_gui_rule_condition condition)
+{
+    return condition > RAW_GUI_RULE_CONDITION_NONE && condition < RAW_GUI_RULE_CONDITION_COUNT;
+}
+
+bool gui_rule_index_is_valid(int32_t index)
+{
+    return index >= 0 || index == RAW_GUI_RULE_INDEX_ALL || index == RAW_GUI_RULE_INDEX_CURRENT;
+}
+
+bool gui_rule_condition_needs_finite_float(raw_gui_rule_condition condition)
+{
+    return condition == RAW_GUI_RULE_CONDITION_FLOAT_EQUALS ||
+           condition == RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN ||
+           condition == RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL;
+}
+
+// Return an empty string when the descriptor is valid, otherwise the complete
+// rejection message. Unknown enum values must never be stored: the evaluator
+// would skip them silently or read an out-of-range index as
+// RAW_GUI_RULE_INDEX_ALL.
+//
+// The message is built here because a truncated struct_size means the
+// descriptor may be allocated with fewer bytes than raw_gui_rule: reading
+// target_key from such an allocation would be out of bounds. target_key is
+// therefore only read once struct_size proves the member exists.
+std::string gui_rule_validation_error(const raw_gui_rule *rule)
+{
+    if (rule == nullptr)
+        return "Rejected GUI rule: null descriptor.";
+    if (rule->struct_size < sizeof(raw_gui_rule))
+        return "Rejected GUI rule: struct_size is smaller than the host descriptor.";
+
+    const std::string prefix = std::string("Rejected GUI rule for target '") +
+        (rule->target_key != nullptr ? rule->target_key : "<null>") + "':";
+    const auto reject = [&prefix](const char *reason) {
+        return prefix + " " + reason + ".";
+    };
+
+    if (!gui_rule_action_is_valid(rule->action))
+        return reject("unknown action");
+    if (rule->target_key == nullptr || rule->target_key[0] == '\0')
+        return reject("missing target_key");
+    if (!gui_rule_index_is_valid(rule->target_index))
+        return reject("invalid target_index");
+    if (rule->scope >= RAW_PRESET_TYPE_COUNT)
+        return reject("unknown scope");
+    if (rule->clause_count == 0)
+        return reject("no condition clause");
+    if (rule->clauses == nullptr)
+        return reject("null clause array");
+
+    for (uint32_t clause_idx = 0; clause_idx < rule->clause_count; ++clause_idx) {
+        const raw_gui_rule_clause &clause = rule->clauses[clause_idx];
+        if (!gui_rule_condition_is_valid(clause.condition))
+            return reject("unknown condition");
+        if (clause.condition_key == nullptr || clause.condition_key[0] == '\0')
+            return reject("missing clause condition_key");
+        if (!gui_rule_index_is_valid(clause.condition_index))
+            return reject("invalid clause condition_index");
+        if (gui_rule_condition_needs_finite_float(clause.condition) &&
+            !std::isfinite(clause.condition_float_value))
+            return reject("non-finite condition_float_value");
+    }
+    return std::string();
+}
+
 } // namespace
 
 // Validate and retain one GUI rule; an identical rule is not inserted twice.
-bool Orchestrator::add_gui_rule(const raw_gui_rule *rule)
+Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule *rule)
 {
-    if (rule == nullptr ||
-        rule->struct_size < sizeof(raw_gui_rule) ||
-        rule->action == RAW_GUI_RULE_ACTION_NONE ||
-        rule->target_key == nullptr || rule->target_key[0] == '\0' ||
-        rule->clause_count == 0 || rule->clauses == nullptr)
-        return false;
+    const std::string validation_error = gui_rule_validation_error(rule);
+    if (!validation_error.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << validation_error;
+        return GuiRuleRegistration::Invalid;
+    }
 
     PluginGuiRule gui_rule;
     gui_rule.action = rule->action;
@@ -1336,10 +1408,6 @@ bool Orchestrator::add_gui_rule(const raw_gui_rule *rule)
     gui_rule.clauses.reserve(rule->clause_count);
     for (uint32_t clause_idx = 0; clause_idx < rule->clause_count; ++clause_idx) {
         const raw_gui_rule_clause &clause = rule->clauses[clause_idx];
-        if (clause.condition == RAW_GUI_RULE_CONDITION_NONE ||
-            clause.condition_key == nullptr || clause.condition_key[0] == '\0')
-            return false;
-
         PluginGuiRuleClause stored;
         stored.condition = clause.condition;
         stored.condition_key = clause.condition_key;
@@ -1369,11 +1437,11 @@ bool Orchestrator::add_gui_rule(const raw_gui_rule *rule)
                 lhs.condition_float_value == rhs.condition_float_value;
         }
         if (identical)
-            return false;
+            return GuiRuleRegistration::Duplicate;
     }
 
     m_gui_rules.emplace_back(std::move(gui_rule));
-    return true;
+    return GuiRuleRegistration::Added;
 }
 
 std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
