@@ -271,18 +271,13 @@ static void populate_snapshot(ConfigOptionDefSnapshot &snapshot, const ConfigOpt
     out.aligned_label_left = source.aligned_label_left ? 1 : 0;
     out.sidetext_width = source.sidetext_width;
 
-    out.has_min = source.plugin_api_has_min || source.min != -FLT_MAX;
-    out.has_max = source.plugin_api_has_max || source.max != FLT_MAX;
-    out.has_max_literal = source.plugin_api_has_max_literal ||
-        source.max_literal.value != 0.0 || source.max_literal.percent;
-    if (out.has_min)
-        out.min_value = source.min;
-    if (out.has_max)
-        out.max_value = source.max;
-    if (out.has_max_literal) {
-        out.max_literal_value = source.max_literal.value;
-        out.max_literal_is_percent = source.max_literal.percent ? 1 : 0;
-    }
+    out.has_min = source.min != -FLT_MAX;
+    out.min_value = source.min;
+    out.has_max = source.max != FLT_MAX;
+    out.max_value = source.max;
+    out.has_max_literal = source.max_literal.value != 0.0 || source.max_literal.percent;
+    out.max_literal_value = source.max_literal.value;
+    out.max_literal_is_percent = source.max_literal.percent ? 1 : 0;
     out.precision = source.precision;
     out.mode = static_cast<raw_config_option_mode>(source.mode);
     out.flags = source.plugin_api_flags;

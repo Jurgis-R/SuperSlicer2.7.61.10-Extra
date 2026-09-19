@@ -747,6 +747,35 @@ TEST_CASE("Configuration definitions expose normalized plugin metadata",
     CHECK(graph.enforced_values[0].y == Approx(10.0));
 }
 
+TEST_CASE("Configuration definitions use sentinel values when limits are absent",
+          "[plugins][config][definition]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
+    const orchestrator_handle *handle = reinterpret_cast<const orchestrator_handle *>(&orchestrator);
+    const double no_min = -std::numeric_limits<float>::max();
+    const double no_max = std::numeric_limits<float>::max();
+
+    const Slic3r::ConfigOptionDef *native_definition =
+        Slic3r::PrintConfigDef::instance().get("test_config_definition_vector_introspection");
+    REQUIRE(native_definition != nullptr);
+    CHECK(native_definition->min == no_min);
+    CHECK(native_definition->max == no_max);
+    CHECK(native_definition->max_literal.value == 0.0);
+    CHECK_FALSE(native_definition->max_literal.percent);
+
+    raw_config_option_def raw = raw_config_option_def_init();
+    REQUIRE(orchestrator_get_option_def(
+        handle, "test_config_definition_vector_introspection", &raw) == 1);
+    CHECK(raw.has_min == 0);
+    CHECK(raw.min_value == no_min);
+    CHECK(raw.has_max == 0);
+    CHECK(raw.max_value == no_max);
+    CHECK(raw.has_max_literal == 0);
+    CHECK(raw.max_literal_value == 0.0);
+    CHECK(raw.max_literal_is_percent == 0);
+}
+
 TEST_CASE("Identical graph definitions accept NaN endpoint sentinels",
           "[plugins][config][definition][graph]")
 {

@@ -246,9 +246,6 @@ public:
     // ABI introspection can reproduce the normalized registration contract.
     uint32_t                            plugin_api_level = 0;
     uint64_t                            plugin_api_flags = 0;
-    bool                                plugin_api_has_min = false;
-    bool                                plugin_api_has_max = false;
-    bool                                plugin_api_has_max_literal = false;
 	// If a type can be disabled (beforeit was nullable be that was a whole circus to make it works and it's dumb concept for "is enbaled": a flag is better)
 	bool								can_be_disabled = false;
     // if a setting can be disabled, and is enabled, it won't be serialized, or kept.

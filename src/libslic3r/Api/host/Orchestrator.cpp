@@ -307,10 +307,6 @@ static bool config_option_def_compatible(const ConfigOptionDef &existing,
     if (existing.type != candidate.type) return fail("type");
     if (existing.plugin_api_level != candidate.plugin_api_level) return fail("level");
     if (existing.plugin_api_flags != candidate.plugin_api_flags) return fail("flags");
-    if (existing.plugin_api_has_min != candidate.plugin_api_has_min) return fail("has_min");
-    if (existing.plugin_api_has_max != candidate.plugin_api_has_max) return fail("has_max");
-    if (existing.plugin_api_has_max_literal != candidate.plugin_api_has_max_literal)
-        return fail("has_max_literal");
     if (existing.category != candidate.category) return fail("category");
     if (existing.gui_type != candidate.gui_type) return fail("gui_type");
     if (existing.printer_technology != candidate.printer_technology) return fail("printer_technology");
@@ -407,9 +403,6 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
     out.type = config_option_type(def->type);
     out.plugin_api_level = uint32_t(def->level);
     out.plugin_api_flags = def->flags;
-    out.plugin_api_has_min = def->has_min != 0;
-    out.plugin_api_has_max = def->has_max != 0;
-    out.plugin_api_has_max_literal = def->has_max_literal != 0;
     out.category = static_cast<OptionCategory>(def->category);
     out.gui_type = static_cast<ConfigOptionDef::GUIType>(def->gui_type);
     out.printer_technology = static_cast<PrinterTechnology>(def->printer_technology);
@@ -449,13 +442,11 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
     out.label_width = def->label_width;
     out.sidetext_width = def->sidetext_width;
 
-    if (def->has_min)
-        out.min = def->min_value;
-    if (def->has_max)
-        out.max = def->max_value;
-
-    if (def->has_max_literal)
-        out.max_literal = FloatOrPercent{def->max_literal_value, def->max_literal_is_percent != 0};
+    out.min = def->has_min ? def->min_value : -FLT_MAX;
+    out.max = def->has_max ? def->max_value : FLT_MAX;
+    out.max_literal = def->has_max_literal
+        ? FloatOrPercent{def->max_literal_value, def->max_literal_is_percent != 0}
+        : FloatOrPercent{0., false};
 
     out.precision = def->precision;
     out.mode = static_cast<ConfigOptionMode>(def->mode);
