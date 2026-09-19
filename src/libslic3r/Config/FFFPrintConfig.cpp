@@ -9118,13 +9118,12 @@ namespace {
 using FffGuiClauses = std::vector<raw_gui_rule_clause>;
 
 raw_gui_rule_clause fff_clause(raw_gui_rule_condition condition, const char *condition_key,
-                               int32_t int_value = 0, double float_value = 0.0)
+                               double numeric_value = 0.0)
 {
     raw_gui_rule_clause out = raw_gui_rule_clause_init();
     out.condition = condition;
     out.condition_key = condition_key;
-    out.condition_int_value = int_value;
-    out.condition_float_value = float_value;
+    out.condition_float_value = numeric_value;
     return out;
 }
 
@@ -9132,11 +9131,11 @@ raw_gui_rule_clause fff_non_zero(const char *key) { return fff_clause(RAW_GUI_RU
 raw_gui_rule_clause fff_true(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_BOOL_TRUE, key); }
 raw_gui_rule_clause fff_false(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_BOOL_FALSE, key); }
 raw_gui_rule_clause fff_enabled(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_OPTION_ENABLED, key); }
-raw_gui_rule_clause fff_int_eq(const char *key, int32_t value) { return fff_clause(RAW_GUI_RULE_CONDITION_INT_EQUALS, key, value); }
-raw_gui_rule_clause fff_int_ne(const char *key, int32_t value) { return fff_clause(RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, key, value); }
-raw_gui_rule_clause fff_float_eq(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_EQUALS, key, 0, value); }
-raw_gui_rule_clause fff_float_lt(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN, key, 0, value); }
-raw_gui_rule_clause fff_float_ge(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL, key, 0, value); }
+raw_gui_rule_clause fff_int_eq(const char *key, int32_t value) { return fff_clause(RAW_GUI_RULE_CONDITION_INT_EQUALS, key, double(value)); }
+raw_gui_rule_clause fff_int_ne(const char *key, int32_t value) { return fff_clause(RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, key, double(value)); }
+raw_gui_rule_clause fff_float_eq(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_EQUALS, key, value); }
+raw_gui_rule_clause fff_float_lt(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN, key, value); }
+raw_gui_rule_clause fff_float_ge(const char *key, double value) { return fff_clause(RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL, key, value); }
 raw_gui_rule_clause fff_is_percent(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_IS_PERCENT, key); }
 raw_gui_rule_clause fff_vector_empty(const char *key) { return fff_clause(RAW_GUI_RULE_CONDITION_VECTOR_EMPTY, key); }
 

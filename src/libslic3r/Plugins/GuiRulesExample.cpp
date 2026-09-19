@@ -95,12 +95,12 @@ void add_enable_rule(orchestrator_handle *orchestrator,
                      const char *target_key,
                      raw_gui_rule_condition condition,
                      const char *condition_key,
-                     int32_t condition_int_value = 0)
+                     double condition_value = 0.0)
 {
     raw_gui_rule_clause clause = raw_gui_rule_clause_init();
     clause.condition = condition;
     clause.condition_key = condition_key;
-    clause.condition_int_value = condition_int_value;
+    clause.condition_float_value = condition_value;
 
     raw_gui_rule rule = raw_gui_rule_init();
     rule.action = RAW_GUI_RULE_ACTION_ENABLE;
@@ -226,13 +226,13 @@ void GuiRulesExample::inilialize_impl(storage_handle *) const
     add_enable_rule(m_orchestrator, "plugin_gui_rule_test_value_nonzero_target", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "plugin_gui_rule_test_value_nonzero_condition");
     add_enable_rule(m_orchestrator, "plugin_gui_rule_test_option_enabled_target", RAW_GUI_RULE_CONDITION_OPTION_ENABLED, "plugin_gui_rule_test_option_enabled_condition");
     add_enable_rule(m_orchestrator, "plugin_gui_rule_test_option_disabled_target", RAW_GUI_RULE_CONDITION_OPTION_DISABLED, "plugin_gui_rule_test_option_disabled_condition");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_int_equals_target", RAW_GUI_RULE_CONDITION_INT_EQUALS, "perimeter_generator", static_cast<int32_t>(Slic3r::PerimeterGeneratorType::Classic));
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_int_not_equals_target", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<int32_t>(Slic3r::PerimeterGeneratorType::Classic));
+    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_int_equals_target", RAW_GUI_RULE_CONDITION_INT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Classic));
+    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_int_not_equals_target", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Classic));
 
     add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "perimeters");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<int32_t>(Slic3r::PerimeterGeneratorType::Arachne));
+    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Arachne));
     add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls_min_width", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO, "perimeters");
-    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls_min_width", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<int32_t>(Slic3r::PerimeterGeneratorType::Arachne));
+    add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls_min_width", RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS, "perimeter_generator", static_cast<double>(Slic3r::PerimeterGeneratorType::Arachne));
     add_enable_rule(m_orchestrator, "plugin_gui_rule_test_thin_walls_min_width", RAW_GUI_RULE_CONDITION_BOOL_TRUE, "plugin_gui_rule_test_thin_walls");
 }
 

@@ -617,7 +617,17 @@ TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui
     invalid_clause = clauses[0];
     invalid_clause.condition = RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN;
     invalid_clause.condition_float_value = std::numeric_limits<double>::quiet_NaN();
-    expect_invalid(invalid, "non-finite condition_float_value");
+    expect_invalid(invalid, "non-finite float condition");
+
+    invalid_clause = clauses[0];
+    invalid_clause.condition = RAW_GUI_RULE_CONDITION_INT_EQUALS;
+    invalid_clause.condition_float_value = std::numeric_limits<double>::quiet_NaN();
+    expect_invalid(invalid, "non-finite int condition");
+
+    invalid_clause = clauses[0];
+    invalid_clause.condition = RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS;
+    invalid_clause.condition_float_value = std::numeric_limits<double>::infinity();
+    expect_invalid(invalid, "infinite int condition");
 
     // The public C relay must distinguish added, duplicate and invalid.
     orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
@@ -628,4 +638,48 @@ TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui
     relay.action = RAW_GUI_RULE_ACTION_NONE;
     CHECK(orchestrator_add_gui_rule(handle, &relay) == -1);
     CHECK(orchestrator_add_gui_rule(handle, nullptr) == -1);
+}
+
+TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins][gui-rules][abi]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    raw_gui_rule_clause int_equals = raw_gui_rule_clause_init();
+    int_equals.condition = RAW_GUI_RULE_CONDITION_INT_EQUALS;
+    int_equals.condition_key = "solid_infill_every_layers";
+    int_equals.condition_float_value = 2.4;
+
+    raw_gui_rule equals_rule = raw_gui_rule_init();
+    equals_rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
+    equals_rule.target_key = "fill_aligned_z";
+    equals_rule.rule_group = "gui_rule_int_group";
+    equals_rule.clauses = &int_equals;
+    equals_rule.clause_count = 1;
+    CHECK(orchestrator.add_gui_rule(&equals_rule) == Orchestrator::GuiRuleRegistration::Added);
+
+    raw_gui_rule_clause int_not_equals = int_equals;
+    int_not_equals.condition = RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS;
+
+    raw_gui_rule not_equals_rule = equals_rule;
+    not_equals_rule.target_key = "infill_every_layers";
+    not_equals_rule.clauses = &int_not_equals;
+    CHECK(orchestrator.add_gui_rule(&not_equals_rule) == Orchestrator::GuiRuleRegistration::Added);
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const auto enabled_for = [&orchestrator, &config](const char *target_key) {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, "gui_rule_int_group"))
+            if (application.target_key == target_key)
+                return application.enabled;
+        return false;
+    };
+
+    config.option<ConfigOptionInt>("solid_infill_every_layers")->value = 2;
+    CHECK(enabled_for("fill_aligned_z"));
+    CHECK_FALSE(enabled_for("infill_every_layers"));
+
+    config.option<ConfigOptionInt>("solid_infill_every_layers")->value = 3;
+    CHECK_FALSE(enabled_for("fill_aligned_z"));
+    CHECK(enabled_for("infill_every_layers"));
 }

@@ -455,18 +455,22 @@ Use it only for options whose value is sized like the extruder count.
 /*
 One condition clause of a GUI rule.
 
-A clause is a single predicate on one config option. condition_index and
-condition_int_value follow the index and integer contracts documented above.
-condition_float_value is used by RAW_GUI_RULE_CONDITION_FLOAT_EQUALS,
-RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN and
-RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL. IS_PERCENT and VECTOR_EMPTY
-ignore condition_int_value and condition_float_value.
+A clause is a single predicate on one config option. condition_index follows
+the index contract documented above. condition_float_value carries the numeric
+operand:
+
+- RAW_GUI_RULE_CONDITION_INT_EQUALS and RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS
+  compare the option integer value to llround(condition_float_value), so enum
+  comparisons use the same field;
+- RAW_GUI_RULE_CONDITION_FLOAT_EQUALS, RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN
+  and RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL compare the normalized
+  option float value directly;
+- IS_PERCENT and VECTOR_EMPTY ignore condition_float_value.
 */
 typedef struct raw_gui_rule_clause {
     raw_gui_rule_condition condition;
     const char *condition_key;
     int32_t condition_index;
-    int32_t condition_int_value;
     double condition_float_value;
 } raw_gui_rule_clause;
 

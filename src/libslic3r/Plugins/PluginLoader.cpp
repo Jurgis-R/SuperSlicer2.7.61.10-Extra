@@ -853,7 +853,7 @@ void add_exclusive_step_used_setting_rules(Orchestrator &orchestrator,
             raw_gui_rule_clause clause = raw_gui_rule_clause_init();
             clause.condition = RAW_GUI_RULE_CONDITION_INT_EQUALS;
             clause.condition_key = group.option_def.opt_key;
-            clause.condition_int_value = int32_t(plugin_idx);
+            clause.condition_float_value = double(plugin_idx);
 
             raw_gui_rule rule = raw_gui_rule_init();
             rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;

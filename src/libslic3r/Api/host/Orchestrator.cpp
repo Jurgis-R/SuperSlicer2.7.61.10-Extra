@@ -1197,9 +1197,9 @@ bool gui_rule_condition_value_at_index(const ConfigOption &condition_option,
     case RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO:
         return condition_option.get_bool(value_index);
     case RAW_GUI_RULE_CONDITION_INT_EQUALS:
-        return condition_option.get_int(value_index) == clause.condition_int_value;
+        return condition_option.get_int(value_index) == int32_t(std::llround(clause.condition_float_value));
     case RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS:
-        return condition_option.get_int(value_index) != clause.condition_int_value;
+        return condition_option.get_int(value_index) != int32_t(std::llround(clause.condition_float_value));
     case RAW_GUI_RULE_CONDITION_FLOAT_EQUALS:
         return condition_option.get_float(value_index) == clause.condition_float_value;
     case RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN:
@@ -1333,7 +1333,11 @@ bool gui_rule_index_is_valid(int32_t index)
 
 bool gui_rule_condition_needs_finite_float(raw_gui_rule_condition condition)
 {
-    return condition == RAW_GUI_RULE_CONDITION_FLOAT_EQUALS ||
+    // INT_* rounds the same field, and llround() of a non-finite value is
+    // undefined behavior.
+    return condition == RAW_GUI_RULE_CONDITION_INT_EQUALS ||
+           condition == RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS ||
+           condition == RAW_GUI_RULE_CONDITION_FLOAT_EQUALS ||
            condition == RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN ||
            condition == RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL;
 }
@@ -1412,7 +1416,6 @@ Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule 
         stored.condition = clause.condition;
         stored.condition_key = clause.condition_key;
         stored.condition_index = clause.condition_index;
-        stored.condition_int_value = clause.condition_int_value;
         stored.condition_float_value = clause.condition_float_value;
         gui_rule.clauses.emplace_back(std::move(stored));
     }
@@ -1433,7 +1436,6 @@ Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule 
             identical = lhs.condition == rhs.condition &&
                 lhs.condition_key == rhs.condition_key &&
                 lhs.condition_index == rhs.condition_index &&
-                lhs.condition_int_value == rhs.condition_int_value &&
                 lhs.condition_float_value == rhs.condition_float_value;
         }
         if (identical)

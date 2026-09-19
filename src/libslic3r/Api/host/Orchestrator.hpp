@@ -230,7 +230,8 @@ public:
         raw_gui_rule_condition condition = RAW_GUI_RULE_CONDITION_NONE;
         std::string condition_key;
         int32_t condition_index = RAW_GUI_RULE_INDEX_ALL;
-        int32_t condition_int_value = 0;
+        // Numeric operand: llround() for INT_EQUALS/INT_NOT_EQUALS, normalized
+        // float for FLOAT_* conditions, ignored by IS_PERCENT/VECTOR_EMPTY.
         double condition_float_value = 0.0;
     };
 
