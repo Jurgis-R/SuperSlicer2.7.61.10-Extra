@@ -1580,6 +1580,23 @@ option_def_error_code Orchestrator::create_new_print_config(const raw_config_opt
     // Attach the queued rules now that the setting exists.
     m_gui_rule_registry.attach_pending_for_setting(out.opt_key);
 
+    // A plugin option that is not declared in used_config_keys never receives a
+    // generated activation rule: it would stay editable whatever the selected
+    // implementation is. Only plugins that already participate in the used-key
+    // contract are reported, so host-created group selectors stay silent.
+    if (m_initializing_plugin != nullptr) {
+        const std::vector<Plugin::UsedConfigKey> &used_keys = m_initializing_plugin->get_used_config_keys();
+        if (!used_keys.empty()) {
+            const bool declared = std::any_of(used_keys.begin(), used_keys.end(),
+                [&out](const Plugin::UsedConfigKey &used_key) { return used_key.key == out.opt_key; });
+            if (!declared)
+                BOOST_LOG_TRIVIAL(warning)
+                    << "Plugin '" << m_initializing_plugin->get_id() << "' created option '"
+                    << out.opt_key << "' without declaring it in used_config_keys; no activation rule "
+                    << "will be generated for it.";
+        }
+    }
+
     // publish it?
     PrintConfigDef::instance_mutable().option_keys(def->option_preset_type).insert(out.opt_key);
     if(def->option_preset_type == RAW_PRESET_TYPE_FFF_FILAMENT_OVERRIDE) {

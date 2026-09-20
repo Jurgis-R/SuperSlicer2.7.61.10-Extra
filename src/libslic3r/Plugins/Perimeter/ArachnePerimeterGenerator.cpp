@@ -83,6 +83,16 @@ namespace {
 const char *k_arachne_perimeter_generator_id = "perimeter.generator.arachne";
 const char *k_no_dependencies[] = { nullptr };
 
+const char *k_perimeters_key = "perimeters";
+
+// used_config_keys is the plugin declaration: the host activates these settings
+// while this implementation is selected and invalidates its caches when they
+// change. Arachne reads the wall count directly; the other generator settings
+// are shared with the core or with the other perimeter implementations.
+const raw_used_config_key k_used_config_keys[] = {
+    { k_perimeters_key, RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
+};
+
 const Slic3r::Layer *to_layer(const layer_handle *handle)
 {
     return reinterpret_cast<const Slic3r::Layer *>(handle);
@@ -386,6 +396,14 @@ const char *const *ArachnePerimeterGenerator::dependencies_impl() const noexcept
 int32_t ArachnePerimeterGenerator::priority_impl() const noexcept
 {
     return 10;
+}
+
+int32_t ArachnePerimeterGenerator::used_config_keys(raw_used_config_key *keys) const noexcept
+{
+    if (keys != nullptr)
+        for (uint32_t idx = 0; idx < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++idx)
+            keys[idx] = k_used_config_keys[idx];
+    return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
 }
 
 const char *ArachnePerimeterGenerator::progress_message_format_impl() const noexcept

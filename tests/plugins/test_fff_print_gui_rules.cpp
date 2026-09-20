@@ -773,3 +773,30 @@ TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][fil
     }();
     CHECK(full_pending.find("gui_rule_filter_pending_target") != full_pending.end());
 }
+TEST_CASE("GUI rules activate perimeters for every perimeter generator", "[plugins][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    REQUIRE(PrintConfigDef::instance().get("step_perimeter_plugin") != nullptr);
+
+    // The generated used-config-key rules must keep the wall count editable for
+    // every implementation that reads it, not only for the one that declared it
+    // first.
+    for (const char *plugin_id : {"perimeter.generator.classic", "perimeter.generator.arachne", "perimeter.generator.simple"}) {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.set_deserialize("step_perimeter_plugin", plugin_id);
+
+        bool found = false;
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1)) {
+            if (application.target_key != "perimeters")
+                continue;
+            found = true;
+            INFO("generator " << plugin_id);
+            CHECK(application.enabled);
+        }
+        INFO("generator " << plugin_id);
+        CHECK(found);
+    }
+}
