@@ -589,6 +589,7 @@ void ensure_plugin_test_runtime_initialized()
         if (without_png) orchestrator.set_plugin_active("PNG", false);
         orchestrator.initialize_plugins();
         if (without_png) orchestrator.set_plugin_active("PNG", true);
+        orchestrator.finalize_plugin_option_defs();
         register_exclusive_step_group_ui_fragments(orchestrator);
         orchestrator.set_plugin_active("slic3r.test.seam_placer.regional", false);
         orchestrator.set_plugin_active("seam_placer.aligned", false);

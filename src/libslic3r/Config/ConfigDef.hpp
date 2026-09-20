@@ -246,6 +246,10 @@ public:
     // ABI introspection can reproduce the normalized registration contract.
     uint32_t                            plugin_api_level = 0;
     uint64_t                            plugin_api_flags = 0;
+    // True when every enum value of this definition is a plugin id. The
+    // orchestrator prunes values whose plugin is missing or inactive when
+    // plugin option definitions are finalized.
+    bool                                contains_plugin_id = false;
 	// If a type can be disabled (beforeit was nullable be that was a whole circus to make it works and it's dumb concept for "is enbaled": a flag is better)
 	bool								can_be_disabled = false;
     // if a setting can be disabled, and is enabled, it won't be serialized, or kept.
@@ -438,6 +442,12 @@ public:
     void set_enum_values(GUIType gui_type, const std::initializer_list<std::string_view> il);
 
     void set_enum_as_closed_for_scripted_enum(const std::vector<std::pair<std::string, std::string>> il);
+
+    // True when the enum map is owned by this definition (plugin-created enum)
+    // instead of a static ConfigOptionEnum<T> map. Scripted enums can be
+    // rebuilt when their value set changes; typed enums keep their native map.
+    bool enum_is_scripted() const
+        { return enum_def.get() != nullptr && enum_def->m_enum_keys_map_storage_for_script.get() != nullptr; }
 
     void set_enum_values(GUIType gui_type, const std::initializer_list<std::pair<std::string_view, std::string_view>> il);
 

@@ -103,6 +103,14 @@ public:
         { return leaf(RAW_GUI_RULE_CONDITION_IS_PERCENT, std::move(key), index, 0.0); }
     static GuiCondition vector_empty(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
         { return leaf(RAW_GUI_RULE_CONDITION_VECTOR_EMPTY, std::move(key), index, 0.0); }
+    static GuiCondition string_equals(std::string key, std::string value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    {
+        if (value.empty())
+            throw std::invalid_argument("A string condition needs a nonempty expected value.");
+        GuiCondition out = leaf(RAW_GUI_RULE_CONDITION_STRING_EQUALS, std::move(key), index, 0.0);
+        out.m_clause.condition_string_value = std::move(value);
+        return out;
+    }
 
 private:
     friend class GuiRule;
@@ -117,6 +125,7 @@ private:
         std::string condition_key;
         int32_t condition_index = RAW_GUI_RULE_INDEX_ALL;
         double condition_float_value = 0.0;
+        std::string condition_string_value;
     };
 
     static void validate_index(int32_t index)
@@ -208,6 +217,8 @@ inline GuiCondition percent(std::string key, int32_t index = RAW_GUI_RULE_INDEX_
     { return GuiCondition::percent(std::move(key), index); }
 inline GuiCondition vector_empty(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
     { return GuiCondition::vector_empty(std::move(key), index); }
+inline GuiCondition string_equals(std::string key, std::string value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+    { return GuiCondition::string_equals(std::move(key), std::move(value), index); }
 
 class GuiRule
 {
@@ -260,6 +271,8 @@ public:
         { return when(GuiCondition::percent(std::move(key), index)); }
     GuiRule &when_vector_empty(std::string key, int32_t index = RAW_GUI_RULE_INDEX_ALL)
         { return when(GuiCondition::vector_empty(std::move(key), index)); }
+    GuiRule &when_string_equals(std::string key, std::string value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
+        { return when(GuiCondition::string_equals(std::move(key), std::move(value), index)); }
 
     GuiRule &target_index(int32_t index)
     {
@@ -401,6 +414,8 @@ private:
             raw.condition_key = clause.condition_key.c_str();
             raw.condition_index = clause.condition_index;
             raw.condition_float_value = clause.condition_float_value;
+            raw.condition_string_value = clause.condition_string_value.empty() ?
+                nullptr : clause.condition_string_value.c_str();
             clauses.push_back(raw);
         }
         return clauses;

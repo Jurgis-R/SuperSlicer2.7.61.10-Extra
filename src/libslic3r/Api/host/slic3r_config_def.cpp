@@ -286,6 +286,7 @@ static void populate_snapshot(ConfigOptionDefSnapshot &snapshot, const ConfigOpt
     out.depends_on = {snapshot.dependency_pointers.data(), uint32_t(snapshot.dependency_pointers.size())};
     out.default_serialized_value = source.default_value ? snapshot.default_serialized_value.c_str() : nullptr;
     out.enum_def.value_label_pairs = {snapshot.enum_pairs.data(), uint32_t(snapshot.enum_pairs.size())};
+    out.contains_plugin_id = source.contains_plugin_id ? 1 : 0;
     out.graph_settings = source.graph_settings ? &snapshot.graph_settings : nullptr;
 }
 

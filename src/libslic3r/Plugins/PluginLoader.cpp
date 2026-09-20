@@ -1219,6 +1219,9 @@ void load_plugins()
     register_exclusive_step_group_options_impl(orchestrator);
 
     orchestrator.initialize_plugins();
+    // Plugins may have recorded deferred option definition patches while they
+    // initialized. Apply them before the GUI or presets read the definitions.
+    orchestrator.finalize_plugin_option_defs();
     register_exclusive_step_group_ui_fragments_impl(orchestrator);
     //note: --loglevel 4 is read too late for this log, use $env:SLIC3R_LOGLEVEL = "4" (or SLIC3R_LOGLEVEL=4 in visual studio environement line)
     BOOST_LOG_TRIVIAL(debug) << "Loaded the entire plugin library in "
