@@ -13,6 +13,8 @@
 
 #include "libslic3r/Technologies.hpp"
 #include "libslic3r/Thread.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Config/GuiRuleTexts.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "GUI_Init.hpp"
 #include "GUI_ObjectList.hpp"
@@ -3424,6 +3426,13 @@ void GUI_App::update_config_option_translations()
         [](const std::string &text, const std::string &domain) {
             return I18N::translate_utf8_in_domain(text, domain);
         });
+
+    // The explanation vocabulary and the cached explanation texts depend on the
+    // language too.
+    update_gui_rule_texts([](const std::string &text) {
+        return I18N::translate_utf8_in_domain(text, std::string());
+    });
+    Orchestrator::instance().gui_rules().invalidate_explanations();
 }
 
 Tab* GUI_App::get_tab(Preset::Type type, bool only_completed)

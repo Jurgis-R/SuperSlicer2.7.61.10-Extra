@@ -1042,6 +1042,12 @@ void PreferencesDialog::build()
 			app_config->get_bool("use_rich_tooltip"));
 		m_values_need_restart.push_back("use_rich_tooltip");
 		
+		append_bool_option(interface_accessibility, "use_option_labels_in_disabled_tooltip",
+			L("Use option labels in disabled-setting tooltips"),
+			L("When a setting is disabled by a plugin or by another setting, its tooltip explains why."
+			  " Enable this to show the translated option labels instead of the raw setting keys."),
+			app_config->get_bool("use_option_labels_in_disabled_tooltip"));
+
 		append_bool_option(interface_accessibility, "hide_slice_tooltip",
 			L("Hide tooltips on slice buttons"),
 			L("These tooltip may be bothersome. You can hide them with this option."),

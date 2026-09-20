@@ -161,6 +161,10 @@ public:
 
     std::function<void(const OptionKeyIdx& opt_key_idx)> edit_custom_gcode { nullptr };
 
+    // Build the explanation appended to the tooltip of a field disabled by the
+    // GUI activation rules. Empty when no rule applies.
+    std::function<wxString(const OptionKeyIdx& opt_key_idx)> m_disabled_reason_provider { nullptr };
+
     wxFont sidetext_font;
     wxFont label_font;
     int    sidetext_width{ -1 };

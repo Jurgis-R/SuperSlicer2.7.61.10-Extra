@@ -339,20 +339,33 @@ void OG_CustomCtrl::OnMotion(wxMouseEvent& event)
 
     for (CtrlLine& line : ctrl_lines) {
         line.is_focused = false;
-        wxString *str_tooltip;
-        size_t idx = 0;
-        for (; idx < line.rects_tooltip.size(); ++idx) {
-            line.is_focused = is_point_in_rect(pos, line.rects_tooltip[idx].first);
+        CtrlLine::TooltipArea *hovered_area = nullptr;
+        for (size_t idx = 0; idx < line.rects_tooltip.size(); ++idx) {
+            line.is_focused = is_point_in_rect(pos, line.rects_tooltip[idx].rect);
             if (line.is_focused) {
-                str_tooltip = &line.rects_tooltip[idx].second;
+                hovered_area = &line.rects_tooltip[idx];
                 break;
             }
         }
         if (line.is_focused) {
             if (!suppress_hyperlinks && !line.og_line.label_path.empty())
                 tooltip = OptionsGroup::get_url(line.og_line.label_path) +"\n\n";
-            if(str_tooltip)
-                tooltip += *str_tooltip;
+            if (hovered_area != nullptr)
+                tooltip += hovered_area->tooltip;
+            // A field disabled by the GUI activation rules explains itself: the
+            // reason is appended after the normal tooltip.
+            if (hovered_area != nullptr && hovered_area->has_option && opt_group != nullptr && opt_group->m_disabled_reason_provider) {
+                const OptionKeyIdx opt_key_idx{hovered_area->opt_key, hovered_area->opt_idx};
+                Field *field = opt_group->get_field(opt_key_idx);
+                if (field != nullptr && !field->is_widget_enabled()) {
+                    const wxString reason = opt_group->m_disabled_reason_provider(opt_key_idx);
+                    if (!reason.IsEmpty()) {
+                        if (!tooltip.IsEmpty())
+                            tooltip += "\n\n";
+                        tooltip += reason;
+                    }
+                }
+            }
             break;
         }
 
@@ -754,7 +767,8 @@ void OG_CustomCtrl::CtrlLine::render(wxDC& dc, wxCoord v_pos)
         is_url_string = !suppress_hyperlinks && !og_line.label_path.empty();
         wxString opt_label = (og_line.label.empty() || og_line.label.Last() != '_') ? og_line.label : og_line.label.substr(0, og_line.label.size() - 1);
         bool no_dots = og_line.label.empty() || og_line.label.Last() == '_' || is_multiline;
-        h_pos = draw_text(dc, wxPoint(h_pos, v_pos), (no_dots ? opt_label : opt_label + ':'), og_line.label_tooltip , text_clr, ctrl->opt_group->title_width * ctrl->m_em_unit, is_url_string);
+        h_pos = draw_text(dc, wxPoint(h_pos, v_pos), (no_dots ? opt_label : opt_label + ':'), og_line.label_tooltip , text_clr, ctrl->opt_group->title_width * ctrl->m_em_unit, is_url_string, false,
+                          option_set.front().opt_key, option_set.front().opt_idx);
     }
 
     // If there's a widget, build it and set result to the correct position.
@@ -828,7 +842,8 @@ void OG_CustomCtrl::CtrlLine::render(wxDC& dc, wxCoord v_pos)
                     is_url_string = false;
                 else if (opt == option_set.front())
                     is_url_string = !suppress_hyperlinks && !og_line.label_path.empty();
-                h_pos = draw_text(dc, wxPoint(h_pos, v_pos), label, option_tooltip, field ? field->label_color() : nullptr, width, is_url_string, !field->m_opt.aligned_label_left);
+                h_pos = draw_text(dc, wxPoint(h_pos, v_pos), label, option_tooltip, field ? field->label_color() : nullptr, width, is_url_string, !field->m_opt.aligned_label_left,
+                                  opt.opt_key, opt.opt_idx);
             }
         }
 
@@ -891,7 +906,8 @@ wxCoord OG_CustomCtrl::CtrlLine::draw_mode_bmp(wxDC& dc, wxCoord v_pos)
     return get_bitmap_size(bmp, ctrl).GetWidth() + ctrl->m_h_gap;
 }
 
-wxCoord    OG_CustomCtrl::CtrlLine::draw_text(wxDC& dc, wxPoint pos, const wxString& text, const wxString& tooltip, const wxColour* color, int width, bool is_url/* = false*/, bool align_right/* = false*/)
+wxCoord    OG_CustomCtrl::CtrlLine::draw_text(wxDC& dc, wxPoint pos, const wxString& text, const wxString& tooltip, const wxColour* color, int width, bool is_url/* = false*/, bool align_right/* = false*/,
+                                              const std::string& opt_key/* = std::string()*/, int32_t opt_idx/* = -1*/)
 {
     wxString multiline_text;
     if (width > 0 && dc.GetTextExtent(text).x > width) {
@@ -927,7 +943,8 @@ wxCoord    OG_CustomCtrl::CtrlLine::draw_text(wxDC& dc, wxPoint pos, const wxStr
         wxPoint draw_pos = pos;
         if (align_right && width > 0)
             draw_pos.x += width - text_width;
-        rects_tooltip.emplace_back(wxRect{draw_pos, wxSize(text_width, text_height)}, tooltip);
+        rects_tooltip.emplace_back(TooltipArea{
+            wxRect{draw_pos, wxSize(text_width, text_height)}, tooltip, opt_key, opt_idx, !opt_key.empty() });
 
         wxColour old_clr = dc.GetTextForeground();
         wxFont old_font = dc.GetFont();

@@ -331,6 +331,9 @@ void AppConfig::set_defaults()
         if (get("use_rich_tooltip").empty())
             set("use_rich_tooltip", "0");
 
+        if (get("use_option_labels_in_disabled_tooltip").empty())
+            set("use_option_labels_in_disabled_tooltip", "0");
+
         if (get("hide_slice_tooltip").empty())
 #ifdef _WIN32
             set("hide_slice_tooltip", "1");

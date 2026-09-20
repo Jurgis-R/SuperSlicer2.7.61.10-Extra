@@ -3153,6 +3153,28 @@ void TabPrint::update_description_lines()
     }
 }
 
+namespace {
+
+// Explanation of a rule-disabled setting, shared by the rule-driven tabs. The
+// style preference selects raw setting keys or the translated option labels.
+wxString gui_rule_disabled_reason(const DynamicPrintConfig *config, const OptionKeyIdx &opt_key_idx, raw_option_preset_type scope)
+{
+    if (config == nullptr)
+        return wxString();
+    const GuiRuleRegistry::ExplanationStyle style =
+        wxGetApp().app_config->get_bool("use_option_labels_in_disabled_tooltip")
+            ? GuiRuleRegistry::ExplanationStyle::TranslatedLabels
+            : GuiRuleRegistry::ExplanationStyle::RawKeys;
+    return from_u8(Orchestrator::instance().gui_rules().explain_disabled(*config, opt_key_idx, scope, style));
+}
+
+} // namespace
+
+wxString TabPrint::disabled_reason(const OptionKeyIdx &opt_key_idx) const
+{
+    return gui_rule_disabled_reason(m_config, opt_key_idx, RAW_PRESET_TYPE_FFF_PRINT);
+}
+
 void TabPrint::toggle_options()
 {
     if (!m_active_page) return;
@@ -4208,6 +4230,11 @@ void TabPrinter::clear_pages()
     m_machine_limits_description_line           = nullptr;
     m_fff_print_host_upload_description_line    = nullptr;
     m_sla_print_host_upload_description_line    = nullptr;
+}
+
+wxString TabPrinter::disabled_reason(const OptionKeyIdx &opt_key_idx) const
+{
+    return gui_rule_disabled_reason(m_config, opt_key_idx, RAW_PRESET_TYPE_FFF_PRINTER);
 }
 
 void TabPrinter::toggle_options()
@@ -6383,6 +6410,9 @@ ConfigOptionsGroupShp Page::new_optgroup(const wxString& title, bool no_title /*
 
     optgroup->set_config_category_and_type(m_title, 
         type_override == Preset::Type::TYPE_INVALID ? m_tab->type() : type_override);
+    optgroup->m_disabled_reason_provider = [tab = m_tab](const OptionKeyIdx &opt_key_idx) {
+        return tab->disabled_reason(opt_key_idx);
+    };
     optgroup->m_on_change = [this](const OptionKeyIdx &opt_key_idx, bool enabled, const boost::any &value) {
         //! This function will be called from OptionGroup.
         //! Using of CallAfter is redundant.
@@ -6658,6 +6688,11 @@ void TabSLAPrint::update_description_lines()
             }
         }
     }
+}
+
+wxString TabSLAPrint::disabled_reason(const OptionKeyIdx &opt_key_idx) const
+{
+    return gui_rule_disabled_reason(m_config, opt_key_idx, RAW_PRESET_TYPE_SLA_PRINT);
 }
 
 void TabSLAPrint::toggle_options()

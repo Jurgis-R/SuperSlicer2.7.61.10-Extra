@@ -68,17 +68,28 @@ class OG_CustomCtrl :public wxPanel
 
         void    render(wxDC& dc, wxCoord v_pos);
         wxCoord draw_mode_bmp(wxDC& dc, wxCoord v_pos);
-        wxCoord draw_text      (wxDC& dc, wxPoint pos, const wxString& text, const wxString& tooltip, const wxColour* color, int width, bool is_url = false, bool align_right = false);
+        wxCoord draw_text      (wxDC& dc, wxPoint pos, const wxString& text, const wxString& tooltip, const wxColour* color, int width, bool is_url = false, bool align_right = false,
+                                const std::string& opt_key = std::string(), int32_t opt_idx = -1);
         wxPoint draw_blinking_bmp(wxDC& dc, wxPoint pos, bool is_blinking);
         wxPoint draw_act_bmps(wxDC& dc, wxPoint pos, const wxBitmapBundle& bmp_undo_to_sys, const wxBitmapBundle& bmp_undo, const wxBitmapBundle* bmp_enable, bool is_blinking, size_t rect_id = 0);
         wxCoord draw_edit_bmp(wxDC& dc, wxPoint pos, const wxBitmapBundle* bmp_edit);
         bool    launch_browser() const;
         bool    is_separator() const { return og_line.is_separator(); }
 
+        // One hover area of the line: the drawn text, its tooltip and, when the
+        // text belongs to one option, the option it explains.
+        struct TooltipArea {
+            wxRect      rect;
+            wxString    tooltip;
+            std::string opt_key;
+            int32_t     opt_idx = -1;
+            bool        has_option = false;
+        };
+
         std::vector<wxRect> rects_undo_icon;
         std::vector<wxRect> rects_undo_to_sys_icon;
         std::vector<wxRect> rects_enable_icon;
-        std::vector<std::pair<wxRect, wxString>> rects_tooltip;
+        std::vector<TooltipArea> rects_tooltip;
         std::vector<wxRect> rects_edit_icon; // should only work for full line, so the "vector" is useless.
     };
 
