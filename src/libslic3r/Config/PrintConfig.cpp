@@ -2584,6 +2584,12 @@ void PrintConfigDef::set_gui_activation_id(const t_config_option_key &opt_key, u
         option->second.gui_activation_id = activation_id;
 }
 
+size_t PrintConfigDef::update_definition_translations(const std::function<std::string(const std::string &, const std::string &)> &translate)
+{
+    PrintConfigDef &def = private_instance();
+    return def.update_translations(translate);
+}
+
 DynamicPrintConfig DynamicPrintConfig::full_print_config()
 {
 	return DynamicPrintConfig((const PrintRegionConfig&)FullPrintConfig::defaults());

@@ -3420,7 +3420,7 @@ void GUI_App::update_config_option_translations()
     // Fill the translated label / full_label / tooltip and enum labels stored in
     // the configuration definitions. Plugin definitions use their own
     // translation_domain; a domain without a loaded catalog keeps the raw text.
-    PrintConfigDef::instance_mutable().update_translations(
+    PrintConfigDef::update_definition_translations(
         [](const std::string &text, const std::string &domain) {
             return I18N::translate_utf8_in_domain(text, domain);
         });
