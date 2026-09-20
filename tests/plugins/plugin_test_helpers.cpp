@@ -258,6 +258,36 @@ void register_plugin_option_list_fixtures(orchestrator_handle *orchestrator)
 
     register_enum("test.infill.prune_list", prune_entries, 2, 1);
     register_enum("test.infill.empty_list", empty_entries, 1, 1);
+
+    // A contribution recorded before the target list exists must survive a
+    // replication patch: replication is applied first, then contributions, so
+    // the result does not depend on plugin initialization order.
+    static const key_value_string_pair_t contributed_entry[] = { { "gyroid", "Gyroid" } };
+
+    register_enum("test.replicate.contrib_source", source_entries, 1, 0);
+
+    raw_option_def_patch contrib_add = raw_option_def_patch_init();
+    contrib_add.kind = RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES;
+    contrib_add.opt_key = "test.replicate.contrib_target";
+    contrib_add.enum_values = { contributed_entry, 1 };
+    if (orchestrator_modify_option_def(orchestrator, &contrib_add) != OPTION_DEF_ERROR_OK)
+        throw std::runtime_error("Failed to record the pre-creation contribution patch.");
+
+    register_enum("test.replicate.contrib_target", target_entries, 1, 0);
+    replicate("test.replicate.contrib_target", "test.replicate.contrib_source");
+
+    // Same contribution after the target exists must give the same result.
+    register_enum("test.replicate.order_source", source_entries, 1, 0);
+    register_enum("test.replicate.order_target", target_entries, 1, 0);
+
+    raw_option_def_patch order_add = raw_option_def_patch_init();
+    order_add.kind = RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES;
+    order_add.opt_key = "test.replicate.order_target";
+    order_add.enum_values = { contributed_entry, 1 };
+    if (orchestrator_modify_option_def(orchestrator, &order_add) != OPTION_DEF_ERROR_OK)
+        throw std::runtime_error("Failed to record the post-creation contribution patch.");
+
+    replicate("test.replicate.order_target", "test.replicate.order_source");
 }
 
 void register_config_introspection_fixture(orchestrator_handle *orchestrator)

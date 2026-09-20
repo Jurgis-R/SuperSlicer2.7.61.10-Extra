@@ -111,6 +111,18 @@ TEST_CASE("REPLICATE_ENUM copies a resolved list and breaks cycles softly", "[pl
     REQUIRE(target->enum_def.get() != nullptr);
     CHECK(target->enum_def->values() == std::vector<std::string>{ "rectilinear" });
 
+    // A contribution added before the target list exists is kept, and gives the
+    // same result as the same contribution added after the list exists.
+    const std::vector<std::string> expected = { "rectilinear", "gyroid" };
+    const ConfigOptionDef *contrib_target = option_def("test.replicate.contrib_target");
+    const ConfigOptionDef *order_target = option_def("test.replicate.order_target");
+    REQUIRE(contrib_target != nullptr);
+    REQUIRE(order_target != nullptr);
+    REQUIRE(contrib_target->enum_def.get() != nullptr);
+    REQUIRE(order_target->enum_def.get() != nullptr);
+    CHECK(contrib_target->enum_def->values() == expected);
+    CHECK(order_target->enum_def->values() == expected);
+
     // A->B and B->A: the cyclic edge is ignored, so each option still resolves
     // once and deterministically.
     const ConfigOptionDef *cycle_a = option_def("test.cycle.a");

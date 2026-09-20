@@ -2207,6 +2207,27 @@ void Orchestrator::finalize_plugin_option_defs()
             const std::map<std::string, std::vector<OptionDefPatch>>::const_iterator patches =
                 m_option_def_patches.find(key);
             if (patches != m_option_def_patches.end()) {
+                // Replication replaces the whole list, so it must run before
+                // every contribution no matter which plugin initialized first.
+                // Otherwise a contribution recorded before the target existed
+                // would be erased by a later replication patch.
+                for (const OptionDefPatch &patch : patches->second) {
+                    if (patch.kind != RAW_OPTION_DEF_PATCH_REPLICATE_ENUM)
+                        continue;
+
+                    // A source that is still being resolved is an ancestor in
+                    // the dependency tree: ignore the edge and keep the current
+                    // values instead of erasing them.
+                    if (resolving.find(patch.source_option_key) != resolving.end()) {
+                        BOOST_LOG_TRIVIAL(warning)
+                            << "Ignored cyclic plugin option definition edge '"
+                            << key << "' -> '" << patch.source_option_key << "'.";
+                        continue;
+                    }
+                    // Snapshot the source now that its own patches applied.
+                    effect = resolve(patch.source_option_key);
+                }
+
                 for (const OptionDefPatch &patch : patches->second) {
                     switch (patch.kind) {
                     case RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES:
@@ -2229,21 +2250,11 @@ void Orchestrator::finalize_plugin_option_defs()
                                            }),
                             effect.end());
                         break;
-                    case RAW_OPTION_DEF_PATCH_REPLICATE_ENUM:
-                        // A source that is still being resolved is an ancestor
-                        // in the dependency tree: ignore the edge and keep the
-                        // current values instead of erasing them.
-                        if (resolving.find(patch.source_option_key) != resolving.end()) {
-                            BOOST_LOG_TRIVIAL(warning)
-                                << "Ignored cyclic plugin option definition edge '"
-                                << key << "' -> '" << patch.source_option_key << "'.";
-                            break;
-                        }
-                        // Snapshot the source now that its own patches applied.
-                        effect = resolve(patch.source_option_key);
-                        break;
                     case RAW_OPTION_DEF_PATCH_SET_DEFAULT:
                         requested_default = patch.default_serialized_value;
+                        break;
+                    case RAW_OPTION_DEF_PATCH_REPLICATE_ENUM:
+                        // Applied in the first pass.
                         break;
                     default:
                         break;

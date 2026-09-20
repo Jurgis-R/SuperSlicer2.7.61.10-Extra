@@ -71,8 +71,12 @@ know whether a list already exists.
 
 Patches are applied by `Orchestrator::finalize_plugin_option_defs()` after all
 plugins initialized and before the configuration definitions are finalized.
-`REPLICATE_ENUM` creates a dependency edge to its source, and the host resolves
-the resulting tree depth-first so sources are finalized first.
+`REPLICATE_ENUM` is applied before every `ADD_ENUM_VALUES` and
+`REMOVE_ENUM_VALUES` patch, so a contribution recorded before the target list
+existed is not erased by a replication patch. The result therefore does not
+depend on plugin initialization order. `REPLICATE_ENUM` creates a dependency
+edge to its source, and the host resolves the resulting tree depth-first so
+sources are finalized first.
 
 Dependency cycles are broken softly: an edge to an option that is still being
 resolved is ignored and the option keeps the values it already has. Cycles are
