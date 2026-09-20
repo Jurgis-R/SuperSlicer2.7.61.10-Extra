@@ -135,6 +135,42 @@ The numeric operand field is `condition_float_value`; `INT_*` conditions round
 it, so enum comparisons pass the enum value directly. Plugins compiled against
 an older SDK must be rebuilt to match the raw clause layout.
 
+## Disabled tooltip explanations
+
+When a rule disables a setting, the GUI appends an explanation to the setting
+tooltip. The text is built by `GuiRuleRegistry::explain_disabled(config,
+OptionKeyIdx, scope, style)` in libslic3r, so tools other than the GUI can
+reuse it:
+
+- rules are selected like the evaluation: same scope, target key and index;
+- a satisfied rule, a target without rules and rules that are not applicable to
+  the config produce an empty string, so the caller keeps its normal tooltip;
+- otherwise the text lists one line per activation reason with the state of
+  every clause:
+
+  ```
+  To enable this setting:
+  • perimeters > 0 (satisfied) and perimeter_generator = Arachne (unmet)
+  ```
+
+`ExplanationStyle::RawKeys` (default) names the options with their keys and
+resolves `INT_*` operands to enum labels; `ExplanationStyle::TranslatedLabels`
+uses the translated option labels filled by the GUI. The fixed vocabulary
+(`To enable this setting:`, `and`, `(satisfied)`, `(unmet)`, condition phrases)
+lives in `Config/GuiRuleTexts.*`; the GUI calls
+`update_gui_rule_texts(translate)` after loading a language.
+
+The GUI side is on demand and cached: `OG_CustomCtrl` appends the explanation
+when the mouse hovers a field whose `is_widget_enabled()` is false, using the
+provider installed by the tab (`TabPrint`, `TabPrinter`, `TabSLAPrint`). The
+cache is dropped on every registration, on every evaluation and when the
+translations are refreshed. Only rule-driven tabs are covered; settings
+disabled by legacy code keep their normal tooltip.
+
+The preference `use_option_labels_in_disabled_tooltip` (Preferences >
+Accessibility, off by default) switches between raw keys and translated option
+labels.
+
 ## Current users
 
 `initialize_fff_print_gui_rules()` in `Config/FFFPrintConfig.cpp` publishes the
