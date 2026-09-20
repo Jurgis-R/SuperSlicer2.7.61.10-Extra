@@ -706,3 +706,70 @@ TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins
     CHECK_FALSE(enabled_for("fill_aligned_z"));
     CHECK(enabled_for("infill_every_layers"));
 }
+
+TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][filter]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const auto evaluate_map = [&orchestrator, &config](int32_t current_index,
+                                                       const std::vector<OptionKeyIdx> &filter,
+                                                       const char *owner = CORE_GUI_RULE_OWNER) {
+        EnabledMap out;
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, owner, filter))
+            out[application.target_key + "#" + std::to_string(application.target_index)] = application.enabled;
+        return out;
+    };
+
+    // A filtered refresh only visits the rules of the displayed settings and
+    // returns the same state as the full scan for those settings.
+    const std::vector<OptionKeyIdx> page = {
+        OptionKeyIdx{ "fill_aligned_z", -1 },
+        OptionKeyIdx{ "infill_every_layers", -1 },
+    };
+    const EnabledMap full = evaluate_map(-1, {});
+    const EnabledMap filtered = evaluate_map(-1, page);
+    CHECK_FALSE(filtered.empty());
+    CHECK(filtered.size() <= page.size());
+    for (const auto &entry : filtered) {
+        const auto found = full.find(entry.first);
+        REQUIRE(found != full.end());
+        CHECK(found->second == entry.second);
+    }
+
+    // The per-extruder pass only keeps fields of the current index: a field of
+    // index 0 is not evaluated while refreshing extruder 1.
+    const std::vector<OptionKeyIdx> extruder_zero = { OptionKeyIdx{ "fill_aligned_z", 0 } };
+    CHECK(evaluate_map(1, extruder_zero).empty());
+    CHECK_FALSE(evaluate_map(-1, extruder_zero).empty());
+
+    // A rule whose setting has no definition is queued and only reachable
+    // through the full scan.
+    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
+    clause.condition = RAW_GUI_RULE_CONDITION_BOOL_TRUE;
+    clause.condition_key = "spiral_vase";
+
+    raw_gui_rule unattached = raw_gui_rule_init();
+    unattached.target_key = "gui_rule_filter_pending_target";
+    unattached.scope = RAW_PRESET_TYPE_FFF_PRINT;
+    unattached.clauses = &clause;
+    unattached.clause_count = 1;
+    CHECK(orchestrator.add_gui_rule(&unattached, "gui_rule_filter_owner") ==
+          Orchestrator::GuiRuleRegistration::Added);
+
+    config.set_key_value("gui_rule_filter_pending_target", new ConfigOptionBool(false));
+    const std::vector<OptionKeyIdx> pending_page = { OptionKeyIdx{ "gui_rule_filter_pending_target", -1 } };
+    const EnabledMap filtered_pending = evaluate_map(-1, pending_page, "gui_rule_filter_owner");
+    CHECK(filtered_pending.empty());
+
+    const auto full_pending = [&orchestrator, &config]() {
+        EnabledMap out;
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, "gui_rule_filter_owner"))
+            out[application.target_key] = application.enabled;
+        return out;
+    }();
+    CHECK(full_pending.find("gui_rule_filter_pending_target") != full_pending.end());
+}

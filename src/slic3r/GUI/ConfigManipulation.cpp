@@ -26,7 +26,8 @@
 namespace Slic3r {
 namespace GUI {
 
-void ConfigManipulation::apply_plugin_gui_rules(DynamicPrintConfig *config, int current_index, raw_option_preset_type scope)
+void ConfigManipulation::apply_plugin_gui_rules(DynamicPrintConfig *config, int current_index, raw_option_preset_type scope,
+                                                const std::vector<OptionKeyIdx>* visible_settings)
 {
     if (config == nullptr)
         return;
@@ -37,8 +38,15 @@ void ConfigManipulation::apply_plugin_gui_rules(DynamicPrintConfig *config, int 
     //
     // current_index == -1 means "global pass".
     // current_index >= 0 means "per-extruder pass for that vector item".
+    //
+    // visible_settings is the field list of the refreshed page: when provided,
+    // only the rules of the displayed settings are evaluated. A null pointer or
+    // an empty list falls back to the full scan (page not built yet).
+    const std::vector<OptionKeyIdx> empty_filter;
+    const std::vector<OptionKeyIdx> &setting_filter = visible_settings != nullptr ? *visible_settings : empty_filter;
+
     for (const Orchestrator::GuiRuleApplication &application :
-         Orchestrator::instance().evaluate_gui_rules(*config, scope, current_index)) {
+         Orchestrator::instance().evaluate_gui_rules(*config, scope, current_index, std::string(), setting_filter)) {
         try {
             this->toggle_field(application.target_key, application.enabled, application.target_index);
         } catch (...) {
@@ -382,7 +390,7 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
     }
 }
 
-void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig* config)
+void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig* config, const std::vector<OptionKeyIdx>* visible_settings)
 {
     // Legacy implementation, migrated to GUI rules. The complete reference copy
     // lives above initialize_fff_print_gui_rules() in
@@ -723,7 +731,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig* config)
     toggle_field("autospeed_min_thin_flow", config->opt_float("max_volumetric_speed") != 0);
 #endif // legacy toggle_print_fff_options block
 
-    this->apply_plugin_gui_rules(config, -1, RAW_PRESET_TYPE_FFF_PRINT);
+    this->apply_plugin_gui_rules(config, -1, RAW_PRESET_TYPE_FFF_PRINT, visible_settings);
 }
 
 
@@ -783,7 +791,7 @@ void ConfigManipulation::update_printer_fff_config(DynamicPrintConfig *config,
         }
     }
 }
-void ConfigManipulation::toggle_printer_fff_options(DynamicPrintConfig *config, DynamicPrintConfig &full_config)
+void ConfigManipulation::toggle_printer_fff_options(DynamicPrintConfig *config, DynamicPrintConfig &full_config, const std::vector<OptionKeyIdx>* visible_settings)
 {
 
     size_t extruder_count = config->option("nozzle_diameter")->size();
@@ -886,7 +894,7 @@ void ConfigManipulation::toggle_printer_fff_options(DynamicPrintConfig *config, 
         toggle_field("retract_restart_toolchange_on_perimeter", extruder_count > 1 && toolchange_retraction, i);
         toggle_field("retract_restart_wipe_toolchange", extruder_count > 1 && toolchange_retraction, i);
 
-        this->apply_plugin_gui_rules(config, int(i), RAW_PRESET_TYPE_FFF_PRINTER);
+        this->apply_plugin_gui_rules(config, int(i), RAW_PRESET_TYPE_FFF_PRINTER, visible_settings);
     }
 
     if (config->opt_bool("single_extruder_multi_material") && extruder_count > 1) {
@@ -896,10 +904,10 @@ void ConfigManipulation::toggle_printer_fff_options(DynamicPrintConfig *config, 
         }
     }
 
-    this->apply_plugin_gui_rules(config, -1, RAW_PRESET_TYPE_FFF_PRINTER);
+    this->apply_plugin_gui_rules(config, -1, RAW_PRESET_TYPE_FFF_PRINTER, visible_settings);
 }
 
-void ConfigManipulation::toggle_print_sla_options(DynamicPrintConfig* config)
+void ConfigManipulation::toggle_print_sla_options(DynamicPrintConfig* config, const std::vector<OptionKeyIdx>* visible_settings)
 {
     bool supports_en = config->opt_bool("supports_enable");
     sla::SupportTreeType treetype = config->opt_enum<sla::SupportTreeType>("support_tree_type");
@@ -967,7 +975,7 @@ void ConfigManipulation::toggle_print_sla_options(DynamicPrintConfig* config)
     toggle_field("pad_object_connector_width", zero_elev);
     toggle_field("pad_object_connector_penetration", zero_elev);
 
-    this->apply_plugin_gui_rules(config, -1, RAW_PRESET_TYPE_SLA_PRINT);
+    this->apply_plugin_gui_rules(config, -1, RAW_PRESET_TYPE_SLA_PRINT, visible_settings);
 }
 
 

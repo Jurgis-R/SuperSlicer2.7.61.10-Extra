@@ -46,6 +46,7 @@ class ExtrusionEntity;
 class PluginStorage;
 class DynamicConfig;
 class DynamicPrintConfig;
+struct OptionKeyIdx;
 namespace ApiClipper { class ClipperShapes; }
 
 // Referenced by Orchestrator's constructor so static-library linkers retain
@@ -475,10 +476,17 @@ public:
     // RAW_PRESET_TYPE_NONE nor the requested scope are ignored. The target is
     // enabled when at least one applicable rule is true. owner_filter restricts
     // the rules to one origin; an empty filter evaluates every owner.
+    //
+    // setting_filter is the field list of the refreshed page. When non-empty,
+    // only the rules attached to those settings are evaluated (and, in a
+    // per-extruder pass, only fields of the current index). An empty list keeps
+    // the full scan used by tests, tools and the first refresh before the page
+    // is built.
     std::vector<GuiRuleApplication> evaluate_gui_rules(const DynamicPrintConfig &config,
                                                        raw_option_preset_type scope,
                                                        int32_t current_index = -1,
-                                                       const std::string &owner_filter = std::string()) const;
+                                                       const std::string &owner_filter = std::string(),
+                                                       const std::vector<OptionKeyIdx> &setting_filter = std::vector<OptionKeyIdx>()) const;
 
     // Create a bridge-detector service handle from an ABI input.
     bridge_detector_instance create_bridge_detector(const bridge_detector_create_input &input);

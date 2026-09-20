@@ -17,6 +17,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <boost/any.hpp>
 
@@ -48,8 +49,11 @@ class ConfigManipulation
     ModelConfig* local_config = nullptr;
     wxWindow*    m_msg_dlg_parent {nullptr};
 
+    // visible_settings is the field list of the refreshed page. When non-null
+    // and non-empty, only the activation rules of those settings are evaluated.
     void    apply_plugin_gui_rules(DynamicPrintConfig* config, int current_index = -1,
-                                   raw_option_preset_type scope = RAW_PRESET_TYPE_FFF_PRINT);
+                                   raw_option_preset_type scope = RAW_PRESET_TYPE_FFF_PRINT,
+                                   const std::vector<OptionKeyIdx>* visible_settings = nullptr);
 
 public:
     ConfigManipulation(std::function<void()> load_config,
@@ -75,14 +79,17 @@ public:
 
     // FFF print
     void    update_print_fff_config(DynamicPrintConfig* config, const bool is_global_config = false);
-    void    toggle_print_fff_options(DynamicPrintConfig* config);
+    void    toggle_print_fff_options(DynamicPrintConfig* config,
+                                     const std::vector<OptionKeyIdx>* visible_settings = nullptr);
 
     // FFF printer
     void    update_printer_fff_config(DynamicPrintConfig* config, const bool is_global_config = false);
-    void    toggle_printer_fff_options(DynamicPrintConfig* config, DynamicPrintConfig &full_config);
+    void    toggle_printer_fff_options(DynamicPrintConfig* config, DynamicPrintConfig &full_config,
+                                       const std::vector<OptionKeyIdx>* visible_settings = nullptr);
 
     // SLA print
-    void    toggle_print_sla_options(DynamicPrintConfig* config);
+    void    toggle_print_sla_options(DynamicPrintConfig* config,
+                                     const std::vector<OptionKeyIdx>* visible_settings = nullptr);
 
     bool    is_initialized_support_material_overhangs_queried() { return m_is_initialized_support_material_overhangs_queried; }
     void    initialize_support_material_overhangs_queried(bool queried)

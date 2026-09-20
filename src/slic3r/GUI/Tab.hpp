@@ -161,6 +161,8 @@ public:
     void        sys_color_changed();
     void        refresh();
 	Field*		get_field(const t_config_option_key& opt_key, int32_t opt_index = -1) const;
+	// Keys of every field currently built on this page.
+	std::vector<OptionKeyIdx> field_keys() const;
 	Line*		get_line(const t_config_option_key& opt_key);
 	bool		set_value(const OptionKeyIdx& opt_key_idx, const boost::any& value, bool enabled);
 	ConfigOptionsGroupShp	new_optgroup(const wxString& title, bool no_title = false, bool is_tab_opt = true, Preset::Type type_override = Preset::Type::TYPE_INVALID);

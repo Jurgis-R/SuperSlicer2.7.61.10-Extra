@@ -277,8 +277,16 @@ void ObjectSettings::update_config_values(ModelConfig* config)
     if (printer_technology == ptFFF) 
         config_manipulation.update_print_fff_config(&main_config);
 
-    printer_technology == ptFFF  ?  config_manipulation.toggle_print_fff_options(&main_config) :
-                                    config_manipulation.toggle_print_sla_options(&main_config) ;
+    // Only the settings displayed in the object settings list need their
+    // activation rules evaluated.
+    std::vector<OptionKeyIdx> visible_settings;
+    for (const std::shared_ptr<ConfigOptionsGroup> &group : m_og_settings)
+        if (group)
+            for (const OptionKeyIdx &key : group->field_keys())
+                visible_settings.push_back(key);
+
+    printer_technology == ptFFF  ?  config_manipulation.toggle_print_fff_options(&main_config, &visible_settings) :
+                                    config_manipulation.toggle_print_sla_options(&main_config, &visible_settings) ;
 }
 
 void ObjectSettings::UpdateAndShow(const bool show)
