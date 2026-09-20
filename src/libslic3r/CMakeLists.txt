@@ -534,6 +534,8 @@ set(SLIC3R_SOURCES
     Config/ConfigOption.hpp
     Config/ConfigSnapshotSerialization.cpp
     Config/ConfigSnapshotSerialization.hpp
+    Config/GuiRuleRegistry.cpp
+    Config/GuiRuleRegistry.hpp
     ContainerUtils.hpp
     CSGMesh/CSGMesh.hpp
     CSGMesh/SliceCSGMesh.hpp

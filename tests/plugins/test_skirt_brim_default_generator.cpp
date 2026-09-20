@@ -388,7 +388,7 @@ TEST_CASE("STEP_SKIRT_BRIM exposes a brim exclusive group but is not exclusive i
                 return true;
         return false;
     };
-    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules()) {
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
         ears_require_outer_brim = ears_require_outer_brim ||
             (rule.target_key == "brim_ears" &&
              has_clause(rule, "brim_width", RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO));

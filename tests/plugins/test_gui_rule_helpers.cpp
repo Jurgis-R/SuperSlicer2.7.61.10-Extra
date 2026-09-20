@@ -36,7 +36,7 @@ std::vector<const Orchestrator::PluginGuiRule *> stored_rules(const Orchestrator
                                                               const std::string &target_key)
 {
     std::vector<const Orchestrator::PluginGuiRule *> out;
-    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules())
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
         if (rule.target_key == target_key && rule.owner == CORE_GUI_RULE_OWNER)
             out.push_back(&rule);
     return out;
@@ -59,7 +59,7 @@ bool evaluated_enabled(const Orchestrator &orchestrator,
                        const std::string &target_key)
 {
     for (const Orchestrator::GuiRuleApplication &application :
-         orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_NONE, -1, CORE_GUI_RULE_OWNER))
+         orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_NONE, -1, CORE_GUI_RULE_OWNER))
         if (application.target_key == target_key)
             return application.enabled;
     return false;

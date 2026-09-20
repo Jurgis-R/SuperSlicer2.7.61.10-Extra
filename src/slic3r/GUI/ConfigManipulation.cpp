@@ -46,7 +46,7 @@ void ConfigManipulation::apply_plugin_gui_rules(DynamicPrintConfig *config, int 
     const std::vector<OptionKeyIdx> &setting_filter = visible_settings != nullptr ? *visible_settings : empty_filter;
 
     for (const Orchestrator::GuiRuleApplication &application :
-         Orchestrator::instance().evaluate_gui_rules(*config, scope, current_index, std::string(), setting_filter)) {
+         Orchestrator::instance().gui_rules().evaluate(*config, scope, current_index, std::string(), setting_filter)) {
         try {
             this->toggle_field(application.target_key, application.enabled, application.target_index);
         } catch (...) {

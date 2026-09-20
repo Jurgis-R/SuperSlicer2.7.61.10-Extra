@@ -15,16 +15,19 @@ core and by C++ plugins.
 
 One raw rule carries:
 
-- an action: `RAW_GUI_RULE_ACTION_ENABLE` or `RAW_GUI_RULE_ACTION_ENABLE_ANY`;
 - one `target_key` and an optional `target_index`;
 - an optional `scope` (`RAW_PRESET_TYPE_NONE` applies everywhere);
-- an optional `rule_group`;
 - one or more clauses that are combined with a logical AND.
 
-Several rules may share one target. Rules from different groups are ANDed,
-while inside one group all ENABLE rules are ANDed and all ENABLE_ANY rules are
-ORed. The final state is enabled when the AND group and, if present, the OR
-group pass and every other group passes.
+A rule is one activation reason: the target is enabled as soon as at least one
+rule registered for it is true (OR). There is no separate "must hold" rule
+kind, and a setting with no rule at all stays enabled. A disjunction therefore
+becomes several rules, one per disjunct.
+
+Rules whose target setting is not defined yet are queued and attached when the
+definition appears; a non-blocking warning lists the keys that never appeared.
+`struct_size` must be `sizeof(raw_gui_rule)` so later additions to the
+structure stay source-compatible.
 
 ## Conditions
 
@@ -41,8 +44,10 @@ compares it using `condition_float_value`:
 | `IS_PERCENT` | the option stores a percentage |
 | `VECTOR_EMPTY` | the option is a vector with no item |
 
-`FLOAT_*` compares the normalized value: a percent option uses a fraction, so
-50% is `0.5`. `IS_PERCENT` and `VECTOR_EMPTY` ignore the numeric value.
+`condition_float_value` is the single numeric operand: `INT_*` conditions round
+it, so enum comparisons pass the enum value directly. `FLOAT_*` compares the
+normalized value: a percent option uses a fraction, so 50% is `0.5`.
+`IS_PERCENT` and `VECTOR_EMPTY` ignore the numeric value.
 
 `condition_index` may be a real item index, `RAW_GUI_RULE_INDEX_ALL` (default)
 or `RAW_GUI_RULE_INDEX_CURRENT`. For an extruder-sized vector, `ALL` means
@@ -53,19 +58,20 @@ by the current extruder loop.
 ## C++ builder
 
 `GuiCondition` is an owning expression tree: leaf factories and the `any_of` /
-`all_of` combinators. `GuiRule::add_to()` normalizes the tree to disjunctive
-normal form and registers one raw rule per disjunction and target.
+`all_of` combinators. `GuiRule::activate()` normalizes the tree to disjunctive
+normal form and registers one activation reason per disjunction and target, so
+an `any_of` condition naturally becomes an OR.
 
 ```cpp
 using namespace slic3r_api;
 
-// ENABLE conjunction: every clause must hold.
-GuiRule::enable("hole_to_polyhole_threshold")
+// One conjunction: every clause must hold.
+GuiRule::activate("hole_to_polyhole_threshold")
     .when_true("hole_to_polyhole")
     .add_to(orch);
 
-// ENABLE_ANY disjunction: support is active for support material or a raft.
-GuiRule::enable_any("dont_support_bridges")
+// Disjunction: the target is enabled for support material or for a raft.
+GuiRule::activate("dont_support_bridges")
     .when(any_of({
         GuiCondition::true_("support_material"),
         GuiCondition::non_zero("raft_layers")
@@ -73,11 +79,10 @@ GuiRule::enable_any("dont_support_bridges")
     .add_to(orch);
 
 // One expression for several targets, restricted to the FFF print tab.
-GuiRule::enable({ "brim_ears_max_angle", "brim_ears_pattern" })
+GuiRule::activate({ "brim_ears_max_angle", "brim_ears_pattern" })
     .when(GuiCondition::true_("brim_ears"))
     .when_non_zero("brim_width")
     .scope(RAW_PRESET_TYPE_FFF_PRINT)
-    .group("skirt_brim.default")
     .add_to(orch);
 ```
 
@@ -97,28 +102,29 @@ one-shot and batch cases.
 `all_of` from `slic3r_api`:
 
 ```python
-GuiRule.enable([
+GuiRule.activate([
     POLYHOLES_THRESHOLD_KEY,
     POLYHOLES_TWISTED_KEY,
 ]).when_true(POLYHOLES_KEY).add_to(self.api)
 
-GuiRule.enable_any("support_material_interface_speed").when(
+GuiRule.activate("support_material_interface_speed").when(
     any_of([
         all_of([GuiCondition.true_("support_material"),
                 GuiCondition.non_zero("support_material_interface_layers")]),
         all_of([GuiCondition.non_zero("raft_layers"),
                 GuiCondition.non_zero("support_material_interface_layers")]),
     ])
-).scope(RAW_PRESET_TYPE_FFF_PRINT).group("fff_print.legacy").add_to(api)
+).scope(RAW_PRESET_TYPE_FFF_PRINT).add_to(api)
 ```
+
+The raw wrapper `Slic3rAPI.add_gui_rule(...)` is also available for callers
+that build clause mappings or tuples themselves.
 
 ## Validation and errors
 
 The builders validate eagerly: empty keys, invalid indexes, non-finite numeric
-operands, empty `any_of`/`all_of` combinations and a disjunction passed to
-`enable()` raise `std::invalid_argument` / `ValueError` before the host is
-called. An OR expression requires `enable_any()` because multiple ENABLE rules
-are ANDed.
+operands, empty `any_of`/`all_of` combinations and an empty target list raise
+`std::invalid_argument` / `ValueError` before the host is called.
 
 `add_to` maps the host result: an invalid descriptor raises
 `std::invalid_argument` / `ValueError`, an internal failure raises
@@ -132,8 +138,9 @@ an older SDK must be rebuilt to match the raw clause layout.
 ## Current users
 
 `initialize_fff_print_gui_rules()` in `Config/FFFPrintConfig.cpp` publishes the
-complete FFF print activation logic in the `fff_print.legacy` group. Official
-plugins (`Polyholes`, `MaxOverhangThreshold`, `SupportDemandBridgeRemoval`,
-`DefaultBrimGenerator`, Python Polyholes) and `GuiRulesExample` demonstrate the
-builder for simple conjunctions and disjunctions. `PluginLoader` generates
-exclusive-step selector rules through the raw C API.
+complete FFF print activation logic: every legacy enable/disable branch becomes
+an activation reason. Official plugins (`Polyholes`, `MaxOverhangThreshold`,
+`SupportDemandBridgeRemoval`, `DefaultBrimGenerator`, Python Polyholes) and
+`GuiRulesExample` demonstrate the builder for simple conjunctions and
+disjunctions. `PluginLoader` generates exclusive-step selector rules through
+the raw C API.

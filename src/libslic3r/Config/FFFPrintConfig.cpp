@@ -622,7 +622,7 @@ void initialize_fff_print_config_cache()
 
     // Every plugin definition that will ever exist has been registered by now;
     // report the activation rules that still target an unknown setting.
-    Orchestrator::instance().warn_pending_gui_rules();
+    Orchestrator::instance().gui_rules().warn_pending_rules();
 }
 
 static Points to_points(const std::vector<Vec2d> &dpts)

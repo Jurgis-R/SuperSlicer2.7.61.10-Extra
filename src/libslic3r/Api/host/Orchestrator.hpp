@@ -26,13 +26,11 @@
 #include "libslic3r/MultiPoint.hpp"
 #include "libslic3r/Polygon.hpp"
 
+#include "libslic3r/Config/GuiRuleRegistry.hpp"
+
 #include "Plugin.hpp"
 
 namespace Slic3r {
-
-// Owner tag used by the built-in GUI activation rules and by any host caller
-// that does not run inside a plugin initialization.
-inline constexpr const char *CORE_GUI_RULE_OWNER = "core";
 
 class Orchestrator;
 class Print;
@@ -230,50 +228,13 @@ public:
         uint64_t order = 0;
     };
 
-    struct PluginGuiRuleClause
-    {
-        raw_gui_rule_condition condition = RAW_GUI_RULE_CONDITION_NONE;
-        std::string condition_key;
-        int32_t condition_index = RAW_GUI_RULE_INDEX_ALL;
-        // Numeric operand: llround() for INT_EQUALS/INT_NOT_EQUALS, normalized
-        // float for FLOAT_* conditions, ignored by IS_PERCENT/VECTOR_EMPTY.
-        double condition_float_value = 0.0;
-    };
-
-    struct PluginGuiRule
-    {
-        // One activation reason for target_key: the clauses are ANDed and the
-        // target is enabled when at least one of its rules is true.
-        std::string target_key;
-        int32_t target_index = RAW_GUI_RULE_INDEX_ALL;
-        raw_option_preset_type scope = RAW_PRESET_TYPE_NONE;
-        // Host-only origin of the rule: "core" for built-in settings, the
-        // plugin id otherwise. Used for diagnostics, deduplication and tests.
-        std::string owner;
-        std::vector<PluginGuiRuleClause> clauses;
-    };
-
-    // All activation rules attached to one setting, in registration order.
-    struct SettingActivation
-    {
-        std::string setting_key;
-        std::vector<size_t> rule_indices;
-    };
-
-    struct GuiRuleApplication
-    {
-        std::string target_key;
-        int32_t target_index = RAW_GUI_RULE_INDEX_ALL;
-        bool enabled = true;
-    };
-
-    // Result of add_gui_rule(). Values mirror the public C result codes.
-    enum class GuiRuleRegistration : int32_t
-    {
-        Invalid = -1,
-        Duplicate = 0,
-        Added = 1
-    };
+    // GUI activation rules are owned by GuiRuleRegistry; these aliases keep the
+    // existing Orchestrator-qualified type names usable.
+    using PluginGuiRuleClause = GuiRuleRegistry::PluginGuiRuleClause;
+    using PluginGuiRule = GuiRuleRegistry::PluginGuiRule;
+    using SettingActivation = GuiRuleRegistry::SettingActivation;
+    using GuiRuleApplication = GuiRuleRegistry::GuiRuleApplication;
+    using GuiRuleRegistration = GuiRuleRegistry::GuiRuleRegistration;
 
     struct ConfigOptionOwner
     {
@@ -452,41 +413,13 @@ public:
     std::string merged_ui_layout(const std::string &target_file,
                                  const std::string &base_content,
                                  const std::unordered_set<std::string> &implemented_fragment_ids) const;
-    // Register a GUI activation rule (conjunctive clauses and scope).
-    // The complete descriptor is validated before it is retained: unknown
-    // condition or scope values, invalid indexes, missing keys and non-finite
-    // float compares are rejected with GuiRuleRegistration::Invalid and a
-    // warning log instead of being stored and silently ignored later.
-    //
-    // owner is the host-only origin of the rule. When null, the plugin being
-    // initialized is used, or "core" outside plugin initialization.
-    GuiRuleRegistration add_gui_rule(const raw_gui_rule *rule, const char *owner = nullptr);
-    // Return GUI rules by borrowed reference.
-    const std::vector<PluginGuiRule> &gui_rules() const { return m_gui_rules; }
-    // Return the per-setting activation groups by borrowed reference.
-    const std::vector<SettingActivation> &setting_activations() const { return m_setting_activations; }
-    // Return the activation group of one setting, or nullptr when it has none.
-    const SettingActivation *setting_activation_for(const std::string &setting_key) const;
-    // Log one non-blocking warning per setting that still has queued rules.
-    // Returns the number of settings reported.
-    size_t warn_pending_gui_rules() const;
-    // Resolve the enabled state of every GUI target for one config snapshot.
-    //
-    // scope selects the refreshed GUI context: rules whose scope is neither
-    // RAW_PRESET_TYPE_NONE nor the requested scope are ignored. The target is
-    // enabled when at least one applicable rule is true. owner_filter restricts
-    // the rules to one origin; an empty filter evaluates every owner.
-    //
-    // setting_filter is the field list of the refreshed page. When non-empty,
-    // only the rules attached to those settings are evaluated (and, in a
-    // per-extruder pass, only fields of the current index). An empty list keeps
-    // the full scan used by tests, tools and the first refresh before the page
-    // is built.
-    std::vector<GuiRuleApplication> evaluate_gui_rules(const DynamicPrintConfig &config,
-                                                       raw_option_preset_type scope,
-                                                       int32_t current_index = -1,
-                                                       const std::string &owner_filter = std::string(),
-                                                       const std::vector<OptionKeyIdx> &setting_filter = std::vector<OptionKeyIdx>()) const;
+    // GUI activation rules: registration, per-setting activation groups,
+    // queued settings and evaluation live in the registry.
+    GuiRuleRegistry &gui_rules() { return m_gui_rule_registry; }
+    const GuiRuleRegistry &gui_rules() const { return m_gui_rule_registry; }
+    // Owner attributed to rules registered through the C API while a plugin is
+    // initializing; "core" outside plugin initialization.
+    std::string current_gui_rule_owner() const;
 
     // Create a bridge-detector service handle from an ABI input.
     bridge_detector_instance create_bridge_detector(const bridge_detector_create_input &input);
@@ -583,9 +516,6 @@ private:
 
     // Construct the empty process-wide registry.
     Orchestrator();
-    // Attach one stored rule to its setting activation group. Returns false
-    // when the setting definition does not exist yet.
-    bool attach_gui_rule_to_setting(const std::string &setting_key, size_t rule_index);
     // Close one registration scope; the caller must own an active scope.
     void end_plugin_registration_scope();
     // Resolve an optional plugin domain to the host domain.
@@ -605,11 +535,7 @@ private:
     std::map<Plugin *, PluginStorage> m_plugin_storage;
     std::vector<PluginUiFragment> m_ui_fragments;
     uint64_t m_next_ui_fragment_order { 0 };
-    std::vector<PluginGuiRule> m_gui_rules;
-    std::vector<SettingActivation> m_setting_activations;
-    // Indices into m_gui_rules for settings whose ConfigOptionDef does not
-    // exist yet. They are attached automatically when the definition appears.
-    std::map<std::string, std::vector<size_t>> m_pending_gui_rules;
+    GuiRuleRegistry m_gui_rule_registry;
     std::map<std::string, ConfigOptionOwner> m_config_option_owners;
     std::vector<TranslationCatalog> m_translation_catalogs;
     std::vector<PluginRegistrationSource> m_plugin_registration_sources;

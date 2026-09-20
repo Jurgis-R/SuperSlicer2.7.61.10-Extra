@@ -381,7 +381,7 @@ EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConf
 {
     EnabledMap out;
     for (const Orchestrator::GuiRuleApplication &application :
-         orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, CORE_GUI_RULE_OWNER))
+         orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, CORE_GUI_RULE_OWNER))
         out[application.target_key] = application.enabled;
     return out;
 }
@@ -459,15 +459,15 @@ TEST_CASE("FFF print GUI rules match the legacy toggle logic", "[plugins][gui-ru
     Orchestrator &orchestrator = Orchestrator::instance();
 
     bool has_fff_rules = false;
-    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules())
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
         has_fff_rules = has_fff_rules ||
             (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.owner == CORE_GUI_RULE_OWNER);
     REQUIRE(has_fff_rules);
 
     // The rules are registered once: a second initialization must not add any.
-    const size_t rule_count = orchestrator.gui_rules().size();
+    const size_t rule_count = orchestrator.gui_rules().rules().size();
     initialize_fff_print_gui_rules();
-    CHECK(orchestrator.gui_rules().size() == rule_count);
+    CHECK(orchestrator.gui_rules().rules().size() == rule_count);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     const EnabledMap expected = reference_enabled(config);
@@ -520,13 +520,13 @@ TEST_CASE("GUI rules preserve clauses, scope and owner", "[plugins][gui-rules][a
     rule.clauses = clauses;
     rule.clause_count = 1;
 
-    CHECK(orchestrator.add_gui_rule(&rule, test_owner) == Orchestrator::GuiRuleRegistration::Added);
-    CHECK(orchestrator.add_gui_rule(&rule, test_owner) == Orchestrator::GuiRuleRegistration::Duplicate);
+    CHECK(orchestrator.gui_rules().add(&rule, test_owner) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, test_owner) == Orchestrator::GuiRuleRegistration::Duplicate);
 
     bool found = false;
     size_t stored_index = 0;
-    for (size_t rule_idx = 0; rule_idx < orchestrator.gui_rules().size(); ++rule_idx) {
-        const Orchestrator::PluginGuiRule &stored = orchestrator.gui_rules()[rule_idx];
+    for (size_t rule_idx = 0; rule_idx < orchestrator.gui_rules().rules().size(); ++rule_idx) {
+        const Orchestrator::PluginGuiRule &stored = orchestrator.gui_rules().rules()[rule_idx];
         if (stored.owner != test_owner)
             continue;
         found = true;
@@ -540,17 +540,17 @@ TEST_CASE("GUI rules preserve clauses, scope and owner", "[plugins][gui-rules][a
     CHECK(found);
 
     // The rule is attached to the activation group of its setting.
-    const Orchestrator::SettingActivation *activation = orchestrator.setting_activation_for("fill_aligned_z");
+    const Orchestrator::SettingActivation *activation = orchestrator.gui_rules().setting_activation_for("fill_aligned_z");
     REQUIRE(activation != nullptr);
     CHECK(activation->setting_key == "fill_aligned_z");
     CHECK(std::find(activation->rule_indices.begin(), activation->rule_indices.end(), stored_index) !=
           activation->rule_indices.end());
 
-    const size_t stored_count = orchestrator.gui_rules().size();
+    const size_t stored_count = orchestrator.gui_rules().rules().size();
     const auto expect_invalid = [&orchestrator, stored_count](raw_gui_rule &candidate, const char *reason) {
         INFO(reason);
-        CHECK(orchestrator.add_gui_rule(&candidate) == Orchestrator::GuiRuleRegistration::Invalid);
-        CHECK(orchestrator.gui_rules().size() == stored_count);
+        CHECK(orchestrator.gui_rules().add(&candidate) == Orchestrator::GuiRuleRegistration::Invalid);
+        CHECK(orchestrator.gui_rules().rules().size() == stored_count);
     };
 
     // Descriptor level validation: an unknown enum value must be rejected
@@ -656,11 +656,11 @@ TEST_CASE("GUI activation rules attach to settings and queue unknown ones", "[pl
     pending.scope = RAW_PRESET_TYPE_FFF_PRINT;
     pending.clauses = &clause;
     pending.clause_count = 1;
-    CHECK(orchestrator.add_gui_rule(&pending, "gui_rule_pending_owner") ==
+    CHECK(orchestrator.gui_rules().add(&pending, "gui_rule_pending_owner") ==
           Orchestrator::GuiRuleRegistration::Added);
     // Unknown settings have no activation group and stay queued for a warning.
-    CHECK(orchestrator.setting_activation_for("gui_rule_pending_test_target") == nullptr);
-    CHECK(orchestrator.warn_pending_gui_rules() >= 1);
+    CHECK(orchestrator.gui_rules().setting_activation_for("gui_rule_pending_test_target") == nullptr);
+    CHECK(orchestrator.gui_rules().warn_pending_rules() >= 1);
 }
 
 TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins][gui-rules][abi]")
@@ -679,7 +679,7 @@ TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins
     equals_rule.scope = RAW_PRESET_TYPE_FFF_PRINT;
     equals_rule.clauses = &int_equals;
     equals_rule.clause_count = 1;
-    CHECK(orchestrator.add_gui_rule(&equals_rule, int_owner) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&equals_rule, int_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     raw_gui_rule_clause int_not_equals = int_equals;
     int_not_equals.condition = RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS;
@@ -687,12 +687,12 @@ TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins
     raw_gui_rule not_equals_rule = equals_rule;
     not_equals_rule.target_key = "infill_every_layers";
     not_equals_rule.clauses = &int_not_equals;
-    CHECK(orchestrator.add_gui_rule(&not_equals_rule, int_owner) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&not_equals_rule, int_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     const auto enabled_for = [&orchestrator, &config, int_owner](const char *target_key) {
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, int_owner))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, int_owner))
             if (application.target_key == target_key)
                 return application.enabled;
         return false;
@@ -718,7 +718,7 @@ TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][fil
                                                        const char *owner = CORE_GUI_RULE_OWNER) {
         EnabledMap out;
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, owner, filter))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, owner, filter))
             out[application.target_key + "#" + std::to_string(application.target_index)] = application.enabled;
         return out;
     };
@@ -756,7 +756,7 @@ TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][fil
     unattached.scope = RAW_PRESET_TYPE_FFF_PRINT;
     unattached.clauses = &clause;
     unattached.clause_count = 1;
-    CHECK(orchestrator.add_gui_rule(&unattached, "gui_rule_filter_owner") ==
+    CHECK(orchestrator.gui_rules().add(&unattached, "gui_rule_filter_owner") ==
           Orchestrator::GuiRuleRegistration::Added);
 
     config.set_key_value("gui_rule_filter_pending_target", new ConfigOptionBool(false));
@@ -767,7 +767,7 @@ TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][fil
     const auto full_pending = [&orchestrator, &config]() {
         EnabledMap out;
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, "gui_rule_filter_owner"))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, "gui_rule_filter_owner"))
             out[application.target_key] = application.enabled;
         return out;
     }();
