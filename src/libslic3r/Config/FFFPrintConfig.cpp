@@ -619,6 +619,10 @@ void initialize_fff_print_config_cache()
     static const int initialized = fff_print_config_static_initializer();
     (void)initialized;
     initialize_fff_print_gui_rules();
+
+    // Every plugin definition that will ever exist has been registered by now;
+    // report the activation rules that still target an unknown setting.
+    Orchestrator::instance().warn_pending_gui_rules();
 }
 
 static Points to_points(const std::vector<Vec2d> &dpts)
@@ -9530,12 +9534,11 @@ void initialize_fff_print_gui_rules()
 {
     static const bool initialized = []() {
         // Register one FFF activation rule: all targets share the FFF scope and
-        // rule group, and every disjunct is registered as an ENABLE_ANY rule.
+        // every disjunct becomes an activation reason.
         const auto add_rule = [](std::initializer_list<const char *> target_keys, const GuiCondition &condition) {
-            GuiRule::enable_any(std::vector<std::string>(target_keys.begin(), target_keys.end()))
+            GuiRule::activate(std::vector<std::string>(target_keys.begin(), target_keys.end()))
                 .when(condition)
                 .scope(RAW_PRESET_TYPE_FFF_PRINT)
-                .group(FFF_PRINT_GUI_RULE_GROUP)
                 .add_to(Orchestrator::instance().handle());
         };
 

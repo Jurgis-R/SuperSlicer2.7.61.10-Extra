@@ -747,7 +747,7 @@ void MaxOverhangThreshold::inilialize_impl(storage_handle *) const
                                  MaxOverhangThreshold::print_ui_fragment(),
                                  1);
 
-    GuiRule::enable({ "overhangs_bridge_threshold", "overhangs_bridge_upper_layers" })
+    GuiRule::activate({ "overhangs_bridge_threshold", "overhangs_bridge_upper_layers" })
         .when_non_zero("overhangs_max_slope")
         .add_to(m_orchestrator);
 }

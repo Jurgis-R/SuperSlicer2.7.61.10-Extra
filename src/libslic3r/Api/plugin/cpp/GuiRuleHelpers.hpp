@@ -23,29 +23,20 @@ Owning builders for the GUI activation rules registered through
 orchestrator_add_gui_rule().
 
 A GuiCondition is an expression tree: a leaf predicate on one config option, or
-an any_of/all_of combination of sub-expressions. A GuiRule owns one action, one
-or more target keys and one root condition. add_to() normalizes the tree to
+an any_of/all_of combination of sub-expressions. A GuiRule owns one or more
+target keys and one root condition. add_to() normalizes the tree to
 disjunctive normal form (an OR of ANDs) and registers one raw rule per
-disjunction and target:
-
-- enable() requires a single conjunction. It maps to
-  RAW_GUI_RULE_ACTION_ENABLE, whose rules are ANDed per target.
-- enable_any() accepts a disjunction. It maps to
-  RAW_GUI_RULE_ACTION_ENABLE_ANY, whose rules are ORed per target. This is the
-  usual form for "support is active when support_material is true or
-  raft_layers is non zero".
-
-Rules from different groups stay ANDed on the same target, so a core feature can
-publish a complete expression in its own group without merging with unrelated
-plugin rules.
+disjunction and target. Each raw rule is an activation reason: the target is
+enabled when at least one applicable rule is true, so a disjunction naturally
+expands to several reasons. This is the usual form for "support is active when
+support_material is true or raft_layers is non zero".
 
 Builder input is validated eagerly: an empty key, an invalid target or
-condition index, a non-finite numeric operand, an empty any_of/all_of or an OR
-expression passed to enable() throws std::invalid_argument before the host is
-called. add_to() maps the C result codes to exceptions: an invalid descriptor
-throws std::invalid_argument, an internal host failure throws
-std::runtime_error, and a duplicate registration is a silent no-op exactly like
-the C return code 0.
+condition index, a non-finite numeric operand or an empty any_of/all_of throws
+std::invalid_argument before the host is called. add_to() maps the C result
+codes to exceptions: an invalid descriptor throws std::invalid_argument, an
+internal host failure throws std::runtime_error, and a duplicate registration
+is a silent no-op exactly like the C return code 0.
 
 The class owns every string and value referenced by the raw descriptor, so a
 GuiRule may be stored and registered later; only add_to() builds the short-lived
@@ -212,12 +203,11 @@ inline GuiCondition vector_empty(std::string key, int32_t index = RAW_GUI_RULE_I
 class GuiRule
 {
 public:
-    static GuiRule enable(std::string target) { return GuiRule(RAW_GUI_RULE_ACTION_ENABLE, targets_from(std::move(target))); }
-    static GuiRule enable(std::vector<std::string> targets) { return GuiRule(RAW_GUI_RULE_ACTION_ENABLE, validated_targets(std::move(targets))); }
-    static GuiRule enable(std::initializer_list<std::string> targets) { return GuiRule(RAW_GUI_RULE_ACTION_ENABLE, validated_targets(std::vector<std::string>(targets))); }
-    static GuiRule enable_any(std::string target) { return GuiRule(RAW_GUI_RULE_ACTION_ENABLE_ANY, targets_from(std::move(target))); }
-    static GuiRule enable_any(std::vector<std::string> targets) { return GuiRule(RAW_GUI_RULE_ACTION_ENABLE_ANY, validated_targets(std::move(targets))); }
-    static GuiRule enable_any(std::initializer_list<std::string> targets) { return GuiRule(RAW_GUI_RULE_ACTION_ENABLE_ANY, validated_targets(std::vector<std::string>(targets))); }
+    // Register one activation reason for every target under the given
+    // condition. A disjunction in the condition becomes several reasons.
+    static GuiRule activate(std::string target) { return GuiRule(targets_from(std::move(target))); }
+    static GuiRule activate(std::vector<std::string> targets) { return GuiRule(validated_targets(std::move(targets))); }
+    static GuiRule activate(std::initializer_list<std::string> targets) { return GuiRule(validated_targets(std::vector<std::string>(targets))); }
 
     GuiRule &when(GuiCondition condition)
     {
@@ -276,12 +266,6 @@ public:
         return *this;
     }
 
-    GuiRule &group(std::string group)
-    {
-        m_group = std::move(group);
-        return *this;
-    }
-
     // Register every disjunct on every target. Throws on invalid descriptors.
     void add_to(orchestrator_handle *orchestrator) const
     {
@@ -293,11 +277,9 @@ public:
             for (const std::vector<GuiCondition::GuiClause> &disjunct : disjuncts) {
                 const std::vector<raw_gui_rule_clause> clauses = make_raw_clauses(disjunct);
                 raw_gui_rule rule = raw_gui_rule_init();
-                rule.action = m_action;
                 rule.target_key = target.c_str();
                 rule.target_index = m_target_index;
                 rule.scope = m_scope;
-                rule.rule_group = m_group.empty() ? nullptr : m_group.c_str();
                 rule.clauses = clauses.data();
                 rule.clause_count = uint32_t(clauses.size());
 
@@ -311,8 +293,7 @@ public:
     }
 
 private:
-    GuiRule(raw_gui_rule_action action, std::vector<std::string> targets) :
-        m_action(action),
+    explicit GuiRule(std::vector<std::string> targets) :
         m_targets(std::move(targets))
     {
     }
@@ -382,9 +363,6 @@ private:
         std::vector<std::vector<GuiCondition::GuiClause>> out;
         append_disjuncts(combined_condition(), out);
 
-        if (m_action == RAW_GUI_RULE_ACTION_ENABLE && out.size() > 1)
-            throw std::invalid_argument(
-                "GuiRule::enable() only accepts a conjunction; use enable_any() for a disjunction.");
         if (out.empty())
             throw std::invalid_argument("A GUI rule needs at least one condition.");
         return out;
@@ -406,11 +384,9 @@ private:
         return clauses;
     }
 
-    raw_gui_rule_action m_action = RAW_GUI_RULE_ACTION_NONE;
     std::vector<std::string> m_targets;
     int32_t m_target_index = RAW_GUI_RULE_INDEX_ALL;
     raw_option_preset_type m_scope = RAW_PRESET_TYPE_NONE;
-    std::string m_group;
     std::vector<GuiCondition> m_conditions;
 };
 

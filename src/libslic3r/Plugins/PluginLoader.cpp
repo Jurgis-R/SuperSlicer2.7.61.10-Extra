@@ -856,11 +856,12 @@ void add_exclusive_step_used_setting_rules(Orchestrator &orchestrator,
             clause.condition_float_value = double(plugin_idx);
 
             raw_gui_rule rule = raw_gui_rule_init();
-            rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
             rule.target_key = setting.key.c_str();
             rule.clauses = &clause;
             rule.clause_count = 1;
-            orchestrator.add_gui_rule(&rule);
+            // Attribute the ownership reason to the plugin that uses the
+            // setting, not to the host generating the rule.
+            orchestrator.add_gui_rule(&rule, plugin->get_id().c_str());
         }
     }
 }

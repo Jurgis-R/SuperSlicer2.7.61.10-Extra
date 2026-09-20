@@ -1294,35 +1294,6 @@ bool gui_rule_matches_scope(raw_option_preset_type rule_scope, raw_option_preset
     return rule_scope == RAW_PRESET_TYPE_NONE || rule_scope == scope;
 }
 
-struct PluginGuiRuleTargetState
-{
-    bool has_all_rules = false;
-    bool all_rules_enabled = true;
-    bool has_any_rules = false;
-    bool any_rule_enabled = false;
-
-    void add(raw_gui_rule_action action, bool condition_enabled)
-    {
-        if (action == RAW_GUI_RULE_ACTION_ENABLE) {
-            has_all_rules = true;
-            all_rules_enabled = all_rules_enabled && condition_enabled;
-        } else if (action == RAW_GUI_RULE_ACTION_ENABLE_ANY) {
-            has_any_rules = true;
-            any_rule_enabled = any_rule_enabled || condition_enabled;
-        }
-    }
-
-    bool enabled() const
-    {
-        return (!has_all_rules || all_rules_enabled) && (!has_any_rules || any_rule_enabled);
-    }
-};
-
-bool gui_rule_action_is_valid(raw_gui_rule_action action)
-{
-    return action == RAW_GUI_RULE_ACTION_ENABLE || action == RAW_GUI_RULE_ACTION_ENABLE_ANY;
-}
-
 bool gui_rule_condition_is_valid(raw_gui_rule_condition condition)
 {
     return condition > RAW_GUI_RULE_CONDITION_NONE && condition < RAW_GUI_RULE_CONDITION_COUNT;
@@ -1366,8 +1337,6 @@ std::string gui_rule_validation_error(const raw_gui_rule *rule)
         return prefix + " " + reason + ".";
     };
 
-    if (!gui_rule_action_is_valid(rule->action))
-        return reject("unknown action");
     if (rule->target_key == nullptr || rule->target_key[0] == '\0')
         return reject("missing target_key");
     if (!gui_rule_index_is_valid(rule->target_index))
@@ -1396,8 +1365,40 @@ std::string gui_rule_validation_error(const raw_gui_rule *rule)
 
 } // namespace
 
+// Attach one already validated and stored rule to its setting activation group.
+// Returns false when the setting definition is not registered yet.
+bool Orchestrator::attach_gui_rule_to_setting(const std::string &setting_key, size_t rule_index)
+{
+    // Read through the finalized-safe accessor: activation rules may be
+    // registered after PrintConfigDef::finalize() (deferred plugin init, tests).
+    const ConfigOptionDef *option_def = PrintConfigDef::instance().get(setting_key);
+    if (option_def == nullptr)
+        return false;
+
+    SettingActivation *activation = nullptr;
+    if (option_def->gui_activation_id != 0 && option_def->gui_activation_id <= m_setting_activations.size())
+        activation = &m_setting_activations[option_def->gui_activation_id - 1];
+
+    if (activation == nullptr) {
+        m_setting_activations.push_back(SettingActivation{ setting_key, {} });
+        activation = &m_setting_activations.back();
+        PrintConfigDef::set_gui_activation_id(setting_key, static_cast<uint32_t>(m_setting_activations.size()));
+        assert(m_setting_activations.back().setting_key == setting_key);
+    }
+    else {
+        // The stored id must never point at another setting; a mismatch means a
+        // definition was replaced without clearing its host-only link.
+        assert(activation->setting_key == setting_key);
+        if (activation->setting_key != setting_key)
+            return false;
+    }
+
+    activation->rule_indices.push_back(rule_index);
+    return true;
+}
+
 // Validate and retain one GUI rule; an identical rule is not inserted twice.
-Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule *rule)
+Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule *rule, const char *owner)
 {
     const std::string validation_error = gui_rule_validation_error(rule);
     if (!validation_error.empty()) {
@@ -1406,11 +1407,11 @@ Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule 
     }
 
     PluginGuiRule gui_rule;
-    gui_rule.action = rule->action;
     gui_rule.target_key = rule->target_key;
     gui_rule.target_index = rule->target_index;
     gui_rule.scope = rule->scope;
-    gui_rule.group = rule->rule_group != nullptr ? rule->rule_group : std::string();
+    gui_rule.owner = owner != nullptr ? owner :
+        (m_initializing_plugin != nullptr ? m_initializing_plugin->get_id() : std::string(CORE_GUI_RULE_OWNER));
     gui_rule.clauses.reserve(rule->clause_count);
     for (uint32_t clause_idx = 0; clause_idx < rule->clause_count; ++clause_idx) {
         const raw_gui_rule_clause &clause = rule->clauses[clause_idx];
@@ -1423,11 +1424,10 @@ Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule 
     }
 
     for (const PluginGuiRule &existing : m_gui_rules) {
-        if (existing.action != gui_rule.action ||
-            existing.target_key != gui_rule.target_key ||
+        if (existing.target_key != gui_rule.target_key ||
             existing.target_index != gui_rule.target_index ||
             existing.scope != gui_rule.scope ||
-            existing.group != gui_rule.group ||
+            existing.owner != gui_rule.owner ||
             existing.clauses.size() != gui_rule.clauses.size())
             continue;
 
@@ -1445,19 +1445,45 @@ Orchestrator::GuiRuleRegistration Orchestrator::add_gui_rule(const raw_gui_rule 
     }
 
     m_gui_rules.emplace_back(std::move(gui_rule));
+    const size_t rule_index = m_gui_rules.size() - 1;
+    if (!this->attach_gui_rule_to_setting(m_gui_rules[rule_index].target_key, rule_index))
+        m_pending_gui_rules[m_gui_rules[rule_index].target_key].push_back(rule_index);
     return GuiRuleRegistration::Added;
+}
+
+const Orchestrator::SettingActivation *Orchestrator::setting_activation_for(const std::string &setting_key) const
+{
+    const ConfigOptionDef *option_def = PrintConfigDef::instance().get(setting_key);
+    if (option_def == nullptr || option_def->gui_activation_id == 0 ||
+        option_def->gui_activation_id > m_setting_activations.size())
+        return nullptr;
+    return &m_setting_activations[option_def->gui_activation_id - 1];
+}
+
+size_t Orchestrator::warn_pending_gui_rules() const
+{
+    size_t reported = 0;
+    for (const std::pair<const std::string, std::vector<size_t>> &entry : m_pending_gui_rules) {
+        if (entry.second.empty())
+            continue;
+        ++reported;
+        BOOST_LOG_TRIVIAL(warning)
+            << "GUI activation rule targets undefined setting '" << entry.first
+            << "' (" << entry.second.size() << " rule(s) queued).";
+    }
+    return reported;
 }
 
 std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
     const DynamicPrintConfig &config,
     raw_option_preset_type scope,
     int32_t current_index,
-    const std::string &group) const
+    const std::string &owner_filter) const
 {
 
-    // Rules from different groups are ANDed on the same target. Inside one
-    // group, ENABLE rules are ANDed and ENABLE_ANY rules are ORed.
-    std::map<std::string, std::map<PluginGuiRuleTarget, PluginGuiRuleTargetState>> enabled_by_group;
+    // Every rule is one activation reason: the target is enabled as soon as one
+    // applicable rule is true (OR).
+    std::map<PluginGuiRuleTarget, bool> enabled_by_target;
 
     // Per-call caches. The clause memo removes the duplication created by the
     // per-target expansion of the rule builders: the same condition is often
@@ -1511,12 +1537,9 @@ std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
     };
 
     for (const PluginGuiRule &rule : m_gui_rules) {
-        // This function currently only applies enable/disable rules.
-        if (rule.action != RAW_GUI_RULE_ACTION_ENABLE && rule.action != RAW_GUI_RULE_ACTION_ENABLE_ANY)
-            continue;
         if (!gui_rule_matches_scope(rule.scope, scope))
             continue;
-        if (!group.empty() && rule.group != group)
+        if (!owner_filter.empty() && rule.owner != owner_filter)
             continue;
         if (rule.clauses.empty())
             continue;
@@ -1574,21 +1597,12 @@ std::vector<Orchestrator::GuiRuleApplication> Orchestrator::evaluate_gui_rules(
             continue;
 
         const PluginGuiRuleTarget target(rule.target_key, target_index);
-        enabled_by_group[rule.group][target].add(rule.action, condition_enabled);
-    }
-
-    std::map<PluginGuiRuleTarget, bool> final_enabled;
-    for (const auto &group_entry : enabled_by_group) {
-        for (const auto &target_entry : group_entry.second) {
-            const std::map<PluginGuiRuleTarget, bool>::iterator existing = final_enabled.find(target_entry.first);
-            const bool previous = existing == final_enabled.end() ? true : existing->second;
-            final_enabled[target_entry.first] = previous && target_entry.second.enabled();
-        }
+        enabled_by_target[target] = enabled_by_target[target] || condition_enabled;
     }
 
     std::vector<GuiRuleApplication> out;
-    out.reserve(final_enabled.size());
-    for (const auto &entry : final_enabled) {
+    out.reserve(enabled_by_target.size());
+    for (const auto &entry : enabled_by_target) {
         GuiRuleApplication application;
         application.target_key = entry.first.first;
         application.target_index = entry.first.second;
@@ -2005,6 +2019,19 @@ option_def_error_code Orchestrator::create_new_print_config(const raw_config_opt
 
     ConfigOptionDef &out = *PrintConfigDef::instance_mutable().add(def->opt_key, type);
     populate_config_option_def_from_raw(out, def, translation_domain);
+
+    // GUI activation rules may have been registered before this definition.
+    // Attach the queued rules now that the setting exists.
+    {
+        const std::map<std::string, std::vector<size_t>>::iterator pending = m_pending_gui_rules.find(out.opt_key);
+        if (pending != m_pending_gui_rules.end()) {
+            std::vector<size_t> queued;
+            queued.swap(pending->second);
+            m_pending_gui_rules.erase(pending);
+            for (size_t rule_index : queued)
+                this->attach_gui_rule_to_setting(out.opt_key, rule_index);
+        }
+    }
 
     // publish it?
     PrintConfigDef::instance_mutable().option_keys(def->option_preset_type).insert(out.opt_key);

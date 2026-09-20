@@ -415,7 +415,7 @@ void SupportDemandBridgeRemoval::inilialize_impl(storage_handle *) const
                                  SupportDemandBridgeRemoval::print_ui_fragment(),
                                  0);
 
-    GuiRule::enable_any("dont_support_bridges")
+    GuiRule::activate("dont_support_bridges")
         .when(any_of({
             GuiCondition::true_("support_material"),
             GuiCondition::non_zero("raft_layers")
