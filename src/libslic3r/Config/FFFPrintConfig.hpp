@@ -398,7 +398,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloat,                avoid_travel_island_weight))
     ((ConfigOptionFloatOrPercent,       bridge_acceleration))
     ((ConfigOptionFloat,                bridge_angle))
-    ((ConfigOptionEnum<InfillPattern>,  bridge_fill_pattern))
+    // bridge_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionEnum<BridgeType>,     bridge_type))
     ((ConfigOptionInt,                  bottom_solid_layers))
     ((ConfigOptionFloat,                bottom_solid_min_thickness))
@@ -406,7 +406,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionPercent,              over_bridge_flow_ratio))
     ((ConfigOptionPercent,              bridge_overlap))
     ((ConfigOptionPercent,              bridge_overlap_min))
-    ((ConfigOptionEnum<InfillPattern>,  bottom_fill_pattern))
+    // bottom_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionFloatOrPercent,       bridged_infill_margin))
     ((ConfigOptionFloatOrPercent,       bridge_speed))
     ((ConfigOptionFloat,                curve_smoothing_precision))
@@ -442,7 +442,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloat,                fill_angle_increment))
     ((ConfigOptionFloats,               fill_angle_template))
     ((ConfigOptionPercent,              fill_density))
-    ((ConfigOptionEnum<InfillPattern>,  fill_pattern))
+    // fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionPercent,              first_layer_flow_ratio))
     ((ConfigOptionEnum<FuzzySkinType>,  fuzzy_skin))
     ((ConfigOptionFloatOrPercent,       fuzzy_skin_thickness))
@@ -574,7 +574,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloatOrPercent,       thin_walls_min_width))
     ((ConfigOptionFloatOrPercent,       thin_walls_overlap))
     ((ConfigOptionFloatOrPercent,       thin_walls_speed))
-    ((ConfigOptionEnum<InfillPattern>,  top_fill_pattern))
+    // top_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionFloatOrPercent,       top_infill_extrusion_width))
     ((ConfigOptionFloatOrPercent,       top_infill_extrusion_spacing))
     ((ConfigOptionInt,                  top_solid_layers))

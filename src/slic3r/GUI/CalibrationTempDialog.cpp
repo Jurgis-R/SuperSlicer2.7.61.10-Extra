@@ -198,7 +198,7 @@ void CalibrationTempDialog::create_geometry(wxCommandEvent& event_args) {
     model.objects()[objs_idx[0]].config.set_key_value("fill_density", new ConfigOptionPercent(7));
     model.objects()[objs_idx[0]].config.set_deserialize_strict("solid_fill_pattern", "rectilinear");
     model.objects()[objs_idx[0]].config.set_key_value("infill_filled_solid", new ConfigOptionBool(true));
-    model.objects()[objs_idx[0]].config.set_key_value("top_fill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+    model.objects()[objs_idx[0]].config.set_deserialize_strict("top_fill_pattern", "rectilinear");
     model.objects()[objs_idx[0]].config.set_key_value("infill_filled_bottom", new ConfigOptionBool(true));
     //disable ironing post-process, it only slow down things
     model.objects()[objs_idx[0]].config.set_key_value("ironing", new ConfigOptionBool(false));

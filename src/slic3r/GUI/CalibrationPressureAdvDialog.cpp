@@ -880,7 +880,7 @@ void CalibrationPressureAdvDialog::create_geometry(wxCommandEvent& event_args) {
         gcfNoExtrusion*/
 
         // config modifers for the base model
-        model.objects()[objs_idx[id_item]].config.set_key_value("bottom_fill_pattern", new ConfigOptionEnum<InfillPattern>(ipMonotonic));// ipConcentric or ipConcentricGapFill ?
+        model.objects()[objs_idx[id_item]].config.set_deserialize_strict("bottom_fill_pattern", "monotonic");
         model.objects()[objs_idx[id_item]].config.set_key_value("infill_filled_bottom", new ConfigOptionBool(true));
         model.objects()[objs_idx[id_item]].config.set_key_value("thin_walls", new ConfigOptionBool(true));
         model.objects()[objs_idx[id_item]].config.set_key_value("bottom_solid_layers", new ConfigOptionInt(1));

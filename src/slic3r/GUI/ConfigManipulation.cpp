@@ -339,8 +339,9 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
         m_support_material_overhangs_queried = false;
     }
 
-    if (config->option<ConfigOptionPercent>("fill_density")->value == 100) {
-        std::string fill_pattern_name = config->option("fill_pattern")->serialize();
+    const ConfigOption *fill_pattern_option = config->option("fill_pattern");
+    if (config->option<ConfigOptionPercent>("fill_density")->value == 100 && fill_pattern_option != nullptr) {
+        std::string fill_pattern_name = fill_pattern_option->serialize();
         if (!fill_pattern_name.empty() && fill_pattern_name.front() == '!')
             fill_pattern_name.erase(fill_pattern_name.begin());
 
@@ -372,7 +373,7 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
                     std::string key_changed;
                     boost::any new_value;
                     if (!is_global_config || answer == wxID_YES) {
-                        new_conf.set_key_value("fill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+                        new_conf.set_deserialize_strict("fill_pattern", "rectilinear");
                         key_changed = "fill_pattern";
                         new_value = new_conf.option("fill_pattern")->get_any();
                     } else {

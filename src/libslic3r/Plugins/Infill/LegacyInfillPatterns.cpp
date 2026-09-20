@@ -123,19 +123,49 @@ bool requires_unmigrated_object_state(Slic3r::InfillPattern pattern)
 const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
 {
     static const char *const k_none[] = { nullptr };
-    static const char *const k_solid[] = { "solid_fill_pattern", nullptr };
+    static const char *const k_all_five[] = {
+        "fill_pattern", "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", "bridge_fill_pattern", nullptr
+    };
+    static const char *const k_sparse_top_bottom_solid[] = {
+        "fill_pattern", "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
+    };
+    static const char *const k_top_bottom_solid[] = {
+        "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
+    };
+    static const char *const k_sparse_only[] = { "fill_pattern", nullptr };
+    static const char *const k_top_only[] = { "top_fill_pattern", nullptr };
+    static const char *const k_solid_only[] = { "solid_fill_pattern", nullptr };
+
     switch (pattern) {
-    case Slic3r::ipEnsuring:
     case Slic3r::ipRectilinear:
     case Slic3r::ipMonotonic:
-    case Slic3r::ipMonotonicLines:
+        return k_all_five;
     case Slic3r::ipAlignedRectilinear:
     case Slic3r::ipConcentric:
     case Slic3r::ipHilbertCurve:
     case Slic3r::ipArchimedeanChords:
     case Slic3r::ipOctagramSpiral:
+        return k_sparse_top_bottom_solid;
+    case Slic3r::ipMonotonicLines:
     case Slic3r::ipSmooth:
-        return k_solid;
+        return k_top_bottom_solid;
+    case Slic3r::ipGrid:
+    case Slic3r::ipTriangles:
+    case Slic3r::ipStars:
+    case Slic3r::ipCubic:
+    case Slic3r::ipLine:
+    case Slic3r::ipHoneycomb:
+    case Slic3r::ip3DHoneycomb:
+    case Slic3r::ipGyroid:
+    case Slic3r::ipAdaptiveCubic:
+    case Slic3r::ipSupportCubic:
+    case Slic3r::ipScatteredRectilinear:
+    case Slic3r::ipLightning:
+        return k_sparse_only;
+    case Slic3r::ipSawtooth:
+        return k_top_only;
+    case Slic3r::ipEnsuring:
+        return k_solid_only;
     default:
         return k_none;
     }

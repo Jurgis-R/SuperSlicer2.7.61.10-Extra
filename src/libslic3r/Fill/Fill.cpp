@@ -36,27 +36,6 @@
 
 namespace Slic3r {
 
-// Read a fill-pattern option that may be a plugin-defined enum. Built-in
-// patterns map back to their native enum; a plugin-only pattern keeps the
-// fallback because the legacy Fill path has no native implementation for it.
-static InfillPattern region_infill_pattern(const PrintRegionConfig &config,
-                                           const char *key,
-                                           InfillPattern fallback)
-{
-    const ConfigOption *option = config.option(key);
-    if (option == nullptr)
-        return fallback;
-
-    std::string value = option->serialize();
-    if (!value.empty() && value.front() == '!')
-        value.erase(value.begin());
-
-    InfillPattern pattern = fallback;
-    if (!ConfigOptionEnum<InfillPattern>::from_string(value, pattern))
-        return fallback;
-    return pattern;
-}
-
 /* Convert a mandatory one-based extruder setting into the common zero-based identity. */
 static extruder_index_t checked_config_extruder_index(int64_t one_based_id);
 
@@ -368,7 +347,7 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, const LayerSliceIsland&
                 bool     is_bridge      = layer.id() > 0 && surface.has_mod_bridge();
                 bool     is_denser      = false;
                 params.extruder         = layerm.region().extruder(extrusion_role, *layer.object());
-                params.pattern          = region_config.fill_pattern.value;
+                params.pattern          = region_infill_pattern(region_config, "fill_pattern", ipStars);
                 params.density          = float(region_config.fill_density) / 100.f;
                 params.dont_adjust      = false;
                 params.connection       = region_config.infill_connection.value;
@@ -380,25 +359,25 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, const LayerSliceIsland&
                     params.connection = region_config.infill_connection_solid.value;
                     params.add_gap_fill = region_config.infill_filled_solid.value;
                     if (surface.has_pos_top()) {
-                        params.pattern = region_config.top_fill_pattern.value;
+                        params.pattern = region_infill_pattern(region_config, "top_fill_pattern", ipMonotonic);
                         params.connection = region_config.infill_connection_top.value;
                         params.add_gap_fill = region_config.infill_filled_top.value;
                     }
                     if (surface.has_pos_bottom()) {
-                        params.pattern = region_config.bottom_fill_pattern.value;
+                        params.pattern = region_infill_pattern(region_config, "bottom_fill_pattern", ipMonotonic);
                         params.connection = region_config.infill_connection_bottom.value;
                         params.add_gap_fill = region_config.infill_filled_bottom.value;
                     }
                     //FIXME for non-thick bridges, shall we allow a bottom surface pattern?
                     if (is_bridge) {
-                        params.pattern = region_config.bridge_fill_pattern.value;
+                        params.pattern = region_infill_pattern(region_config, "bridge_fill_pattern", ipRectilinear);
                         params.connection = region_config.infill_connection_bridge.value;
                         params.add_gap_fill = false;
                         params.bridge_type = region_config.bridge_type.value;
                     }
                 } else {
                     if (is_bridge) {
-                        params.pattern = region_config.bridge_fill_pattern.value;
+                        params.pattern = region_infill_pattern(region_config, "bridge_fill_pattern", ipRectilinear);
                         params.connection = region_config.infill_connection_bridge.value;
                     }
                     if (region_config.infill_dense.get_bool()

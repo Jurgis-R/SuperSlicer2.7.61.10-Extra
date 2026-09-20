@@ -84,8 +84,8 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     const bool default_accel = fl("default_acceleration") > 0;
     const bool pp_ironing = has_top && b("ironing");
     const bool ironing_pattern =
-        config.opt_enum<InfillPattern>("top_fill_pattern") == InfillPattern::ipSmooth ||
-        config.opt_enum<InfillPattern>("bottom_fill_pattern") == InfillPattern::ipSmooth ||
+        enum_name("top_fill_pattern") == "smooth" ||
+        enum_name("bottom_fill_pattern") == "smooth" ||
         enum_name("solid_fill_pattern") == "smooth";
     const bool has_ironing = pp_ironing || ironing_pattern;
     const bool ext_not_loop = ext && !loop_seam;
@@ -104,8 +104,8 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     const bool avoid = b("avoid_crossing_perimeters");
     const bool infill_or_solid = H || has_solid;
     const bool smooth =
-        (has_top && config.opt_enum<InfillPattern>("top_fill_pattern") == InfillPattern::ipSmooth) ||
-        (has_bottom && config.opt_enum<InfillPattern>("bottom_fill_pattern") == InfillPattern::ipSmooth) ||
+        (has_top && enum_name("top_fill_pattern") == "smooth") ||
+        (has_bottom && enum_name("bottom_fill_pattern") == "smooth") ||
         (has_solid && enum_name("solid_fill_pattern") == "smooth") ||
         (have_support && config.opt_enum<InfillPattern>("support_material_top_interface_pattern") == InfillPattern::ipSmooth) ||
         (have_support && config.opt_enum<InfillPattern>("support_material_bottom_interface_pattern") == InfillPattern::ipSmooth);
@@ -449,8 +449,8 @@ void randomize(DynamicPrintConfig &config, std::mt19937 &rng)
     set_enum("support_material_contact_distance_type", coin(rng) ? int(zdNone) : int(zdFilament));
     set_enum("raft_contact_distance_type", coin(rng) ? int(zdNone) : int(zdFilament));
     set_enum("seam_position", coin(rng) ? int(spCost) : int(spAligned));
-    set_enum("top_fill_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));
-    set_enum("bottom_fill_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));
+    config.set_deserialize_strict("top_fill_pattern", coin(rng) ? "smooth" : "rectilinear");
+    config.set_deserialize_strict("bottom_fill_pattern", coin(rng) ? "smooth" : "rectilinear");
     // solid_fill_pattern is a plugin-defined enum storing plugin ids.
     config.set_deserialize_strict("solid_fill_pattern", coin(rng) ? "smooth" : "rectilinear");
     set_enum("support_material_top_interface_pattern", coin(rng) ? int(InfillPattern::ipSmooth) : int(InfillPattern::ipRectilinear));

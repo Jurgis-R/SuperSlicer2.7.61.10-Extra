@@ -432,31 +432,33 @@ std::string validate(const FullPrintConfig& cfg)
     if (! PrintConfigDef::instance().get("gcode_flavor")->has_enum_value(cfg.gcode_flavor.serialize()))
         return "Invalid value for --gcode-flavor";
 
-    // --fill-pattern
-    if (! PrintConfigDef::instance().get("fill_pattern")->has_enum_value(cfg.fill_pattern.serialize()))
-        return "Invalid value for --fill-pattern";
-
-    // --top-fill-pattern
-    if (!PrintConfigDef::instance().get("top_fill_pattern")->has_enum_value(cfg.top_fill_pattern.serialize()))
-        return "Invalid value for --top-fill-pattern";
-
-    // --bottom-fill-pattern
-    if (! PrintConfigDef::instance().get("bottom_fill_pattern")->has_enum_value(cfg.bottom_fill_pattern.serialize()))
-        return "Invalid value for --bottom-fill-pattern";
-
+    // --fill-pattern, --top-fill-pattern, --bottom-fill-pattern,
     // --solid-fill-pattern
-    // The option is defined by the infill.generator.default plugin: validate it
-    // only when the plugin is loaded and the config carries a value.
-    if (const ConfigOptionDef *solid_pattern_def = PrintConfigDef::instance().get("solid_fill_pattern")) {
-        if (const ConfigOption *solid_pattern = cfg.optptr("solid_fill_pattern");
-            solid_pattern != nullptr && !solid_pattern_def->has_enum_value(solid_pattern->serialize()))
-            return "Invalid value for --solid-fill-pattern";
-    }
+    // These options are defined by the infill.generator.default plugin: validate
+    // each one only when the plugin is loaded and the config carries a value.
+    const auto validate_pattern = [&cfg](const char *key, const char *error) -> const char * {
+        const ConfigOptionDef *pattern_def = PrintConfigDef::instance().get(key);
+        if (pattern_def == nullptr)
+            return nullptr;
+        const ConfigOption *pattern = cfg.optptr(key);
+        if (pattern != nullptr && !pattern_def->has_enum_value(pattern->serialize()))
+            return error;
+        return nullptr;
+    };
+    if (const char *error = validate_pattern("fill_pattern", "Invalid value for --fill-pattern"))
+        return error;
+    if (const char *error = validate_pattern("top_fill_pattern", "Invalid value for --top-fill-pattern"))
+        return error;
+    if (const char *error = validate_pattern("bottom_fill_pattern", "Invalid value for --bottom-fill-pattern"))
+        return error;
+    if (const char *error = validate_pattern("solid_fill_pattern", "Invalid value for --solid-fill-pattern"))
+        return error;
 
     // --fill-density
-    if (fabs(cfg.fill_density.value - 100.) < EPSILON &&
-        (! PrintConfigDef::instance().get("top_fill_pattern")->has_enum_value(cfg.fill_pattern.serialize())
-        && ! PrintConfigDef::instance().get("bottom_fill_pattern")->has_enum_value(cfg.fill_pattern.serialize())
+    const ConfigOption *fill_pattern = cfg.optptr("fill_pattern");
+    if (fabs(cfg.fill_density.value - 100.) < EPSILON && fill_pattern != nullptr &&
+        (! PrintConfigDef::instance().get("top_fill_pattern")->has_enum_value(fill_pattern->serialize())
+        && ! PrintConfigDef::instance().get("bottom_fill_pattern")->has_enum_value(fill_pattern->serialize())
         ))
         return "The selected fill pattern is not supposed to work at 100% density";
 
@@ -827,14 +829,11 @@ void init_categories(PrintConfigDef &definition)
         "external_perimeters_hole",
         // fill pattern
         "fill_density",
-        "fill_pattern",
+        // The pattern list options are registered by the
+        // infill.generator.default plugin.
         "fill_top_flow_ratio",
         "fill_smooth_width",
         "fill_smooth_distribution",
-        "top_fill_pattern",
-        "bottom_fill_pattern",
-        // solid_fill_pattern is registered by the infill.generator.default plugin.
-        "bridge_fill_pattern",
         "infill_every_layers",
 //      "infill_only_where_needed",
         "solid_infill_every_layers",
@@ -1768,17 +1767,8 @@ void init_fff_params(PrintConfigDef &definition)
     def->can_be_disabled = true;
     def->set_default_value(enable_default_option(new ConfigOptionInts{ 100 }));
 
-    def = definition.add("bridge_fill_pattern", coEnum, ptFFF);
-    def->label = L("Bridging fill pattern");
-    def->category = OptionCategory::infill;
-    def->invalidates_step = posInfill;
-    def->tooltip = L("Fill pattern for bridges and internal bridge infill.");
-    def->set_enum<InfillPattern>({
-        { "rectilinear", L("Rectilinear") },
-        { "monotonic", L("Monotonic") },
-    });
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+    // bridge_fill_pattern is created by the infill.generator.default plugin so
+    // the bridge pattern list can be extended by pattern plugins.
 
     def = definition.add("bridge_type", coEnum, ptFFF);
     def->label = L("Bridge flow baseline");
@@ -2295,57 +2285,9 @@ void init_fff_params(PrintConfigDef &definition)
     def->is_vector_extruder = true;
     def->set_default_value(new ConfigOptionStrings { "; Filament-specific end gcode \n;END gcode for filament\n" });
 
-    def = definition.add("top_fill_pattern", coEnum, ptFFF);
-    def->label = L("Top");
-    def->full_label = L("Top fill Pattern");
-    def->category = OptionCategory::infill;
-    def->invalidates_step = posInfill;
-    def->tooltip = L("Fill pattern for top infill. This only affects the top visible layer, and not its adjacent solid shells."
-        "\nIf you want an 'aligned' pattern, set 90° to the fill angle increment setting.");
-    def->cli = "top-fill-pattern|external-fill-pattern=s";
-    def->aliases = { "external_fill_pattern" };
-    def->set_enum<InfillPattern>({
-        { "rectilinear",        L("Rectilinear") },
-        { "monotonic",          L("Monotonic") },
-        { "monotonicgapfill",   L("Monotonic (filled)") },
-        { "monotoniclines",     L("Monotonic Lines") },
-        { "alignedrectilinear", L("Aligned Rectilinear") },
-        { "concentric",         L("Concentric") },
-        { "concentricgapfill",  L("Concentric (filled)") },
-        { "hilbertcurve",       L("Hilbert Curve") },
-        { "archimedeanchords",  L("Archimedean Chords") },
-        { "octagramspiral",     L("Octagram Spiral") },
-        { "sawtooth",     L("Sawtooth") },
-        { "smooth",     L("Ironing") },
-    });
-    def->mode = comSimpleAE | comPrusa;
-    def->set_default_value(new ConfigOptionEnum<InfillPattern>(ipMonotonic));
-
-    def = definition.add("bottom_fill_pattern", coEnum, ptFFF);
-    def->label = L("Bottom");
-    def->full_label = L("Bottom fill pattern");
-    def->category = OptionCategory::infill;
-    def->invalidates_step = posInfill;
-    def->tooltip = L("Fill pattern for bottom infill. This only affects the bottom visible layer, and not its adjacent solid shells."
-        "\nIf you want an 'aligned' pattern, set 90° to the fill angle increment setting.");
-    def->cli = "bottom-fill-pattern|external-fill-pattern=s";
-    def->aliases = { "external_fill_pattern" };
-    def->set_enum<InfillPattern>({
-        { "rectilinear",        L("Rectilinear") },
-        { "monotonic",          L("Monotonic") },
-        { "monotonicgapfill",   L("Monotonic (filled)") },
-        { "monotoniclines",     L("Monotonic Lines") },
-        { "alignedrectilinear", L("Aligned Rectilinear") },
-        { "concentric",         L("Concentric") },
-        { "concentricgapfill",  L("Concentric (filled)") },
-        { "hilbertcurve",       L("Hilbert Curve") },
-        { "archimedeanchords",  L("Archimedean Chords") },
-        { "octagramspiral",     L("Octagram Spiral") },
-        { "smooth",     L("Ironing") },
-    });
-
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionEnum<InfillPattern>(ipMonotonic));
+    // top_fill_pattern and bottom_fill_pattern are created by the
+    // infill.generator.default plugin so their pattern lists can be extended by
+    // pattern plugins.
 
     // solid_fill_pattern is created by the infill.generator.default plugin so
     // the solid pattern list can be extended by pattern plugins.
@@ -3693,36 +3635,8 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionPercent(18));
 
-    def = definition.add("fill_pattern", coEnum, ptFFF);
-    def->label = L("Pattern");
-    def->full_label = L("Sparse fill pattern");
-    def->category = OptionCategory::infill;
-    def->invalidates_step = posInfill;
-    def->tooltip = L("Fill pattern for general low-density infill."
-        "\nIf you want an 'aligned' pattern, set 90° to the fill angle increment setting.");
-    def->set_enum<InfillPattern>({
-        { "rectilinear",        L("Rectilinear") },
-        { "alignedrectilinear", L("Aligned Rectilinear") },
-        { "monotonic",          L("Monotonic") },
-        { "grid",               L("Grid") }, 
-        { "triangles",          L("Triangles")},
-        { "stars",              L("Stars")},
-        { "cubic",              L("Cubic")},
-        { "line",               L("Line")},
-        { "concentric",         L("Concentric")},
-        { "honeycomb",          L("Honeycomb")},
-        { "3dhoneycomb",        L("3D Honeycomb")},
-        { "gyroid",             L("Gyroid")},
-        { "hilbertcurve",       L("Hilbert Curve")},
-        { "archimedeanchords",  L("Archimedean Chords")},
-        { "octagramspiral",     L("Octagram Spiral")},
-        {"scatteredrectilinear",L("Scattered Rectilinear")},
-        { "adaptivecubic",      L("Adaptive Cubic")},
-        { "supportcubic",       L("Support Cubic")},
-        { "lightning",          L("Lightning")}
-    });
-    def->mode = comSimpleAE | comPrusa;
-    def->set_default_value( new ConfigOptionEnum<InfillPattern>(ipStars));
+    // fill_pattern is created by the infill.generator.default plugin so the
+    // sparse pattern list can be extended by pattern plugins.
 
     def = definition.add("fill_top_flow_ratio", coPercent, ptFFF);
     def->label = L("Top fill");
@@ -9642,7 +9556,9 @@ void initialize_fff_print_gui_rules()
                  int_not_equals("fuzzy_skin", int(FuzzySkinType::None)));
 
         // ----- infill -------------------------------------------------------
-        add_rule({ "fill_aligned_z", "fill_pattern", "infill_connection",
+        // The pattern list options are registered by the infill.generator.default
+        // plugin, which also publishes their activation rules.
+        add_rule({ "fill_aligned_z", "infill_connection",
                    "solid_infill_every_layers", "solid_infill_below_area",
                    "solid_infill_below_layer_area", "solid_infill_below_width",
                    "infill_extruder" }, non_zero("fill_density"));
@@ -9695,29 +9611,26 @@ void initialize_fff_print_gui_rules()
         }));
 
         // solid / top / bottom surfaces
-        add_rule({ "ironing", "top_fill_pattern", "infill_connection_top",
+        add_rule({ "ironing", "infill_connection_top",
                    "top_infill_extrusion_width", "top_infill_extrusion_spacing",
                    "top_solid_infill_speed" }, has_top);
-        add_rule({ "bottom_fill_pattern", "infill_connection_bottom" }, has_bottom);
-        // solid_fill_pattern is registered by the infill.generator.default plugin,
-        // which also publishes its own activation rule.
-        add_rule({ "infill_connection_solid",
-                   "bridge_fill_pattern", "infill_connection_bridge" }, has_solid);
+        add_rule({ "infill_connection_bottom" }, has_bottom);
+        add_rule({ "infill_connection_solid", "infill_connection_bridge" }, has_solid);
 
         const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
         add_rule({ "ironing_type", "ironing_flowrate", "ironing_spacing", "ironing_angle" }, ironing_pp);
 
         const GuiCondition ironing_any = any_of({
             ironing_pp,
-            int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)),
-            int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)),
+            string_equals("top_fill_pattern", "smooth"),
+            string_equals("bottom_fill_pattern", "smooth"),
             string_equals("solid_fill_pattern", "smooth")
         });
         add_rule({ "ironing_speed" }, ironing_any);
 
         const GuiCondition fill_smooth = any_of({
-            all_of({ has_top, int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)) }),
-            all_of({ has_bottom, int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)) }),
+            all_of({ has_top, string_equals("top_fill_pattern", "smooth") }),
+            all_of({ has_bottom, string_equals("bottom_fill_pattern", "smooth") }),
             all_of({ has_solid, string_equals("solid_fill_pattern", "smooth") }),
             all_of({ have_support, int_equals("support_material_top_interface_pattern", int(InfillPattern::ipSmooth)) }),
             all_of({ have_support, int_equals("support_material_bottom_interface_pattern", int(InfillPattern::ipSmooth)) })

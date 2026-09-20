@@ -35,6 +35,27 @@ namespace Slic3r {
 
 class Surface;
 
+// Read a fill-pattern option that may be a plugin-defined enum. Built-in
+// patterns map back to their native enum; a plugin-only pattern returns the
+// fallback because legacy callers have no native implementation for it.
+inline InfillPattern region_infill_pattern(const PrintRegionConfig &config,
+                                           const char *key,
+                                           InfillPattern fallback)
+{
+    const ConfigOption *option = config.option(key);
+    if (option == nullptr)
+        return fallback;
+
+    std::string value = option->serialize();
+    if (!value.empty() && value.front() == '!')
+        value.erase(value.begin());
+
+    InfillPattern pattern = fallback;
+    if (!ConfigOptionEnum<InfillPattern>::from_string(value, pattern))
+        return fallback;
+    return pattern;
+}
+
 namespace FillAdaptive {
     struct Octree;
 };

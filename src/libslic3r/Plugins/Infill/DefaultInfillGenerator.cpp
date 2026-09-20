@@ -78,33 +78,43 @@ namespace {
 const char *k_default_infill_generator_id = "infill.generator.default";
 const char *k_no_dependencies[] = { nullptr };
 
-// The generator owns the solid infill pattern list. Pattern plugins may extend
-// it through orchestrator_modify_option_def(); every value is a plugin id.
+// The generator owns the five infill pattern lists. Pattern plugins may extend
+// them through orchestrator_modify_option_def(); every value is a plugin id.
+const char *k_fill_pattern_key = "fill_pattern";
+const char *k_top_fill_pattern_key = "top_fill_pattern";
+const char *k_bottom_fill_pattern_key = "bottom_fill_pattern";
 const char *k_solid_fill_pattern_key = "solid_fill_pattern";
+const char *k_bridge_fill_pattern_key = "bridge_fill_pattern";
+
 const raw_used_config_key k_used_config_keys[] = {
-    { k_solid_fill_pattern_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT }
+    { k_fill_pattern_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
+    { k_top_fill_pattern_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
+    { k_bottom_fill_pattern_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
+    { k_solid_fill_pattern_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
+    { k_bridge_fill_pattern_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT }
 };
-const char *k_defined_config_keys[] = { k_solid_fill_pattern_key };
+const char *k_defined_config_keys[] = {
+    k_fill_pattern_key,
+    k_top_fill_pattern_key,
+    k_bottom_fill_pattern_key,
+    k_solid_fill_pattern_key,
+    k_bridge_fill_pattern_key
+};
 
-void create_solid_fill_pattern_option(orchestrator_handle *orchestrator)
+void create_pattern_option(orchestrator_handle *orchestrator,
+                           const char *key,
+                           const char *label,
+                           const char *full_label,
+                           const char *tooltip,
+                           const char *default_id,
+                           const key_value_string_pair_t *entries,
+                           uint32_t entry_count,
+                           raw_config_option_mode mode,
+                           const char *cli = nullptr,
+                           const char *alias = nullptr)
 {
-    // Base list of pattern plugin ids. The legacy "(filled)" variants are gone:
-    // gap fill is owned by infill.post_process.gap_fill.
-    static const key_value_string_pair_t k_solid_patterns[] = {
-        { "ensuring",           "Ensuring" },
-        { "rectilinear",        "Rectilinear" },
-        { "monotonic",          "Monotonic" },
-        { "monotoniclines",     "Monotonic Lines" },
-        { "alignedrectilinear", "Aligned Rectilinear" },
-        { "concentric",         "Concentric" },
-        { "hilbertcurve",       "Hilbert Curve" },
-        { "archimedeanchords",  "Archimedean Chords" },
-        { "octagramspiral",     "Octagram Spiral" },
-        { "smooth",             "Ironing" },
-    };
-
     raw_config_option_def def = raw_config_option_def_init();
-    def.opt_key = k_solid_fill_pattern_key;
+    def.opt_key = key;
     def.type = RAW_CO_ENUM;
     def.gui_type = RAW_GUI_TYPE_SELECT_CLOSE;
     def.container_type = RAW_CONTAINER_TYPE_REGION;
@@ -112,21 +122,118 @@ void create_solid_fill_pattern_option(orchestrator_handle *orchestrator)
     def.printer_technology = RAW_PT_FFF;
     def.category = RAW_OPTION_CATEGORY_INFILL;
     def.invalidates_step = STEP_INFILL;
-    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
-    def.label = "Solid fill pattern";
-    def.full_label = "Solid fill pattern";
-    def.tooltip = "Fill pattern for solid (internal) infill. This only affects the solid not-visible layers."
-        " You should use rectilinear in most cases. You can try ironing for translucent material.";
+    def.mode = mode;
+    def.label = label;
+    def.full_label = full_label;
+    def.tooltip = tooltip;
+    def.cli = cli;
+    if (alias != nullptr)
+        def.aliases = { &alias, 1 };
     def.contains_plugin_id = 1;
-    def.default_serialized_value = "ensuring";
-    def.enum_def.value_label_pairs = {
-        k_solid_patterns,
-        uint32_t(sizeof(k_solid_patterns) / sizeof(k_solid_patterns[0]))
-    };
+    def.default_serialized_value = default_id;
+    def.enum_def.value_label_pairs = { entries, entry_count };
     orchestrator_create_option_def(orchestrator, &def);
 }
 
-void register_solid_fill_pattern_rules(orchestrator_handle *orchestrator)
+void create_infill_pattern_options(orchestrator_handle *orchestrator)
+{
+    // Base lists of pattern plugin ids. The legacy "(filled)" variants are gone:
+    // gap fill is owned by infill.post_process.gap_fill.
+    static const key_value_string_pair_t k_sparse_patterns[] = {
+        { "rectilinear",         "Rectilinear" },
+        { "alignedrectilinear",  "Aligned Rectilinear" },
+        { "monotonic",           "Monotonic" },
+        { "grid",                "Grid" },
+        { "triangles",           "Triangles" },
+        { "stars",               "Stars" },
+        { "cubic",               "Cubic" },
+        { "line",                "Line" },
+        { "concentric",          "Concentric" },
+        { "honeycomb",           "Honeycomb" },
+        { "3dhoneycomb",         "3D Honeycomb" },
+        { "gyroid",              "Gyroid" },
+        { "hilbertcurve",        "Hilbert Curve" },
+        { "archimedeanchords",   "Archimedean Chords" },
+        { "octagramspiral",      "Octagram Spiral" },
+        { "scatteredrectilinear","Scattered Rectilinear" },
+        { "adaptivecubic",       "Adaptive Cubic" },
+        { "supportcubic",        "Support Cubic" },
+        { "lightning",           "Lightning" },
+    };
+    static const key_value_string_pair_t k_top_patterns[] = {
+        { "rectilinear",         "Rectilinear" },
+        { "monotonic",           "Monotonic" },
+        { "monotoniclines",      "Monotonic Lines" },
+        { "alignedrectilinear",  "Aligned Rectilinear" },
+        { "concentric",          "Concentric" },
+        { "hilbertcurve",        "Hilbert Curve" },
+        { "archimedeanchords",   "Archimedean Chords" },
+        { "octagramspiral",      "Octagram Spiral" },
+        { "sawtooth",            "Sawtooth" },
+        { "smooth",              "Ironing" },
+    };
+    static const key_value_string_pair_t k_bottom_patterns[] = {
+        { "rectilinear",         "Rectilinear" },
+        { "monotonic",           "Monotonic" },
+        { "monotoniclines",      "Monotonic Lines" },
+        { "alignedrectilinear",  "Aligned Rectilinear" },
+        { "concentric",          "Concentric" },
+        { "hilbertcurve",        "Hilbert Curve" },
+        { "archimedeanchords",   "Archimedean Chords" },
+        { "octagramspiral",      "Octagram Spiral" },
+        { "smooth",              "Ironing" },
+    };
+    static const key_value_string_pair_t k_solid_patterns[] = {
+        { "ensuring",            "Ensuring" },
+        { "rectilinear",         "Rectilinear" },
+        { "monotonic",           "Monotonic" },
+        { "monotoniclines",      "Monotonic Lines" },
+        { "alignedrectilinear",  "Aligned Rectilinear" },
+        { "concentric",          "Concentric" },
+        { "hilbertcurve",        "Hilbert Curve" },
+        { "archimedeanchords",   "Archimedean Chords" },
+        { "octagramspiral",      "Octagram Spiral" },
+        { "smooth",              "Ironing" },
+    };
+    static const key_value_string_pair_t k_bridge_patterns[] = {
+        { "rectilinear",         "Rectilinear" },
+        { "monotonic",           "Monotonic" },
+    };
+
+    create_pattern_option(orchestrator, k_fill_pattern_key, "Pattern", "Sparse fill pattern",
+        "Fill pattern for general low-density infill."
+        "\nIf you want an 'aligned' pattern, set 90° to the fill angle increment setting.",
+        "stars", k_sparse_patterns,
+        uint32_t(sizeof(k_sparse_patterns) / sizeof(k_sparse_patterns[0])),
+        RAW_CONFIG_OPTION_MODE_SIM_ADV_EXP);
+    create_pattern_option(orchestrator, k_top_fill_pattern_key, "Top", "Top fill Pattern",
+        "Fill pattern for top infill. This only affects the top visible layer, and not its adjacent solid shells."
+        "\nIf you want an 'aligned' pattern, set 90° to the fill angle increment setting.",
+        "monotonic", k_top_patterns,
+        uint32_t(sizeof(k_top_patterns) / sizeof(k_top_patterns[0])),
+        RAW_CONFIG_OPTION_MODE_SIM_ADV_EXP,
+        "top-fill-pattern|external-fill-pattern=s", "external_fill_pattern");
+    create_pattern_option(orchestrator, k_bottom_fill_pattern_key, "Bottom", "Bottom fill pattern",
+        "Fill pattern for bottom infill. This only affects the bottom visible layer, and not its adjacent solid shells."
+        "\nIf you want an 'aligned' pattern, set 90° to the fill angle increment setting.",
+        "monotonic", k_bottom_patterns,
+        uint32_t(sizeof(k_bottom_patterns) / sizeof(k_bottom_patterns[0])),
+        RAW_CONFIG_OPTION_MODE_ADV_EXP,
+        "bottom-fill-pattern|external-fill-pattern=s", "external_fill_pattern");
+    create_pattern_option(orchestrator, k_solid_fill_pattern_key, "Solid fill pattern", "Solid fill pattern",
+        "Fill pattern for solid (internal) infill. This only affects the solid not-visible layers."
+        " You should use rectilinear in most cases. You can try ironing for translucent material.",
+        "ensuring", k_solid_patterns,
+        uint32_t(sizeof(k_solid_patterns) / sizeof(k_solid_patterns[0])),
+        RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI);
+    create_pattern_option(orchestrator, k_bridge_fill_pattern_key, "Bridging fill pattern", "Bridging fill pattern",
+        "Fill pattern for bridges and internal bridge infill.",
+        "rectilinear", k_bridge_patterns,
+        uint32_t(sizeof(k_bridge_patterns) / sizeof(k_bridge_patterns[0])),
+        RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI);
+}
+
+void register_infill_pattern_rules(orchestrator_handle *orchestrator)
 {
     using slic3r_api::all_of;
     using slic3r_api::any_of;
@@ -134,8 +241,25 @@ void register_solid_fill_pattern_rules(orchestrator_handle *orchestrator)
     using slic3r_api::non_zero;
     using slic3r_api::true_;
 
-    // Same condition as the legacy FFF print rule: the solid pattern is
-    // selectable only when the print produces solid infill.
+    const auto add_rule = [orchestrator](const char *key, const slic3r_api::GuiCondition &condition) {
+        slic3r_api::GuiRule::enable_any({ key })
+            .when(condition)
+            .scope(RAW_PRESET_TYPE_FFF_PRINT)
+            .group(Slic3r::FFF_PRINT_GUI_RULE_GROUP)
+            .add_to(orchestrator);
+    };
+
+    // Same conditions as the legacy FFF print rules: each pattern list is
+    // selectable only when the matching surface kind is printed.
+    const slic3r_api::GuiCondition has_top = any_of({
+        non_zero("top_solid_layers"),
+        all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+        int_equals("solid_infill_every_layers", 1)
+    });
+    const slic3r_api::GuiCondition has_bottom = any_of({
+        non_zero("bottom_solid_layers"),
+        int_equals("solid_infill_every_layers", 1)
+    });
     const slic3r_api::GuiCondition has_solid = any_of({
         non_zero("top_solid_layers"),
         all_of({ non_zero("perimeters"), true_("spiral_vase") }),
@@ -145,12 +269,13 @@ void register_solid_fill_pattern_rules(orchestrator_handle *orchestrator)
         all_of({ non_zero("fill_density"), non_zero("solid_infill_below_area") })
     });
 
-    slic3r_api::GuiRule::enable_any({ k_solid_fill_pattern_key })
-        .when(has_solid)
-        .scope(RAW_PRESET_TYPE_FFF_PRINT)
-        .group(Slic3r::FFF_PRINT_GUI_RULE_GROUP)
-        .add_to(orchestrator);
+    add_rule(k_fill_pattern_key, non_zero("fill_density"));
+    add_rule(k_top_fill_pattern_key, has_top);
+    add_rule(k_bottom_fill_pattern_key, has_bottom);
+    add_rule(k_solid_fill_pattern_key, has_solid);
+    add_rule(k_bridge_fill_pattern_key, has_solid);
 }
+
 
 struct SurfaceInfillRecipe
 {
@@ -565,8 +690,8 @@ int32_t DefaultInfillGenerator::defined_config_keys(const char **keys) const noe
 
 void DefaultInfillGenerator::inilialize_impl(storage_handle *) const
 {
-    create_solid_fill_pattern_option(m_orchestrator);
-    register_solid_fill_pattern_rules(m_orchestrator);
+    create_infill_pattern_options(m_orchestrator);
+    register_infill_pattern_rules(m_orchestrator);
 }
 
 const char *DefaultInfillGenerator::progress_message_format_impl() const noexcept
