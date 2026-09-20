@@ -1197,6 +1197,7 @@ bool gui_rule_condition_value_at_index(const ConfigOption &condition_option,
 {
     // Scalar get_bool() ignores the index. Vector get_bool() needs a real item
     // index, so "-1 / unspecified" falls back to 0 only for this low-level read.
+    // STRING_EQUALS uses the same resolved index to pick the serialized item.
     const size_t value_index = condition_index < 0 ? 0 : size_t(condition_index);
 
     switch (clause.condition) {
@@ -1228,7 +1229,17 @@ bool gui_rule_condition_value_at_index(const ConfigOption &condition_option,
         return vector_option != nullptr && vector_option->empty();
     }
     case RAW_GUI_RULE_CONDITION_STRING_EQUALS: {
-        std::string serialized = condition_option.serialize();
+        // A vector option must compare the serialized text of the resolved
+        // item, not the serialization of the whole vector.
+        std::string serialized;
+        if (const ConfigOptionVectorBase *vector_option =
+                dynamic_cast<const ConfigOptionVectorBase *>(&condition_option)) {
+            if (value_index >= vector_option->size())
+                return false;
+            serialized = vector_option->serialize_at(int(value_index));
+        } else {
+            serialized = condition_option.serialize();
+        }
         if (!serialized.empty() && serialized.front() == '!')
             serialized.erase(serialized.begin());
         return serialized == clause.condition_string_value;

@@ -430,9 +430,12 @@ typedef enum raw_gui_rule_condition {
     Compare the option's serialized value with condition_string_value.
 
     The comparison is string-based, so it works for every option type: enums
-    compare their value name (for example "smooth"), strings their text. A
-    leading '!' (disabled option) is not part of the compared value, matching
-    serialize() normalization used elsewhere in the GUI.
+    compare their value name (for example "smooth"), strings their text. For a
+    vector option, the item selected by condition_index is compared: an explicit
+    index reads that item, RAW_GUI_RULE_INDEX_CURRENT reads the current extruder
+    item and RAW_GUI_RULE_INDEX_ALL is true when any item matches. A leading '!'
+    (disabled option) is not part of the compared value, matching serialize()
+    normalization used elsewhere in the GUI.
     */
     RAW_GUI_RULE_CONDITION_STRING_EQUALS,
     /* Number of declared condition kinds; unknown values are rejected. */
@@ -475,6 +478,7 @@ operand:
   and RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL compare the normalized
   option float value directly;
 - RAW_GUI_RULE_CONDITION_STRING_EQUALS compares the serialized option value
+  (or, for a vector option, the serialized item selected by condition_index)
   with condition_string_value;
 - IS_PERCENT and VECTOR_EMPTY ignore both operands.
 */

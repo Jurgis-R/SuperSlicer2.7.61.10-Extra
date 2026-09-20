@@ -170,3 +170,92 @@ TEST_CASE("STRING_EQUALS compares serialized option values", "[plugins][gui-rule
     config.set_deserialize_strict("solid_fill_pattern", "rectilinear");
     CHECK_FALSE(target_enabled(config));
 }
+
+TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", "[plugins][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    const char *const indexed_group = "test.string_equals_vector.indexed";
+    const char *const any_group = "test.string_equals_vector.any";
+    const char *const current_group = "test.string_equals_vector.current";
+    const char *const out_of_range_group = "test.string_equals_vector.out_of_range";
+
+    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
+    clause.condition = RAW_GUI_RULE_CONDITION_STRING_EQUALS;
+    clause.condition_key = "filament_type";
+    clause.condition_string_value = "PETG";
+
+    raw_gui_rule rule = raw_gui_rule_init();
+    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
+    rule.clauses = &clause;
+    rule.clause_count = 1;
+
+    // An explicit index reads exactly that vector item.
+    clause.condition_index = 1;
+    rule.target_key = "fill_aligned_z";
+    rule.rule_group = indexed_group;
+    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+
+    // An explicit index outside the vector never matches.
+    clause.condition_index = 7;
+    rule.target_key = "fill_angle";
+    rule.rule_group = out_of_range_group;
+    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+
+    // INDEX_ALL without a current item is true when any item matches.
+    clause.condition_index = RAW_GUI_RULE_INDEX_ALL;
+    rule.target_key = "infill_every_layers";
+    rule.rule_group = any_group;
+    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+
+    // INDEX_CURRENT follows the extruder item currently processed.
+    clause.condition_index = RAW_GUI_RULE_INDEX_CURRENT;
+    rule.target_key = "filament_type";
+    rule.target_index = RAW_GUI_RULE_INDEX_CURRENT;
+    rule.rule_group = current_group;
+    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    REQUIRE(config.option("filament_type")->is_vector());
+    REQUIRE(static_cast<const ConfigOptionVectorBase *>(config.option("filament_type"))->is_extruder_size());
+
+    const auto configured_types = [&config]() {
+        return config.option<ConfigOptionStrings>("filament_type")->get_values();
+    };
+    const auto set_types = [&config](const char *serialized) {
+        config.set_deserialize_strict("filament_type", serialized);
+    };
+    const auto enabled_for = [&orchestrator, &config](const char *group, const char *target, int current_index) {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, group))
+            if (application.target_key == target)
+                return application.enabled;
+        return false;
+    };
+
+    // Two different items: the element read depends on the resolved index.
+    set_types("PLA;PETG");
+    REQUIRE(configured_types() == std::vector<std::string>{ "PLA", "PETG" });
+    CHECK(enabled_for(indexed_group, "fill_aligned_z", -1));
+    CHECK_FALSE(enabled_for(out_of_range_group, "fill_angle", -1));
+
+    set_types("PETG;PLA");
+    CHECK_FALSE(enabled_for(indexed_group, "fill_aligned_z", -1));
+
+    set_types("PLA;PLA");
+    CHECK_FALSE(enabled_for(indexed_group, "fill_aligned_z", -1));
+
+    // "Any item" read, in both orders.
+    set_types("PLA;PETG");
+    CHECK(enabled_for(any_group, "infill_every_layers", -1));
+    set_types("PETG;PLA");
+    CHECK(enabled_for(any_group, "infill_every_layers", -1));
+    set_types("PLA;PLA");
+    CHECK_FALSE(enabled_for(any_group, "infill_every_layers", -1));
+
+    // Current-item read: index 0 is PLA, index 1 is PETG.
+    set_types("PLA;PETG");
+    CHECK_FALSE(enabled_for(current_group, "filament_type", 0));
+    CHECK(enabled_for(current_group, "filament_type", 1));
+}
