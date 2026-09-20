@@ -2195,8 +2195,13 @@ void Orchestrator::finalize_plugin_option_defs()
 
             PluginEnumValues effect;
             const std::map<std::string, PluginEnumValues>::const_iterator base = base_values.find(key);
-            if (base != base_values.end())
+            if (base != base_values.end()) {
                 effect = base->second;
+            } else if (const ConfigOptionDef *source_def = definition.get(key)) {
+                // A replication source that is not itself a patch target still
+                // starts from its current definition values.
+                effect = option_def_enum_values(*source_def);
+            }
 
             std::string requested_default;
             const std::map<std::string, std::vector<OptionDefPatch>>::const_iterator patches =
@@ -2225,6 +2230,15 @@ void Orchestrator::finalize_plugin_option_defs()
                             effect.end());
                         break;
                     case RAW_OPTION_DEF_PATCH_REPLICATE_ENUM:
+                        // A source that is still being resolved is an ancestor
+                        // in the dependency tree: ignore the edge and keep the
+                        // current values instead of erasing them.
+                        if (resolving.find(patch.source_option_key) != resolving.end()) {
+                            BOOST_LOG_TRIVIAL(warning)
+                                << "Ignored cyclic plugin option definition edge '"
+                                << key << "' -> '" << patch.source_option_key << "'.";
+                            break;
+                        }
                         // Snapshot the source now that its own patches applied.
                         effect = resolve(patch.source_option_key);
                         break;
@@ -2284,6 +2298,10 @@ void Orchestrator::finalize_plugin_option_defs()
                             def->set_default_value(default_option);
                         else
                             delete default_option;
+                    } else {
+                        // The rebuilt list is empty: replace the default too so
+                        // it does not keep borrowing the released map.
+                        def->set_default_value(def->create_empty_option());
                     }
                 } else {
                     BOOST_LOG_TRIVIAL(warning)

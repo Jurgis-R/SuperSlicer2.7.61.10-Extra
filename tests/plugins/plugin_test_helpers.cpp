@@ -103,6 +103,11 @@ namespace {
 void register_config_introspection_fixture(orchestrator_handle *orchestrator);
 void register_config_option_or_fail(orchestrator_handle *orchestrator,
                                     const raw_config_option_def &definition);
+void register_plugin_option_list_fixtures(orchestrator_handle *orchestrator);
+
+// Set while the runtime finalizes plugin option definitions when the empty
+// plugin-id list fixture reports its non-fatal error.
+bool g_empty_option_list_error_reported = false;
 
 #ifdef SLIC3R_TEST_PYTHON_PLUGINS
 
@@ -200,6 +205,59 @@ void register_config_option_or_fail(orchestrator_handle *orchestrator,
             "Failed to register configuration introspection fixture '" + key +
             "' (error " + std::to_string(int(result)) + ").");
     }
+}
+
+// Register the fixtures used by the plugin-defined option list tests. They must
+// exist before the runtime applies deferred option definition patches.
+void register_plugin_option_list_fixtures(orchestrator_handle *orchestrator)
+{
+    const auto register_enum = [orchestrator](const char *key,
+                                              const key_value_string_pair_t *entries,
+                                              uint32_t entry_count,
+                                              int32_t contains_plugin_id) {
+        raw_config_option_def def = raw_config_option_def_init();
+        def.opt_key = key;
+        def.type = RAW_CO_ENUM;
+        def.gui_type = RAW_GUI_TYPE_SELECT_CLOSE;
+        def.container_type = RAW_CONTAINER_TYPE_PROJECT;
+        def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+        def.printer_technology = RAW_PT_FFF;
+        def.category = RAW_OPTION_CATEGORY_INFILL;
+        def.contains_plugin_id = contains_plugin_id;
+        def.default_serialized_value = entries[0].value;
+        def.enum_def.value_label_pairs = { entries, entry_count };
+        register_config_option_or_fail(orchestrator, def);
+    };
+    const auto replicate = [orchestrator](const char *key, const char *source) {
+        raw_option_def_patch patch = raw_option_def_patch_init();
+        patch.kind = RAW_OPTION_DEF_PATCH_REPLICATE_ENUM;
+        patch.opt_key = key;
+        patch.source_option_key = source;
+        if (orchestrator_modify_option_def(orchestrator, &patch) != OPTION_DEF_ERROR_OK)
+            throw std::runtime_error(std::string("Failed to record a replicate patch for '") + key + "'.");
+    };
+
+    static const key_value_string_pair_t source_entries[] = { { "rectilinear", "Rectilinear" } };
+    static const key_value_string_pair_t target_entries[] = { { "monotonic", "Monotonic" } };
+    static const key_value_string_pair_t prune_entries[] = {
+        { "rectilinear", "Rectilinear" },
+        { "test.infill.missing_pattern", "Missing pattern" }
+    };
+    static const key_value_string_pair_t empty_entries[] = {
+        { "test.infill.missing_pattern", "Missing pattern" }
+    };
+
+    register_enum("test.replicate.source", source_entries, 1, 0);
+    register_enum("test.replicate.target", target_entries, 1, 0);
+    replicate("test.replicate.target", "test.replicate.source");
+
+    register_enum("test.cycle.a", source_entries, 1, 0);
+    register_enum("test.cycle.b", target_entries, 1, 0);
+    replicate("test.cycle.a", "test.cycle.b");
+    replicate("test.cycle.b", "test.cycle.a");
+
+    register_enum("test.infill.prune_list", prune_entries, 2, 1);
+    register_enum("test.infill.empty_list", empty_entries, 1, 1);
 }
 
 void register_config_introspection_fixture(orchestrator_handle *orchestrator)
@@ -370,6 +428,7 @@ void ensure_plugin_test_runtime_initialized()
         orchestrator_handle *orchestrator_handle_value =
             reinterpret_cast<orchestrator_handle *>(&orchestrator);
         register_config_introspection_fixture(orchestrator_handle_value);
+        register_plugin_option_list_fixtures(orchestrator_handle_value);
         slic3r_api::StandardLayerHeightGeneratorPlugin::register_standard_layer_height_generator_plugin(
             orchestrator_handle_value);
         slic3r_api::SliceVolumePlugin::register_slice_volume_plugin(orchestrator_handle_value);
@@ -625,6 +684,21 @@ void ensure_plugin_test_runtime_initialized()
         orchestrator.initialize_plugins();
         if (without_png) orchestrator.set_plugin_active("PNG", true);
         orchestrator.finalize_plugin_option_defs();
+        {
+            // Capture the empty plugin-id list diagnostic without hiding it
+            // from tests that assert plugin messages later.
+            std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+            for (const Orchestrator::PluginMessage &message : messages) {
+                if (message.message.find("test.infill.empty_list") != std::string::npos) {
+                    g_empty_option_list_error_reported = true;
+                    continue;
+                }
+                orchestrator.add_plugin_message(message.level,
+                                                orchestrator.get_plugin(message.plugin_id),
+                                                message.step,
+                                                message.message.c_str());
+            }
+        }
         register_exclusive_step_group_ui_fragments(orchestrator);
         orchestrator.set_plugin_active("slic3r.test.seam_placer.regional", false);
         orchestrator.set_plugin_active("seam_placer.aligned", false);
@@ -647,6 +721,12 @@ bool python_plugin_test_runtime_available()
 #else
     return false;
 #endif
+}
+
+bool plugin_test_empty_option_list_error_reported()
+{
+    ensure_plugin_test_runtime_initialized();
+    return g_empty_option_list_error_reported;
 }
 
 } // namespace Slic3r::Test::Plugins
