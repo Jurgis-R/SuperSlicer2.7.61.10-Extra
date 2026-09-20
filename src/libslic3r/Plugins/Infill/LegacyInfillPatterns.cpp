@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_infill.h"
 #include "libslic3r/Fill/FillBase.hpp"
@@ -116,6 +117,30 @@ bool requires_unmigrated_object_state(Slic3r::InfillPattern pattern)
            pattern == Slic3r::ipLightning;
 }
 
+// Option keys whose pattern list this plugin wants to join. Each pattern
+// declares the lists it is valid for; the host ignores unknown keys, so a
+// pattern never needs to know whether a list already exists.
+const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
+{
+    static const char *const k_none[] = { nullptr };
+    static const char *const k_solid[] = { "solid_fill_pattern", nullptr };
+    switch (pattern) {
+    case Slic3r::ipEnsuring:
+    case Slic3r::ipRectilinear:
+    case Slic3r::ipMonotonic:
+    case Slic3r::ipMonotonicLines:
+    case Slic3r::ipAlignedRectilinear:
+    case Slic3r::ipConcentric:
+    case Slic3r::ipHilbertCurve:
+    case Slic3r::ipArchimedeanChords:
+    case Slic3r::ipOctagramSpiral:
+    case Slic3r::ipSmooth:
+        return k_solid;
+    default:
+        return k_none;
+    }
+}
+
 Slic3r::Flow flow_from_raw(const c_flow &flow)
 {
     // c_flow is the ABI representation prepared by the host step. Flow does
@@ -183,6 +208,23 @@ private:
     const char *const *dependencies_impl() const noexcept override { return k_no_dependencies; }
     int32_t priority_impl() const noexcept override { return m_priority; }
     const char *progress_message_format_impl() const noexcept override { return "Generating infill pattern: %u / %u"; }
+
+    void inilialize_impl(storage_handle *) const override
+    {
+        // Join every pattern list this pattern is valid for. The host keeps
+        // contributions for keys that do not exist yet and applies them when the
+        // list is created by another plugin.
+        for (const char *const *key = pattern_option_memberships(m_pattern); *key != nullptr; ++key) {
+            key_value_string_pair_t entry = { m_id, m_name };
+            key_value_string_pair_array_t entries = { &entry, 1 };
+
+            raw_option_def_patch patch = raw_option_def_patch_init();
+            patch.kind = RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES;
+            patch.opt_key = *key;
+            patch.enum_values = entries;
+            orchestrator_modify_option_def(m_orchestrator, &patch);
+        }
+    }
 
     void run_impl(const plugin_run_context *run_ctx) const override
     {

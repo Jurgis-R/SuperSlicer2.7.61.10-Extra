@@ -340,21 +340,29 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
     }
 
     if (config->option<ConfigOptionPercent>("fill_density")->value == 100) {
-        const int fill_pattern = config->option<ConfigOptionEnum<InfillPattern>>("fill_pattern")->value;
-        bool correct_100p_fill = config->option_def("top_fill_pattern")->enum_def->enum_to_index(fill_pattern).has_value();
-        if (!correct_100p_fill) {
-            correct_100p_fill = config->option_def("bottom_fill_pattern")->enum_def->enum_to_index(fill_pattern).has_value();
-        }
-        if (!correct_100p_fill) {
-            correct_100p_fill = config->option_def("solid_fill_pattern")->enum_def->enum_to_index(fill_pattern).has_value();
-        }
+        std::string fill_pattern_name = config->option("fill_pattern")->serialize();
+        if (!fill_pattern_name.empty() && fill_pattern_name.front() == '!')
+            fill_pattern_name.erase(fill_pattern_name.begin());
+
+        // Pattern options may be plugin-defined enums, so membership is checked
+        // on the serialized value instead of an integer enum index.
+        const auto def_has_value = [config](const char *key, const std::string &value) {
+            const ConfigOptionDef *def = config->option_def(key);
+            return def != nullptr && def->has_enum_value(value);
+        };
+        const bool correct_100p_fill = def_has_value("top_fill_pattern", fill_pattern_name) ||
+                                       def_has_value("bottom_fill_pattern", fill_pattern_name) ||
+                                       def_has_value("solid_fill_pattern", fill_pattern_name);
         if (!correct_100p_fill) {
             // get fill_pattern name from enum_labels for using this one at dialog_msg
             const ConfigOptionDef *fill_pattern_def = config->option_def("fill_pattern");
             assert(fill_pattern_def != nullptr);
-            if (auto label = fill_pattern_def->enum_def->enum_to_label(fill_pattern); label.has_value()) {
+            const std::optional<int> fill_pattern_index =
+                fill_pattern_def->enum_def->value_to_index(fill_pattern_name);
+            if (fill_pattern_index.has_value()) {
                 wxString msg_text = GUI::format_wxstr(_L("The %1% infill pattern is not supposed to work at 100%% density."),
-                                                       I18N::translate_in_domain(*label, fill_pattern_def->translation_domain));
+                                                       I18N::translate_in_domain(fill_pattern_def->enum_def->label(*fill_pattern_index),
+                                                                                 fill_pattern_def->translation_domain));
                 if (is_global_config) {
                     msg_text += "\n\n" + _L("Shall I switch to rectilinear fill pattern?");
                 MessageDialog dialog(m_msg_dlg_parent, msg_text, _L("Infill"),

@@ -36,6 +36,27 @@
 
 namespace Slic3r {
 
+// Read a fill-pattern option that may be a plugin-defined enum. Built-in
+// patterns map back to their native enum; a plugin-only pattern keeps the
+// fallback because the legacy Fill path has no native implementation for it.
+static InfillPattern region_infill_pattern(const PrintRegionConfig &config,
+                                           const char *key,
+                                           InfillPattern fallback)
+{
+    const ConfigOption *option = config.option(key);
+    if (option == nullptr)
+        return fallback;
+
+    std::string value = option->serialize();
+    if (!value.empty() && value.front() == '!')
+        value.erase(value.begin());
+
+    InfillPattern pattern = fallback;
+    if (!ConfigOptionEnum<InfillPattern>::from_string(value, pattern))
+        return fallback;
+    return pattern;
+}
+
 /* Convert a mandatory one-based extruder setting into the common zero-based identity. */
 static extruder_index_t checked_config_extruder_index(int64_t one_based_id);
 
@@ -355,7 +376,7 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, const LayerSliceIsland&
 
                 if (surface.has_fill_solid()) {
                     params.density = 1.f;
-                    params.pattern = region_config.solid_fill_pattern.value;
+                    params.pattern = region_infill_pattern(region_config, "solid_fill_pattern", ipRectilinear);
                     params.connection = region_config.infill_connection_solid.value;
                     params.add_gap_fill = region_config.infill_filled_solid.value;
                     if (surface.has_pos_top()) {
@@ -659,7 +680,7 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, const LayerSliceIsland&
                 // Produce another solid fill.
                 SurfaceFillParams params;
                 params.extruder = one_layerm->region().extruder(frSolidInfill, *layer.object());
-                params.pattern  = one_layerm->region().config().solid_fill_pattern.value;
+                params.pattern  = region_infill_pattern(one_layerm->region().config(), "solid_fill_pattern", ipRectilinear);
                 params.density  = 100.f;
                 params.role     = ExtrusionRole::InternalInfill;
                 params.angle    = compute_fill_angle(one_layerm->region().config(), layer.id());

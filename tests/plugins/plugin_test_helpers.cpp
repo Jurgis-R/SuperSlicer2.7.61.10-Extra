@@ -39,6 +39,8 @@
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
+#include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
+#include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetractionLift.hpp"
@@ -391,6 +393,10 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::GCodeGeneration::Thumbnail::register_builtin_gcode_thumbnail_plugins(
             orchestrator_handle_value);
         slic3r_api::FlatAreaLayerHeightPlugin::register_flat_area_layer_height_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::DefaultInfillGeneratorPlugin::register_default_infill_generator_plugin(
+            orchestrator_handle_value);
+        slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins(
+            orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin(orchestrator_handle_value);
@@ -521,6 +527,35 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "QOI");
         activate_plugin_or_fail(orchestrator, "BIQU");
         activate_plugin_or_fail(orchestrator, "flat_area_layer_height");
+        // Infill generation mirrors the application default activation: the
+        // generator owns the solid pattern setting and pattern plugins fill it.
+        activate_plugin_or_fail(orchestrator, "infill.generator.default");
+        activate_plugin_or_fail(orchestrator, "rectilinear");
+        activate_plugin_or_fail(orchestrator, "monotonic");
+        activate_plugin_or_fail(orchestrator, "alignedrectilinear");
+        activate_plugin_or_fail(orchestrator, "grid");
+        activate_plugin_or_fail(orchestrator, "triangles");
+        activate_plugin_or_fail(orchestrator, "stars");
+        activate_plugin_or_fail(orchestrator, "cubic");
+        activate_plugin_or_fail(orchestrator, "line");
+        activate_plugin_or_fail(orchestrator, "monotoniclines");
+        activate_plugin_or_fail(orchestrator, "concentric");
+        activate_plugin_or_fail(orchestrator, "honeycomb");
+        activate_plugin_or_fail(orchestrator, "3dhoneycomb");
+        activate_plugin_or_fail(orchestrator, "gyroid");
+        activate_plugin_or_fail(orchestrator, "hilbertcurve");
+        activate_plugin_or_fail(orchestrator, "archimedeanchords");
+        activate_plugin_or_fail(orchestrator, "octagramspiral");
+        activate_plugin_or_fail(orchestrator, "adaptivecubic");
+        activate_plugin_or_fail(orchestrator, "supportcubic");
+        activate_plugin_or_fail(orchestrator, "smooth");
+        activate_plugin_or_fail(orchestrator, "smoothhilbert");
+        activate_plugin_or_fail(orchestrator, "smoothtriple");
+        activate_plugin_or_fail(orchestrator, "rectiwithperimeter");
+        activate_plugin_or_fail(orchestrator, "scatteredrectilinear");
+        activate_plugin_or_fail(orchestrator, "sawtooth");
+        activate_plugin_or_fail(orchestrator, "lightning");
+        activate_plugin_or_fail(orchestrator, "ensuring");
         activate_plugin_or_fail(orchestrator, "dense_infill.surface_marker");
         activate_plugin_or_fail(orchestrator, "dense_infill.recipe_modifier");
         activate_plugin_or_fail(orchestrator, "dense_infill.post_infill_order");

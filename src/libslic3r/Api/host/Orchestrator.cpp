@@ -2264,13 +2264,17 @@ void Orchestrator::finalize_plugin_option_defs()
                 // Plugin-created enums own a scripted map that must be rebuilt
                 // whenever their value set changes.
                 if (def->enum_is_scripted() || contains_plugin_id) {
-                    def->set_enum_as_closed_for_scripted_enum(effect);
-
+                    // Read the current default before rebuilding the map: a
+                    // ConfigOptionEnumGeneric borrows the map pointer, which
+                    // set_enum_as_closed_for_scripted_enum() releases.
                     std::string desired = requested_default;
                     if (desired.empty() && def->default_value)
                         desired = def->default_value->serialize();
                     if (!desired.empty() && desired.front() == '!')
                         desired.erase(desired.begin());
+
+                    def->set_enum_as_closed_for_scripted_enum(effect);
+
                     if (!plugin_enum_has_value(effect, desired))
                         desired = effect.empty() ? std::string() : effect.front().first;
 

@@ -10,8 +10,10 @@
 #include <cmath>
 #include <string>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_infill.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/ExtrusionProperty.hpp"
@@ -76,6 +78,80 @@ namespace {
 const char *k_default_infill_generator_id = "infill.generator.default";
 const char *k_no_dependencies[] = { nullptr };
 
+// The generator owns the solid infill pattern list. Pattern plugins may extend
+// it through orchestrator_modify_option_def(); every value is a plugin id.
+const char *k_solid_fill_pattern_key = "solid_fill_pattern";
+const raw_used_config_key k_used_config_keys[] = {
+    { k_solid_fill_pattern_key, RAW_CO_ENUM, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT }
+};
+const char *k_defined_config_keys[] = { k_solid_fill_pattern_key };
+
+void create_solid_fill_pattern_option(orchestrator_handle *orchestrator)
+{
+    // Base list of pattern plugin ids. The legacy "(filled)" variants are gone:
+    // gap fill is owned by infill.post_process.gap_fill.
+    static const key_value_string_pair_t k_solid_patterns[] = {
+        { "ensuring",           "Ensuring" },
+        { "rectilinear",        "Rectilinear" },
+        { "monotonic",          "Monotonic" },
+        { "monotoniclines",     "Monotonic Lines" },
+        { "alignedrectilinear", "Aligned Rectilinear" },
+        { "concentric",         "Concentric" },
+        { "hilbertcurve",       "Hilbert Curve" },
+        { "archimedeanchords",  "Archimedean Chords" },
+        { "octagramspiral",     "Octagram Spiral" },
+        { "smooth",             "Ironing" },
+    };
+
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = k_solid_fill_pattern_key;
+    def.type = RAW_CO_ENUM;
+    def.gui_type = RAW_GUI_TYPE_SELECT_CLOSE;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.category = RAW_OPTION_CATEGORY_INFILL;
+    def.invalidates_step = STEP_INFILL;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.label = "Solid fill pattern";
+    def.full_label = "Solid fill pattern";
+    def.tooltip = "Fill pattern for solid (internal) infill. This only affects the solid not-visible layers."
+        " You should use rectilinear in most cases. You can try ironing for translucent material.";
+    def.contains_plugin_id = 1;
+    def.default_serialized_value = "ensuring";
+    def.enum_def.value_label_pairs = {
+        k_solid_patterns,
+        uint32_t(sizeof(k_solid_patterns) / sizeof(k_solid_patterns[0]))
+    };
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
+void register_solid_fill_pattern_rules(orchestrator_handle *orchestrator)
+{
+    using slic3r_api::all_of;
+    using slic3r_api::any_of;
+    using slic3r_api::int_equals;
+    using slic3r_api::non_zero;
+    using slic3r_api::true_;
+
+    // Same condition as the legacy FFF print rule: the solid pattern is
+    // selectable only when the print produces solid infill.
+    const slic3r_api::GuiCondition has_solid = any_of({
+        non_zero("top_solid_layers"),
+        all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+        int_equals("solid_infill_every_layers", 1),
+        non_zero("bottom_solid_layers"),
+        all_of({ non_zero("fill_density"), non_zero("solid_infill_every_layers") }),
+        all_of({ non_zero("fill_density"), non_zero("solid_infill_below_area") })
+    });
+
+    slic3r_api::GuiRule::enable_any({ k_solid_fill_pattern_key })
+        .when(has_solid)
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .group(Slic3r::FFF_PRINT_GUI_RULE_GROUP)
+        .add_to(orchestrator);
+}
+
 struct SurfaceInfillRecipe
 {
     std::string pattern_plugin_id;
@@ -96,10 +172,14 @@ c_flow to_c_flow(const Slic3r::Flow &flow)
     return out;
 }
 
-std::string serialized_pattern_id(Slic3r::InfillPattern pattern)
+std::string serialized_pattern_id(const Slic3r::PrintRegionConfig &region_config, const char *key)
 {
-    Slic3r::ConfigOptionEnum<Slic3r::InfillPattern> option(pattern);
-    std::string value = option.serialize();
+    // Read the option generically so built-in enum options and plugin-defined
+    // pattern id options follow the same path.
+    const Slic3r::ConfigOption *option = region_config.option(key);
+    if (option == nullptr)
+        return std::string();
+    std::string value = option->serialize();
     if (!value.empty() && value.front() == '!')
         value.erase(value.begin());
     return value;
@@ -141,19 +221,19 @@ raw_extrusion_role raw_role_for_surface(const Slic3r::Surface &surface, bool bri
     return RAW_EXTRUSION_ROLE_INTERNAL_INFILL;
 }
 
-Slic3r::InfillPattern pattern_for_surface(const Slic3r::Surface &surface,
-                                          bool bridge,
-                                          const Slic3r::PrintRegionConfig &region_config)
+std::string pattern_for_surface(const Slic3r::Surface &surface,
+                                bool bridge,
+                                const Slic3r::PrintRegionConfig &region_config)
 {
     if (bridge)
-        return region_config.bridge_fill_pattern.value;
+        return serialized_pattern_id(region_config, "bridge_fill_pattern");
     if (surface.has_pos_top())
-        return region_config.top_fill_pattern.value;
+        return serialized_pattern_id(region_config, "top_fill_pattern");
     if (surface.has_pos_bottom())
-        return region_config.bottom_fill_pattern.value;
+        return serialized_pattern_id(region_config, "bottom_fill_pattern");
     if (surface.has_fill_solid())
-        return region_config.solid_fill_pattern.value;
-    return region_config.fill_pattern.value;
+        return serialized_pattern_id(region_config, "solid_fill_pattern");
+    return serialized_pattern_id(region_config, "fill_pattern");
 }
 
 Slic3r::InfillConnection connection_for_surface(const Slic3r::Surface &surface,
@@ -245,13 +325,13 @@ SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
     const Slic3r::PrintRegionConfig &region_config = region.region().config();
     const bool bridge = layer.id() > 0 && surface.has_mod_bridge();
     const Slic3r::FlowRole extrusion_role = flow_role_for_surface(surface);
-    const Slic3r::InfillPattern pattern = pattern_for_surface(surface, bridge, region_config);
+    const std::string pattern_id = pattern_for_surface(surface, bridge, region_config);
     const Slic3r::Flow flow = bridge ?
         bridge_flow_for_surface(layer, region, extrusion_role, region_config) :
         normal_flow_for_surface(layer, region, extrusion_role, surface);
 
     SurfaceInfillRecipe recipe;
-    recipe.pattern_plugin_id = serialized_pattern_id(pattern);
+    recipe.pattern_plugin_id = pattern_id;
     recipe.raw.surface_type = static_cast<raw_surface_type>(surface.surface_type);
     recipe.raw.extrusion_role = raw_role_for_surface(surface, bridge);
     recipe.raw.flow = to_c_flow(flow);
@@ -270,12 +350,12 @@ SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
     recipe.raw.gap_fill_enabled = 0;
 
     recipe.raw.dont_adjust = 0;
-    recipe.raw.monotonic = pattern == Slic3r::ipMonotonic || pattern == Slic3r::ipMonotonicLines ? 1 : 0;
+    recipe.raw.monotonic = pattern_id == "monotonic" || pattern_id == "monotoniclines" ? 1 : 0;
     recipe.raw.fill_exactly = region_config.enforce_full_fill_volume.get_bool() ? 1 : 0;
     recipe.raw.complete = 0;
     recipe.raw.use_arachne = (region_config.perimeter_generator == Slic3r::PerimeterGeneratorType::Arachne &&
-                              pattern == Slic3r::ipConcentric) ||
-                             pattern == Slic3r::ipEnsuring ? 1 : 0;
+                              pattern_id == "concentric") ||
+                             pattern_id == "ensuring" ? 1 : 0;
     recipe.raw.can_angle_cross = region_config.fill_angle_cross ? 1 : 0;
     recipe.raw.extruder = region.region().extruder(extrusion_role, object);
     recipe.raw.priority = int32_t(surface.priority);
@@ -465,6 +545,28 @@ const char *const *DefaultInfillGenerator::dependencies_impl() const noexcept
 int32_t DefaultInfillGenerator::priority_impl() const noexcept
 {
     return 0;
+}
+
+int32_t DefaultInfillGenerator::used_config_keys(raw_used_config_key *keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t index = 0; index < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++index)
+            keys[index] = k_used_config_keys[index];
+    return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
+}
+
+int32_t DefaultInfillGenerator::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t index = 0; index < sizeof(k_defined_config_keys) / sizeof(k_defined_config_keys[0]); ++index)
+            keys[index] = k_defined_config_keys[index];
+    return int32_t(sizeof(k_defined_config_keys) / sizeof(k_defined_config_keys[0]));
+}
+
+void DefaultInfillGenerator::inilialize_impl(storage_handle *) const
+{
+    create_solid_fill_pattern_option(m_orchestrator);
+    register_solid_fill_pattern_rules(m_orchestrator);
 }
 
 const char *DefaultInfillGenerator::progress_message_format_impl() const noexcept

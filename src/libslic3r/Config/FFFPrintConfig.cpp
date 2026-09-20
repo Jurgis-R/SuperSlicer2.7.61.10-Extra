@@ -445,8 +445,13 @@ std::string validate(const FullPrintConfig& cfg)
         return "Invalid value for --bottom-fill-pattern";
 
     // --solid-fill-pattern
-    if (!PrintConfigDef::instance().get("solid_fill_pattern")->has_enum_value(cfg.solid_fill_pattern.serialize()))
-        return "Invalid value for --solid-fill-pattern";
+    // The option is defined by the infill.generator.default plugin: validate it
+    // only when the plugin is loaded and the config carries a value.
+    if (const ConfigOptionDef *solid_pattern_def = PrintConfigDef::instance().get("solid_fill_pattern")) {
+        if (const ConfigOption *solid_pattern = cfg.optptr("solid_fill_pattern");
+            solid_pattern != nullptr && !solid_pattern_def->has_enum_value(solid_pattern->serialize()))
+            return "Invalid value for --solid-fill-pattern";
+    }
 
     // --fill-density
     if (fabs(cfg.fill_density.value - 100.) < EPSILON &&
@@ -828,7 +833,7 @@ void init_categories(PrintConfigDef &definition)
         "fill_smooth_distribution",
         "top_fill_pattern",
         "bottom_fill_pattern",
-        "solid_fill_pattern",
+        // solid_fill_pattern is registered by the infill.generator.default plugin.
         "bridge_fill_pattern",
         "infill_every_layers",
 //      "infill_only_where_needed",
@@ -2342,31 +2347,8 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionEnum<InfillPattern>(ipMonotonic));
 
-    def = definition.add("solid_fill_pattern", coEnum, ptFFF);
-    def->label = L("Solid fill pattern");
-    def->category = OptionCategory::infill;
-    def->invalidates_step = posInfill;
-    def->tooltip = L("Fill pattern for solid (internal) infill. This only affects the solid not-visible layers. You should use rectilinear in most cases. You can try ironing for translucent material."
-        " Rectilinear (filled) replaces zig-zag patterns by a single big line & is more efficient for filling little spaces."
-        "\nIf you want an 'aligned' pattern, set 90° to the fill angle increment setting.");
-    def->set_enum<InfillPattern>({
-        { "ensuring",           L("Ensuring") },
-        { "rectilinear",        L("Rectilinear") },
-        { "rectilineargapfill", L("Rectilinear (filled)") },
-        { "monotonic",          L("Monotonic") },
-        { "monotonicgapfill",   L("Monotonic (filled)") },
-        { "monotoniclines",     L("Monotonic Lines") },
-        { "alignedrectilinear", L("Aligned Rectilinear") },
-        { "concentric",         L("Concentric") },
-        { "concentricgapfill",  L("Concentric (filled)") },
-        { "hilbertcurve",       L("Hilbert Curve") },
-        { "archimedeanchords",  L("Archimedean Chords") },
-        { "octagramspiral",     L("Octagram Spiral") },
-        { "smooth",             L("Ironing") },
-    });
-
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionEnum<InfillPattern>(ipEnsuring));
+    // solid_fill_pattern is created by the infill.generator.default plugin so
+    // the solid pattern list can be extended by pattern plugins.
 
     def = definition.add("enforce_full_fill_volume", coBool, ptFFF);
     def->label = L("Enforce 100% fill volume");
@@ -9131,6 +9113,7 @@ using slic3r_api::int_equals;
 using slic3r_api::int_not_equals;
 using slic3r_api::non_zero;
 using slic3r_api::percent;
+using slic3r_api::string_equals;
 using slic3r_api::true_;
 using slic3r_api::vector_empty;
 
@@ -9716,7 +9699,9 @@ void initialize_fff_print_gui_rules()
                    "top_infill_extrusion_width", "top_infill_extrusion_spacing",
                    "top_solid_infill_speed" }, has_top);
         add_rule({ "bottom_fill_pattern", "infill_connection_bottom" }, has_bottom);
-        add_rule({ "solid_fill_pattern", "infill_connection_solid",
+        // solid_fill_pattern is registered by the infill.generator.default plugin,
+        // which also publishes its own activation rule.
+        add_rule({ "infill_connection_solid",
                    "bridge_fill_pattern", "infill_connection_bridge" }, has_solid);
 
         const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
@@ -9726,14 +9711,14 @@ void initialize_fff_print_gui_rules()
             ironing_pp,
             int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)),
             int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)),
-            int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth))
+            string_equals("solid_fill_pattern", "smooth")
         });
         add_rule({ "ironing_speed" }, ironing_any);
 
         const GuiCondition fill_smooth = any_of({
             all_of({ has_top, int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)) }),
             all_of({ has_bottom, int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)) }),
-            all_of({ has_solid, int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth)) }),
+            all_of({ has_solid, string_equals("solid_fill_pattern", "smooth") }),
             all_of({ have_support, int_equals("support_material_top_interface_pattern", int(InfillPattern::ipSmooth)) }),
             all_of({ have_support, int_equals("support_material_bottom_interface_pattern", int(InfillPattern::ipSmooth)) })
         });

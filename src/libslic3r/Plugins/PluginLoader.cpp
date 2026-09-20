@@ -823,7 +823,7 @@ void register_infill_pattern_config_choices(Orchestrator &orchestrator)
         "fill_pattern",
         "top_fill_pattern",
         "bottom_fill_pattern",
-        "solid_fill_pattern",
+        // solid_fill_pattern is defined and finalized by the infill generator plugin.
         "bridge_fill_pattern"
     };
 

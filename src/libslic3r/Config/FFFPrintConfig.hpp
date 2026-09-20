@@ -552,7 +552,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloatOrPercent,       small_perimeter_speed))
     ((ConfigOptionFloatOrPercent,       small_perimeter_min_length))
     ((ConfigOptionFloatOrPercent,       small_perimeter_max_length))
-    ((ConfigOptionEnum<InfillPattern>,  solid_fill_pattern))
+    // solid_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionFloatOrPercent,       solid_infill_acceleration))
     ((ConfigOptionFloat,                solid_infill_below_area))
     ((ConfigOptionFloat,                solid_infill_below_layer_area))
