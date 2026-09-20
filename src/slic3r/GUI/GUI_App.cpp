@@ -13,6 +13,7 @@
 
 #include "libslic3r/Technologies.hpp"
 #include "libslic3r/Thread.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 #include "GUI_Init.hpp"
 #include "GUI_ObjectList.hpp"
 #include "GUI_ObjectManipulation.hpp"
@@ -1663,6 +1664,9 @@ bool GUI_App::on_init_inner()
 
     // If load_language() fails, the application closes.
     load_language(wxString(), true);
+    // Config definitions (core and plugins) now exist and the catalogs are
+    // loaded: store their translated labels in the definitions.
+    update_config_option_translations();
 #ifdef _MSW_DARK_MODE
     bool init_dark_color_mode = app_config->get_bool("dark_color_mode");
     bool init_sys_menu_enabled = app_config->get_bool("sys_menu_enabled");
@@ -1835,6 +1839,8 @@ bool GUI_App::on_init_inner()
         plugin_updater.reset(new PluginUpdater());
         apply_repository_archive_download_timeout();
         plugin_updater->reload_all_plugins();
+        // Plugins may have registered new definitions: refresh their translations.
+        update_config_option_translations();
         Bind(EVT_SLIC3R_VERSION_ONLINE, &GUI_App::on_version_read, this);
         Bind(EVT_SLIC3R_EXPERIMENTAL_VERSION_ONLINE, [this](const wxCommandEvent& evt) {
             if (this->plater_ != nullptr && (m_app_updater->get_triggered_by_user() || app_config->get("notify_release") == "all")) {
@@ -3237,6 +3243,7 @@ bool GUI_App::select_language()
             //    m_wxLocale->GetCanonicalName()
             // 3) new_language_info->CanonicalName is a safe bet. It points to a valid dictionary name.
 			app_config->set("translation_language", new_language_info->CanonicalName.ToUTF8().data());            
+            update_config_option_translations();
     		return true;
     	}
     }
@@ -3406,6 +3413,17 @@ bool GUI_App::load_language(wxString language, bool initial)
     //wxSetlocale(LC_NUMERIC, "C");
     Preset::update_suffix_modified(format(" (%1%)", _L("modified")));
 	return true;
+}
+
+void GUI_App::update_config_option_translations()
+{
+    // Fill the translated label / full_label / tooltip and enum labels stored in
+    // the configuration definitions. Plugin definitions use their own
+    // translation_domain; a domain without a loaded catalog keeps the raw text.
+    PrintConfigDef::instance_mutable().update_translations(
+        [](const std::string &text, const std::string &domain) {
+            return I18N::translate_utf8_in_domain(text, domain);
+        });
 }
 
 Tab* GUI_App::get_tab(Preset::Type type, bool only_completed)

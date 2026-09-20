@@ -309,6 +309,10 @@ public:
 
     bool            switch_language();
     bool            load_language(wxString language, bool initial);
+    // Refresh the translated label / full_label / tooltip and enum labels stored
+    // in the configuration definitions. Called after load_language() and after
+    // plugin reloads; safe to call repeatedly.
+    void            update_config_option_translations();
 
     Tab*            get_tab(Preset::Type type, bool only_completed = true);
     ConfigOptionMode get_mode();

@@ -141,6 +141,14 @@ public:
     const std::vector<std::string>& labels() const { return this->has_labels() ? m_labels : m_values; }
     const std::string&              label(int idx) const { return this->labels()[idx]; }
 
+    // Translated counterpart of labels(), filled by ConfigDef::update_translations()
+    // after the GUI loaded a language. Falls back to the raw labels when nothing
+    // was translated. Never use it for value parsing, only for display.
+    const std::vector<std::string>& translated_labels() const {
+        return this->m_labels_translated.empty() ? this->labels() : this->m_labels_translated;
+    }
+    const std::string&              translated_label(int idx) const { return this->translated_labels()[idx]; }
+
     // Look up a closed enum value of this combo box based on an index of the combo box value / label.
     // Such a mapping should always succeed.
     int index_to_enum(int index) const;
@@ -187,6 +195,10 @@ private:
 
     std::vector<std::string>        m_values;
     std::vector<std::string>        m_labels;
+    // Translated labels, index-aligned with m_labels (untranslated entries keep
+    // the raw label). Empty when nothing was translated; filled by
+    // ConfigDef::update_translations().
+    std::vector<std::string>        m_labels_translated;
     // If true, then enum_values are sorted and they contain all the values, thus the UI element ordinary
     // to enum value could be converted directly.
     bool                            m_values_ordinary { false };
@@ -344,6 +356,20 @@ public:
     // empty value keeps the historic application catalog lookup.
     std::string                         translation_domain;
     std::string                         get_full_label() const { return !full_label.empty() ? full_label : label; }
+    // Translated counterparts of label / full_label / tooltip, filled by
+    // ConfigDef::update_translations() once the GUI loaded a language. They are
+    // host-only and never set from a plugin definition; an empty value means
+    // "use the raw field". Consumers must not translate them again.
+    std::string                         label_translated;
+    std::string                         full_label_translated;
+    std::string                         tooltip_translated;
+    const std::string&                  translated_label() const { return !label_translated.empty() ? label_translated : label; }
+    const std::string&                  translated_full_label() const {
+        if (!full_label_translated.empty())
+            return full_label_translated;
+        return !full_label.empty() ? full_label : label;
+    }
+    const std::string&                  translated_tooltip() const { return !tooltip_translated.empty() ? tooltip_translated : tooltip; }
     // With which printer technology is this configuration valid?
     PrinterTechnology                   printer_technology = ptUnknown;
     // Where plugin-created static options shall store their actual value.
@@ -541,6 +567,14 @@ public:
 
     // public for orchestrator
     ConfigOptionDef*        add(const t_config_option_key &opt_key, ConfigOptionType type, PrinterTechnology pt = ptUnknown);
+    // Fill the translated label / full_label / tooltip and enum labels of every
+    // definition from the raw fields. translate(text, translation_domain)
+    // returns the text unchanged when no translation exists; an empty result or
+    // a result identical to the original clears the translated field so the raw
+    // value stays authoritative. Everything is recomputed from the originals,
+    // so calling it again after a language change is safe. Returns the number
+    // of definitions that changed.
+    size_t                  update_translations(const std::function<std::string(const std::string &text, const std::string &domain)> &translate);
     // Finalize open / close enums, validate everything.
     void                    finalize();
 protected:

@@ -16,6 +16,7 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_queries.cpp
     test_public_kdtree.cpp
     test_clipper_views.cpp
+    test_config_translations.cpp
     test_deferred_callback_exception.cpp
     test_extrusion_continuity.cpp
     test_extrusion_ordered_leaf.cpp
