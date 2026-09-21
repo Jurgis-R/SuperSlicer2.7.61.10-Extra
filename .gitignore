@@ -1,30 +1,36 @@
-Build
-Build.bat
-/build/
-MYMETA.json
-MYMETA.yml
+# ===== Build & packaging =====
+BUILD*
+Build*
+build*
 _build
 blib
-xs/buildtmp
+releases/
+
+# ===== Perl / XS =====
 *.o
-MANIFEST.bak
-xs/MANIFEST.bak
 xs/assertlib*
-.init_bundle.ini
-.vs/*
+MYMETA.*
+MANIFEST.bak
+
+# ===== Divers =====
 /src/TAGS
-/.vscode/
-build*
-build-linux/*
-deps/build*
-deps/build-linux/*
-**/.DS_Store
-**/.idea/
-.pkg_cache
 CMakeUserPresets.json
 **/bad_*
-releases/
+AGENT*
+Agent*
+agent*
+
+# ===== Resources (plugins) =====
 resources/plugins/*.zip
 resources/plugins/descriptions/
-.tgitconfig
-AGENT*.md
+
+# ===== Hidden files =====
+# Ignorer tout dot-file / dot-dossier, puis ré-autoriser l'utile.
+# Garder ce bloc EN DERNIER : les lignes "!…" doivent suivre « .* ».
+.*
+!.github/
+!.github/**
+!.gitignore
+!.gitattributes
+!.gitmodules
+!.clang-format
