@@ -1049,7 +1049,6 @@ void init_categories(PrintConfigDef &definition)
         "print_temperature",
         "print_bed_temperature",
         "print_first_layer_bed_temperature",
-        "print_retract_lift",
         "external_perimeter_cut_corners",
         "external_perimeter_overlap",
         "perimeter_bonding",
@@ -5570,17 +5569,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->can_be_disabled = true;
     def->set_default_value(disable_default_option(new ConfigOptionInt(200)));
-
-    def = definition.add("print_retract_lift", coFloat, ptFFF);
-    def->label = L("Z-lift override");
-    def->category = OptionCategory::filament;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("Set the new lift-z value for this override. 0 will disable the z-lift. -& to disable. May only work on Height range modifiers.");
-    def->sidetext = L("mm");
-    def->min = 0;
-    def->mode = comExpert | comSuSi;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionFloat(0)));
 
     def = definition.add("print_temperature", coInt, ptFFF);
     def->label = L("Temperature");

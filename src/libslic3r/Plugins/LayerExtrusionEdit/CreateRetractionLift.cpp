@@ -3,10 +3,22 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+CreateRetractionLift.cpp
+========================
+
+Implements the compact-scope retraction-lift provider declared in
+CreateRetractionLift.hpp: the print_retract_lift option definition and its
+activation rule, the two passes that turn the requested lift into wipe and
+travel geometry, and the registration entry point. The header describes the
+pass contract and the prerequisites on transition scopes.
+*/
+
 #include "CreateRetractionLift.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -14,6 +26,8 @@
 #include <vector>
 
 #include "ExtrusionScopeHelpers.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
@@ -52,6 +66,38 @@ const char *const k_dependencies[] = {
 const RegionSettings::OptionKeyGroup k_lift_region_keys = {
     "print_retract_lift"
 };
+
+const char *const k_defined_config_keys[] = {
+    "print_retract_lift"
+};
+
+void initialize_create_retraction_lift_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definition owned by this module. It fixes the option type, override
+    scope, default and GUI metadata; the defined key is published in the print
+    presets, so profiles read and write it by name like any built-in setting.
+    Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "print_retract_lift";
+    def.type = RAW_CO_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_FILAMENT;
+    def.label = "Z-lift override";
+    def.tooltip = "Set the new lift-z value for this override. 0 will disable the z-lift. -& to disable. May only work on Height range modifiers.";
+    def.sidetext = "mm";
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 
 /* Properties inherited while locating printable or process geometry. */
 struct EffectiveState
@@ -113,6 +159,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
 
     /*
@@ -926,6 +974,19 @@ int32_t CreateRetractionLift::used_config_keys(
     if (keys != nullptr)
         std::copy(std::begin(used_keys), std::end(used_keys), keys);
     return int32_t(sizeof(used_keys) / sizeof(used_keys[0]));
+}
+
+int32_t CreateRetractionLift::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void CreateRetractionLift::inilialize_impl(storage_handle *) const
+{
+    initialize_create_retraction_lift_settings(m_orchestrator);
 }
 
 const char *CreateRetractionLift::progress_message_format_impl() const noexcept

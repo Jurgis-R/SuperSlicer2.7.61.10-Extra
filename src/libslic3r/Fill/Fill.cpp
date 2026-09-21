@@ -212,7 +212,7 @@ struct SurfaceFillParams : FillParams
             RETURN_COMPARE_NON_EQUAL(config->print_extrusion_multiplier.value);
             RETURN_COMPARE_NON_EQUAL(config->print_first_layer_temperature.value);
             RETURN_COMPARE_NON_EQUAL_OPTION(print_retract_length);
-            RETURN_COMPARE_NON_EQUAL(config->print_retract_lift.value);
+            RETURN_COMPARE_NON_EQUAL_OPTION(print_retract_lift);
             RETURN_COMPARE_NON_EQUAL(config->print_temperature.value);
             // end print modifier
             if (this->pattern == ipConcentric || rhs.pattern == ipConcentric) {
@@ -263,7 +263,7 @@ struct SurfaceFillParams : FillParams
             || config->print_extrusion_multiplier        != rhs.config->print_extrusion_multiplier
             || config->print_first_layer_temperature     != rhs.config->print_first_layer_temperature
             || !fill_config_option_equal(config, rhs.config, "print_retract_length")
-            || config->print_retract_lift                != rhs.config->print_retract_lift
+            || !fill_config_option_equal(config, rhs.config, "print_retract_lift")
             || config->print_temperature                 != rhs.config->print_temperature
             // end print modifier
             ))

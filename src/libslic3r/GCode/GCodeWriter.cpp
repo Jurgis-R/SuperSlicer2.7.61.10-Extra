@@ -1189,8 +1189,10 @@ double GCodeWriter::will_lift(int layer_id) const{
     }
 
     // use the override if set
-    if (target_lift > 0 && config_region && config_region->print_retract_lift.is_enabled()) {
-        target_lift = config_region->print_retract_lift.value;
+    const ConfigOptionFloat *print_retract_lift_opt =
+        config_region != nullptr ? config_region->opt<ConfigOptionFloat>("print_retract_lift") : nullptr;
+    if (target_lift > 0 && print_retract_lift_opt != nullptr && print_retract_lift_opt->is_enabled()) {
+        target_lift = print_retract_lift_opt->value;
     }
 
     // one-time extra lift (often for dangerous travels)

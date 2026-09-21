@@ -549,6 +549,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.fan.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.toolchange.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.retraction.default");
+        activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.lift.default");
         activate_plugin_or_fail(orchestrator, "skirt_brim.brim.default");
         activate_plugin_or_fail(orchestrator, "skirt_brim.skirt.default");
         activate_plugin_or_fail(orchestrator, "skirt_brim.brim_skirt_trim.default");

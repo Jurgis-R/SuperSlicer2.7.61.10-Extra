@@ -10291,12 +10291,12 @@ std::string GCodeGenerator::retract_and_wipe(bool toolchange, bool inhibit_lift)
         // check if need to lift
         bool need_lift = !m_writer.tool_is_extruder() || toolchange
             || (BOOL_EXTRUDER_CONFIG(retract_lift_first_layer) && this->m_layer_index == 0 &&
-                (!m_config.print_retract_lift.is_enabled() || m_config.print_retract_lift.value > 0))
+                (!config_is_enabled(m_config, "print_retract_lift") || config_value(m_config, "print_retract_lift") > 0))
             || this->m_writer.get_extra_lift() > 0;
         bool last_fill_extusion_role_top_infill = (this->m_last_extrusion_role == GCodeExtrusionRole::TopSolidInfill || this->m_last_extrusion_role == GCodeExtrusionRole::Ironing);
         if (this->m_last_extrusion_role == GCodeExtrusionRole::GapFill)
             last_fill_extusion_role_top_infill = (this->m_last_not_gapfill_extrusion_role == GCodeExtrusionRole::TopSolidInfill || this->m_last_not_gapfill_extrusion_role == GCodeExtrusionRole::Ironing);
-        if (!need_lift && (!m_config.print_retract_lift.is_enabled() || m_config.print_retract_lift.value > 0)) {
+        if (!need_lift && (!config_is_enabled(m_config, "print_retract_lift") || config_value(m_config, "print_retract_lift") > 0)) {
             if (STRING_EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Not on top")
                 need_lift = !last_fill_extusion_role_top_infill;
             else if (STRING_EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Only on top")

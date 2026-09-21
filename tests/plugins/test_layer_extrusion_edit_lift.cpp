@@ -16,7 +16,11 @@ and the rule that a layer worker never has to rebuild printable scope content.
 
 #include <algorithm>
 #include <optional>
+#include <string>
 #include <vector>
+
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 namespace {
 
@@ -142,6 +146,23 @@ TEST_CASE("CreateRetractionLift registers after travel routing",
         return key.key == "wipe_lift" &&
             key.type == RAW_CO_VECTOR_FLOAT_OR_PERCENT;
     }));
+
+    // The plugin publishes print_retract_lift and reads it as a region override.
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "print_retract_lift");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("print_retract_lift");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloat);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->can_be_disabled);
+    CHECK(def->default_value->serialize() == "!0");
+    CHECK(PrintConfig::defaults().option("print_retract_lift") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("print_retract_lift") != nullptr);
 }
 
 TEST_CASE("CreateRetractionLift creates a symmetric ramped travel",
