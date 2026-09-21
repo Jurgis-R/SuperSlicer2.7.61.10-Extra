@@ -1288,7 +1288,6 @@ void init_categories(PrintConfigDef &definition)
         "end_gcode",
         "before_layer_gcode",
         "layer_gcode",
-        "toolchange_gcode",
         "color_change_gcode", "pause_print_gcode", "template_custom_gcode","feature_gcode",
         "between_objects_gcode",
         "between_objects_gcode_before_move",
@@ -8237,21 +8236,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->sidetext = L("s");
     def->min = 0;
     def->set_default_value(new ConfigOptionFloat(30));
-
-    def = definition.add("toolchange_gcode", coString, ptFFF);
-    def->label = L("Tool change G-code");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This custom code is inserted at every extruder change. If you don't leave this empty, you are "
-        "expected to take care of the toolchange yourself - Slic3r will not output any other G-code to "
-        "change the filament. You can use placeholder variables for all Slic3r settings as well as {toolchange_z}, {layer_z}, {layer_num}, {max_layer_z}, {previous_extruder} "
-        "and {next_extruder}, so e.g. the standard toolchange command can be scripted as T{next_extruder}."
-        "!! Warning !!: if any character is written here, Slic3r won't output any toolchange command by itself.");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 5;
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionString(""));
 
     def = definition.add("tool_name", coStrings, ptFFF);
     def->label = L("Tool name");

@@ -67,7 +67,7 @@ TEST_CASE("CreateToolChange follows the complete ordered tool chronology",
     Model model;
     prepare_print(print, model);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.toolchange_gcode.value.clear();
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
 
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups[0].layers[0].tool_groups.emplace_back();
@@ -121,7 +121,7 @@ TEST_CASE("CreateToolChange stores the final structural script context",
     Model model;
     prepare_print(print, model);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.toolchange_gcode.value =
+    config.option<ConfigOptionString>("toolchange_gcode")->value =
         "; P[previous_extruder] N[next_extruder] L[layer_num]";
 
     PrintingGroup &group = print.mutable_printing_plan().groups.front();
@@ -158,7 +158,7 @@ TEST_CASE("Whitespace toolchange G-code uses only the semantic fallback",
     Model model;
     prepare_print(print, model);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.toolchange_gcode.value = " \t\r\n";
+    config.option<ConfigOptionString>("toolchange_gcode")->value = " \t\r\n";
 
     PrintingLayerGroup &layer = print.mutable_printing_plan().groups.front()
         .layers.front();
@@ -185,7 +185,7 @@ TEST_CASE("Unconstrained tool visits inherit the ordered tool across layers and 
     Model model;
     prepare_print(print, model);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.toolchange_gcode.value = GENERATE(std::string(), std::string("; [previous_extruder] -> [next_extruder]"));
+    config.option<ConfigOptionString>("toolchange_gcode")->value = GENERATE(std::string(), std::string("; [previous_extruder] -> [next_extruder]"));
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups[0].layers[0].tool_groups[0].extruder_id = 1;
     // Empty wildcard visits must keep the selection, just like printable ones.
@@ -224,7 +224,7 @@ TEST_CASE("Unconstrained tool visits inherit the ordered tool across layers and 
     CHECK(slic3r_api::printing_extrusion_scope_has_flag(
         *property, slic3r_api::PRINTING_EXTRUSION_SCOPE_INCOMING_TOOLCHANGE));
     const ExtrusionEntity &event = first_before_event(middle.tool_groups[1]);
-    if (config.toolchange_gcode.value.empty()) {
+    if (config.option<ConfigOptionString>("toolchange_gcode")->value.empty()) {
         const ExtrusionPropertySpecialCommand *command = event.get_property<ExtrusionPropertySpecialCommand>();
         REQUIRE(command != nullptr);
         CHECK(command->extra_data == Approx(0.0));

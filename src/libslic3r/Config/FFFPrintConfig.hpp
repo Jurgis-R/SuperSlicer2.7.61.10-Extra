@@ -746,7 +746,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBools,               travel_lift_before_obstacle))
     ((ConfigOptionFloats,              temperature_heat_speed))
     ((ConfigOptionStrings,             tool_name))
-    ((ConfigOptionString,              toolchange_gcode))
     ((ConfigOptionFloat,               travel_speed))
     ((ConfigOptionFloat,               travel_speed_z))
     ((ConfigOptionBool,                use_firmware_retraction))

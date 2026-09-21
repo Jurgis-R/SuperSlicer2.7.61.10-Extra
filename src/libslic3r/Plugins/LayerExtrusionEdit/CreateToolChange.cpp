@@ -3,16 +3,30 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+CreateToolChange.cpp
+====================
+
+Implements the built-in tool-selection producer declared in CreateToolChange.hpp:
+the toolchange_gcode option definition and its activation rule, the provider
+callbacks, and the registration entry point. The setup scan and the per-layer
+run that materialize every real tool change in the ordered PrintingPlan are
+documented in the header.
+*/
+
 #include "CreateToolChange.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
@@ -44,6 +58,40 @@ namespace slic3r_api { namespace LayerExtrusionEdit { namespace CreateToolChange
 namespace {
 
 const char *const k_no_dependencies[] = {nullptr};
+
+const char *const k_defined_config_keys[] = {
+    "toolchange_gcode"
+};
+
+void initialize_create_tool_change_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definition owned by this module. It fixes the option type, override
+    scope, default and GUI metadata; the defined key is published in the print
+    presets, so profiles read and write it by name like any built-in setting.
+    Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "toolchange_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "Tool change G-code";
+    def.tooltip = "This custom code is inserted at every extruder change. If you don't leave this empty, you are "
+        "expected to take care of the toolchange yourself - Slic3r will not output any other G-code to "
+        "change the filament. You can use placeholder variables for all Slic3r settings as well as {toolchange_z}, {layer_z}, {layer_num}, {max_layer_z}, {previous_extruder} "
+        "and {next_extruder}, so e.g. the standard toolchange command can be scripted as T{next_extruder}."
+        "!! Warning !!: if any character is written here, Slic3r won't output any toolchange command by itself.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 5;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 
 /* Immutable prefix facts consumed by one parallel layer run. */
 struct LayerToolState
@@ -97,6 +145,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
 
     /* Prefix-scan tool visits without traversing any extrusion tree. */
@@ -255,6 +305,19 @@ int32_t CreateToolChange::used_config_keys(
             "toolchange_gcode", RAW_CO_STRING,
             RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
     return 1;
+}
+
+int32_t CreateToolChange::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void CreateToolChange::inilialize_impl(storage_handle *) const
+{
+    initialize_create_tool_change_settings(m_orchestrator);
 }
 
 const char *CreateToolChange::progress_message_format_impl() const noexcept

@@ -1354,7 +1354,12 @@ namespace DoExport {
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Before layer change G-code"), config.before_layer_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("After layer change G-code"), config.layer_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Extrusion type change G-code"), config.feature_gcode.value);
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Tool change G-code"), config.toolchange_gcode.value);
+        if (ret.size() < MAX_TAGS_COUNT) {
+            const ConfigOptionString *toolchange_gcode_opt =
+                print.config().opt<ConfigOptionString>("toolchange_gcode");
+            if (toolchange_gcode_opt != nullptr)
+                check(_u8L("Tool change G-code"), toolchange_gcode_opt->value);
+        }
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Between objects G-code (for sequential printing"), config.between_objects_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Color Change G-code"), GCodeWriter::get_default_color_change_gcode(config));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Pause Print G-code"), GCodeWriter::get_default_pause_gcode(config));
@@ -10299,7 +10304,9 @@ std::string GCodeGenerator::toolchange(extruder_index_t extruder_id, coord_t pri
     std::string gcode;
 
     // Process the custom toolchange_gcode. If it is empty, insert just a Tn command.
-    std::string toolchange_gcode = m_config.toolchange_gcode.value;
+    const ConfigOptionString *toolchange_gcode_opt =
+        m_config.opt<ConfigOptionString>("toolchange_gcode");
+    std::string toolchange_gcode = toolchange_gcode_opt != nullptr ? toolchange_gcode_opt->value : std::string();
     boost::trim(toolchange_gcode); //remove invisible characters that may compromize the 'toolchange_gcode.empty()'
     std::string toolchange_gcode_parsed;
     if (!toolchange_gcode.empty() && m_writer.multiple_extruders) {

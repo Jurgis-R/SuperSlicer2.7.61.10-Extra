@@ -77,7 +77,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     config.end_gcode.value.clear();
     config.before_layer_gcode.value.clear();
     config.layer_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
     config.between_objects_gcode.value.clear();
     config.start_filament_gcode.set(std::vector<std::string>{""});
     config.end_filament_gcode.set(std::vector<std::string>{""});

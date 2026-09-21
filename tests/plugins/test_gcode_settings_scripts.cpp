@@ -109,7 +109,7 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
     config.before_layer_gcode.value = "; before layer";
     config.layer_gcode.value = "; after layer move";
-    config.toolchange_gcode.value = "; custom toolchange";
+    config.option<ConfigOptionString>("toolchange_gcode")->value = "; custom toolchange";
     config.start_filament_gcode.set(std::vector<std::string>{"; start filament 0", "; start filament 1"});
     config.end_filament_gcode.set(std::vector<std::string>{"; end filament 0", "; end filament 1"});
     config.end_gcode.value = "; end print";
@@ -208,7 +208,7 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
 
     config.before_layer_gcode.value.clear();
     config.layer_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
     config.start_filament_gcode.set(std::vector<std::string>{"", ""});
     config.end_filament_gcode.set(std::vector<std::string>{"", ""});
     config.end_gcode.value.clear();
@@ -239,7 +239,7 @@ TEST_CASE("Between-object scripts select the requested side of the group move",
     config.end_gcode.value.clear();
     config.before_layer_gcode.value.clear();
     config.layer_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
     config.start_filament_gcode.set(std::vector<std::string>{""});
     config.end_filament_gcode.set(std::vector<std::string>{""});
     config.between_objects_gcode.value =
@@ -311,7 +311,7 @@ TEST_CASE("Single-extruder multimaterial finalizes only the active logical tool"
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
     config.start_gcode.value.clear();
     config.end_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
     config.start_filament_gcode.set(std::vector<std::string>{"", ""});
     config.end_filament_gcode.set(std::vector<std::string>{"; finalize 0", "; finalize 1"});
     config.single_extruder_multi_material.value = true;
@@ -358,7 +358,7 @@ TEST_CASE("Configured scripts use ordered plan tools and final layer state",
                                "B[start_gcode_bed_temperature]";
     config.before_layer_gcode.value = "; BEFORE_LAYER L[layer_num] Z[layer_z] P[previous_layer_z]";
     config.layer_gcode.value = "; LAYER L[layer_num] Z[layer_z]";
-    config.toolchange_gcode.value = "; CUSTOM_TOOL P[previous_extruder] N[next_extruder]";
+    config.option<ConfigOptionString>("toolchange_gcode")->value = "; CUSTOM_TOOL P[previous_extruder] N[next_extruder]";
     config.start_filament_gcode.set(std::vector<std::string>{
         "; START_FILAMENT F[filament_extruder_id] P[previous_extruder] N[next_extruder]",
         "; START_FILAMENT F[filament_extruder_id] P[previous_extruder] N[next_extruder]"
