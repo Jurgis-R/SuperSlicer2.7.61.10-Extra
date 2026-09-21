@@ -420,7 +420,10 @@ SmoothingParams get_smoothing_params(
             config.machine_max_feedrate_y.get_at(extruder_id)}
             .norm();
 
-    const double xy_acceleration = config.machine_max_acceleration_travel.get_at(extruder_id);
+    const ConfigOptionFloats *machine_max_acceleration_travel_opt =
+        config.opt<ConfigOptionFloats>("machine_max_acceleration_travel");
+    const double xy_acceleration = machine_max_acceleration_travel_opt != nullptr ?
+        machine_max_acceleration_travel_opt->get_at(extruder_id) : 0.;
 
     const double xy_acceleration_time = max_xy_velocity / xy_acceleration;
     const double xy_acceleration_distance = 1.0 / 2.0 * xy_acceleration *

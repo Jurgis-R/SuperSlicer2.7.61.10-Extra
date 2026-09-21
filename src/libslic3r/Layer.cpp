@@ -869,10 +869,20 @@ ExPolygons Layer::merged(coordf_t offset_scaled) const
     return expolygons;
 }
 
+// Compare one option of two region configs. A plugin-owned option that is absent
+// on both sides compares equal; present on one side only compares unequal.
+static bool region_config_option_equal(const PrintRegionConfig &lhs, const PrintRegionConfig &rhs, const char *key)
+{
+    const ConfigOption *lhs_option = lhs.option(key);
+    const ConfigOption *rhs_option = rhs.option(key);
+    return lhs_option == nullptr || rhs_option == nullptr ?
+        lhs_option == rhs_option : *lhs_option == *rhs_option;
+}
+
 bool config_compatible_for_perimeter(const PrintRegionConfig &config, const PrintRegionConfig &other_config, bool is_first_layer) {
     if (config.perimeter_extruder             == other_config.perimeter_extruder
         && config.perimeters                  == other_config.perimeters
-        && config.external_perimeter_acceleration == other_config.external_perimeter_acceleration
+        && region_config_option_equal(config, other_config, "external_perimeter_acceleration")
         && config.external_perimeter_extrusion_width == other_config.external_perimeter_extrusion_width
         && config.external_perimeter_overlap == other_config.external_perimeter_overlap
         && config.external_perimeter_speed == other_config.external_perimeter_speed // it os mandatory? can't this be set at gcode.cpp?
@@ -889,7 +899,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         //&& config.extra_perimeters_on_overhangs == other_config.extra_perimeters_on_overhangs // can be used in modifiers
         //&& config.gap_fill_enabled          == other_config.gap_fill_enabled
         && ((config.gap_fill_speed          == other_config.gap_fill_speed) || (!config.gap_fill_enabled && !other_config.gap_fill_enabled))
-        && config.gap_fill_acceleration     == other_config.gap_fill_acceleration
+        && region_config_option_equal(config, other_config, "gap_fill_acceleration")
         && config.gap_fill_last             == other_config.gap_fill_last
         && config.gap_fill_flow_match_perimeter == other_config.gap_fill_flow_match_perimeter
         && config.gap_fill_extension         == other_config.gap_fill_extension
@@ -908,7 +918,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && (!is_first_layer || config.only_one_perimeter_first_layer == other_config.only_one_perimeter_first_layer)
         //&& config.only_one_perimeter_top    == other_config.only_one_perimeter_top // can be used in modifiers
         //&& config.only_one_perimeter_top_other_algo == other_config.only_one_perimeter_top_other_algo // can be used in modifiers with only_one_perimeter_top
-        && config.overhangs_acceleration    == other_config.overhangs_acceleration
+        && region_config_option_equal(config, other_config, "overhangs_acceleration")
         // && config.overhang   == other_config.overhangs
         && config.overhangs_dynamic_speed   == other_config.overhangs_dynamic_speed // need regionSettings in gcode
         && config.overhangs_extrusion_spacing == other_config.overhangs_extrusion_spacing
@@ -941,7 +951,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && config.small_perimeter_min_length == other_config.small_perimeter_min_length
         && config.small_perimeter_max_length == other_config.small_perimeter_max_length
         //&& config.thin_walls                == other_config.thin_walls // can be used in modifiers
-        && config.thin_walls_acceleration   == other_config.thin_walls_acceleration
+        && region_config_option_equal(config, other_config, "thin_walls_acceleration")
         //&& config.thin_walls_min_width      == other_config.thin_walls_min_width // can be used in modifiers with thin_walls
         //&& config.thin_walls_overlap        == other_config.thin_walls_overlap // can be used in modifiers with thin_walls
         && config.thin_perimeters           == other_config.thin_perimeters

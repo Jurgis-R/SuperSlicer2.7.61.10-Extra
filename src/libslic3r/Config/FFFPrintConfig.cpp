@@ -902,24 +902,10 @@ void init_categories(PrintConfigDef &definition)
         "fuzzy_skin_point_dist",
         "fuzzy_skin_thickness",
         // acceleration
-        "bridge_acceleration",
-        "brim_acceleration",
-        "default_acceleration",
-        "external_perimeter_acceleration",
-        "first_layer_acceleration",
         "first_layer_acceleration_over_raft",
-        "gap_fill_acceleration",
-        "infill_acceleration",
-        "internal_bridge_acceleration",
-        "ironing_acceleration",
-        "overhangs_acceleration",
         "perimeter_acceleration",
-        "solid_infill_acceleration",
         "support_material_acceleration",
         "support_material_interface_acceleration",
-        "thin_walls_acceleration",
-        "top_solid_infill_acceleration",
-        "travel_acceleration",
         // skirt
         "skirts",
         "skirt_distance",
@@ -1227,9 +1213,7 @@ void init_categories(PrintConfigDef &definition)
     });
 
     definition.option_keys(RAW_PRESET_TYPE_FFF_PRINTER_MACHINE_LIMITS).insert( {
-        "machine_max_acceleration_extruding",
         "machine_max_acceleration_retracting",
-        "machine_max_acceleration_travel",
         "machine_max_acceleration_x", "machine_max_acceleration_y", "machine_max_acceleration_z", "machine_max_acceleration_e",
         "machine_max_feedrate_x", "machine_max_feedrate_y", "machine_max_feedrate_z", "machine_max_feedrate_e",
         "machine_min_extruding_rate", "machine_min_travel_rate",
@@ -1686,21 +1670,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionFloat(0.));
 
-    def = definition.add("bridge_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Bridges");
-    def->full_label = L("Bridge acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for bridges."
-                "\nCan be a % of the default acceleration"
-                "\nSet zero to use default acceleration for bridges.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "default_acceleration";
-    def->min = 0;
-    def->max_literal = { -220, false };
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
-
     def = definition.add("bridge_angle", coFloat, ptFFF);
     def->label = L("Bridging");
     def->full_label = L("Bridging angle");
@@ -1874,21 +1843,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->min = 0;
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
-
-    def = definition.add("brim_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Brim & Skirt");
-    def->full_label = L("Brim & Skirt acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for brim and skirt. "
-        "\nCan be a % of the support acceleration"
-        "\nSet zero to use support acceleration.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "support_material_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comAdvancedE | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
     def = definition.add("brim_separation", coFloat, ptFFF);
     def->label = L("Brim separation gap");
@@ -2122,23 +2076,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->cli = "curve-smoothing-cutoff-dist=f";
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloat(2));
-
-    def = definition.add("default_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Default");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->full_label = L("Default acceleration");
-    def->tooltip = L("This is the acceleration your printer will be reset to after "
-        "the role-specific acceleration values are used (perimeter/infill). "
-        "\nAccelerations from the left column can also be expressed as a percentage of this value."
-        "\nThis can be expressed as a percentage (for example: 80%) over the machine Max Acceleration for X axis."
-        "\nSet zero to prevent resetting acceleration at all.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "machine_max_acceleration_x";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
     def = definition.add("default_filament_profile", coStrings, ptFFF);
     def->label = L("Default filament profile");
@@ -2429,21 +2366,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->max = 100;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(80));
-
-    def = definition.add("external_perimeter_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("External");
-    def->full_label = L("External Perimeter acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for external perimeters. "
-                "\nCan be a % of the internal perimeter acceleration"
-                "\nSet zero to use internal perimeter acceleration for external perimeters.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "perimeter_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
 
     def = definition.add("external_perimeter_speed", coFloatOrPercent, ptFFF);
     def->label = L("External");
@@ -3782,21 +3704,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->graph_settings->step_y      = 0.01;
     def->graph_settings->allowed_types = {GraphData::GraphType::LINEAR, GraphData::GraphType::SPLINE, GraphData::GraphType::SQUARE};
 
-    def = definition.add("first_layer_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Max");
-    def->full_label = L("First layer acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the maximum acceleration your printer will use for first layer."
-                "\nIf set to %, all accelerations will be reduced by that ratio."
-                "\nSet zero to disable acceleration control for first layer.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "depends";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
-
     def = definition.add("first_layer_acceleration_over_raft", coFloatOrPercent, ptFFF);
     def->label = L("First object layer over raft interface");
     def->category = OptionCategory::speed;
@@ -4037,21 +3944,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comPrusa;
     def->aliases = { "gap_fill" }; //superslicer 2.3 or older
     def->set_default_value(new ConfigOptionBool(true));
-
-    def = definition.add("gap_fill_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Gap fill");
-    def->full_label = L("Gap fill acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for gap fills. "
-                "\nThis can be expressed as a percentage over the perimeter acceleration."
-                "\nSet zero to use perimeter acceleration for gap fills.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "perimeter_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
 
     def = definition.add("gap_fill_extension", coFloatOrPercent, ptFFF);
     def->label = L("Extension");
@@ -4302,21 +4194,6 @@ void init_fff_params(PrintConfigDef &definition)
                    " a filament with an ugly shaped tip.");
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionBool(0));
-
-    def = definition.add("infill_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Sparse");
-    def->full_label = L("Infill acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for Sparse infill."
-                "\nCan be a % of the solid infill acceleration"
-                "\nSet zero to use solid infill acceleration for infill.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "solid_infill_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
 
     def = definition.add("infill_every_layers", coInt, ptFFF);
     def->label = L("Combine infill every");
@@ -4657,22 +4534,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = definition.add("internal_bridge_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Internal bridges ");
-    def->full_label = L("Internal bridges acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for internal bridges. "
-                "\nCan be a % of the default acceleration"
-                "\nSet zero to use bridge acceleration for internal bridges.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "bridge_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
-    def->aliases = { "bridge_internal_acceleration" };
-
     def = definition.add("internal_bridge_expansion", coBool, ptFFF);
     def->label = L("Extends internal bridge to infill");
     def->category = OptionCategory::skirtBrim;
@@ -4734,21 +4595,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->invalidates_step = posPrepareInfill;
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("ironing_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Ironing");
-    def->full_label = L("Ironing acceleration");
-    def->category = OptionCategory::ironing;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for ironing. "
-                "\nCan be a % of the top solid infill acceleration"
-                "\nSet zero or 100% to use top solid infill acceleration for ironing.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "top_solid_infill_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
 
     def = definition.add("ironing_angle", coFloat, ptFFF);
     def->label = L("Ironing angle");
@@ -5048,16 +4894,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->set_default_value(new ConfigOptionFloats{ 0., 0. });
 
     // M204 P... [mm/sec^2]
-    def = definition.add("machine_max_acceleration_extruding", coFloats, ptFFF);
-    def->full_label = L("Maximum acceleration when extruding");
-    def->category = OptionCategory::limits;
-    def->tooltip = L("Maximum acceleration when extruding");
-    def->sidetext = L("mm/s²");
-    def->min = 0;
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionFloats{ 1500., 1250. });
-
-    // M204 R... [mm/sec^2]
     def = definition.add("machine_max_acceleration_retracting", coFloats, ptFFF);
     def->full_label = L("Maximum acceleration when retracting");
     def->category = OptionCategory::limits;
@@ -5069,15 +4905,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->set_default_value(new ConfigOptionFloats{ 1500., 1250. });
 
     // M204 T... [mm/sec^2]
-    def = definition.add("machine_max_acceleration_travel", coFloats, ptFFF);
-    def->full_label = L("Maximum acceleration for travel moves");
-    def->category = OptionCategory::limits;
-    def->tooltip = L("Maximum acceleration for travel moves.");
-    def->sidetext = L("mm/s²");
-    def->min = 0;
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionFloats{ 1500., 1250. });
-
     def = definition.add("max_gcode_per_second", coFloat, ptFFF);
     def->label = L("Maximum G1 per second (Experimental)");
     def->category = OptionCategory::speed;
@@ -5412,21 +5239,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->tooltip = L("Allow to set a specific speed, fan speed and flow (if enabled) for overhangs (unsupported perimeters)");
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionBool(true));
-
-    def = definition.add("overhangs_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Overhangs");
-    def->full_label = L("Overhang acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for overhangs."
-                "\nCan be a % of the bridge acceleration"
-                "\nSet zero to to use bridge acceleration for overhangs.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "bridge_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
 
     def             = definition.add("overhangs_dynamic_fan_speed", coGraphs, ptFFF);
     def->label      = L("Dynamic overhang speeds");
@@ -7169,21 +6981,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionBool(true));
 
-    def = definition.add("solid_infill_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Solid ");
-    def->full_label = L("Solid acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for solid infill. "
-                "\nCan be a % of the default acceleration"
-                "\nSet zero or 100% to use default acceleration for solid infill.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "default_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
-
     def = definition.add("solid_over_perimeters", coInt, ptFFF);
     def->label = L("No solid infill over");
     def->full_label = L("No solid infill over perimeters");
@@ -7876,21 +7673,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(true));
 
-    def = definition.add("thin_walls_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Thin Walls");
-    def->full_label = L("Thin walls acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for thin walls. "
-                "\nCan be a % of the external perimeter acceleration"
-                "\nSet zero to use external perimeter acceleration for thin walls.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "external_perimeter_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
-
     def = definition.add("thin_walls_speed", coFloatOrPercent, ptFFF);
     def->label = L("Thin walls");
     def->full_label = L("Thin walls speed");
@@ -8004,21 +7786,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value((new ConfigOptionFloatOrPercent(0, false))->set_phony(true));
 
-    def = definition.add("top_solid_infill_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Top solid ");
-    def->full_label = L("Top solid acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This is the acceleration your printer will use for top solid infill. "
-                "\nCan be a % of the solid infill acceleration"
-                "\nSet zero or 100% to use solid infill acceleration for top solid infill.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "solid_infill_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
-
     def = definition.add("top_solid_infill_overlap", coPercent, ptFFF);
     def->label = L("Top solid infill overlap");
     def->category = OptionCategory::width;
@@ -8073,21 +7840,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->min = 0;
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionFloat(0.));
-
-    def = definition.add("travel_acceleration", coFloatOrPercent, ptFFF);
-    def->label = L("Travel");
-    def->full_label = L("Travel acceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("Acceleration for travel moves (jumps between distant extrusion points)."
-                     "\nCan be a % of the default acceleration"
-                     "\nSet zero to use default acceleration for travel moves.");
-    def->sidetext = L("mm/s² or %");
-    def->ratio_over = "default_acceleration";
-    def->min = 0;
-    def->max_literal = { -200, false };
-    def->mode = comAdvancedE | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(1500, false));
 
     def = definition.add("travel_speed", coFloat, ptFFF);
     def->label = L("Travel");

@@ -562,6 +562,16 @@ TEST_CASE("Migrated travel deceleration settings keep a single scoped storage",
     CHECK(min_length_def->container_type == ConfigOptionContainerType::Plater);
     CHECK(PrintConfig::defaults().option("gcode_min_length") != nullptr);
     CHECK(PrintRegionConfig::defaults().option("gcode_min_length") == nullptr);
+
+    // brim_acceleration is object-scoped and is not duplicated into the print
+    // or region configs.
+    const ConfigOptionDef *brim_acceleration_def =
+        PrintConfigDef::instance().get("brim_acceleration");
+    REQUIRE(brim_acceleration_def != nullptr);
+    CHECK(brim_acceleration_def->container_type == ConfigOptionContainerType::Object);
+    CHECK(PrintConfig::defaults().option("brim_acceleration") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("brim_acceleration") == nullptr);
+    CHECK(PrintObjectConfig::defaults().option("brim_acceleration") != nullptr);
 }
 
 TEST_CASE("Travel deceleration resolves its switch at the Travel destination",

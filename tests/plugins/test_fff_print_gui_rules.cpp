@@ -351,25 +351,12 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("milling_extra_size", b("milling_post_process"));
     set("milling_speed", b("milling_post_process"));
 
-    // travel_deceleration_use_target is defined by the travel-deceleration
-    // plugin; its activation rule is covered by that plugin's tests.
-    const char *const default_accel_keys[] = {
-        "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
-        "gap_fill_acceleration", "travel_acceleration",
-        "first_layer_acceleration"
-    };
-    for (const char *key : default_accel_keys)
-        set(key, default_accel);
+    // The travel deceleration and feature acceleration settings are defined by
+    // their plugins, so the reference skips them; their activation rules are
+    // covered by the plugin tests.
     set("perimeter_acceleration", default_accel && P);
-    set("external_perimeter_acceleration", default_accel && P);
-    set("thin_walls_acceleration", default_accel && P);
-    set("infill_acceleration", default_accel && H);
-    set("solid_infill_acceleration", default_accel && has_solid);
-    set("top_solid_infill_acceleration", default_accel && has_top);
-    set("ironing_acceleration", default_accel && has_ironing);
     set("support_material_acceleration", default_accel && (have_support || have_brim || have_skirt));
     set("support_material_interface_acceleration", default_accel && have_iface);
-    set("brim_acceleration", default_accel && (have_brim || have_skirt));
 
     const bool percent_speed =
         config.option<ConfigOptionFloatOrPercent>("perimeter_speed")->percent ||

@@ -615,7 +615,18 @@ TEST_CASE("Layer extrusion editors expose independent config contracts",
     CHECK(speed_plugin->get_exclusive_group() == "layer_extrusion_edit.speed");
     CHECK(acceleration_plugin->get_exclusive_group() == "layer_extrusion_edit.acceleration");
     CHECK(speed_plugin->get_defined_config_keys().empty());
-    CHECK(acceleration_plugin->get_defined_config_keys().empty());
+
+    // Keys the acceleration step reads; the plugin publishes exactly this set.
+    std::vector<std::string> acceleration_defined;
+    for (const Plugin::DefinedConfigKey &key : acceleration_plugin->get_defined_config_keys())
+        acceleration_defined.push_back(key.key);
+    CHECK(acceleration_defined.size() == 16);
+    for (const char *expected : { "default_acceleration", "bridge_acceleration",
+                                  "machine_max_acceleration_travel", "travel_acceleration" })
+        CHECK(std::find(acceleration_defined.begin(), acceleration_defined.end(), expected) !=
+              acceleration_defined.end());
+    CHECK(std::find(acceleration_defined.begin(), acceleration_defined.end(), "machine_limits_usage") ==
+          acceleration_defined.end());
 
     std::vector<std::string> speed_keys;
     for (const Plugin::UsedConfigKey &key : speed_plugin->get_used_config_keys())
@@ -1890,4 +1901,71 @@ TEST_CASE("Layer fan plugin consumes final timing without estimating geometry",
     REQUIRE(time != nullptr);
     CHECK(time->duration_seconds == Approx(123.0));
     CHECK(time->is_final());
+}
+
+TEST_CASE("Acceleration plugin owns its settings and activation rules",
+          "[plugins][layer-extrusion-edit][acceleration][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("default_acceleration");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloatOrPercent);
+    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->default_value->serialize() == "0");
+
+    def = PrintConfigDef::instance().get("machine_max_acceleration_travel");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloats);
+    CHECK(def->default_value->serialize() == "1500,1250");
+
+    // Every rule this plugin owns applies to the print scope and keeps the
+    // default_acceleration gate. Each any_of() disjunction expands to one rule
+    // per activation reason, so the counts below cover all of them.
+    size_t owned_rule_count = 0;
+    size_t bridge_rule_count = 0;
+    size_t perimeter_rule_count = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != DEFAULT_ACCELERATION_PLUGIN)
+            continue;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        owned_rule_count++;
+        REQUIRE(!rule.clauses.empty());
+        CHECK(rule.clauses.front().condition == RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO);
+        CHECK(rule.clauses.front().condition_key == "default_acceleration");
+        if (rule.target_key == "bridge_acceleration") {
+            bridge_rule_count++;
+            REQUIRE(rule.clauses.size() == 1);
+        }
+        if (rule.target_key == "external_perimeter_acceleration") {
+            perimeter_rule_count++;
+            REQUIRE(rule.clauses.size() == 2);
+            CHECK(rule.clauses[1].condition_key == "perimeters");
+        }
+    }
+    CHECK(owned_rule_count == 27);
+    CHECK(bridge_rule_count == 1);
+    CHECK(perimeter_rule_count == 1);
+
+    const auto enabled = [&orchestrator](const DynamicPrintConfig &config, const char *target) {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1,
+                                               DEFAULT_ACCELERATION_PLUGIN))
+            if (application.target_key == target)
+                return application.enabled;
+        return false;
+    };
+
+    const DynamicPrintConfig no_default = speed_config({{"default_acceleration", "0"}, {"perimeters", "2"}});
+    CHECK_FALSE(enabled(no_default, "bridge_acceleration"));
+    CHECK_FALSE(enabled(no_default, "external_perimeter_acceleration"));
+
+    const DynamicPrintConfig no_perimeters = speed_config({{"default_acceleration", "1000"}, {"perimeters", "0"}});
+    CHECK(enabled(no_perimeters, "bridge_acceleration"));
+    CHECK_FALSE(enabled(no_perimeters, "external_perimeter_acceleration"));
+
+    const DynamicPrintConfig all_set = speed_config({{"default_acceleration", "1000"}, {"perimeters", "2"}});
+    CHECK(enabled(all_set, "bridge_acceleration"));
+    CHECK(enabled(all_set, "external_perimeter_acceleration"));
 }

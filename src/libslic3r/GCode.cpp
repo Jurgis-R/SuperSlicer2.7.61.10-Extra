@@ -195,24 +195,37 @@ uint16_t tool_id_from_extruder(const extruder_index_t extruder_id)
         return ok;
     }
 
+    // Resolve one optional acceleration. Plugin-owned settings are absent when
+    // their provider is disabled, which reads as zero.
+    double computed_acceleration(const ConfigBase &config, const char *key) {
+        return config.has(key) ? config.get_computed_value(key) : 0.;
+    }
+
+    // Read the first value of one optional machine limit; an absent setting
+    // reads as zero.
+    double machine_limit_value(const ConfigBase &config, const char *key) {
+        const ConfigOptionFloats *option = config.option<ConfigOptionFloats>(key);
+        return option != nullptr ? option->get_at(0) : 0.;
+    }
+
     double get_default_acceleration(PrintConfig& config) {
         double max = 0;
-        max = config.machine_max_acceleration_extruding.get_at(0);
+        max = machine_limit_value(config, "machine_max_acceleration_extruding");
         // on 2.3, check for enable/disable if(config.machine_limits_usage)
         if (config.machine_limits_usage <= MachineLimitsUsage::Limits)
-            return std::min(config.get_computed_value("default_acceleration"), max);
+            return std::min(computed_acceleration(config, "default_acceleration"), max);
         else
-            return config.get_computed_value("default_acceleration");
+            return computed_acceleration(config, "default_acceleration");
     }
 
     double get_travel_acceleration(PrintConfig& config) {
         double max = 0;
-        max = config.machine_max_acceleration_travel.get_at(0);
+        max = machine_limit_value(config, "machine_max_acceleration_travel");
         // on 2.3, check for enable/disable if(config.machine_limits_usage)
         if (config.machine_limits_usage <= MachineLimitsUsage::Limits)
-            return std::min(config.get_computed_value("travel_acceleration"), max);
+            return std::min(computed_acceleration(config, "travel_acceleration"), max);
         else
-            return config.get_computed_value("travel_acceleration");
+            return computed_acceleration(config, "travel_acceleration");
     }
 
     std::string OozePrevention::pre_toolchange(GCodeGenerator& gcodegen)
@@ -3938,8 +3951,8 @@ void GCodeGenerator::print_machine_envelope(GCodeOutputStream &file, const Print
                 int(print.config().machine_max_acceleration_e.get_at(0) + 0.5));
         if (std::set<uint8_t>{gcfRepetier}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M202 X%d Y%d ; sets maximum travel acceleration\n",
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5),
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5));
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5));
         if (std::set<uint8_t>{gcfMarlinLegacy, gcfMarlinFirmware, gcfRepetier, gcfSmoothie, gcfSprinter}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M203 X%d Y%d Z%d E%d ; sets maximum feedrates, %s\n",
                 int(print.config().machine_max_feedrate_x.get_at(0) * factor + 0.5),
@@ -3963,18 +3976,18 @@ void GCodeGenerator::print_machine_envelope(GCodeOutputStream &file, const Print
         if (gcfMarlinLegacy == print.config().gcode_flavor)
             // Legacy Marlin uses M204 S[print] T[retract]
             file.write_format("M204 S%d T%d ; sets acceleration (S) and retract acceleration (R), mm/sec^2\n",
-                int(print.config().machine_max_acceleration_extruding.get_at(0) + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_extruding") + 0.5),
                 int(print.config().machine_max_acceleration_retracting.get_at(0) + 0.5));
         else if (std::set<uint8_t>{gcfMarlinFirmware}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M204 P%d R%d T%d ; sets acceleration (P, T) and retract acceleration (R), mm/sec^2\n",
-                int(print.config().machine_max_acceleration_extruding.get_at(0) + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_extruding") + 0.5),
                 int(print.config().machine_max_acceleration_retracting.get_at(0) + 0.5),
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5));
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5));
         else if (std::set<uint8_t>{gcfRepRap, gcfKlipper, gcfSprinter}.count(print.config().gcode_flavor.value) > 0)
             // Uses M204 P[print] T[travel]
             file.write_format("M204 P%d T%d ; sets acceleration (P, T), mm/sec^2\n",
-                int(print.config().machine_max_acceleration_extruding.get_at(0) + 0.5),
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5));
+                int(machine_limit_value(print.config(), "machine_max_acceleration_extruding") + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5));
         // jerk
         if (std::set<uint8_t>{gcfRepRap}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M566 X%.2lf Y%.2lf Z%.2lf E%.2lf ; sets the jerk limits, mm/min\n",
@@ -8899,7 +8912,7 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
     double max_acceleration = std::numeric_limits<double>::max();
     // on 2.3, check for enable/disable if(config.machine_limits_usage)
     if (m_config.machine_limits_usage <= MachineLimitsUsage::Limits)
-        max_acceleration = m_config.machine_max_acceleration_extruding.get_at(0);
+        max_acceleration = machine_limit_value(m_config, "machine_max_acceleration_extruding");
     double travel_acceleration = get_travel_acceleration(m_config);
     if (acceleration > 0) {
         switch (extrusion_role_to_gcode_extrusion_role(path.role())){
@@ -8913,8 +8926,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 break;
             case GCodeExtrusionRole::ExternalPerimeter:
             accel_externalPerimeter:
-                if (m_config.external_perimeter_acceleration.value > 0) {
-                    double external_perimeter_acceleration = m_config.get_computed_value("external_perimeter_acceleration");
+                if (computed_acceleration(m_config, "external_perimeter_acceleration") > 0) {
+                    double external_perimeter_acceleration = computed_acceleration(m_config, "external_perimeter_acceleration");
                     if (external_perimeter_acceleration > 0) {
                         acceleration = external_perimeter_acceleration;
                         break;
@@ -8923,16 +8936,16 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_perimeter;
             case GCodeExtrusionRole::SolidInfill:
             accel_solidInfill:
-                if (m_config.solid_infill_acceleration.value > 0) {
-                    double solid_infill_acceleration = m_config.get_computed_value("solid_infill_acceleration");
+                if (computed_acceleration(m_config, "solid_infill_acceleration") > 0) {
+                    double solid_infill_acceleration = computed_acceleration(m_config, "solid_infill_acceleration");
                     if (solid_infill_acceleration > 0)
                         acceleration = solid_infill_acceleration;
                 }
                 break;
             case GCodeExtrusionRole::InternalInfill:
             //internalInfill:
-                if (m_config.infill_acceleration.value > 0) {
-                    double infill_acceleration = m_config.get_computed_value("infill_acceleration");
+                if (computed_acceleration(m_config, "infill_acceleration") > 0) {
+                    double infill_acceleration = computed_acceleration(m_config, "infill_acceleration");
                     if (infill_acceleration > 0) {
                         acceleration = infill_acceleration;
                         break;
@@ -8941,8 +8954,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_solidInfill;
             case GCodeExtrusionRole::TopSolidInfill:
             accel_topSolidInfill:
-                if (m_config.top_solid_infill_acceleration.value > 0) {
-                    double top_solid_infill_acceleration = m_config.get_computed_value("top_solid_infill_acceleration");
+                if (computed_acceleration(m_config, "top_solid_infill_acceleration") > 0) {
+                    double top_solid_infill_acceleration = computed_acceleration(m_config, "top_solid_infill_acceleration");
                     if (top_solid_infill_acceleration > 0) {
                         acceleration = top_solid_infill_acceleration;
                         break;
@@ -8950,8 +8963,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 }
                 goto accel_solidInfill;
             case GCodeExtrusionRole::Ironing:
-                if (m_config.ironing_acceleration.value > 0) {
-                    double ironing_acceleration = m_config.get_computed_value("ironing_acceleration");
+                if (computed_acceleration(m_config, "ironing_acceleration") > 0) {
+                    double ironing_acceleration = computed_acceleration(m_config, "ironing_acceleration");
                     if (ironing_acceleration > 0) {
                         acceleration = ironing_acceleration;
                         break;
@@ -8978,8 +8991,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_supportMaterial;
             case GCodeExtrusionRole::Skirt:
                 //skirtBrim:
-                if (m_config.brim_acceleration.value > 0) {
-                    double brim_acceleration = m_config.get_computed_value("brim_acceleration");
+                if (computed_acceleration(m_config, "brim_acceleration") > 0) {
+                    double brim_acceleration = computed_acceleration(m_config, "brim_acceleration");
                     if (brim_acceleration > 0) {
                         acceleration = brim_acceleration;
                         break;
@@ -8988,15 +9001,15 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_supportMaterial;
             case GCodeExtrusionRole::BridgeInfill:
             accel_bridgeInfill:
-                if (m_config.bridge_acceleration.value > 0) {
-                    double bridge_acceleration = m_config.get_computed_value("bridge_acceleration");
+                if (computed_acceleration(m_config, "bridge_acceleration") > 0) {
+                    double bridge_acceleration = computed_acceleration(m_config, "bridge_acceleration");
                     if (bridge_acceleration > 0)
                         acceleration = bridge_acceleration;
                 }
                 break;
             case GCodeExtrusionRole::InternalBridgeInfill:
-                if (m_config.internal_bridge_acceleration.value > 0) {
-                    double internal_bridge_acceleration = m_config.get_computed_value("internal_bridge_acceleration");
+                if (computed_acceleration(m_config, "internal_bridge_acceleration") > 0) {
+                    double internal_bridge_acceleration = computed_acceleration(m_config, "internal_bridge_acceleration");
                     if (internal_bridge_acceleration > 0) {
                         acceleration = internal_bridge_acceleration;
                         break;
@@ -9004,8 +9017,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 }
                 goto accel_bridgeInfill;
             case GCodeExtrusionRole::OverhangPerimeter:
-                if (m_config.overhangs_acceleration.value > 0) {
-                    double overhangs_acceleration = m_config.get_computed_value("overhangs_acceleration");
+                if (computed_acceleration(m_config, "overhangs_acceleration") > 0) {
+                    double overhangs_acceleration = computed_acceleration(m_config, "overhangs_acceleration");
                     if (overhangs_acceleration > 0) {
                         acceleration = overhangs_acceleration;
                         break;
@@ -9013,8 +9026,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 }
                 goto accel_bridgeInfill;
             case GCodeExtrusionRole::GapFill:
-                if (m_config.gap_fill_acceleration.value > 0) {
-                    double gap_fill_acceleration = m_config.get_computed_value("gap_fill_acceleration");
+                if (computed_acceleration(m_config, "gap_fill_acceleration") > 0) {
+                    double gap_fill_acceleration = computed_acceleration(m_config, "gap_fill_acceleration");
                     if (gap_fill_acceleration > 0) {
                         acceleration = gap_fill_acceleration;
                         break;
@@ -9023,8 +9036,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_perimeter;
                 break;
             case GCodeExtrusionRole::ThinWall:
-                if (m_config.thin_walls_acceleration.value > 0) {
-                    double thin_walls_acceleration = m_config.get_computed_value("thin_walls_acceleration");
+                if (computed_acceleration(m_config, "thin_walls_acceleration") > 0) {
+                    double thin_walls_acceleration = computed_acceleration(m_config, "thin_walls_acceleration");
                     if (thin_walls_acceleration > 0) {
                         acceleration = thin_walls_acceleration;
                         break;
@@ -9040,8 +9053,10 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 break;
         }
 
-        if (this->on_first_layer() && m_config.first_layer_acceleration.value > 0) {
-            acceleration = std::min(acceleration, m_config.first_layer_acceleration.get_effective_value(acceleration));
+        const ConfigOptionFloatOrPercent *first_layer_acceleration_opt =
+            m_config.opt<ConfigOptionFloatOrPercent>("first_layer_acceleration");
+        if (this->on_first_layer() && first_layer_acceleration_opt != nullptr && first_layer_acceleration_opt->value > 0) {
+            acceleration = std::min(acceleration, first_layer_acceleration_opt->get_effective_value(acceleration));
         } else if (this->object_layer_over_raft() && m_config.first_layer_acceleration_over_raft.value > 0) {
             acceleration = m_config.first_layer_acceleration_over_raft.get_effective_value(acceleration);
         }

@@ -108,6 +108,29 @@ struct NormalizeVisitor : public ExtrusionVisitor {
     }
 } normalize_visitor;
 
+// Order one optional region option: an absent plugin-owned option sorts before
+// a present one, and two absent options compare equal.
+static int fill_config_option_compare(const PrintRegionConfig *lhs, const PrintRegionConfig *rhs, const char *key)
+{
+    const ConfigOption *lhs_option = lhs != nullptr ? lhs->option(key) : nullptr;
+    const ConfigOption *rhs_option = rhs != nullptr ? rhs->option(key) : nullptr;
+    if (lhs_option == nullptr || rhs_option == nullptr)
+        return lhs_option == rhs_option ? 0 : (lhs_option == nullptr ? -1 : 1);
+    if (*lhs_option < *rhs_option) return -1;
+    if (*rhs_option < *lhs_option) return 1;
+    return 0;
+}
+
+// Compare one optional region option: absent on both sides compares equal,
+// present on one side only compares unequal.
+static bool fill_config_option_equal(const PrintRegionConfig *lhs, const PrintRegionConfig *rhs, const char *key)
+{
+    const ConfigOption *lhs_option = lhs != nullptr ? lhs->option(key) : nullptr;
+    const ConfigOption *rhs_option = rhs != nullptr ? rhs->option(key) : nullptr;
+    return lhs_option == nullptr || rhs_option == nullptr ?
+        lhs_option == rhs_option : *lhs_option == *rhs_option;
+}
+
 struct SurfaceFillParams : FillParams
 {
     // Infill pattern, adjusted for the density etc.
@@ -135,6 +158,7 @@ struct SurfaceFillParams : FillParams
     bool operator<(const SurfaceFillParams &rhs) const {
 #define RETURN_COMPARE_NON_EQUAL(KEY) if (this->KEY < rhs.KEY) return true; if (this->KEY > rhs.KEY) return false;
 #define RETURN_COMPARE_NON_EQUAL_TYPED(TYPE, KEY) if (TYPE(this->KEY) < TYPE(rhs.KEY)) return true; if (TYPE(this->KEY) > TYPE(rhs.KEY)) return false;
+#define RETURN_COMPARE_NON_EQUAL_OPTION(KEY) { const int option_cmp = fill_config_option_compare(config, rhs.config, #KEY); if (option_cmp < 0) return true; if (option_cmp > 0) return false; }
 
         // Sort first by decreasing bridging angle, so that the bridges are processed with priority when trimming one layer by the other.
         if (this->bridge_angle > rhs.bridge_angle) return true; 
@@ -163,20 +187,20 @@ struct SurfaceFillParams : FillParams
         assert(this->config != nullptr);
         assert(rhs.config != nullptr);
         if (config != nullptr && rhs.config != nullptr) {
-            RETURN_COMPARE_NON_EQUAL(config->infill_acceleration);
+            RETURN_COMPARE_NON_EQUAL_OPTION(infill_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->infill_extruder);
             RETURN_COMPARE_NON_EQUAL(config->infill_speed);
-            RETURN_COMPARE_NON_EQUAL(config->solid_infill_acceleration);
+            RETURN_COMPARE_NON_EQUAL_OPTION(solid_infill_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->solid_infill_speed);
-            RETURN_COMPARE_NON_EQUAL(config->top_solid_infill_acceleration);
+            RETURN_COMPARE_NON_EQUAL_OPTION(top_solid_infill_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->top_solid_infill_speed);
-            RETURN_COMPARE_NON_EQUAL(config->default_acceleration);
+            RETURN_COMPARE_NON_EQUAL_OPTION(default_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->default_speed);
-            RETURN_COMPARE_NON_EQUAL(config->bridge_acceleration);
+            RETURN_COMPARE_NON_EQUAL_OPTION(bridge_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->bridge_speed);
-            RETURN_COMPARE_NON_EQUAL(config->internal_bridge_acceleration);
+            RETURN_COMPARE_NON_EQUAL_OPTION(internal_bridge_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->internal_bridge_speed);
-            RETURN_COMPARE_NON_EQUAL(config->gap_fill_acceleration);
+            RETURN_COMPARE_NON_EQUAL_OPTION(gap_fill_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->gap_fill_speed);
             RETURN_COMPARE_NON_EQUAL(config->print_extrusion_multiplier);
             RETURN_COMPARE_NON_EQUAL(config->region_gcode.value)
@@ -214,20 +238,20 @@ struct SurfaceFillParams : FillParams
         if ((config != nullptr) != (rhs.config != nullptr))
             return false;
         if(config != nullptr && (
-            config->infill_acceleration != rhs.config->infill_acceleration
+            !fill_config_option_equal(config, rhs.config, "infill_acceleration")
             || config->infill_extruder != rhs.config->infill_extruder
             || config->infill_speed != rhs.config->infill_speed
-            || config->solid_infill_acceleration != rhs.config->solid_infill_acceleration
+            || !fill_config_option_equal(config, rhs.config, "solid_infill_acceleration")
             || config->solid_infill_speed != rhs.config->solid_infill_speed
-            || config->top_solid_infill_acceleration != rhs.config->top_solid_infill_acceleration
+            || !fill_config_option_equal(config, rhs.config, "top_solid_infill_acceleration")
             || config->top_solid_infill_speed != rhs.config->top_solid_infill_speed
-            || config->default_acceleration != rhs.config->default_acceleration
+            || !fill_config_option_equal(config, rhs.config, "default_acceleration")
             || config->default_speed != rhs.config->default_speed
-            || config->bridge_acceleration != rhs.config->bridge_acceleration
+            || !fill_config_option_equal(config, rhs.config, "bridge_acceleration")
             || config->bridge_speed != rhs.config->bridge_speed
-            || config->internal_bridge_acceleration != rhs.config->internal_bridge_acceleration
+            || !fill_config_option_equal(config, rhs.config, "internal_bridge_acceleration")
             || config->internal_bridge_speed != rhs.config->internal_bridge_speed
-            || config->gap_fill_acceleration != rhs.config->gap_fill_acceleration
+            || !fill_config_option_equal(config, rhs.config, "gap_fill_acceleration")
             || config->gap_fill_speed != rhs.config->gap_fill_speed
             || config->print_extrusion_multiplier != rhs.config->print_extrusion_multiplier
             || config->region_gcode != rhs.config->region_gcode
@@ -1391,7 +1415,10 @@ void Layer::_make_ironing(LayerSliceIsland &island)
                 ironing_params.just_infill  = false;
                 ironing_params.line_spacing = config.get_computed_value("ironing_spacing", ironing_params.extruder);
                 ironing_params.height       = default_layer_height * 0.01 * config.ironing_flowrate;
-                ironing_params.acceleration = config.ironing_acceleration;
+                const ConfigOptionFloatOrPercent *ironing_acceleration_opt =
+                    config.opt<ConfigOptionFloatOrPercent>("ironing_acceleration");
+                ironing_params.acceleration = ironing_acceleration_opt != nullptr ?
+                    float(ironing_acceleration_opt->value) : 0.f;
                 ironing_params.speed        = config.ironing_speed;
                 if (config.ironing_angle.value >= 0) {
                     ironing_params.angle = float(Geometry::deg2rad(config.ironing_angle.value));

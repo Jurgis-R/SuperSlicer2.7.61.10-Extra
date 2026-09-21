@@ -499,22 +499,11 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
              true_("milling_post_process"));
 
     // ----- accelerations -------------------------------------------------
-    add_rule({ "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
-               "gap_fill_acceleration", "travel_acceleration",
-               "first_layer_acceleration" }, non_zero("default_acceleration"));
-    add_rule({ "perimeter_acceleration", "external_perimeter_acceleration", "thin_walls_acceleration" },
+    add_rule({ "perimeter_acceleration" },
              all_of({ non_zero("default_acceleration"), non_zero("perimeters") }));
-    add_rule({ "infill_acceleration" }, all_of({ non_zero("default_acceleration"), non_zero("fill_density") }));
-
-    add_rule({ "solid_infill_acceleration" }, all_of({ non_zero("default_acceleration"), has_solid }));
-    add_rule({ "top_solid_infill_acceleration" }, all_of({ non_zero("default_acceleration"), has_top }));
-    add_rule({ "ironing_acceleration" }, all_of({ non_zero("default_acceleration"), ironing_any }));
-
     add_rule({ "support_material_acceleration" },
              all_of({ non_zero("default_acceleration"), any_of({ true_("support_material"), non_zero("raft_layers"), non_zero("brim_width"), non_zero("brim_width_interior"), non_zero("skirts") }) }));
     add_rule({ "support_material_interface_acceleration" }, all_of({ non_zero("default_acceleration"), have_interface }));
-    add_rule({ "brim_acceleration" },
-             all_of({ non_zero("default_acceleration"), any_of({ non_zero("brim_width"), non_zero("brim_width_interior"), non_zero("skirts") }) }));
 
     // ----- speeds -------------------------------------------------------
     add_rule({ "default_speed" }, any_of({
