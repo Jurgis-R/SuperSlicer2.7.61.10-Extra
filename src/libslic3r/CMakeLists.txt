@@ -277,6 +277,8 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/PrintingPlanFileWriter.hpp
 	Plugins/GCode/SettingsGCodeScripts.cpp
 	Plugins/GCode/SettingsGCodeScripts.hpp
+	Plugins/GuiRulesCore.cpp
+	Plugins/GuiRulesCore.hpp
 	Plugins/GuiRulesExample.cpp
 	Plugins/GuiRulesExample.hpp
 	Plugins/Infill/DefaultInfillGenerator.cpp

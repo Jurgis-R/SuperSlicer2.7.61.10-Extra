@@ -20,11 +20,6 @@ namespace Slic3r {
 
 void initialize_fff_print_config_cache();
 
-// Register the GUI activation rules that select which FFF print settings are
-// editable. Called once, after plugins are loaded, by
-// initialize_fff_print_config_cache().
-void initialize_fff_print_gui_rules();
-
 enum CompleteObjectSort {
     cosNearest,
     cosObject,

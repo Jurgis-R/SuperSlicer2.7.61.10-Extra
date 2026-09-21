@@ -173,10 +173,12 @@ labels.
 
 ## Current users
 
-`initialize_fff_print_gui_rules()` in `Config/FFFPrintConfig.cpp` publishes the
-complete FFF print activation logic: every legacy enable/disable branch becomes
-an activation reason. Official plugins (`Polyholes`, `MaxOverhangThreshold`,
-`SupportDemandBridgeRemoval`, `DefaultBrimGenerator`, Python Polyholes) and
+`gui_rules.core` (`Plugins/GuiRulesCore.cpp`) is the built-in plugin that
+publishes the complete FFF print activation logic: every legacy enable/disable
+branch becomes an activation reason. Feature plugins are progressively taking
+over the rules of the settings they implement. Official plugins (`Polyholes`,
+`MaxOverhangThreshold`, `SupportDemandBridgeRemoval`, `DefaultBrimGenerator`,
+Python Polyholes) and
 `GuiRulesExample` demonstrate the builder for simple conjunctions and
 disjunctions. `PluginLoader` generates exclusive-step selector rules through
 the raw C API.

@@ -10,6 +10,7 @@
 #include "plugin_test_helpers.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Plugins/GuiRulesCore.hpp"
 #include "libslic3r/Config/FFFPrintConfig.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 
@@ -17,7 +18,7 @@
 FFF print GUI rules tests
 =========================
 
-initialize_fff_print_gui_rules() replaces the enable/disable logic of the
+The built-in gui_rules.core plugin replaces the enable/disable logic of the
 legacy ConfigManipulation::toggle_print_fff_options(). These tests compare the
 declarative rules with an imperative reference implementation of the legacy
 intent on curated scenarios and a seeded fuzz.
@@ -29,9 +30,12 @@ namespace {
 
 using EnabledMap = std::map<std::string, bool>;
 
-// Reference implementation of the migrated legacy logic. It mirrors the final
-// net state of toggle_print_fff_options(), including the intentional
-// corrections applied during the migration.
+// Owner of the built-in activation rules: the gui_rules.core plugin.
+const char *const core_gui_rules_owner = "gui_rules.core";
+
+// Independent reference model of the activation logic. It computes the enabled
+// set directly from the config, so the tests can compare the rule registry
+// against a plain implementation without reusing its evaluator.
 EnabledMap reference_enabled(const DynamicPrintConfig &config)
 {
     EnabledMap out;
@@ -381,7 +385,7 @@ EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConf
 {
     EnabledMap out;
     for (const Orchestrator::GuiRuleApplication &application :
-         orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, CORE_GUI_RULE_OWNER))
+         orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, core_gui_rules_owner))
         out[application.target_key] = application.enabled;
     return out;
 }
@@ -461,12 +465,12 @@ TEST_CASE("FFF print GUI rules match the legacy toggle logic", "[plugins][gui-ru
     bool has_fff_rules = false;
     for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
         has_fff_rules = has_fff_rules ||
-            (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.owner == CORE_GUI_RULE_OWNER);
+            (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.owner == core_gui_rules_owner);
     REQUIRE(has_fff_rules);
 
     // The rules are registered once: a second initialization must not add any.
     const size_t rule_count = orchestrator.gui_rules().rules().size();
-    initialize_fff_print_gui_rules();
+    slic3r_api::GuiRulesCorePlugin::register_gui_rules_core_plugin(orchestrator.handle());
     CHECK(orchestrator.gui_rules().rules().size() == rule_count);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
@@ -715,7 +719,7 @@ TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][fil
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     const auto evaluate_map = [&orchestrator, &config](int32_t current_index,
                                                        const std::vector<OptionKeyIdx> &filter,
-                                                       const char *owner = CORE_GUI_RULE_OWNER) {
+                                                       const char *owner = core_gui_rules_owner) {
         EnabledMap out;
         for (const Orchestrator::GuiRuleApplication &application :
              orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, owner, filter))

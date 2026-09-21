@@ -93,6 +93,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/SeamPlacer/CostSeamPlacer.hpp"
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
+#include "libslic3r/Plugins/GuiRulesCore.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
@@ -772,6 +773,10 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
             register_infill_region_compatibility_splitter_plugin);
     register_builtin_plugin(orchestrator, "support_demand_bridge_removal",
         slic3r_api::Support::SupportDemandBridgeRemovalPlugin::register_support_demand_bridge_removal_plugin);
+    // Last: the built-in activation rules reference settings created by the
+    // other plugins; the pending-rule queue attaches the ones that appear later.
+    register_builtin_plugin(orchestrator, "gui_rules.core",
+        slic3r_api::GuiRulesCorePlugin::register_gui_rules_core_plugin);
 }
 
 std::vector<std::pair<std::string, std::string>> active_infill_pattern_choices(Orchestrator &orchestrator)
