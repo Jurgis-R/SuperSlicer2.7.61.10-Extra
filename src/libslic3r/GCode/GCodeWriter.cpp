@@ -1033,9 +1033,11 @@ std::string GCodeWriter::retract(bool before_wipe)
     if (factor == 0)
         return "";
     //check for override
-    if (config_region && config_region->print_retract_length.is_enabled()) {
+    const ConfigOptionFloat *print_retract_length_opt =
+        config_region != nullptr ? config_region->opt<ConfigOptionFloat>("print_retract_length") : nullptr;
+    if (print_retract_length_opt != nullptr && print_retract_length_opt->is_enabled()) {
         return this->_retract(
-            factor * config_region->print_retract_length,
+            factor * print_retract_length_opt->value,
             factor * m_tool->retract_restart_extra(),
             std::nullopt,
             "retract"

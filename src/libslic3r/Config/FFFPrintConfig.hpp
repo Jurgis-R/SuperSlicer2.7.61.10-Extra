@@ -504,7 +504,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionInt,                  perimeters))
     ((ConfigOptionInt,                  perimeters_hole))
     ((ConfigOptionPercent,              print_extrusion_multiplier))
-    ((ConfigOptionFloat,                print_retract_length))
     ((ConfigOptionFloat,                print_retract_lift))
     ((ConfigOptionString,               region_gcode))
     ((ConfigOptionFloatOrPercent,       slice_merge_dent))

@@ -1046,7 +1046,6 @@ void init_categories(PrintConfigDef &definition)
         "curve_smoothing_angle_concave",
         "print_extrusion_multiplier",
         "print_first_layer_temperature",
-        "print_retract_length",
         "print_temperature",
         "print_bed_temperature",
         "print_first_layer_bed_temperature",
@@ -5571,16 +5570,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->can_be_disabled = true;
     def->set_default_value(disable_default_option(new ConfigOptionInt(200)));
-
-    def = definition.add("print_retract_length", coFloat, ptFFF);
-    def->label = L("Retraction length");
-    def->category = OptionCategory::filament;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("Override the retract_length setting from the printer config. Used for calibration.");
-    def->min = 0;
-    def->mode = comExpert | comSuSi;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionFloat(0)));
 
     def = definition.add("print_retract_lift", coFloat, ptFFF);
     def->label = L("Z-lift override");

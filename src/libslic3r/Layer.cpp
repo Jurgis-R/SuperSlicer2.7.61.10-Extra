@@ -942,7 +942,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         // print -modifier, because region are fused in gode wiew if not.
         && config.print_extrusion_multiplier        == other_config.print_extrusion_multiplier
         && config.print_first_layer_temperature     == other_config.print_first_layer_temperature
-        && config.print_retract_length              == other_config.print_retract_length
+        && region_config_option_equal(config, other_config, "print_retract_length")
         && config.print_retract_lift                == other_config.print_retract_lift
         && config.print_temperature                 == other_config.print_temperature
         // end print modifier

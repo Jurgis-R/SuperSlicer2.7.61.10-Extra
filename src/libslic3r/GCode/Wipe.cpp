@@ -122,10 +122,13 @@ std::string Wipe::wipe(GCodeGenerator &gcodegen, bool toolchange)
 
     // Remaining quantized retraction length.
     double retract_length = extruder.retract_length();
+    const PrintRegionConfig *print_region_config = gcodegen.writer().print_region_config();
+    const ConfigOptionFloat *print_retract_length_opt =
+        print_region_config != nullptr ? print_region_config->opt<ConfigOptionFloat>("print_retract_length") : nullptr;
     if (toolchange) {
         retract_length = extruder.retract_length_toolchange();
-    } else if (gcodegen.writer().print_region_config() && gcodegen.writer().print_region_config()->print_retract_length.is_enabled()) {
-        retract_length = gcodegen.writer().print_region_config()->print_retract_length.value;
+    } else if (print_retract_length_opt != nullptr && print_retract_length_opt->is_enabled()) {
+        retract_length = print_retract_length_opt->value;
     }
     retract_length = extruder.retract_to_go(retract_length);
     double nozzle_diameter = extruder.id() < 0 ? 0.4 : gcodegen.config().nozzle_diameter.get_at(extruder.id());

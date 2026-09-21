@@ -211,7 +211,7 @@ struct SurfaceFillParams : FillParams
             // print modifier, because region are fused in gode wiew if not.
             RETURN_COMPARE_NON_EQUAL(config->print_extrusion_multiplier.value);
             RETURN_COMPARE_NON_EQUAL(config->print_first_layer_temperature.value);
-            RETURN_COMPARE_NON_EQUAL(config->print_retract_length.value);
+            RETURN_COMPARE_NON_EQUAL_OPTION(print_retract_length);
             RETURN_COMPARE_NON_EQUAL(config->print_retract_lift.value);
             RETURN_COMPARE_NON_EQUAL(config->print_temperature.value);
             // end print modifier
@@ -262,7 +262,7 @@ struct SurfaceFillParams : FillParams
             // print modifier, because region are fused in gode wiew if not.
             || config->print_extrusion_multiplier        != rhs.config->print_extrusion_multiplier
             || config->print_first_layer_temperature     != rhs.config->print_first_layer_temperature
-            || config->print_retract_length              != rhs.config->print_retract_length
+            || !fill_config_option_equal(config, rhs.config, "print_retract_length")
             || config->print_retract_lift                != rhs.config->print_retract_lift
             || config->print_temperature                 != rhs.config->print_temperature
             // end print modifier
