@@ -189,19 +189,19 @@ struct SurfaceFillParams : FillParams
         if (config != nullptr && rhs.config != nullptr) {
             RETURN_COMPARE_NON_EQUAL_OPTION(infill_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->infill_extruder);
-            RETURN_COMPARE_NON_EQUAL(config->infill_speed);
+            RETURN_COMPARE_NON_EQUAL_OPTION(infill_speed);
             RETURN_COMPARE_NON_EQUAL_OPTION(solid_infill_acceleration);
-            RETURN_COMPARE_NON_EQUAL(config->solid_infill_speed);
+            RETURN_COMPARE_NON_EQUAL_OPTION(solid_infill_speed);
             RETURN_COMPARE_NON_EQUAL_OPTION(top_solid_infill_acceleration);
-            RETURN_COMPARE_NON_EQUAL(config->top_solid_infill_speed);
+            RETURN_COMPARE_NON_EQUAL_OPTION(top_solid_infill_speed);
             RETURN_COMPARE_NON_EQUAL_OPTION(default_acceleration);
             RETURN_COMPARE_NON_EQUAL(config->default_speed);
             RETURN_COMPARE_NON_EQUAL_OPTION(bridge_acceleration);
-            RETURN_COMPARE_NON_EQUAL(config->bridge_speed);
+            RETURN_COMPARE_NON_EQUAL_OPTION(bridge_speed);
             RETURN_COMPARE_NON_EQUAL_OPTION(internal_bridge_acceleration);
-            RETURN_COMPARE_NON_EQUAL(config->internal_bridge_speed);
+            RETURN_COMPARE_NON_EQUAL_OPTION(internal_bridge_speed);
             RETURN_COMPARE_NON_EQUAL_OPTION(gap_fill_acceleration);
-            RETURN_COMPARE_NON_EQUAL(config->gap_fill_speed);
+            RETURN_COMPARE_NON_EQUAL_OPTION(gap_fill_speed);
             RETURN_COMPARE_NON_EQUAL(config->print_extrusion_multiplier);
             RETURN_COMPARE_NON_EQUAL(config->region_gcode.value)
             RETURN_COMPARE_NON_EQUAL(config->small_area_infill_flow_compensation_model.is_enabled())
@@ -240,19 +240,19 @@ struct SurfaceFillParams : FillParams
         if(config != nullptr && (
             !fill_config_option_equal(config, rhs.config, "infill_acceleration")
             || config->infill_extruder != rhs.config->infill_extruder
-            || config->infill_speed != rhs.config->infill_speed
+            || !fill_config_option_equal(config, rhs.config, "infill_speed")
             || !fill_config_option_equal(config, rhs.config, "solid_infill_acceleration")
-            || config->solid_infill_speed != rhs.config->solid_infill_speed
+            || !fill_config_option_equal(config, rhs.config, "solid_infill_speed")
             || !fill_config_option_equal(config, rhs.config, "top_solid_infill_acceleration")
-            || config->top_solid_infill_speed != rhs.config->top_solid_infill_speed
+            || !fill_config_option_equal(config, rhs.config, "top_solid_infill_speed")
             || !fill_config_option_equal(config, rhs.config, "default_acceleration")
             || config->default_speed != rhs.config->default_speed
             || !fill_config_option_equal(config, rhs.config, "bridge_acceleration")
-            || config->bridge_speed != rhs.config->bridge_speed
+            || !fill_config_option_equal(config, rhs.config, "bridge_speed")
             || !fill_config_option_equal(config, rhs.config, "internal_bridge_acceleration")
-            || config->internal_bridge_speed != rhs.config->internal_bridge_speed
+            || !fill_config_option_equal(config, rhs.config, "internal_bridge_speed")
             || !fill_config_option_equal(config, rhs.config, "gap_fill_acceleration")
-            || config->gap_fill_speed != rhs.config->gap_fill_speed
+            || !fill_config_option_equal(config, rhs.config, "gap_fill_speed")
             || config->print_extrusion_multiplier != rhs.config->print_extrusion_multiplier
             || config->region_gcode != rhs.config->region_gcode
             || config->small_area_infill_flow_compensation_model.is_enabled() != rhs.config->small_area_infill_flow_compensation_model.is_enabled()
@@ -1419,7 +1419,10 @@ void Layer::_make_ironing(LayerSliceIsland &island)
                     config.opt<ConfigOptionFloatOrPercent>("ironing_acceleration");
                 ironing_params.acceleration = ironing_acceleration_opt != nullptr ?
                     float(ironing_acceleration_opt->value) : 0.f;
-                ironing_params.speed        = config.ironing_speed;
+                const ConfigOptionFloatOrPercent *ironing_speed_opt =
+                    config.opt<ConfigOptionFloatOrPercent>("ironing_speed");
+                ironing_params.speed        = ironing_speed_opt != nullptr ?
+                    float(ironing_speed_opt->value) : 0.f;
                 if (config.ironing_angle.value >= 0) {
                     ironing_params.angle = float(Geometry::deg2rad(config.ironing_angle.value));
                 } else {

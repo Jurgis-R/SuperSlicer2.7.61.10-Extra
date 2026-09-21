@@ -1623,8 +1623,10 @@ bool WipeTowerLayer::finish_layer(ExtrusionEntityCollection &collection, extrude
     bool first_layer = extrusion_z == extrusion_height;
     float speed_factor = 60.f;
     float print_speed = m_object_config->support_material_speed;
-    if (first_layer && m_object_config->first_layer_speed > 0)
-        print_speed = m_object_config->first_layer_speed;
+    const ConfigOptionFloatOrPercent *first_layer_speed_opt =
+        m_object_config->opt<ConfigOptionFloatOrPercent>("first_layer_speed");
+    if (first_layer && first_layer_speed_opt != nullptr && first_layer_speed_opt->value > 0)
+        print_speed = float(first_layer_speed_opt->value);
     if (print_speed <= 0)
         print_speed = m_wipe_tower_info->m_region_config->get_computed_value("perimeter_speed", current_extruder);
     if (print_speed <= 0) {

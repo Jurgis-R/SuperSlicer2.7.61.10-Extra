@@ -172,8 +172,8 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
         "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs", "external_perimeters_first",
         "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing",
         "external_perimeter_extrusion_change_odd_layers", "overhangs", "seam_position",
-        "staggered_inner_seams", "perimeter_speed", "perimeter_reverse", "perimeter_generator",
-        "external_perimeter_speed", "small_perimeter_speed", "spiral_vase",
+        "staggered_inner_seams", "perimeter_reverse", "perimeter_generator",
+        "small_perimeter_speed", "spiral_vase",
         "seam_notch_all", "seam_notch_inner", "seam_notch_outer",
         "no_perimeter_unsupported_algo", "only_one_perimeter_top"
     }, non_zero("perimeters"));
@@ -311,15 +311,14 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
 
     add_rule({ "enforce_full_fill_volume", "external_infill_margin", "bridged_infill_margin",
                "solid_infill_extruder", "solid_infill_extrusion_width",
-               "solid_infill_extrusion_spacing", "solid_infill_speed",
+               "solid_infill_extrusion_spacing",
                "solid_infill_extrusion_change_odd_layers" }, has_solid);
 
     const GuiCondition has_infill_or_solid = any_of({ has_solid, non_zero("fill_density") });
     add_rule({ "infill_first" }, has_infill_or_solid);
     add_rule({ "fill_angle_cross", "fill_angle_follow_model", "fill_angle_increment",
                "fill_angle_template", "bridge_angle", "infill_extrusion_width",
-               "infill_extrusion_spacing", "infill_extrusion_change_odd_layers",
-               "infill_speed" }, has_infill_or_solid);
+               "infill_extrusion_spacing", "infill_extrusion_change_odd_layers" }, has_infill_or_solid);
 
     add_rule({ "fill_angle" },
              all_of({ has_infill_or_solid, vector_empty("fill_angle_template") }));
@@ -339,22 +338,13 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
 
     // solid / top / bottom surfaces
     add_rule({ "ironing", "top_fill_pattern", "infill_connection_top",
-               "top_infill_extrusion_width", "top_infill_extrusion_spacing",
-               "top_solid_infill_speed" }, has_top);
+               "top_infill_extrusion_width", "top_infill_extrusion_spacing" }, has_top);
     add_rule({ "bottom_fill_pattern", "infill_connection_bottom" }, has_bottom);
     add_rule({ "solid_fill_pattern", "infill_connection_solid",
                "bridge_fill_pattern", "infill_connection_bridge" }, has_solid);
 
     const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
     add_rule({ "ironing_type", "ironing_flowrate", "ironing_spacing", "ironing_angle" }, ironing_pp);
-
-    const GuiCondition ironing_any = any_of({
-        ironing_pp,
-        int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)),
-        int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)),
-        int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth))
-    });
-    add_rule({ "ironing_speed" }, ironing_any);
 
     const GuiCondition fill_smooth = any_of({
         all_of({ has_top, int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)) }),
@@ -382,9 +372,6 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
 
     const GuiCondition support_skirt_brim = any_of({ have_support, non_zero("skirts"), non_zero("brim_width"), non_zero("brim_width_interior") });
     add_rule({ "support_material_speed" }, support_skirt_brim);
-
-    const GuiCondition brim_or_skirt = any_of({ non_zero("brim_width"), non_zero("brim_width_interior"), non_zero("skirts") });
-    add_rule({ "brim_speed" }, brim_or_skirt);
 
     // ----- support material and raft ------------------------------------
     add_rule({ "support_material_style", "support_material_extrusion_width",
@@ -495,7 +482,7 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     add_rule({ "enforce_retract_first_layer" }, true_("only_retract_when_crossing_perimeters"));
 
     // ----- milling ------------------------------------------------------
-    add_rule({ "milling_after_z", "milling_extra_size", "milling_speed" },
+    add_rule({ "milling_after_z", "milling_extra_size" },
              true_("milling_post_process"));
 
     // ----- accelerations -------------------------------------------------
@@ -512,8 +499,6 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
         percent("bridge_speed"),
         percent("support_material_speed")
     }));
-    add_rule({ "max_print_speed", "autospeed_min_thin_flow" },
-             non_zero("max_volumetric_speed"));
 
 
 }

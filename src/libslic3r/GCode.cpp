@@ -208,6 +208,31 @@ uint16_t tool_id_from_extruder(const extruder_index_t extruder_id)
         return option != nullptr ? option->get_at(0) : 0.;
     }
 
+    // Read the raw value of one optional setting; an absent plugin-owned setting
+    // reads as zero.
+    double config_value(const ConfigBase &config, const char *key) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr ? option->get_float() : 0.;
+    }
+
+    // Read one extruder-indexed optional setting; an absent setting reads as zero.
+    double config_value_at(const ConfigBase &config, const char *key, size_t idx) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr ? option->get_float(idx) : 0.;
+    }
+
+    // Resolve one optional float-or-percent setting against a fallback value.
+    double config_effective_value(const ConfigBase &config, const char *key, double fallback) {
+        const ConfigOptionFloatOrPercent *option = config.option<ConfigOptionFloatOrPercent>(key);
+        return option != nullptr ? option->get_effective_value(fallback) : fallback;
+    }
+
+    // Whether one optional setting exists and is enabled.
+    bool config_is_enabled(const ConfigBase &config, const char *key) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr && option->is_enabled();
+    }
+
     double get_default_acceleration(PrintConfig& config) {
         double max = 0;
         max = machine_limit_value(config, "machine_max_acceleration_extruding");
@@ -304,7 +329,8 @@ uint16_t tool_id_from_extruder(const extruder_index_t extruder_id)
 
     const std::vector<std::string> ColorPrintColors::Colors = { "#C0392B", "#E67E22", "#F1C40F", "#27AE60", "#1ABC9C", "#2980B9", "#9B59B6" };
 
-#define EXTRUDER_CONFIG_WITH_DEFAULT(OPT,DEF) (m_writer.tool_is_extruder()?m_config.OPT.get_at(m_writer.tool()->id()):DEF)
+#define EXTRUDER_CONFIG_WITH_DEFAULT(OPT,DEF) (m_writer.tool_is_extruder() && m_config.option(#OPT) != nullptr ? m_config.option(#OPT)->get_float(m_writer.tool()->id()) : double(DEF))
+#define STRING_EXTRUDER_CONFIG_WITH_DEFAULT(OPT,DEF) (m_writer.tool_is_extruder() && m_config.option<ConfigOptionStrings>(#OPT) != nullptr ? m_config.option<ConfigOptionStrings>(#OPT)->get_at(m_writer.tool()->id()) : std::string(DEF))
 #define BOOL_EXTRUDER_CONFIG(OPT) (m_writer.tool_is_extruder() && m_config.OPT.get_at(m_writer.tool()->id()))
 
 struct GCodeGenerator::PlaceholderParserIntegration {
@@ -1691,7 +1717,7 @@ namespace DoExport {
     static std::vector<double> autospeed_volumetric_limit(const Print &print, const ToolOrdering& tool_ordering) {
         std::vector<double> ret;
         ret.resize(print.config().nozzle_diameter.size(), 0.);
-        if (print.config().max_volumetric_speed.value <= 0) {
+        if (config_value(print.config(), "max_volumetric_speed") <= 0) {
             return ret;
         }
         const double max_print_speed = print.config().get_computed_value("max_print_speed");
@@ -1701,14 +1727,14 @@ namespace DoExport {
         for (size_t extruder_idx = 0; extruder_idx < print.config().nozzle_diameter.size(); ++extruder_idx) {
             const extruder_index_t extruder_id = checked_extruder_index(extruder_idx);
             double min_mm3_per_mm = 0;
-            if (print.config().autospeed_min_thin_flow.is_enabled()) {
-                if (print.config().autospeed_min_thin_flow > 0) {
-                    double min_mm3_per_s = print.config().max_volumetric_speed.value;
-                    if (print.config().filament_max_volumetric_speed.get_at(extruder_id) > 0) {
-                        min_mm3_per_s = std::min(min_mm3_per_s, print.config().filament_max_volumetric_speed.get_at(extruder_id));
+            if (config_is_enabled(print.config(), "autospeed_min_thin_flow")) {
+                if (config_value(print.config(), "autospeed_min_thin_flow") > 0) {
+                    double min_mm3_per_s = config_value(print.config(), "max_volumetric_speed");
+                    if (config_value_at(print.config(), "filament_max_volumetric_speed", extruder_id) > 0) {
+                        min_mm3_per_s = std::min(min_mm3_per_s, config_value_at(print.config(), "filament_max_volumetric_speed", extruder_id));
                     }
                     min_mm3_per_mm = std::max(min_mm3_per_mm,
-                                              print.config().autospeed_min_thin_flow.get_effective_value(min_mm3_per_s) /
+                                              config_effective_value(print.config(), "autospeed_min_thin_flow", min_mm3_per_s) /
                                                   max_print_speed);
                 }
             }
@@ -1811,9 +1837,9 @@ namespace DoExport {
                 // will need slower feedrates.
                 double volumetric_speed_mm3_per_s = min_mm3_per_mm * max_print_speed;
                 // limit such volumetric speed with max_volumetric_speed if set
-                if (print.config().max_volumetric_speed.value > 0)
+                if (config_value(print.config(), "max_volumetric_speed") > 0)
                     volumetric_speed_mm3_per_s = std::min(volumetric_speed_mm3_per_s,
-                                                          print.config().max_volumetric_speed.value);
+                                                          config_value(print.config(), "max_volumetric_speed"));
                 ret[extruder_idx] = volumetric_speed_mm3_per_s;
             }
         }
@@ -8436,7 +8462,7 @@ double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path) {
     }
     // first layer mult
     if (this->m_layer->scaled_bottom_z() <= 0) {
-        e_per_mm *= this->config().first_layer_flow_ratio.get_effective_value(1);
+        e_per_mm *= config_effective_value(this->config(), "first_layer_flow_ratio", 1);
         e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_first_layer_flow_ratio, 100) * 0.01;
     }
     return e_per_mm;
@@ -8462,7 +8488,7 @@ std::string GCodeGenerator::_extrude(ExtrusionPath &path, const std::string_view
         Flow flow = Flow::new_from_width(nozzle_diameter, nozzle_diameter, path.attributes().height, 1);
         ExtrusionPath fake_path(ExtrusionAttributes{ExtrusionRole::ExternalPerimeter, flow}, nullptr);
         double my_e_per_mm = _compute_e_per_mm(fake_path);
-        my_e_per_mm *= this->config().first_layer_flow_ratio.get_effective_value(1);
+        my_e_per_mm *= config_effective_value(this->config(), "first_layer_flow_ratio", 1);
         my_e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_first_layer_flow_ratio, 100) * 0.01;
         double e_value = my_e_per_mm * config().first_layer_strong_start.get_effective_value(nozzle_diameter);
         // Dicretize the path to have aonly small segments (at the start), to absorb the alsck of extrusion.
@@ -8725,37 +8751,37 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
         // respect the % hierarchy
         if ((path.role().is_overhang() && m_config.overhangs) ||
             (path.overhang_attributes() && path.overhang_attributes()->has_full_overhangs_speed)) {
-            speed = m_config.overhangs_speed.get_effective_value(m_config.bridge_speed.get_effective_value(vol_speed));
+            speed = m_config.overhangs_speed.get_effective_value(config_effective_value(m_config, "bridge_speed", vol_speed));
             if(comment) *comment = std::string("overhangs_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::Perimeter) {
-            speed = m_config.perimeter_speed.get_effective_value(vol_speed);
+            speed = config_effective_value(m_config, "perimeter_speed", vol_speed);
             if(comment) *comment = std::string("perimeter_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::ExternalPerimeter) {
-            speed = m_config.external_perimeter_speed.get_effective_value(m_config.perimeter_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "external_perimeter_speed", config_effective_value(m_config, "perimeter_speed", vol_speed));
             if(comment) *comment = std::string("external_perimeter_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::BridgeInfill) {
-            speed = m_config.bridge_speed.get_effective_value(vol_speed);
+            speed = config_effective_value(m_config, "bridge_speed", vol_speed);
             if(comment) *comment = std::string("bridge_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::InternalBridgeInfill) {
-            speed = m_config.internal_bridge_speed.get_effective_value(m_config.bridge_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "internal_bridge_speed", config_effective_value(m_config, "bridge_speed", vol_speed));
             if(comment) *comment = std::string("internal_bridge_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::InternalInfill) {
-            speed = m_config.infill_speed.get_effective_value(m_config.solid_infill_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "infill_speed", config_effective_value(m_config, "solid_infill_speed", vol_speed));
             if(comment) *comment = std::string("infill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::SolidInfill) {
-            speed = m_config.solid_infill_speed.get_effective_value(vol_speed);
+            speed = config_effective_value(m_config, "solid_infill_speed", vol_speed);
             if(comment) *comment = std::string("solid_infill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::TopSolidInfill) {
-            speed = m_config.top_solid_infill_speed.get_effective_value(m_config.solid_infill_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "top_solid_infill_speed", config_effective_value(m_config, "solid_infill_speed", vol_speed));
             if(comment) *comment = std::string("top_solid_infill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::ThinWall) {
-            speed = m_config.thin_walls_speed.get_effective_value(m_config.external_perimeter_speed.get_effective_value(m_config.perimeter_speed.get_effective_value(vol_speed)));
+            speed = config_effective_value(m_config, "thin_walls_speed", config_effective_value(m_config, "external_perimeter_speed", config_effective_value(m_config, "perimeter_speed", vol_speed)));
             if(comment) *comment = std::string("thin_walls_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::GapFill) {
-            speed = m_config.gap_fill_speed.get_effective_value(m_config.perimeter_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "gap_fill_speed", config_effective_value(m_config, "perimeter_speed", vol_speed));
             if(comment) *comment = std::string("gap_fill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::Ironing) {
-            speed = m_config.ironing_speed.get_effective_value(m_config.top_solid_infill_speed.get_effective_value(m_config.solid_infill_speed.get_effective_value(vol_speed)));
+            speed = config_effective_value(m_config, "ironing_speed", config_effective_value(m_config, "top_solid_infill_speed", config_effective_value(m_config, "solid_infill_speed", vol_speed)));
             if(comment) *comment = std::string("ironing_speed ") + *comment;
         }
         if (speed == 0) {
@@ -8798,9 +8824,9 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
                     vol_speed = max_print_speed;
                 }
                 if (path.role() == ExtrusionRole::OverhangExternalPerimeter) {
-                    other_speed = m_config.external_perimeter_speed.get_effective_value(vol_speed);
+                    other_speed = config_effective_value(m_config, "external_perimeter_speed", vol_speed);
                 } else {
-                    other_speed = m_config.perimeter_speed.get_effective_value(vol_speed);
+                    other_speed = config_effective_value(m_config, "perimeter_speed", vol_speed);
                 }
                 if (other_speed == 0) {
                     other_speed = vol_speed;
@@ -8824,7 +8850,7 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
 
 
     if (speed == 0) { // if you don't have a m_volumetric_speed
-        speed = m_config.max_print_speed.value;
+        speed = config_value(m_config, "max_print_speed");
         if(comment) *comment = "max_print_speed";
     }
     // Apply small perimeter 'modifier
@@ -8842,9 +8868,9 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
     // Apply first layer modifier
     if (this->on_first_layer()) {
         const double base_speed = speed;
-        double first_layer_speed = m_config.first_layer_speed.get_effective_value(base_speed);
+        double first_layer_speed = config_effective_value(m_config, "first_layer_speed", base_speed);
         if (path.role() == ExtrusionRole::InternalInfill || path.role() == ExtrusionRole::SolidInfill) {
-            double first_layer_infill_speed = m_config.first_layer_infill_speed.get_effective_value(base_speed);
+            double first_layer_infill_speed = config_effective_value(m_config, "first_layer_infill_speed", base_speed);
             if (first_layer_infill_speed > 0) {
                 if (first_layer_infill_speed < speed) {
                     speed = first_layer_infill_speed;
@@ -8862,7 +8888,7 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
                 if(comment) *comment += ", reduced to first_layer_speed";
             }
         }
-        double first_layer_min_speed = m_config.first_layer_min_speed.value;
+        double first_layer_min_speed = config_value(m_config, "first_layer_min_speed");
         if (first_layer_min_speed > speed) {
             speed = first_layer_min_speed;
             if(comment) *comment += ", increased to first_layer_min_speed";
@@ -8879,11 +8905,11 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
     // the first_layer_flow_ratio is added at the last time to take into account everything. So do the compute like it's here.
     double path_mm3_per_mm = path.mm3_per_mm();
     if (m_layer->scaled_bottom_z() <= 0) {
-        path_mm3_per_mm *= this->config().first_layer_flow_ratio.get_effective_value(1);
+        path_mm3_per_mm *= config_effective_value(this->config(), "first_layer_flow_ratio", 1);
     }
     // cap speed with max_volumetric_speed anyway (even if user is not using autospeed)
-    if (m_config.max_volumetric_speed.value > 0 && path_mm3_per_mm > 0 && m_config.max_volumetric_speed.value / path_mm3_per_mm < speed) {
-        speed = m_config.max_volumetric_speed.value / path_mm3_per_mm;
+    if (config_value(m_config, "max_volumetric_speed") > 0 && path_mm3_per_mm > 0 && config_value(m_config, "max_volumetric_speed") / path_mm3_per_mm < speed) {
+        speed = config_value(m_config, "max_volumetric_speed") / path_mm3_per_mm;
         if(comment) *comment += ", reduced by max_volumetric_speed";
     }
     // filament cap (volumetric & raw speed)
@@ -10271,9 +10297,9 @@ std::string GCodeGenerator::retract_and_wipe(bool toolchange, bool inhibit_lift)
         if (this->m_last_extrusion_role == GCodeExtrusionRole::GapFill)
             last_fill_extusion_role_top_infill = (this->m_last_not_gapfill_extrusion_role == GCodeExtrusionRole::TopSolidInfill || this->m_last_not_gapfill_extrusion_role == GCodeExtrusionRole::Ironing);
         if (!need_lift && (!m_config.print_retract_lift.is_enabled() || m_config.print_retract_lift.value > 0)) {
-            if (EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Not on top")
+            if (STRING_EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Not on top")
                 need_lift = !last_fill_extusion_role_top_infill;
-            else if (EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Only on top")
+            else if (STRING_EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Only on top")
                 need_lift = last_fill_extusion_role_top_infill;
             else
                 need_lift = true;

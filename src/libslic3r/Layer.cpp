@@ -885,7 +885,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && region_config_option_equal(config, other_config, "external_perimeter_acceleration")
         && config.external_perimeter_extrusion_width == other_config.external_perimeter_extrusion_width
         && config.external_perimeter_overlap == other_config.external_perimeter_overlap
-        && config.external_perimeter_speed == other_config.external_perimeter_speed // it os mandatory? can't this be set at gcode.cpp?
+        && region_config_option_equal(config, other_config, "external_perimeter_speed") // it os mandatory? can't this be set at gcode.cpp?
         && config.external_perimeters_first == other_config.external_perimeters_first
         && config.external_perimeters_first_force == other_config.external_perimeters_first_force
         && config.external_perimeters_hole  == other_config.external_perimeters_hole
@@ -898,7 +898,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         //&& config.extra_perimeters_odd_layers == other_config.extra_perimeters_odd_layers // can be used in modifiers
         //&& config.extra_perimeters_on_overhangs == other_config.extra_perimeters_on_overhangs // can be used in modifiers
         //&& config.gap_fill_enabled          == other_config.gap_fill_enabled
-        && ((config.gap_fill_speed          == other_config.gap_fill_speed) || (!config.gap_fill_enabled && !other_config.gap_fill_enabled))
+        && ((region_config_option_equal(config, other_config, "gap_fill_speed")) || (!config.gap_fill_enabled && !other_config.gap_fill_enabled))
         && region_config_option_equal(config, other_config, "gap_fill_acceleration")
         && config.gap_fill_last             == other_config.gap_fill_last
         && config.gap_fill_flow_match_perimeter == other_config.gap_fill_flow_match_perimeter
@@ -938,7 +938,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && config.perimeter_loop_seam       == other_config.perimeter_loop_seam
         && config.perimeter_overlap         == other_config.perimeter_overlap
         && config.perimeter_reverse         == other_config.perimeter_reverse
-        && config.perimeter_speed           == other_config.perimeter_speed // it is mandatory? can't this be set at gcode.cpp?
+        && region_config_option_equal(config, other_config, "perimeter_speed") // it is mandatory? can't this be set at gcode.cpp?
         // print -modifier, because region are fused in gode wiew if not.
         && config.print_extrusion_multiplier        == other_config.print_extrusion_multiplier
         && config.print_first_layer_temperature     == other_config.print_first_layer_temperature
@@ -956,7 +956,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         //&& config.thin_walls_overlap        == other_config.thin_walls_overlap // can be used in modifiers with thin_walls
         && config.thin_perimeters           == other_config.thin_perimeters
         && config.thin_perimeters_all       == other_config.thin_perimeters_all
-        && config.thin_walls_speed          == other_config.thin_walls_speed
+        && region_config_option_equal(config, other_config, "thin_walls_speed")
         && config.fuzzy_skin                == other_config.fuzzy_skin
         && config.fuzzy_skin_thickness      == other_config.fuzzy_skin_thickness
         && config.fuzzy_skin_point_dist     == other_config.fuzzy_skin_point_dist)

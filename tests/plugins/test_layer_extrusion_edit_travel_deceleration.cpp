@@ -572,6 +572,15 @@ TEST_CASE("Migrated travel deceleration settings keep a single scoped storage",
     CHECK(PrintConfig::defaults().option("brim_acceleration") == nullptr);
     CHECK(PrintRegionConfig::defaults().option("brim_acceleration") == nullptr);
     CHECK(PrintObjectConfig::defaults().option("brim_acceleration") != nullptr);
+
+    // gap_fill_speed is region-scoped and is not duplicated into the print
+    // config.
+    const ConfigOptionDef *gap_fill_speed_def =
+        PrintConfigDef::instance().get("gap_fill_speed");
+    REQUIRE(gap_fill_speed_def != nullptr);
+    CHECK(gap_fill_speed_def->container_type == ConfigOptionContainerType::Region);
+    CHECK(PrintConfig::defaults().option("gap_fill_speed") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("gap_fill_speed") != nullptr);
 }
 
 TEST_CASE("Travel deceleration resolves its switch at the Travel destination",

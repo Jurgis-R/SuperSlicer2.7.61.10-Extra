@@ -82,11 +82,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         (supp || i("support_material_enforce_layers") > 0);
     const bool default_accel = fl("default_acceleration") > 0;
     const bool pp_ironing = has_top && b("ironing");
-    const bool ironing_pattern =
-        config.opt_enum<InfillPattern>("top_fill_pattern") == InfillPattern::ipSmooth ||
-        config.opt_enum<InfillPattern>("bottom_fill_pattern") == InfillPattern::ipSmooth ||
-        config.opt_enum<InfillPattern>("solid_fill_pattern") == InfillPattern::ipSmooth;
-    const bool has_ironing = pp_ironing || ironing_pattern;
     const bool ext_not_loop = ext && !loop_seam;
     const bool can_reverse = !A && overhangs && !b("perimeter_reverse");
     const bool soluble = have_support &&
@@ -124,8 +119,8 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs", "external_perimeters_first",
         "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing",
         "external_perimeter_extrusion_change_odd_layers", "overhangs", "seam_position",
-        "staggered_inner_seams", "perimeter_speed", "perimeter_reverse", "perimeter_generator",
-        "external_perimeter_speed", "small_perimeter_speed", "spiral_vase",
+        "staggered_inner_seams", "perimeter_reverse", "perimeter_generator",
+        "small_perimeter_speed", "spiral_vase",
         "seam_notch_all", "seam_notch_inner", "seam_notch_outer",
         "no_perimeter_unsupported_algo", "only_one_perimeter_top"
     };
@@ -211,7 +206,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     const char *const solid_keys[] = {
         "enforce_full_fill_volume", "external_infill_margin", "bridged_infill_margin",
         "solid_infill_extruder", "solid_infill_extrusion_width", "solid_infill_extrusion_spacing",
-        "solid_infill_speed", "solid_infill_extrusion_change_odd_layers"
+        "solid_infill_extrusion_change_odd_layers"
     };
     for (const char *key : solid_keys)
         set(key, has_solid);
@@ -220,7 +215,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     const char *const infill_or_solid_keys[] = {
         "fill_angle_cross", "fill_angle_follow_model", "fill_angle_increment", "fill_angle_template",
         "bridge_angle", "infill_extrusion_width", "infill_extrusion_spacing",
-        "infill_extrusion_change_odd_layers", "infill_speed"
+        "infill_extrusion_change_odd_layers"
     };
     for (const char *key : infill_or_solid_keys)
         set(key, infill_or_solid);
@@ -233,7 +228,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
 
     const char *const top_keys[] = {
         "ironing", "top_fill_pattern", "infill_connection_top", "top_infill_extrusion_width",
-        "top_infill_extrusion_spacing", "top_solid_infill_speed"
+        "top_infill_extrusion_spacing"
     };
     for (const char *key : top_keys)
         set(key, has_top);
@@ -248,7 +243,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("ironing_flowrate", pp_ironing);
     set("ironing_spacing", pp_ironing);
     set("ironing_angle", pp_ironing);
-    set("ironing_speed", has_ironing);
     set("fill_smooth_width", smooth);
     set("fill_smooth_distribution", smooth);
 
@@ -266,7 +260,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("perimeter_extrusion_change_odd_layers", P || have_brim);
     set("support_material_extruder", have_support || have_skirt);
     set("support_material_speed", have_support || have_skirt || have_brim);
-    set("brim_speed", have_brim || have_skirt);
 
     const char *const support_keys[] = {
         "support_material_style", "support_material_extrusion_width",
@@ -349,7 +342,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("enforce_retract_first_layer", b("only_retract_when_crossing_perimeters"));
     set("milling_after_z", b("milling_post_process"));
     set("milling_extra_size", b("milling_post_process"));
-    set("milling_speed", b("milling_post_process"));
 
     // The travel deceleration and feature acceleration settings are defined by
     // their plugins, so the reference skips them; their activation rules are
@@ -364,8 +356,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         config.option<ConfigOptionFloatOrPercent>("bridge_speed")->percent ||
         config.option<ConfigOptionFloatOrPercent>("support_material_speed")->percent;
     set("default_speed", percent_speed);
-    set("max_print_speed", fl("max_volumetric_speed") != 0);
-    set("autospeed_min_thin_flow", fl("max_volumetric_speed") != 0);
 
     return out;
 }

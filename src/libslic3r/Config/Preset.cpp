@@ -405,7 +405,7 @@ void Preset::normalize(DynamicPrintConfig &config)
     if (milling_diameter != nullptr)
         // Loaded the FFF Printer settings. Verify, that all extruder dependent values have enough values.
         config.set_num_milling((unsigned int)milling_diameter->size());
-    if (const auto *gap_fill_speed = config.option<ConfigOptionFloat>("gap_fill_speed", false); gap_fill_speed && gap_fill_speed->value <= 0.) {
+    if (const auto *gap_fill_speed = config.option<ConfigOptionFloatOrPercent>("gap_fill_speed", false); gap_fill_speed && gap_fill_speed->value <= 0.) {
         // Legacy conversion. If the gap fill speed is zero, it means the gap fill is not enabled.
         // Set the new gap_fill_enabled value, so that it will show up in the UI as disabled.
         if (auto *gap_fill_enabled = config.option<ConfigOptionBool>("gap_fill_enabled", false); gap_fill_enabled)
