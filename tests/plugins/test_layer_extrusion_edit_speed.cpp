@@ -17,6 +17,8 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_data_tree.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/AuxiliaryLayerHelpers.hpp"
@@ -1585,7 +1587,36 @@ TEST_CASE("Layer fan plugin exposes its independent contract",
     CHECK(fan_plugin->get_step() == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(fan_plugin->get_priority() == 20);
     CHECK(fan_plugin->get_exclusive_group() == "layer_extrusion_edit.fan");
-    CHECK(fan_plugin->get_defined_config_keys().empty());
+
+    // Keys the fan step reads; the plugin publishes exactly this set.
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : fan_plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 18);
+    for (const char *expected : { "bridge_fan_speed", "default_fan_speed", "disable_fan_first_layers",
+                                  "fan_below_layer_time", "fan_printer_min_speed", "max_fan_speed",
+                                  "top_fan_speed" })
+        CHECK(std::find(defined_keys.begin(), defined_keys.end(), expected) != defined_keys.end());
+
+    const ConfigOptionDef *fan_def = PrintConfigDef::instance().get("bridge_fan_speed");
+    REQUIRE(fan_def != nullptr);
+    CHECK(fan_def->type == coInts);
+    CHECK(fan_def->is_vector_extruder);
+    CHECK(fan_def->can_be_disabled);
+    CHECK(fan_def->invalidates_step == STEP_GCODE);
+    CHECK(fan_def->default_value->serialize() == "100");
+
+    fan_def = PrintConfigDef::instance().get("default_fan_speed");
+    REQUIRE(fan_def != nullptr);
+    CHECK(fan_def->type == coInts);
+    CHECK(fan_def->default_value->serialize() == "!100");
+    REQUIRE(fan_def->aliases.size() == 1);
+    CHECK(fan_def->aliases.front() == "min_fan_speed");
+
+    fan_def = PrintConfigDef::instance().get("fan_printer_min_speed");
+    REQUIRE(fan_def != nullptr);
+    CHECK(fan_def->type == coInt);
+    CHECK(fan_def->default_value->serialize() == "0");
 
     std::vector<std::string> keys;
     for (const Plugin::UsedConfigKey &key : fan_plugin->get_used_config_keys())

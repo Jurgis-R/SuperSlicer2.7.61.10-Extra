@@ -23,12 +23,15 @@ fan_speed_percent and decides whether a physical fan command is necessary.
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <vector>
 
 #include "ExtrusionProcessParameterHelpers.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
@@ -64,6 +67,453 @@ const raw_used_config_key k_used_config_keys[] = {
     {"top_fan_speed", RAW_CO_VECTOR_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
     {"travel_speed", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE}
 };
+
+const char *const k_defined_config_keys[] = {
+    "bridge_fan_speed",
+    "default_fan_speed",
+    "disable_fan_first_layers",
+    "external_perimeter_fan_speed",
+    "fan_below_layer_time",
+    "fan_printer_min_speed",
+    "full_fan_speed_layer",
+    "gap_fill_fan_speed",
+    "infill_fan_speed",
+    "internal_bridge_fan_speed",
+    "max_fan_speed",
+    "overhangs_fan_speed",
+    "perimeter_fan_speed",
+    "slowdown_below_layer_time",
+    "solid_infill_fan_speed",
+    "support_material_fan_speed",
+    "support_material_interface_fan_speed",
+    "top_fan_speed"
+};
+
+void initialize_default_fan_settings(orchestrator_handle *orchestrator)
+    {
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- bridge_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "bridge_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Bridge Infill fan speed";
+    def.tooltip = "This fan speed is enforced during bridges and overhangs. It won't slow down the fan if it's currently running at a higher speed.\nSet to 0 to stop the fan.\nIf disabled, default fan speed will be used.\nCan be disabled by disable_fan_first_layers and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- disable_fan_first_layers | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "disable_fan_first_layers";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Disable fan for the first";
+    def.tooltip = "You can set this to a positive value to disable fan at all during the first layers, so that it does not make adhesion worse.";
+    def.sidetext = "layers";
+    def.is_vector_extruder = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 1000;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "1";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- external_perimeter_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "external_perimeter_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "External perimeter fan speed";
+    def.tooltip = "When set to a non-zero value this fan speed is used only for external perimeters (visible ones) and thin walls.\nSet to 0 to stop the fan.\nIf disabled, the default fan speed will be used.\nExternal perimeters can benefit from higher fan speed to improve surface finish, while internal perimeters, infill, etc. benefit from lower fan speed to improve layer adhesion.\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- fan_below_layer_time | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "fan_below_layer_time";
+    def.type = RAW_CO_VECTOR_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Enable fan if layer print time is below";
+    def.tooltip = "If layer print time is estimated below this number of seconds, fan will be enabled and its speed will be calculated by interpolating the default and maximum speeds.\nSet zero to disable.";
+    def.sidetext = "approximate seconds";
+    def.is_vector_extruder = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 1000;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "60";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- fan_printer_min_speed | preset=RAW_PRESET_TYPE_FFF_PRINTER ----
+    def = raw_config_option_def_init();
+    def.opt_key = "fan_printer_min_speed";
+    def.type = RAW_CO_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_GENERAL;
+    def.label = "Minimum fan speed";
+    def.full_label = "Minimum fan speed";
+    def.tooltip = "This setting represents the minimum fan speed (like minimum PWM) your fan needs to work.";
+    def.sidetext = "%";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- full_fan_speed_layer | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "full_fan_speed_layer";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_FILAMENT;
+    def.label = "Full fan speed at layer";
+    def.tooltip = "Fan speed will be ramped up linearly from zero at layer \"disable_fan_first_layers\" to maximum at layer \"full_fan_speed_layer\". \"full_fan_speed_layer\" will be ignored if equal or lower than \"disable_fan_first_layers\", in which case the fan will be running at maximum allowed speed at layer \"disable_fan_first_layers\" + 1.\nset 0 to disable";
+    def.is_vector_extruder = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 1000;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "4";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Gap fill fan speed";
+    def.tooltip = "This fan speed is enforced during all gap fill Perimeter moves\nSet to 0 to stop the fan.\nIf disabled, default fan speed will be used.\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- infill_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "infill_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Internal Infill fan speed";
+    def.tooltip = "This fan speed is enforced during all Internal Infill moves\nSet to 0 to stop the fan.\nIf disabled, default fan speed will be used.\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- internal_bridge_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "internal_bridge_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Internal Bridge Infill fan speed";
+    def.tooltip = "This fan speed is enforced during all infill bridges. It won't slow down the fan if it's currently running at a higher speed.\nSet to 0 to stop the fan.\nIf disabled, Bridge fan speed will be used.\nCan be disabled by disable_fan_first_layers and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    {
+    static const char *const k_aliases[] = { "bridge_internal_fan_speed" };
+    def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- max_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "max_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Max";
+    def.full_label = "Max fan speed";
+    def.tooltip = "This setting represents the maximum speed of your fan, used when the layer print time is Very short.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- overhangs_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "overhangs_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Overhangs Perimeter fan speed";
+    def.tooltip = "This fan speed is enforced during all Overhang Perimeter moves\nIf disabled, the previous (perimeter) fan speed will be used.\nCan be overridden by disable_fan_first_layers and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- perimeter_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "perimeter_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Internal Perimeter fan speed";
+    def.tooltip = "This fan speed is enforced during all Perimeter moves\nSet to 0 to stop the fan.\nIf disabled, default fan speed will be used.\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- slowdown_below_layer_time | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "slowdown_below_layer_time";
+    def.type = RAW_CO_VECTOR_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Slow down if layer print time is below";
+    def.tooltip = "If layer print time is estimated below this number of seconds, print moves speed will be scaled down to extend duration to this value, if possible.\nSet zero to disable.";
+    def.sidetext = "approximate seconds";
+    def.is_vector_extruder = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 1000;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "5";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- solid_infill_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "solid_infill_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Solid Infill fan speed";
+    def.tooltip = "This fan speed is enforced during all Solid Infill moves\nSet to 0 to stop the fan.\nIf disabled, default fan speed will be used.\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- support_material_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "support_material_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Support Material fan speed";
+    def.tooltip = "This fan speed is enforced during all support moves\nSet to 0 to stop the fan.\nIf disabled, default fan speed will be used.\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- support_material_interface_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "support_material_interface_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Support interface fan speed";
+    def.tooltip = "This fan speed is enforced during all support interfaces, to be able to weaken their bonding with a high fan speed.\nSet to 0 to stop the fan.\nIf disabled, Support Material fan speed will be used.\nCan only be overridden by disable_fan_first_layers.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- top_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "top_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Top Solid fan speed";
+    def.tooltip = "This fan speed is enforced during all top fills (including ironing).\nSet to 0 to stop the fan.\nIf disabled, Solid Infill fan speed will be used.\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer.";
+    def.sidetext = "%";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- default_fan_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "default_fan_speed";
+    def.type = RAW_CO_VECTOR_INT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_COOLING;
+    def.label = "Default fan speed";
+    def.tooltip = "Default speed for the fan, to set the speed for features where there is no fan control. Useful for PLA and other low-temp filament.\nSet 0 to disable the fan by default. Useful for ABS and other high-temp filaments.\nIf disabled, no fan speed command will be emitted when possible (if a feature set a speed, it won't be reverted).";
+    def.is_vector_extruder = 1;
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_SIMPLE | RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    {
+    static const char *const k_aliases[] = { "min_fan_speed" };
+    def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "!100";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
 
 enum class FanRole : uint8_t
 {
@@ -151,6 +601,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
     void setup_impl(const plugin_run_context *run_ctx, uint32_t run_count) const override;
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
@@ -245,8 +697,9 @@ LayerFanPolicy layer_fan_policy(const Config &config,
     policy.speed[role_index(FanRole::Default)] = default_speed;
     policy.speed[role_index(FanRole::Skirt)] = default_speed;
 
-    // Build the role table before applying time-based changes. Disabled role
-    // settings intentionally remain -1 until the historical fallback pass.
+    // Build the role table before applying time-based changes. A disabled role
+    // keeps -1 so the late family fallback at the end of the pass can redirect
+    // it to its reference role.
     policy.speed[role_index(FanRole::BridgeInfill)] = legacy_fan_value(config, "bridge_fan_speed", extruder_id);
     policy.speed[role_index(FanRole::InternalBridgeInfill)] = legacy_fan_value(config, "internal_bridge_fan_speed", extruder_id);
     policy.speed[role_index(FanRole::TopSolidInfill)] = legacy_fan_value(config, "top_fan_speed", extruder_id);
@@ -511,6 +964,19 @@ int32_t DefaultFan::used_config_keys(raw_used_config_key *keys) const noexcept
     if (keys != nullptr)
         std::copy(std::begin(k_used_config_keys), std::end(k_used_config_keys), keys);
     return int32_t(std::size(k_used_config_keys));
+}
+
+int32_t DefaultFan::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void DefaultFan::inilialize_impl(storage_handle *) const
+{
+    initialize_default_fan_settings(m_orchestrator);
 }
 
 const char *DefaultFan::progress_message_format_impl() const noexcept

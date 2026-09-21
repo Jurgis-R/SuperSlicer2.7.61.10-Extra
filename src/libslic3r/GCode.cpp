@@ -2495,7 +2495,10 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
 
 
     // Disable fan.
-    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && print.config().disable_fan_first_layers.get_at(initial_extruder_id)) {
+    const ConfigOptionInts *disable_fan_first_layers_opt =
+        print.config().opt<ConfigOptionInts>("disable_fan_first_layers");
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual &&
+        disable_fan_first_layers_opt != nullptr && disable_fan_first_layers_opt->get_at(initial_extruder_id)) {
         preamble_to_put_start_layer.append(m_writer.set_fan(uint8_t(0), initial_extruder_id));
     }
 

@@ -1188,24 +1188,7 @@ void init_categories(PrintConfigDef &definition)
         // "cooling",
         // "fan_always_on", (now default_fan_speed)
         // "min_fan_speed", (now fan_printer_min_speed)
-        "default_fan_speed",
-        "max_fan_speed",
-        "bridge_fan_speed",
-        "external_perimeter_fan_speed",
-        "gap_fill_fan_speed",
-        "infill_fan_speed",
-        "internal_bridge_fan_speed",
-        "overhangs_fan_speed",
         "overhangs_dynamic_fan_speed",
-        "perimeter_fan_speed",
-        "solid_infill_fan_speed",
-        "support_material_fan_speed",
-        "support_material_interface_fan_speed",
-        "top_fan_speed",
-        "disable_fan_first_layers",
-        "full_fan_speed_layer",
-        "fan_below_layer_time",
-        "slowdown_below_layer_time",
         "max_speed_reduction",
         "min_print_speed",
         // custom gcode
@@ -1267,7 +1250,6 @@ void init_categories(PrintConfigDef &definition)
         "fan_speedup_overhangs",
         "fan_speedup_time",
         "fan_percentage",
-        "fan_printer_min_speed",
         "gcode_ascii",
         "gcode_filename_illegal_char",
         "gcode_flavor",
@@ -1747,22 +1729,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent(200, true));
 
-    def = definition.add("bridge_fan_speed", coInts, ptFFF);
-    def->label = L("Bridge Infill fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during bridges and overhangs. It won't slow down the fan if it's currently running at a higher speed."
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, default fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comPrusa;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(enable_default_option(new ConfigOptionInts{ 100 }));
-
     def = definition.add("bridge_fill_pattern", coEnum, ptFFF);
     def->label = L("Bridging fill pattern");
     def->category = OptionCategory::infill;
@@ -2182,22 +2148,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->set_default_value(new ConfigOptionStrings());
     def->cli = ConfigOptionDef::nocli;
 
-    def           = definition.add("default_fan_speed", coInts, ptFFF);
-    def->label    = L("Default fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip  = L(
-        "Default speed for the fan, to set the speed for features where there is no fan control. Useful for PLA and other low-temp filament."
-        "\nSet 0 to disable the fan by default. Useful for ABS and other high-temp filaments."
-        "\nIf disabled, no fan speed command will be emitted when possible (if a feature set a speed, it won't be reverted).");
-    def->mode               = comSimpleAE | comSuSi;
-    def->min                = 0;
-    def->max                = 100;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
-    def->aliases = { "min_fan_speed" }; // only if "fan_always_on"
-
     def = definition.add("default_print_profile", coString, ptFFF);
     def->label = L("Default print profile");
     def->tooltip = L("Default print profile associated with the current printer profile. "
@@ -2221,19 +2171,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->min = 0;
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent(100, false));
-
-    def = definition.add("disable_fan_first_layers", coInts, ptFFF);
-    def->label = L("Disable fan for the first");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("You can set this to a positive value to disable fan at all "
-                   "during the first layers, so that it does not make adhesion worse.");
-    def->sidetext = L("layers");
-    def->min = 0;
-    def->max = 1000;
-    def->mode = comExpert | comPrusa;
-    def->is_vector_extruder = true;
-    def->set_default_value(new ConfigOptionInts { 1 });
 
     def = definition.add("draft_shield", coEnum, ptFFF);
     def->label = L("Draft shield");
@@ -2479,23 +2416,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->sidetext = L("%");
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(0));
-
-    def = definition.add("external_perimeter_fan_speed", coInts, ptFFF);
-    def->label = L("External perimeter fan speed");
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("When set to a non-zero value this fan speed is used only for external perimeters (visible ones) and thin walls."
-                    "\nSet to 0 to stop the fan."
-                    "\nIf disabled, the default fan speed will be used."
-                    "\nExternal perimeters can benefit from higher fan speed to improve surface finish, "
-                    "while internal perimeters, infill, etc. benefit from lower fan speed to improve layer adhesion."
-                    "\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
 
     def = definition.add("external_perimeter_overlap", coPercent, ptFFF);
     def->label = L("external perimeter overlap");
@@ -2913,20 +2833,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->is_vector_extruder = true;
     def->set_default_value(new ConfigOptionBools{ true });
 #endif
-
-    def = definition.add("fan_below_layer_time", coFloats, ptFFF);
-    def->label = L("Enable fan if layer print time is below");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("If layer print time is estimated below this number of seconds, fan will be enabled "
-                "and its speed will be calculated by interpolating the default and maximum speeds."
-                "\nSet zero to disable.");
-    def->sidetext = L("approximate seconds");
-    def->min = 0;
-    def->max = 1000;
-    def->mode = comExpert | comPrusa;
-    def->is_vector_extruder = true;
-    def->set_default_value(new ConfigOptionFloats { 60 });
 
     def = definition.add("filament_colour", coStrings, ptFFF);
     def->label = L("Color");
@@ -4083,21 +3989,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionInts { 200 });
 
-    def = definition.add("full_fan_speed_layer", coInts, ptFFF);
-    def->label = L("Full fan speed at layer");
-    def->category = OptionCategory::filament;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("Fan speed will be ramped up linearly from zero at layer \"disable_fan_first_layers\" "
-                   "to maximum at layer \"full_fan_speed_layer\". "
-                   "\"full_fan_speed_layer\" will be ignored if equal or lower than \"disable_fan_first_layers\", in which case "
-                   "the fan will be running at maximum allowed speed at layer \"disable_fan_first_layers\" + 1."
-                   "\nset 0 to disable");
-    def->min = 0;
-    def->max = 1000;
-    def->mode = comExpert | comPrusa;
-    def->is_vector_extruder = true;
-    def->set_default_value(new ConfigOptionInts { 4 });
-
     def = definition.add("fuzzy_skin", coEnum, ptFFF);
     def->label = L("Fuzzy Skin");
     def->category = OptionCategory::fuzzy_skin;
@@ -4176,22 +4067,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->max_literal = { 50, true };
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent{ 0, false });
-
-    def = definition.add("gap_fill_fan_speed", coInts, ptFFF);
-    def->label = L("Gap fill fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all gap fill Perimeter moves"
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, default fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comExpert | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
 
     def = definition.add("gap_fill_flow_match_perimeter", coPercent, ptFFF);
     def->label = L("Cap with perimeter flow");
@@ -4685,22 +4560,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent(100, true));
 
-    def = definition.add("infill_fan_speed", coInts, ptFFF);
-    def->label = L("Internal Infill fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all Internal Infill moves"
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, default fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comExpert | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
-
     def = definition.add("infill_filled_bottom", coBool, ptFFF);
     def->label = L("GapFill for bottom infill areas");
     def->category = OptionCategory::infill;
@@ -4823,23 +4682,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->invalidates_step = posPrepareInfill;
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionBool(true));
-
-    def = definition.add("internal_bridge_fan_speed", coInts, ptFFF);
-    def->label = L("Internal Bridge Infill fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all infill bridges. It won't slow down the fan if it's currently running at a higher speed."
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, Bridge fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
-    def->aliases = { "bridge_internal_fan_speed" };
 
     def = definition.add("internal_bridge_min_width", coFloatOrPercent, ptFFF);
     def->label = L("Internal bridge infill threshold width");
@@ -5249,19 +5091,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->can_be_disabled = true;
     def->set_default_value(disable_default_option(new ConfigOptionFloat(1500)));
-
-    def = definition.add("max_fan_speed", coInts, ptFFF);
-    def->label = L("Max");
-    def->full_label = L("Max fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This setting represents the maximum speed of your fan, used when the layer print time is Very short.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comPrusa;
-    def->is_vector_extruder = true;
-    def->set_default_value(new ConfigOptionInts { 100 });
 
     def = definition.add("max_layer_height", coFloatsOrPercents, ptFFF);
     def->label = L("Max");
@@ -5733,21 +5562,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value((new ConfigOptionFloatOrPercent(0, false)));
 
-    def = definition.add("overhangs_fan_speed", coInts, ptFFF);
-    def->label = L("Overhangs Perimeter fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all Overhang Perimeter moves"
-        "\nIf disabled, the previous (perimeter) fan speed will be used."
-        "\nCan be overridden by disable_fan_first_layers and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
-
     def = definition.add("overhangs_flow_ratio", coPercent, ptFFF);
     def->label = L("Overhangs flow ratio");
     def->sidetext = L("%");
@@ -6023,22 +5837,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionEnum<PerimeterDirection>(pdCCW_CW));
 
-    def = definition.add("perimeter_fan_speed", coInts, ptFFF);
-    def->label = L("Internal Perimeter fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all Perimeter moves"
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, default fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comExpert | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
-
     def = definition.add("perimeter_loop", coBool, ptFFF);
     def->label = L("Perimeters loop");
     def->full_label = L("Perimeters loop");
@@ -6194,18 +5992,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->height = 13;
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionString{ "" });
-
-    def = definition.add("fan_printer_min_speed", coInt, ptFFF);
-    def->label = L("Minimum fan speed");
-    def->full_label = L("Minimum fan speed");
-    def->category = OptionCategory::general;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This setting represents the minimum fan speed (like minimum PWM) your fan needs to work.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comSuSi;
-    def->set_default_value(new ConfigOptionInt(0));
 
     def = definition.add("print_bed_temperature", coInt, ptFFF);
     def->label = L("Bed Temperature");
@@ -7022,20 +6808,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionEnum<SlicingMode>(SlicingMode::Regular));
 
-    def = definition.add("slowdown_below_layer_time", coFloats, ptFFF);
-    def->label = L("Slow down if layer print time is below");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("If layer print time is estimated below this number of seconds, print moves "
-        "speed will be scaled down to extend duration to this value, if possible."
-        "\nSet zero to disable.");
-    def->sidetext = L("approximate seconds");
-    def->min = 0;
-    def->max = 1000;
-    def->mode = comExpert | comPrusa;
-    def->is_vector_extruder = true;
-    def->set_default_value(new ConfigOptionFloats{ 5 });
-
     def = definition.add("small_perimeter_speed", coFloatOrPercent, ptFFF);
     def->label = L("Speed");
     def->full_label = L("Small perimeters speed");
@@ -7196,22 +6968,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->can_phony = true;
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent(100, true));
-
-    def = definition.add("solid_infill_fan_speed", coInts, ptFFF);
-    def->label = L("Solid Infill fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all Solid Infill moves"
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, default fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer and increased by low layer time.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comExpert | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
 
     def = definition.add("solid_infill_speed", coFloatOrPercent, ptFFF);
     def->label = L("Solid");
@@ -7648,22 +7404,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
-    def = definition.add("support_material_fan_speed", coInts, ptFFF);
-    def->label = L("Support Material fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all support moves"
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, default fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comExpert | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
-
     def = definition.add("support_material_interface_angle", coFloat, ptFFF);
     def->label = L("Pattern angle");
     def->full_label = L("Support interface pattern angle");
@@ -7686,23 +7426,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->max = 360;
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
-
-    def = definition.add("support_material_interface_fan_speed", coInts, ptFFF);
-    def->label = L("Support interface fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all support interfaces, to be able to weaken their bonding with a high fan speed."
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, Support Material fan speed will be used."
-        "\nCan only be overridden by disable_fan_first_layers.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
-
 
     def = definition.add("support_material_interface_contact_loops", coBool, ptFFF);
     def->label = L("Interface loops");
@@ -8245,22 +7968,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->is_vector_extruder = true;
     def->set_default_value(new ConfigOptionStrings({""}));
-
-    def = definition.add("top_fan_speed", coInts, ptFFF);
-    def->label = L("Top Solid fan speed");
-    def->category = OptionCategory::cooling;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This fan speed is enforced during all top fills (including ironing)."
-        "\nSet to 0 to stop the fan."
-        "\nIf disabled, Solid Infill fan speed will be used."
-        "\nCan be disabled by disable_fan_first_layers, slowed down by full_fan_speed_layer.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comAdvancedE | comSuSi;
-    def->is_vector_extruder = true;
-    def->can_be_disabled = true;
-    def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
 
     def = definition.add("top_infill_extrusion_width", coFloatOrPercent, ptFFF);
     def->label = L("Top solid infill");

@@ -38,6 +38,27 @@
 
 namespace Slic3r {
 
+namespace {
+
+// Read one extruder-indexed option value. Plugin-owned settings can be absent
+// when their provider is disabled, in which case the neutral value is zero.
+double cooling_extruder_config_value(const FullPrintConfig &config, const char *key, extruder_index_t extruder_id)
+{
+    const ConfigOption *option = config.option(key);
+    return option != nullptr ? option->get_float(size_t(extruder_id)) : 0.;
+}
+
+// Read one extruder-indexed fan speed; a disabled entry reads as -1, the value
+// the fan policy uses for "no value set".
+int cooling_fan_config_value(const FullPrintConfig &config, const char *key, extruder_index_t extruder_id)
+{
+    const ConfigOption *option = config.option(key);
+    return option != nullptr && option->is_enabled(size_t(extruder_id)) ?
+        option->get_int(size_t(extruder_id)) : -1;
+}
+
+} // namespace
+
 CoolingBuffer::CoolingBuffer(GCodeGenerator &gcodegen) : m_config(gcodegen.config()), m_current_extruder(0)
 {
     this->reset(gcodegen.writer().get_position());
@@ -432,8 +453,10 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
         PerExtruderAdjustments &adj         = per_extruder_adjustments[i];
         const extruder_index_t  extruder_id = m_extruder_ids[i];
         adj.extruder_id               = extruder_id;
-        adj.cooling_slow_down_enabled = m_config.slowdown_below_layer_time.get_at(extruder_id) > 0;
-        adj.slowdown_below_layer_time = float(m_config.slowdown_below_layer_time.get_at(extruder_id));
+        const double slowdown_below_layer_time =
+            cooling_extruder_config_value(m_config, "slowdown_below_layer_time", extruder_id);
+        adj.cooling_slow_down_enabled = slowdown_below_layer_time > 0;
+        adj.slowdown_below_layer_time = float(slowdown_below_layer_time);
         adj.min_print_speed           = float(m_config.min_print_speed.get_at(extruder_id));
         adj.max_speed_reduction       = float(m_config.max_speed_reduction.get_at(extruder_id) / 100);
         map_extruder_to_per_extruder_adjustment[extruder_id] = i;
@@ -988,9 +1011,9 @@ std::string CoolingBuffer::apply_layer_cooldown(
     bool fan_control[ uint8_t(GCodeExtrusionRole::Count)];
     int fan_speeds[ uint8_t(GCodeExtrusionRole::Count)];
     int default_fan_speed[ uint8_t(GCodeExtrusionRole::Count)];
-#define EXTRUDER_CONFIG(OPT) m_config.OPT.get_at(m_current_extruder)
-#define FAN_CONFIG(OPT) m_config.OPT.is_enabled(m_current_extruder) ? m_config.OPT.get_at(m_current_extruder) : -1
-    const int min_fan_speed             = m_config.fan_printer_min_speed;
+#define EXTRUDER_CONFIG(OPT) cooling_extruder_config_value(m_config, #OPT, m_current_extruder)
+#define FAN_CONFIG(OPT) cooling_fan_config_value(m_config, #OPT, m_current_extruder)
+    const int min_fan_speed             = int(EXTRUDER_CONFIG(fan_printer_min_speed));
     assert(min_fan_speed >= 0);
     int initial_default_fan_speed = FAN_CONFIG(default_fan_speed);
     //if default_fan_speed activated, be sure it's at least the mins
