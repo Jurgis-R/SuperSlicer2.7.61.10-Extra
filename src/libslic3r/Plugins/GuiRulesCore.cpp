@@ -500,7 +500,7 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
 
     // ----- accelerations -------------------------------------------------
     add_rule({ "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
-               "gap_fill_acceleration", "travel_acceleration", "travel_deceleration_use_target",
+               "gap_fill_acceleration", "travel_acceleration",
                "first_layer_acceleration" }, non_zero("default_acceleration"));
     add_rule({ "perimeter_acceleration", "external_perimeter_acceleration", "thin_walls_acceleration" },
              all_of({ non_zero("default_acceleration"), non_zero("perimeters") }));

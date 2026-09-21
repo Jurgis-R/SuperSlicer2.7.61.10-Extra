@@ -7714,8 +7714,10 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     }
 
     // if the path is too small to be printed, put in the queue to be merge with the next one.
-    const distf_t scaled_min_length = this->config().gcode_min_length.is_enabled() ?
-        scale_d(this->config().gcode_min_length.get_effective_value(m_current_perimeter_extrusion_width)) :
+    const ConfigOptionFloatOrPercent *gcode_min_length_opt =
+        this->config().opt<ConfigOptionFloatOrPercent>("gcode_min_length");
+    const distf_t scaled_min_length = (gcode_min_length_opt != nullptr && gcode_min_length_opt->is_enabled()) ?
+        scale_d(gcode_min_length_opt->get_effective_value(m_current_perimeter_extrusion_width)) :
         0;
     if (scaled_min_length > 0 && simplifed_path.length() < scaled_min_length) {
         m_last_too_small = simplifed_path;
@@ -9080,7 +9082,9 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
     auto [/*double*/acceleration, /*double*/travel_acceleration] = _compute_acceleration(path);
 
     bool moved_to_point = last_pos_defined() && last_pos().coincides_with_epsilon(path.first_point());
-    if (m_config.travel_deceleration_use_target) {
+    const ConfigOptionBool *travel_deceleration_use_target_opt =
+        m_config.opt<ConfigOptionBool>("travel_deceleration_use_target");
+    if (travel_deceleration_use_target_opt != nullptr && travel_deceleration_use_target_opt->value) {
         if (travel_acceleration <= acceleration || travel_acceleration == 0 || acceleration == 0) {
             m_writer.set_travel_acceleration((uint32_t)floor(acceleration + 0.5));
             m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
@@ -9133,9 +9137,12 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
                     // don't use it if the distance is too small
                     distf_t min_dist_for_deceleration = distf_t(SCALED_EPSILON);
                     min_dist_for_deceleration = std::max(min_dist_for_deceleration, dist_to_go_extrude_speed / 10);
-                    min_dist_for_deceleration = std::max(min_dist_for_deceleration,
-                                                         scale_d(m_config.gcode_min_length.get_effective_value(
-                                                             m_current_perimeter_extrusion_width)));
+                    const ConfigOptionFloatOrPercent *gcode_min_length_opt =
+                        m_config.opt<ConfigOptionFloatOrPercent>("gcode_min_length");
+                    if (gcode_min_length_opt != nullptr)
+                        min_dist_for_deceleration = std::max(min_dist_for_deceleration,
+                                                             scale_d(gcode_min_length_opt->get_effective_value(
+                                                                 m_current_perimeter_extrusion_width)));
                     cant_use_deceleration = cant_use_deceleration || length < min_dist_for_deceleration;
                     // don't use it their isn't enough acceleration to go to the next speed without going by the travel speed
                     cant_use_deceleration = cant_use_deceleration || accel_extrude2extrude * 1.1 > acceleration;
@@ -9700,8 +9707,10 @@ Polyline GCodeGenerator::travel_to(std::string &gcode, const Point &point, Extru
     this->m_throw_if_canceled();
     //if needed, remove points to avoid surcharging the printer.
     if (this->last_pos_defined()) {
-        const coordf_t scaled_min_length = this->config().gcode_min_length.is_enabled() ?
-            scale_d(this->config().gcode_min_length.get_effective_value(m_current_perimeter_extrusion_width)) :
+        const ConfigOptionFloatOrPercent *gcode_min_length_opt =
+            this->config().opt<ConfigOptionFloatOrPercent>("gcode_min_length");
+        const coordf_t scaled_min_length = (gcode_min_length_opt != nullptr && gcode_min_length_opt->is_enabled()) ?
+            scale_d(gcode_min_length_opt->get_effective_value(m_current_perimeter_extrusion_width)) :
             0;
         coordf_t scaled_min_resolution = scale_d(this->config().gcode_min_resolution.get_effective_value(m_current_perimeter_extrusion_width));
         if (config().avoid_crossing_perimeters.value) {

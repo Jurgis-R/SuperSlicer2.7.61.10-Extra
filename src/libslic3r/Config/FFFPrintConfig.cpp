@@ -920,7 +920,6 @@ void init_categories(PrintConfigDef &definition)
         "thin_walls_acceleration",
         "top_solid_infill_acceleration",
         "travel_acceleration",
-        "travel_deceleration_use_target",
         // skirt
         "skirts",
         "skirt_distance",
@@ -1278,7 +1277,6 @@ void init_categories(PrintConfigDef &definition)
         "use_firmware_retraction", "use_volumetric_e", "variable_layer_height",
         "lift_min",
         "gcode_command_buffer",
-        "gcode_min_length",
         "gcode_min_resolution",
         "max_gcode_per_second",
         //FIXME the print host keys are left here just for conversion from the Printer preset to Physical Printer preset.
@@ -6485,22 +6483,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionInt(10));
 
-    def = definition.add("gcode_min_length", coFloatOrPercent, ptFFF);
-    def->label = L("Minimum extrusion length");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("When outputting gcode, this setting ensure that there is almost no commands more than this value apart."
-        " Be sure to also use max_gcode_per_second instead, as it's much better when you have very different speeds for features"
-        " (Too many too small commands may overload the firmware / connection)."
-        "\nDisabled if set to 0.");
-    def->sidetext = L("mm or %");
-    def->min = 0;
-    def->precision = 6;
-    def->mode = comExpert | comSuSi;
-    def->can_be_disabled = true;
-    def->set_default_value(enable_default_option(new ConfigOptionFloatOrPercent(0.02, false)));
-    def->aliases = {"min_length"};
-
     def = definition.add("gcode_min_resolution", coFloatOrPercent, ptFFF);
     def->label = L("minimum resolution");
     def->category = OptionCategory::speed;
@@ -8415,15 +8397,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->max_literal = { -200, false };
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent(1500, false));
-
-    def = definition.add("travel_deceleration_use_target", coBool, ptFFF);
-    def->label = L("Decelerate with target acceleration");
-    def->full_label = L("Use target acceleration for travel deceleration");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("If selected, the deceleration of a travel will use the acceleration value of the extrusion that will be printed after it (if any) ");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(true));
 
     def = definition.add("travel_speed", coFloat, ptFFF);
     def->label = L("Travel");

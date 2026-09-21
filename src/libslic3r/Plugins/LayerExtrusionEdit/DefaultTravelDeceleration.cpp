@@ -25,12 +25,16 @@ the movement speed that preceded that independently processed layer.
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <vector>
 
 #include "ExtrusionProcessParameterHelpers.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_polyline.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
@@ -53,6 +57,69 @@ const raw_used_config_key k_used_config_keys[] = {
 const RegionSettings::OptionKeyGroup k_travel_deceleration_region_keys{
     "travel_deceleration_use_target"
 };
+
+const char *const k_defined_config_keys[] = {
+    "gcode_min_length",
+    "travel_deceleration_use_target"
+};
+
+const char *const k_gcode_min_length_aliases[] = { "min_length" };
+
+using slic3r_api::GuiRule;
+using slic3r_api::non_zero;
+
+void initialize_default_travel_deceleration_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "gcode_min_length";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "Minimum extrusion length";
+    def.tooltip = "When outputting gcode, this setting ensure that there is almost no commands more than this value apart."
+        " Be sure to also use max_gcode_per_second instead, as it's much better when you have very different speeds for features"
+        " (Too many too small commands may overload the firmware / connection)."
+        "\nDisabled if set to 0.";
+    def.sidetext = "mm or %";
+    def.has_min = 1;
+    def.min_value = 0.0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.can_be_disabled = 1;
+    def.default_serialized_value = "0.02";
+    def.aliases = const_strings_t{ k_gcode_min_length_aliases, 1 };
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "travel_deceleration_use_target";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "Decelerate with target acceleration";
+    def.full_label = "Use target acceleration for travel deceleration";
+    def.tooltip = "If selected, the deceleration of a travel will use the acceleration value of the extrusion that will be printed after it (if any) ";
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "1";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // Travel deceleration applies once a default acceleration is set for the print.
+    GuiRule::activate({ "travel_deceleration_use_target" })
+        .when(non_zero("default_acceleration"))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 
 struct LayerEntrySpeed
 {
@@ -198,6 +265,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
     void setup_impl(const plugin_run_context *run_ctx, uint32_t run_count) const override;
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
@@ -729,6 +798,19 @@ int32_t DefaultTravelDeceleration::used_config_keys(raw_used_config_key *keys) c
     if (keys != nullptr)
         std::copy(std::begin(k_used_config_keys), std::end(k_used_config_keys), keys);
     return int32_t(std::size(k_used_config_keys));
+}
+
+int32_t DefaultTravelDeceleration::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void DefaultTravelDeceleration::inilialize_impl(storage_handle *) const
+{
+    initialize_default_travel_deceleration_settings(m_orchestrator);
 }
 
 const char *DefaultTravelDeceleration::progress_message_format_impl() const noexcept

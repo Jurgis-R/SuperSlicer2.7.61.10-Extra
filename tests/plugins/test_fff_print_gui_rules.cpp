@@ -351,9 +351,11 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("milling_extra_size", b("milling_post_process"));
     set("milling_speed", b("milling_post_process"));
 
+    // travel_deceleration_use_target is defined by the travel-deceleration
+    // plugin; its activation rule is covered by that plugin's tests.
     const char *const default_accel_keys[] = {
         "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
-        "gap_fill_acceleration", "travel_acceleration", "travel_deceleration_use_target",
+        "gap_fill_acceleration", "travel_acceleration",
         "first_layer_acceleration"
     };
     for (const char *key : default_accel_keys)
