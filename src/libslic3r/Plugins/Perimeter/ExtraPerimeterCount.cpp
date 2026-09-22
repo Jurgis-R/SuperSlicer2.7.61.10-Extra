@@ -3,16 +3,33 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+ExtraPerimeterCount.cpp
+=======================
+
+Implementation of the extra perimeter count module declared in
+ExtraPerimeterCount.hpp.
+
+The file holds the plugin metadata, the owned option definition and activation
+rule, the module callbacks (start, after) and the registration entry point. The
+solo region value is applied in start(); after() handles per-area values by
+rebuilding the matching child clip areas and adding one more branch pass where
+the configured count is not reached.
+*/
+
 #include "ExtraPerimeterCount.hpp"
 
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
 
 /*
@@ -69,6 +86,37 @@ const char *k_no_dependencies[] = { nullptr };
 const raw_used_config_key k_used_config_keys[] = {
     { "extra_perimeters_count", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "extra_perimeters_count"
+};
+
+void initialize_extra_perimeter_count_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- extra_perimeters_count | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "extra_perimeters_count";
+    def.type = RAW_CO_INT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Extra perimeters";
+    def.tooltip = "To be used in modifiers, as long as perimeter contour & hole count split the perimeters.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 const char *k_extra_perimeter_count_key = "extra_perimeters_count";
 
 class ModuleState
@@ -273,6 +321,14 @@ ExtraPerimeterCount::instance(orchestrator_handle *orch)
     return s_instance;
 }
 
+void add_extra_perimeter_count_gui_rules(orchestrator_handle *orchestrator)
+{
+    // Extra perimeter counts need a non-zero perimeter count.
+    GuiRule::activate({ "extra_perimeters_count" })
+        .when(non_zero("perimeters"))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const char *ExtraPerimeterCount::id_impl() const noexcept
 {
     return k_extra_perimeter_count_id;
@@ -298,6 +354,20 @@ int32_t ExtraPerimeterCount::used_config_keys(raw_used_config_key *keys) const n
     if (keys != nullptr)
         keys[0] = k_used_config_keys[0];
     return 1;
+}
+
+int32_t ExtraPerimeterCount::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void ExtraPerimeterCount::inilialize_impl(storage_handle *) const
+{
+    initialize_extra_perimeter_count_settings(m_orchestrator);
+    add_extra_perimeter_count_gui_rules(m_orchestrator);
 }
 
 const char *ExtraPerimeterCount::progress_message_format_impl() const noexcept

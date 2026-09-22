@@ -114,7 +114,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         (fl("skirt_extrusion_width") == 0 && have_skirt);
 
     const char *const have_perimeters_keys[] = {
-        "extra_perimeters", "extra_perimeters_count",
+        "extra_perimeters",
         "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs", "external_perimeters_first",
         "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing",
         "external_perimeter_extrusion_change_odd_layers", "overhangs", "seam_position",

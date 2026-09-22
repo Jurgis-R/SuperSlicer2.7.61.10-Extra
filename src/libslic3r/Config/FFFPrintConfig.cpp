@@ -802,7 +802,6 @@ void init_categories(PrintConfigDef &definition)
         "duplicate_distance",
         "ensure_vertical_shell_thickness",
         "extra_perimeters",
-        "extra_perimeters_count",
         "extra_perimeters_odd_layers",
         "extra_perimeters_on_overhangs",
         "avoid_crossing_curled_overhangs",
@@ -2385,14 +2384,6 @@ void init_fff_params(PrintConfigDef &definition)
         " Personally, I think it's useless.");
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("extra_perimeters_count", coInt, ptFFF);
-    def->label = L("Extra perimeters");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("To be used in modifiers, as long as perimeter contour & hole count split the perimeters.");
-    def->mode = comAdvancedE | comSuSi;
-    def->set_default_value(new ConfigOptionInt(0));
 
     def = definition.add("extra_perimeters_on_overhangs", coBool, ptFFF);
     def->label = L("Extra perimeters on overhangs (Experimental)");

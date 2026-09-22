@@ -99,6 +99,14 @@ double region_setting_solo_float(const RegionSettings &settings, const ConfigBas
     return settings.get_solo_config(option).get_float();
 }
 
+int32_t region_setting_solo_int(const RegionSettings &settings, const ConfigBase &config, const char *key)
+{
+    const ConfigOption *option = config.option(key);
+    if (option == nullptr || settings.has_many_config(option))
+        return 0;
+    return settings.get_solo_config(option).get_int();
+}
+
 std::map<RegionSettings::SettingsValue, RegionSettings::ClipExpoly> region_setting_areas(
     const RegionSettings &settings, const ConfigBase &config, const char *key)
 {
@@ -3594,9 +3602,9 @@ ProcessSurfaceResult PerimeterGenerator::process_arachne(const Parameters &param
     }
      
     // extra_perimeters_count (add extra perimeters on regions)
-    if (params.region_setting.has_many_config(&params.config.extra_perimeters_count)) {
+    if (region_setting_has_many(params.region_setting, params.config, "extra_perimeters_count")) {
         std::vector<std::pair<int, ExPolygons>> ordered_settings;
-        for (auto const &[extra_perimeters_count, areas] : params.region_setting.get_areas(&params.config.extra_perimeters_count)) {
+        for (auto const &[extra_perimeters_count, areas] : region_setting_areas(params.region_setting, params.config, "extra_perimeters_count")) {
             if (extra_perimeters_count.get_int() > 0) {
                 //Bunch them: if you have a 0, 2 and 3, bunhc the 2 and 3 for the first 
                 ordered_settings.emplace_back(extra_perimeters_count.get_int(), intersection_ex(infill_contour, areas.expolys));
@@ -4477,8 +4485,8 @@ void PerimeterGenerator::process(// Input:
             nb_loop_holes = std::min(nb_loop_holes, 1);
         }
 
-        if (!params.region_setting.has_many_config(&params.config.extra_perimeters_count)) {
-            int extra_perimeters_count = params.region_setting.get_solo_config(&params.config.extra_perimeters_count).get_int();
+        if (!region_setting_has_many(params.region_setting, params.config, "extra_perimeters_count")) {
+            int extra_perimeters_count = region_setting_solo_int(params.region_setting, params.config, "extra_perimeters_count");
             if (extra_perimeters_count > 0) {
                 nb_loop_contour += extra_perimeters_count;
                 nb_loop_holes += extra_perimeters_count;
@@ -5407,10 +5415,10 @@ ProcessSurfaceResult PerimeterGenerator::process_classic(const Parameters &     
                 bool skip_extra_peri = false;
 
                 // extra_perimeters_count (add extra perimeters on regions)
-                if (params.region_setting.has_many_config(&params.config.extra_perimeters_count)) {
+                if (region_setting_has_many(params.region_setting, params.config, "extra_perimeters_count")) {
                     bool add_extra = false;
                     for (auto const &[extra_perimeters_count, areas] :
-                         params.region_setting.get_areas(&params.config.extra_perimeters_count)) {
+                         region_setting_areas(params.region_setting, params.config, "extra_perimeters_count")) {
                         if (extra_perimeters_count.get_int() > extra_perimeters_count_printed) {
                             append(extra_perimeter_next_onion, areas.intersections(previous_spacing/2, last));
                             add_extra = true;
