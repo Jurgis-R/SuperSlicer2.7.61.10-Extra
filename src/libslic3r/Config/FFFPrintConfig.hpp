@@ -572,7 +572,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                fan_percentage))
     ((ConfigOptionBool,                fan_speedup_overhangs))
     ((ConfigOptionFloat,               fan_speedup_time))
-    ((ConfigOptionString,              feature_gcode))
     ((ConfigOptionFloatsOrPercents,    filament_bridge_pa))
     ((ConfigOptionFloatsOrPercents,    filament_bridge_internal_pa))
     ((ConfigOptionFloatsOrPercents,    filament_brim_pa))

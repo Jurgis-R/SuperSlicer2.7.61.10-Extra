@@ -1420,7 +1420,7 @@ namespace DoExport {
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("End G-code"), config_string(config, "end_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Before layer change G-code"), config.before_layer_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("After layer change G-code"), config.layer_gcode.value);
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Extrusion type change G-code"), config.feature_gcode.value);
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Extrusion type change G-code"), config_string(config, "feature_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) {
             const ConfigOptionString *toolchange_gcode_opt =
                 print.config().opt<ConfigOptionString>("toolchange_gcode");
@@ -9452,13 +9452,13 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     }
     // extrude arc or line
     GCodeExtrusionRole grole = extrusion_role_to_gcode_extrusion_role(path.role());
-    if (grole != m_last_extrusion_role && !m_config.feature_gcode.value.empty()) {
+    if (grole != m_last_extrusion_role && !config_string(m_config, "feature_gcode").empty()) {
         DynamicConfig config;
         config.set_key_value("extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(grole)));
         config.set_key_value("next_extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(grole)));
         config.set_key_value("previous_extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(m_last_extrusion_role)));
         config.set_key_value("last_extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(m_last_extrusion_role)));
-        gcode += this->placeholder_parser_process("feature_gcode", m_config.feature_gcode.value,
+        gcode += this->placeholder_parser_process("feature_gcode", config_string(m_config, "feature_gcode"),
                                                   m_writer.tool()->id(), &config)
             + "\n";
     }

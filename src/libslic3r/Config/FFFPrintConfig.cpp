@@ -1228,7 +1228,7 @@ void init_categories(PrintConfigDef &definition)
         "start_gcode_manual",
         "before_layer_gcode",
         "layer_gcode",
-        "color_change_gcode", "pause_print_gcode", "template_custom_gcode","feature_gcode",
+        "color_change_gcode", "pause_print_gcode", "template_custom_gcode",
         //printer fields
         "printer_custom_variables",
         "printer_vendor",
@@ -4228,29 +4228,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->height = 5;
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionString(""));
-
-    def = definition.add("feature_gcode", coString, ptFFF);
-    def->label = L("After extrusion type change in G-code");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This custom code is inserted at every extrusion type change."
-        "Note that you can use placeholder variables for all Slic3r settings as well as {last_extrusion_role}, {extrusion_role}, {layer_num} and {layer_z}."
-        " The 'extrusion_role' strings can take these string values:"
-        " { Perimeter, ExternalPerimeter, OverhangPerimeter, InternalInfill, SolidInfill, TopSolidInfill, BridgeInfill, GapFill, Skirt, SupportMaterial, SupportMaterialInterface, WipeTower, Mixed }."
-        " Mixed is only used when the role of the extrusion is not unique, not exactly inside another category or not known.");
-    def->cli = "feature-gcode";
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 5;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionString(""));
-
-    // def = definition.add("exact_last_layer_height", coBool);
-    // def->label = L("Exact last layer height");
-    // def->category = OptionCategory::perimeter;
-    // def->tooltip = L("This setting controls the height of last object layers to put the last layer at the exact highest height possible. Experimental.");
-    // def->mode = comHidden;
-    // def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("remaining_times", coBool, ptFFF);
     def->label = L("Supports remaining times");

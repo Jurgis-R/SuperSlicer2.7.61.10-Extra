@@ -81,7 +81,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     config.option<ConfigOptionString>("between_objects_gcode")->value.clear();
     config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{""});
     config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{""});
-    config.feature_gcode.value =
+    config.option<ConfigOptionString>("feature_gcode")->value =
         "; FEATURE [previous_extrusion_role]>[next_extrusion_role]";
 
     PrintingPlan &plan = print.mutable_printing_plan();
@@ -218,7 +218,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     CHECK(travel_move < infill_feature);
     CHECK(infill_feature < infill_move);
 
-    config.feature_gcode.value.clear();
+    config.option<ConfigOptionString>("feature_gcode")->value.clear();
     Steps::StepExtrusionEdition::clean_and_prepare(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK(first_root.get_property<ExtrusionPropertyCustomGcode>() == nullptr);
@@ -238,7 +238,7 @@ TEST_CASE("Feature G-code validates and normalizes rich extrusion roles",
     auto prepare_role = [](raw_extrusion_role raw_role) {
         std::unique_ptr<Print> print(new Print());
         PrintConfig &config = const_cast<PrintConfig &>(print->config());
-        config.feature_gcode.value = "; FEATURE [next_extrusion_role]";
+        config.option<ConfigOptionString>("feature_gcode")->value = "; FEATURE [next_extrusion_role]";
         PrintingPlan &plan = print->mutable_printing_plan();
         plan.groups.emplace_back();
         plan.groups.front().layers.emplace_back();
@@ -297,7 +297,7 @@ TEST_CASE("Feature G-code ignores retraction and wipe process roles",
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Print print;
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.feature_gcode.value = "; FEATURE [previous_extrusion_role]>[next_extrusion_role]";
+    config.option<ConfigOptionString>("feature_gcode")->value = "; FEATURE [previous_extrusion_role]>[next_extrusion_role]";
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
     plan.groups.front().layers.emplace_back();
@@ -333,4 +333,36 @@ TEST_CASE("Feature G-code ignores retraction and wipe process roles",
     for (size_t extrusion_idx = 1; extrusion_idx + 1 < tool.extrusions.size(); ++extrusion_idx)
         CHECK(tool.extrusions[extrusion_idx].root->get_property<ExtrusionPropertyCustomGcode>() == nullptr);
     CHECK(tool.extrusions.back().root->get_property<ExtrusionPropertyCustomGcode>() == nullptr);
+}
+
+
+TEST_CASE("Feature G-code plugin owns its script setting",
+          "[plugins][gcode][feature-gcode][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("gcode.feature_gcode");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "feature_gcode");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("feature_gcode");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coString);
+    CHECK(def->container_type == ConfigOptionContainerType::Plater);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
+    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->multiline);
+    CHECK(def->full_width);
+    CHECK(def->cli == "feature-gcode");
+    CHECK(PrintConfig::defaults().option<ConfigOptionString>("feature_gcode")->value.empty());
+
+    // The script stays always editable: the plugin owns no activation rule.
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
+        CHECK(rule.owner != "gcode.feature_gcode");
 }
