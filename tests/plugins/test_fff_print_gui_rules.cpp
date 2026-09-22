@@ -90,7 +90,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     const bool notch = P && (fl("seam_notch_all") != 0 || fl("seam_notch_inner") != 0 || fl("seam_notch_outer") != 0);
     const bool gap = !A;
     const bool have_gap = gap && b("gap_fill_enabled");
-    const bool gap_ext = have_gap || b("infill_filled_bottom") || b("infill_filled_solid") || b("infill_filled_top");
     const bool seq = b("complete_objects") || fl("parallel_objects_step") > 0;
     const bool parallel_ok = !b("complete_objects") && fl("parallel_objects_step") > 0;
     const bool have_wipe = fl("parallel_objects_step") <= 0 || b("parallel_islands");
@@ -141,8 +140,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("perimeters_hole", not_A);
     set("overhangs_extrusion_spacing", not_A);
     set("perimeter_loop", P && !A);
-    set("thin_perimeters", P && !A);
-    set("perimeter_round_corners", P && !A);
 
     set("seam_slope_type", ext_not_loop);
     const bool scarf = config.opt_enum<SeamScarfType>("seam_slope_type") != SeamScarfType::None;
@@ -163,11 +160,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("overhangs_width", overhangs && en("overhangs_flow_ratio"));
 
     set("min_width_top_surface", P && b("only_one_perimeter_top"));
-    set("thin_perimeters_all", P && fl("thin_perimeters") != 0 && !A);
-    set("thin_walls", P && !A);
-    set("thin_walls_min_width", P && !A && b("thin_walls"));
-    set("thin_walls_overlap", P && !A && b("thin_walls"));
-    set("thin_walls_merge", P && !A && b("thin_walls"));
 
     set("seam_angle_cost", seam_cost);
     set("seam_travel_cost", seam_cost);
@@ -175,14 +167,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("perimeter_loop_seam", loop_seam);
     set("seam_notch_angle", notch);
 
-    set("gap_fill_enabled", gap);
-    set("gap_fill_last", have_gap);
     set("gap_fill_no_overhang", have_gap);
-    set("gap_fill_extension", gap_ext);
-    set("gap_fill_max_width", gap_ext);
-    set("gap_fill_min_area", gap_ext);
-    set("gap_fill_min_length", gap_ext);
-    set("gap_fill_min_width", gap_ext);
 
     const bool fuzzy = config.opt_enum<FuzzySkinType>("fuzzy_skin") != FuzzySkinType::None;
     set("fuzzy_skin_thickness", fuzzy);

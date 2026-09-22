@@ -45,6 +45,17 @@
 
 namespace Slic3r {
 
+namespace {
+
+// Plugin-owned region settings can be absent when their provider is disabled.
+double fill_region_option_effective_value(const PrintRegionConfig *config, const char *key, double fallback)
+{
+    const ConfigOption *option = config != nullptr ? config->option(key) : nullptr;
+    return option != nullptr ? option->get_effective_value(fallback) : fallback;
+}
+
+} // namespace
+
 Fill* Fill::new_from_type(const InfillPattern type)
 {
     switch (type) {
@@ -267,7 +278,7 @@ void Fill::fill_surface_extrusion_with_gap_fill(const Surface *surface,
     ensure_valid(gapfill_areas, params.fill_resolution);
     assert_valid(gapfill_areas);
     if (gapfill_areas.size() > 0) {
-        const double minarea = scale_d(params.config->gap_fill_min_area.get_effective_value(params.flow.width())) * double(params.flow.scaled_width());
+        const double minarea = scale_d(fill_region_option_effective_value(params.config, "gap_fill_min_area", params.flow.width())) * double(params.flow.scaled_width());
         for (int i = 0; i < gapfill_areas.size(); i++) {
             if (gapfill_areas[i].area() < minarea) {
                 gapfill_areas.erase(gapfill_areas.begin() + i);
@@ -519,8 +530,8 @@ Fill::do_gap_fill(const ExPolygons& gapfill_areas, const FillParams& params, Ext
     double unscaled_width = params.flow.width();
     // safer to use the current flow for it.
     if (params.config != nullptr) {
-        const coord_t minwidth = scale_i(params.config->gap_fill_min_width.get_effective_value(unscaled_width));
-        const coord_t maxwidth = scale_i(params.config->gap_fill_max_width.get_effective_value(unscaled_width));
+        const coord_t minwidth = scale_i(fill_region_option_effective_value(params.config, "gap_fill_min_width", unscaled_width));
+        const coord_t maxwidth = scale_i(fill_region_option_effective_value(params.config, "gap_fill_max_width", unscaled_width));
         if (minwidth > 0) {
             min = std::max(min, minwidth);
         }
@@ -530,13 +541,13 @@ Fill::do_gap_fill(const ExPolygons& gapfill_areas, const FillParams& params, Ext
     }
     const double minarea = scale_d(scale_d((params.config == nullptr) ?
                                                sqr(unscaled_width) :
-                                               params.config->gap_fill_min_area.get_effective_value(sqr(unscaled_width))));
+                                               fill_region_option_effective_value(params.config, "gap_fill_min_area", sqr(unscaled_width))));
     const coord_t minlength = (params.config == nullptr) ?
         0 :
-        scale_i(params.config->gap_fill_min_length.get_effective_value(unscaled_width));
+        scale_i(fill_region_option_effective_value(params.config, "gap_fill_min_length", unscaled_width));
     const coord_t gapfill_extension = (params.config == nullptr) ?
         0 :
-        scale_i(params.config->gap_fill_extension.get_effective_value(unscaled_width));
+        scale_i(fill_region_option_effective_value(params.config, "gap_fill_extension", unscaled_width));
     // collapse 
     //be sure we don't gapfill where the perimeters are already touching each other (negative spacing).
     min = std::max(min,

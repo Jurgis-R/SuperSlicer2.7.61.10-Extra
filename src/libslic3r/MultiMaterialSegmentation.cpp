@@ -1028,7 +1028,7 @@ static inline std::vector<std::vector<ExPolygons>> mm_segmentation_top_and_botto
                     out.top_solid_layers = 100000;
                     out.bottom_solid_layers = 100000;
                 }
-                out.small_region_threshold = config.gap_fill_enabled.value ?
+                out.small_region_threshold = (config.option("gap_fill_enabled") != nullptr && config.option("gap_fill_enabled")->get_bool()) ?
                                              // Gap fill enabled. Enable a single line of 1/2 extrusion width.
                                              0.5f * (perimeter_extrusion_width) :
                                              // Gap fill disabled. Enable two lines slightly overlapping.

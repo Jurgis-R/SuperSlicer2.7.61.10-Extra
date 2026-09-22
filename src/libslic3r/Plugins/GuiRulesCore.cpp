@@ -188,8 +188,12 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
 
     const GuiCondition not_arachne = any_of({ false_("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) });
     add_rule({ "perimeters_hole", "overhangs_extrusion_spacing" }, not_arachne);
-    add_rule({ "perimeter_loop", "thin_perimeters", "perimeter_round_corners" },
+    add_rule({ "perimeter_loop" },
              all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
+    add_rule({ "only_one_perimeter_first_layer" }, all_of({
+        int_not_equals("perimeters", 0),
+        int_not_equals("perimeters", 1)
+    }));
 
     // external perimeter / seam slope
     add_rule({ "seam_slope_type" }, any_of({
@@ -221,10 +225,7 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
                  float_equals("perimeter_overlap", 1.0),
                  float_equals("external_perimeter_overlap", 1.0) })
     }));
-    add_rule({ "only_one_perimeter_first_layer" }, all_of({
-        int_not_equals("perimeters", 0),
-        int_not_equals("perimeters", 1)
-    }));
+
 
     // overhangs
     const GuiCondition can_reverse = all_of({ non_zero("perimeters"), true_("overhangs"),
@@ -242,13 +243,10 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
              all_of({ non_zero("perimeters"), true_("overhangs"), enabled("overhangs_flow_ratio") }));
 
     // perimeter details
+
+
     add_rule({ "min_width_top_surface" },
              all_of({ non_zero("perimeters"), true_("only_one_perimeter_top") }));
-    add_rule({ "thin_perimeters_all" },
-             all_of({ non_zero("perimeters"), non_zero("thin_perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
-    add_rule({ "thin_walls" }, all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
-    add_rule({ "thin_walls_min_width", "thin_walls_overlap", "thin_walls_merge" },
-             all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)), true_("thin_walls") }));
 
     const GuiCondition seam_cost = all_of({ non_zero("perimeters"), int_equals("seam_position", int(spCost)) });
     add_rule({ "seam_angle_cost", "seam_travel_cost", "seam_visibility" }, seam_cost);
@@ -263,22 +261,12 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     }));
 
     // ----- gap fill -----------------------------------------------------
-    add_rule({ "gap_fill_enabled" }, not_arachne);
     const GuiCondition gap_enabled = true_("gap_fill_enabled");
     const GuiCondition gap_base = any_of({
         all_of({ false_("perimeters"), gap_enabled }),
         all_of({ int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)), gap_enabled })
     });
-    add_rule({ "gap_fill_last", "gap_fill_no_overhang" }, gap_base);
-
-    const GuiCondition gap_extended = any_of({
-        gap_base,
-        true_("infill_filled_bottom"),
-        true_("infill_filled_solid"),
-        true_("infill_filled_top")
-    });
-    add_rule({ "gap_fill_extension", "gap_fill_max_width", "gap_fill_min_area",
-               "gap_fill_min_length", "gap_fill_min_width" }, gap_extended);
+    add_rule({ "gap_fill_no_overhang" }, gap_base);
 
     // fuzzy skin
     add_rule({ "fuzzy_skin_thickness", "fuzzy_skin_point_dist" },

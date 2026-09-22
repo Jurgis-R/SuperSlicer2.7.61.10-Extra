@@ -794,7 +794,6 @@ void init_categories(PrintConfigDef &definition)
         "avoid_crossing_top",
         "avoid_travel_island",
         "avoid_travel_island_weight",
-        "thin_perimeters", "thin_perimeters_all",
         "overhangs",
         "overhangs_extrusion_spacing",
         "overhangs_type",
@@ -871,16 +870,8 @@ void init_categories(PrintConfigDef &definition)
         "support_material_xy_spacing",
         "travel_speed", "travel_speed_z",
         // gapfill
-        "gap_fill_enabled",
-        "gap_fill_extension",
         "gap_fill_flow_match_perimeter",
-        "gap_fill_last",
-        "gap_fill_max_width",
-        "gap_fill_min_area",
-        "gap_fill_min_length",
-        "gap_fill_min_width",
         "gap_fill_no_overhang",
-        "gap_fill_overlap",
         "gap_fill_perimeter",
         // fuzzy
         "fuzzy_skin",
@@ -964,7 +955,6 @@ void init_categories(PrintConfigDef &definition)
         "first_layer_extrusion_width", 
         "first_layer_infill_extrusion_spacing", 
         "first_layer_infill_extrusion_width", 
-        "perimeter_round_corners",
         "perimeter_extrusion_spacing",
         "perimeter_extrusion_width",
         "perimeter_extrusion_change_odd_layers",
@@ -1030,10 +1020,6 @@ void init_categories(PrintConfigDef &definition)
         "infill_connection", "infill_connection_solid", "infill_connection_top", "infill_connection_bottom", "infill_connection_bridge",
         "infill_filled_bottom", "infill_filled_solid", "infill_filled_top",
         // thin wall
-        "thin_walls",
-        "thin_walls_min_width",
-        "thin_walls_overlap",
-        "thin_walls_merge",
         //precision, smoothing
 //        "arc_fitting", // in printer preset
         "model_precision",
@@ -3762,32 +3748,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionFloatOrPercent(200, true));
 
-    def = definition.add("gap_fill_enabled", coBool, ptFFF);
-    def->label = L("Gap fill");
-    def->full_label = L("Enable Gap fill");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posSlice;
-    def->tooltip = L("Enable gap fill algorithm. It will extrude small lines between perimeters "
-        "when there is not enough space for another perimeter or an infill.");
-    def->mode = comAdvancedE | comPrusa;
-    def->aliases = { "gap_fill" }; //superslicer 2.3 or older
-    def->set_default_value(new ConfigOptionBool(true));
-
-    def = definition.add("gap_fill_extension", coFloatOrPercent, ptFFF);
-    def->label = L("Extension");
-    def->full_label = L("Gap fill: extra extension");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Increase the length of all gapfills by this amount (may overextrude a little bit)"
-        "\nCan be a % of the extrusion width"
-        "\nIs also used by infill's gapfill.");
-    def->ratio_over = "perimeter_width";
-    def->sidetext = L("mm or %");
-    def->min = 0;
-    def->max_literal = { 50, true };
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent{ 0, false });
-
     def = definition.add("gap_fill_flow_match_perimeter", coPercent, ptFFF);
     def->label = L("Cap with perimeter flow");
     def->full_label = L("Gapfill: cap speed with perimeter flow");
@@ -3801,74 +3761,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(0));
 
-    def = definition.add("gap_fill_last", coBool, ptFFF);
-    def->label = L("after last perimeter");
-    def->full_label = L("Gapfill: after last perimeter");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("All gaps, between the last perimeter and the infill, which are thinner than a perimeter will be filled by gapfill.");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("gap_fill_max_width", coFloatOrPercent, ptFFF);
-    def->label = L("Max width");
-    def->full_label = L("Gapfill: Max width");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("This setting represents the maximum width of a gapfill. Points wider than this threshold won't be created."
-        "\nCan be a % of the extrusion width"
-        "\n0 to auto"
-        "\nIs also used by infill's gapfill.");
-    def->ratio_over = "perimeter_width";
-    def->sidetext = L("mm or %");
-    def->min = 0;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent{ 0, false });
-
-    def = definition.add("gap_fill_min_area", coFloatOrPercent, ptFFF);
-    def->label = L("Min surface");
-    def->full_label = L("Gapfill: Min surface");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("This setting represents the minimum mm² for a gapfill extrusion to be created."
-        "\nCan be a % of (extrusion width)²"
-        "\nIs also used by infill's gapfill.");
-    def->ratio_over = "perimeter_width_square";
-    def->sidetext = L("mm² or %");
-    def->min = 0;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent{ 100, true });
-
-    def = definition.add("gap_fill_min_length", coFloatOrPercent, ptFFF);
-    def->label = L("Min length");
-    def->full_label = L("Gapfill: Min length");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("This setting represents the minimum mm for a gapfill extrusion to be extruded."
-        "\nCan be a % of the extrusion width"
-        "\n0 to auto"
-        "\nIs also used by infill's gapfill.");
-    def->ratio_over = "perimeter_width";
-    def->sidetext = L("mm or %");
-    def->min = 0;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent{ 0, false });
-
-    def = definition.add("gap_fill_min_width", coFloatOrPercent, ptFFF);
-    def->label = L("Min width");
-    def->full_label = L("Gapfill: Min width");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("This setting represents the minimum width of a gapfill. Points thinner than this threshold won't be created."
-        "\nCan be a % of the extrusion width"
-        "\n0 to auto"
-        "\nIs also used by infill's gapfill.");
-    def->ratio_over = "perimeter_width";
-    def->sidetext = L("mm or %");
-    def->min = 0;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent{ 0, false });
-
     def = definition.add("gap_fill_no_overhang", coBool, ptFFF);
     def->label = L("No gap fill on overhang areas");
     def->category = OptionCategory::perimeter;
@@ -3876,20 +3768,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->tooltip = L("Prevent gapfill into overhang areas. May create some holes.");
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("gap_fill_overlap", coPercent, ptFFF);
-    def->label = L("Gap fill overlap");
-    def->full_label = L("Gap fill overlap");
-    def->category = OptionCategory::width;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("This setting allows you to reduce the overlap between the perimeters and the gap fill."
-        " 100% means that no gaps are left, and 0% means that the gap fill won't touch the perimeters."
-        "\nMay be useful if you can see the gapfill on the exterrnal surface, to reduce that artifact.");
-    def->sidetext = L("%");
-    def->min = 0;
-    def->max = 100;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionPercent(80));
 
     def = definition.add("gap_fill_perimeter", coBool, ptFFF);
     def->label = L("Allow Perimeter inside Gap fill");
@@ -5436,17 +5314,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->tooltip = L("On even layers, all perimeter loops are reversed (it disables the overhang reversal, so it doesn't double-reverse)."
                     "That setting will likely create defects on the perimeters, so it's only useful is for materials that have some direction-dependent properties (stress lines).");
     def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("perimeter_round_corners", coBool, ptFFF);
-    def->label = L("Round corners");
-    def->full_label = L("Round corners for perimeters");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Internal perimeters will go around sharp corners by turning around instead of making the same sharp corner."
-                        " This can help when there are visible holes in sharp corners on internal perimeters."
-                        "\nCan incur some more processing time, and corners are a bit less sharp.");
-    def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("perimeters", coInt, ptFFF);
@@ -7289,95 +7156,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->is_vector_extruder = true;
     def->set_default_value(new ConfigOptionFloats { 0 });
-
-    def = definition.add("thin_perimeters", coPercent, ptFFF);
-    def->label = L("Overlapping external perimeter");
-    def->full_label = L("Overlapping external perimeter");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Allow outermost perimeter to overlap itself to avoid the use of thin walls. Note that flow isn't adjusted and so this will result in over-extruding and undefined behavior."
-                "\n100% means that perimeters can overlap completely on top of each other."
-                "\n0% will deactivate this setting."
-                "\nValues below 2% don't have any effect."
-                "\n-1% will also deactivate the anti-hysteresis checks for external perimeters.");
-    def->sidetext = "%";
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionPercent(80));
-
-    def = definition.add("thin_perimeters_all", coPercent, ptFFF);
-    def->label = L("Overlapping all perimeters");
-    def->full_label = L("Overlapping all perimeters");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Allow all perimeters to overlap, instead of just external ones."
-                "\n100% means that perimeters can overlap completely on top of each other."
-                "\n0% will deactivate this setting."
-                "\nValues below 2% don't have any effect."
-                "\n-1% will also deactivate the anti-hysteresis checks for internal perimeters.");
-    def->sidetext = "%";
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionPercent(20));
-
-    def = definition.add("thin_walls", coBool, ptFFF);
-    def->label = L("Thin walls");
-    def->full_label = L("Thin walls");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posSlice;
-    def->tooltip = L("Detect single-width walls (parts where two extrusions don't fit and we need "
-        "to collapse them into a single trace). If unchecked, Slic3r may try to fit perimeters "
-        "where it's not possible, creating some overlap leading to over-extrusion.");
-    def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionBool(true));
-
-    def = definition.add("thin_walls_min_width", coFloatOrPercent, ptFFF);
-    def->label = L("Min width");
-    def->full_label = L("Thin walls min width");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Minimum width for the extrusion to be extruded (widths lower than the nozzle diameter will be over-extruded at the nozzle diameter)."
-        " If expressed as percentage (for example 110%) it will be computed over nozzle diameter."
-        " The default behavior of PrusaSlicer is with a 33% value. Put 100% to avoid any sort of over-extrusion.");
-    def->ratio_over = "nozzle_diameter";
-    def->mode = comExpert | comSuSi;
-    def->min = 0;
-    def->max_literal = { 20, true };
-    def->set_default_value(new ConfigOptionFloatOrPercent(33, true));
-
-    def = definition.add("thin_walls_overlap", coFloatOrPercent, ptFFF);
-    def->label = L("Overlap");
-    def->full_label = L("Thin wall overlap");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Overlap between the thin wall and the perimeters. Can be a % of the external perimeter width (default 50%)");
-    def->ratio_over = "external_perimeter_extrusion_width";
-    def->mode = comExpert | comSuSi;
-    def->min = 0;
-    def->max_literal = { 10, true };
-    def->set_default_value(new ConfigOptionFloatOrPercent(50, true));
-
-    def = definition.add("thin_walls_merge", coBool, ptFFF);
-    def->label = L("Merging with perimeters");
-    def->full_label = L("Thin wall merge");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Allow the external perimeter to merge the thin walls in the path."
-                    " You can deactivate this if you are using thin walls as a custom support, to reduce adhesion a little.");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(true));
-
-    // put it in Preferences if you want it.
-    //def = definition.add("threads", coInt);
-    //def->label = L("Threads");
-    //def->tooltip = L("Threads are used to parallelize long-running tasks. Optimal threads number "
-    //               "is slightly above the number of available cores/processors.");
-    //def->readonly = true;
-    //def->min = 1;
-    //def->mode = comExpert | comPrusa; // note: hidden setting (and should be a preference)
-    //{
-    //    int threads = (unsigned int)boost::thread::hardware_concurrency();
-    //    def->set_default_value(new ConfigOptionInt(threads > 0 ? threads : 2));
-    //    def->cli = ConfigOptionDef::nocli;
-    //}
 
     def = definition.add("time_cost", coFloat, ptFFF);
     def->label = L("Time cost");

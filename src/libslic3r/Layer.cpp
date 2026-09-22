@@ -879,6 +879,14 @@ static bool region_config_option_equal(const PrintRegionConfig &lhs, const Print
         lhs_option == rhs_option : *lhs_option == *rhs_option;
 }
 
+// Whether one optional region option reads as false; an absent plugin-owned
+// option counts as disabled.
+static bool region_config_option_false(const PrintRegionConfig &config, const char *key)
+{
+    const ConfigOption *option = config.option(key);
+    return option == nullptr || !option->get_bool();
+}
+
 bool config_compatible_for_perimeter(const PrintRegionConfig &config, const PrintRegionConfig &other_config, bool is_first_layer) {
     if (config.perimeter_extruder             == other_config.perimeter_extruder
         && config.perimeters                  == other_config.perimeters
@@ -898,17 +906,17 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         //&& config.extra_perimeters_odd_layers == other_config.extra_perimeters_odd_layers // can be used in modifiers
         //&& config.extra_perimeters_on_overhangs == other_config.extra_perimeters_on_overhangs // can be used in modifiers
         //&& config.gap_fill_enabled          == other_config.gap_fill_enabled
-        && ((region_config_option_equal(config, other_config, "gap_fill_speed")) || (!config.gap_fill_enabled && !other_config.gap_fill_enabled))
+        && ((region_config_option_equal(config, other_config, "gap_fill_speed")) || (region_config_option_false(config, "gap_fill_enabled") && region_config_option_false(other_config, "gap_fill_enabled")))
         && region_config_option_equal(config, other_config, "gap_fill_acceleration")
-        && config.gap_fill_last             == other_config.gap_fill_last
+        && region_config_option_equal(config, other_config, "gap_fill_last")
         && config.gap_fill_flow_match_perimeter == other_config.gap_fill_flow_match_perimeter
-        && config.gap_fill_extension         == other_config.gap_fill_extension
-        && config.gap_fill_max_width         == other_config.gap_fill_max_width
-        && config.gap_fill_min_area         == other_config.gap_fill_min_area
-        && config.gap_fill_min_length         == other_config.gap_fill_min_length
-        && config.gap_fill_min_width         == other_config.gap_fill_min_width
+        && region_config_option_equal(config, other_config, "gap_fill_extension")
+        && region_config_option_equal(config, other_config, "gap_fill_max_width")
+        && region_config_option_equal(config, other_config, "gap_fill_min_area")
+        && region_config_option_equal(config, other_config, "gap_fill_min_length")
+        && region_config_option_equal(config, other_config, "gap_fill_min_width")
         // && config.gap_fill_no_overhang         == other_config.gap_fill_no_overhang
-        && config.gap_fill_overlap          == other_config.gap_fill_overlap
+        && region_config_option_equal(config, other_config, "gap_fill_overlap")
         && config.gap_fill_perimeter          == other_config.gap_fill_perimeter
         && config.infill_dense              == other_config.infill_dense
         && config.infill_dense_algo         == other_config.infill_dense_algo
@@ -954,8 +962,8 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && region_config_option_equal(config, other_config, "thin_walls_acceleration")
         //&& config.thin_walls_min_width      == other_config.thin_walls_min_width // can be used in modifiers with thin_walls
         //&& config.thin_walls_overlap        == other_config.thin_walls_overlap // can be used in modifiers with thin_walls
-        && config.thin_perimeters           == other_config.thin_perimeters
-        && config.thin_perimeters_all       == other_config.thin_perimeters_all
+        && region_config_option_equal(config, other_config, "thin_perimeters")
+        && region_config_option_equal(config, other_config, "thin_perimeters_all")
         && region_config_option_equal(config, other_config, "thin_walls_speed")
         && config.fuzzy_skin                == other_config.fuzzy_skin
         && config.fuzzy_skin_thickness      == other_config.fuzzy_skin_thickness
