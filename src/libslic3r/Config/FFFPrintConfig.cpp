@@ -1228,7 +1228,6 @@ void init_categories(PrintConfigDef &definition)
         "start_gcode_manual",
         "before_layer_gcode",
         "layer_gcode",
-        "color_change_gcode", "pause_print_gcode", "template_custom_gcode",
         //printer fields
         "printer_custom_variables",
         "printer_vendor",
@@ -6251,17 +6250,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = definition.add("color_change_gcode", coString, ptFFF);
-    def->label = L("Color change G-code");
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This G-code will be used as a code for the color change"
-                     " If empty, the default color change print command for the selected G-code flavor will be used (if any).");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 12;
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionString(""));
-
     def = definition.add("parallel_objects_step", coFloat, ptFFF);
     def->label = L("Parallel printing step");
     def->category = OptionCategory::output;
@@ -6294,27 +6282,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->sidetext = L("mm");
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("pause_print_gcode", coString, ptFFF);
-    def->label = L("Pause Print G-code");
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This G-code will be used as a code for the pause print."
-                    " If empty, the default pause print command for the selected G-code flavor will be used (if any).");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 12;
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionString(""));
-
-    def = definition.add("template_custom_gcode", coString, ptFFF);
-    def->label = L("Custom G-code");
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This G-code will be used as a custom code");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 12;
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionString(""));
 
     def = definition.add("single_extruder_multi_material", coBool, ptFFF);
     def->label = L("Single Extruder Multi Material");

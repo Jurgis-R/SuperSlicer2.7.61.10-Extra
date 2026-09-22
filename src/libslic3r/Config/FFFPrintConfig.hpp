@@ -701,9 +701,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloatOrPercent,      wipe_tower_wipe_starting_speed))
     ((ConfigOptionFloat,               z_offset))
     ((ConfigOptionFloat,               z_step))
-    ((ConfigOptionString,              color_change_gcode))
-    ((ConfigOptionString,              pause_print_gcode))
-    ((ConfigOptionString,              template_custom_gcode))
 
 )
 #ifdef HAS_PRESSURE_EQUALIZER

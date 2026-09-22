@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "CustomGCodePerPrintZRecord.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
@@ -63,6 +64,16 @@ namespace slic3r_api::GCodeGeneration::CustomGCodePerPrintZPlugin {
 namespace {
 
 const char *const k_no_dependencies[] = {nullptr};
+
+const char *const k_defined_config_keys[] = {
+    "color_change_gcode",
+    "pause_print_gcode",
+    "template_custom_gcode"
+};
+
+// Register the option definitions owned by this plugin; it runs once from
+// inilialize_impl().
+void initialize_custom_gcode_per_print_z_settings(orchestrator_handle *orchestrator);
 
 /* Add one scalar integer placeholder to the temporary script Config. */
 void set_int_argument(MutableConfig &config, const char *key, int32_t value);
@@ -213,6 +224,65 @@ void append_tagged_raw_gcode(storage_handle *storage,
         throw std::runtime_error("Cannot append custom height-marker G-code to the printing plan.");
 }
 
+void initialize_custom_gcode_per_print_z_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    printer presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "color_change_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "Color change G-code";
+    def.tooltip = "This G-code will be used as a code for the color change"
+                  " If empty, the default color change print command for the selected G-code flavor will be used (if any).";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 12;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "pause_print_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "Pause Print G-code";
+    def.tooltip = "This G-code will be used as a code for the pause print."
+                  " If empty, the default pause print command for the selected G-code flavor will be used (if any).";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 12;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "template_custom_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "Custom G-code";
+    def.tooltip = "This G-code will be used as a custom code";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 12;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
 class CustomGCodePerPrintZ final : public PluginBase
 {
 public:
@@ -244,6 +314,15 @@ private:
         keys[3] = raw_used_config_key{"nozzle_diameter", RAW_CO_VECTOR_FLOAT,
                                       RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         return 4;
+    }
+    int32_t defined_config_keys(const char **keys) const noexcept override {
+        if (keys != nullptr)
+            for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+                keys[idx] = k_defined_config_keys[idx];
+        return int32_t(std::size(k_defined_config_keys));
+    }
+    void inilialize_impl(storage_handle *) const override {
+        initialize_custom_gcode_per_print_z_settings(m_orchestrator);
     }
 
     void run_impl(const plugin_run_context *run_context) const override

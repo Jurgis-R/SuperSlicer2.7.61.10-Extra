@@ -1430,7 +1430,7 @@ namespace DoExport {
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Between objects G-code (for sequential printing"), config_string(config, "between_objects_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Color Change G-code"), GCodeWriter::get_default_color_change_gcode(config));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Pause Print G-code"), GCodeWriter::get_default_pause_gcode(config));
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Template Custom G-code"), config.template_custom_gcode.value);
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Template Custom G-code"), config_string(config, "template_custom_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) {
             for (const std::string& value : config_string_list(config, "start_filament_gcode")) {
                 check(_u8L("Filament Start G-code"), value);
@@ -4370,7 +4370,7 @@ namespace ProcessLayer
                 gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Custom_Code) + "\n";
                 if (gcode_type == CustomGCode::Template)    // Template Custom Gcode
                     gcode += gcodegen.placeholder_parser_process("template_custom_gcode",
-                                                                 print.config().template_custom_gcode,
+                                                                 config_string(print.config(), "template_custom_gcode"),
                                                                  current_extruder_id);
                 else                                        // custom Gcode
                     gcode += custom_gcode.extra;
@@ -7688,7 +7688,7 @@ void GCodeGenerator::apply_property(const ExtrusionPropertySpecialCommand& comma
     }
     case ExtrusionPropertySpecialCommand::Code::PAUSE: // pause (G4) for extra_data miliseconds (int)
         visitor_gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\n";
-        if (config().pause_print_gcode.value.empty()) {
+        if (config_string(config(), "pause_print_gcode").empty()) {
             visitor_gcode += "G4 P";
             visitor_gcode += std::to_string(int(command.extra_data));
 

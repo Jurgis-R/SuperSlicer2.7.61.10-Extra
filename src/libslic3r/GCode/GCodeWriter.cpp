@@ -57,7 +57,9 @@ bool GCodeWriter::supports_separate_travel_acceleration(GCodeFlavor flavor)
 
 std::string GCodeWriter::get_default_pause_gcode(const GCodeConfig &config)
 {
-    if (config.pause_print_gcode.value.empty()) {
+    const ConfigOptionString *pause_script = config.opt<ConfigOptionString>("pause_print_gcode");
+    const std::string pause_gcode = pause_script != nullptr ? pause_script->value : std::string();
+    if (pause_gcode.empty()) {
         if (config.gcode_flavor.value == GCodeFlavor::gcfKlipper) {
             return "PAUSE";
         } else if (config.gcode_flavor.value == GCodeFlavor::gcfRepRap || config.gcode_flavor.value == GCodeFlavor::gcfMarlinLegacy /*prusa only*/) {
@@ -67,13 +69,15 @@ std::string GCodeWriter::get_default_pause_gcode(const GCodeConfig &config)
             return "";
         }
     } else {
-        return config.pause_print_gcode.value;
+        return pause_gcode;
     }
 }
 
 std::string GCodeWriter::get_default_color_change_gcode(const GCodeConfig &config)
 {
-    if (config.color_change_gcode.value.empty()) {
+    const ConfigOptionString *color_change_script = config.opt<ConfigOptionString>("color_change_gcode");
+    const std::string color_change_gcode = color_change_script != nullptr ? color_change_script->value : std::string();
+    if (color_change_gcode.empty()) {
         if (config.gcode_flavor.value == GCodeFlavor::gcfRepRap || config.gcode_flavor.value == GCodeFlavor::gcfMarlinLegacy ||
             config.gcode_flavor.value == GCodeFlavor::gcfMarlinFirmware || config.gcode_flavor.value == GCodeFlavor::gcfSmoothie) {
             return "M600";
@@ -82,7 +86,7 @@ std::string GCodeWriter::get_default_color_change_gcode(const GCodeConfig &confi
             return "";
         }
     } else {
-        return config.color_change_gcode.value;
+        return color_change_gcode;
     }
 }
 
