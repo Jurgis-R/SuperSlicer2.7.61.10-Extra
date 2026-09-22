@@ -213,7 +213,8 @@ static void update_arrangepoly_slaprint(arrangement::ArrangePolygon &ret,
 static coord_t brim_offset(const PrintObject &po, const ModelInstance &inst)
 {
     const BrimType brim_type         = po.config().brim_type.value;
-    const float    brim_separation   = po.config().brim_separation.getFloat();
+    const ConfigOptionFloat *brim_separation_option = po.config().option<ConfigOptionFloat>("brim_separation");
+    const float    brim_separation   = float(brim_separation_option != nullptr ? brim_separation_option->value : 0.);
     const float    brim_width        = po.config().brim_width.getFloat();
     const bool     has_outer_brim    = brim_type == BrimType::btOuterOnly ||
                                        brim_type == BrimType::btOuterAndInner;

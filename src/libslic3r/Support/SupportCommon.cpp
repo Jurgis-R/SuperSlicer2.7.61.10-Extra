@@ -408,7 +408,10 @@ SupportGeneratorLayersPtr generate_raft_base(
         //const BrimType brim_type       = object.config().brim_type;
         const bool     brim_outer      = object.config().brim_width > 0; // brim_type == btOuterOnly || brim_type == btOuterAndInner;
         const bool     brim_inner      = object.config().brim_width_interior > 0; //brim_type == btInnerOnly || brim_type == btOuterAndInner;
-        const auto     brim_separation = scale_d(object.config().brim_separation.value + object.config().brim_width.value);
+        const ConfigOptionFloat *brim_separation_option =
+            object.config().option<ConfigOptionFloat>("brim_separation");
+        const auto     brim_separation = scale_d((brim_separation_option != nullptr ? brim_separation_option->value : 0.) +
+                                                 object.config().brim_width.value);
         for (const ExPolygon &ex : object.layers().front().lslices()) {
             ex.assert_valid();
             if (brim_outer && brim_inner)

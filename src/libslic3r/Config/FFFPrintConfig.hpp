@@ -260,7 +260,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloat,                brim_width))
     ((ConfigOptionFloat,                brim_width_interior))
     ((ConfigOptionBool,                 brim_per_object))
-    ((ConfigOptionFloat,                brim_separation))
     //((ConfigOptionEnum<BrimType>,       brim_type))
     ((ConfigOptionString,               object_gcode))
     ((ConfigOptionPercent,              external_perimeter_cut_corners))

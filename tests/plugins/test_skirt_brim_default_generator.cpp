@@ -9,6 +9,7 @@
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Api/plugin/c/steps/slic3r_step_support.h"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Exception.hpp"
@@ -424,11 +425,13 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     const ConfigOptionDef *max_angle = PrintConfigDef::instance().get("brim_ears_max_angle");
     const ConfigOptionDef *detection_length = PrintConfigDef::instance().get("brim_ears_detection_length");
     const ConfigOptionDef *pattern = PrintConfigDef::instance().get("brim_ears_pattern");
+    const ConfigOptionDef *separation = PrintConfigDef::instance().get("brim_separation");
     REQUIRE(inside_holes != nullptr);
     REQUIRE(ears != nullptr);
     REQUIRE(max_angle != nullptr);
     REQUIRE(detection_length != nullptr);
     REQUIRE(pattern != nullptr);
+    REQUIRE(separation != nullptr);
 
     /*
     Leaving invalidates_step at STEP_NONE in the raw definitions asks the
@@ -457,6 +460,28 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     CHECK(pattern->has_enum_value("rectilinear"));
     CHECK_FALSE(pattern->has_enum_value("grid"));
     CHECK(pattern->default_value->serialize() == "concentric");
+    CHECK(separation->type == coFloat);
+    CHECK(separation->container_type == ConfigOptionContainerType::Object);
+    CHECK(separation->option_preset_type == RAW_PRESET_TYPE_FFF_PRINT);
+    CHECK(separation->invalidates_step == STEP_SUPPORT);
+    CHECK(separation->sidetext == "mm");
+    CHECK(separation->default_value->serialize() == "0");
+    REQUIRE(separation->aliases.size() == 1);
+    CHECK(separation->aliases.front() == "brim_offset");
+
+    /*
+    brim_separation is editable while a brim is requested on either shell, in
+    the print scope: one reason per accepted case.
+    */
+    Orchestrator &orchestrator = Orchestrator::instance();
+    size_t separation_rules = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != DEFAULT_BRIM_GENERATOR || rule.target_key != "brim_separation")
+            continue;
+        ++separation_rules;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+    }
+    CHECK(separation_rules == 2);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     config.set_deserialize_strict({

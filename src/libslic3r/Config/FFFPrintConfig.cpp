@@ -910,7 +910,6 @@ void init_categories(PrintConfigDef &definition)
         "brim_per_object",
         "brim_width",
         "brim_width_interior",
-        "brim_separation",
         //"brim_type",
         // support
         "support_material", "support_material_auto", "support_material_threshold", "support_material_enforce_layers",
@@ -1751,17 +1750,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->min = 0;
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
-
-    def = definition.add("brim_separation", coFloat, ptFFF);
-    def->label = L("Brim separation gap");
-    def->category = OptionCategory::skirtBrim;
-    def->invalidates_step = posSupportMaterial;
-    def->tooltip = L("Offset of brim from the printed object. Should be kept at 0 unless you encounter great difficulties to separate them."
-        "\nIt's subtracted to brim_width and brim_width_interior, so it has to be lower than them. The offset is applied after the first layer XY compensation (elephant foot).");
-    def->sidetext = L("mm");
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionFloat(0));
-    def->aliases = { "brim_offset" }; // from superslicer 2.3
 
 #if 0
     def = definition.add("brim_type", coEnum, ptFFF);

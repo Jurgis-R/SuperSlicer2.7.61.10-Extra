@@ -342,7 +342,6 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
                "draft_shield", "min_skirt_length", "skirt_extrusion_width" }, non_zero("skirts"));
     add_rule({ "skirt_height" },
              all_of({ non_zero("skirts"), int_not_equals("draft_shield", int(dsEnabled)) }));
-    add_rule({ "brim_separation" }, have_brim);
 
     const GuiCondition perim_or_brim = any_of({ non_zero("perimeters"), non_zero("brim_width"), non_zero("brim_width_interior") });
     add_rule({ "perimeter_extruder" }, perim_or_brim);

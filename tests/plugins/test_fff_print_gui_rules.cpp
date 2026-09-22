@@ -236,7 +236,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     for (const char *key : skirt_keys)
         set(key, have_skirt);
     set("skirt_height", have_skirt && config.opt_enum<DraftShield>("draft_shield") != dsEnabled);
-    set("brim_separation", have_brim);
     set("perimeter_extruder", P || have_brim);
     set("perimeter_extrusion_width", P || have_brim);
     set("perimeter_extrusion_spacing", P || have_brim);

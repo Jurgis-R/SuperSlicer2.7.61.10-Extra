@@ -45,7 +45,8 @@ coord_t brim_offset(const PrintObject &po)
 {
     // note: in superslicer, brim_separation is deduced from brim_width
     //   while it's added in prusaslicer
-    const float    brim_separation = po.config().brim_separation.value;
+    const ConfigOptionFloat *brim_separation_option = po.config().option<ConfigOptionFloat>("brim_separation");
+    const float    brim_separation = float(brim_separation_option != nullptr ? brim_separation_option->value : 0.);
     const float    brim_width      = po.config().brim_width.value;
     const bool     has_outer_brim  = po.config().brim_width.value > 0
                                   && brim_separation < brim_width;

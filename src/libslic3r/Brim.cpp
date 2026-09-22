@@ -38,6 +38,15 @@
 
 namespace Slic3r {
 
+// Read the optional brim separation offset; an absent plugin-owned setting
+// reads as zero.
+static double brim_separation_value(const ConfigBase &config)
+{
+    const ConfigOptionFloat *option = config.option<ConfigOptionFloat>("brim_separation");
+    return option != nullptr ? option->value : 0.;
+}
+
+
 // prusaslicer
 #if 0 
 static void append_and_translate(ExPolygons &dst, const ExPolygons &src, const PrintInstance &instance) {
@@ -152,7 +161,7 @@ static Polygons top_level_outer_brim_islands(const ConstPrintObjectPtrs &top_lev
             continue;
 
         //FIXME how about the brim type?
-        auto     brim_separation = float(scale_(object->config().brim_separation.value));
+        auto     brim_separation = float(scale_(brim_separation_value(object->config())));
         Polygons islands_object;
         for (const ExPolygon &ex_poly : get_print_object_bottom_layer_expolygons(*object)) {
             Polygons contour_offset = offset(ex_poly.contour, brim_separation, ClipperLib::jtSquare);
@@ -184,7 +193,7 @@ static ExPolygons top_level_outer_brim_area(const Print                   &print
     for(size_t print_object_idx = 0; print_object_idx < print.objects().size(); ++print_object_idx) {
         const PrintObject *object            = &print.objects()[print_object_idx];
         const BrimType     brim_type         = object->config().brim_type.value;
-        const float        brim_separation   = scale_(object->config().brim_separation.value);
+        const float        brim_separation   = scale_(brim_separation_value(object->config()));
         const float        brim_width        = scale_(object->config().brim_width.value);
         const bool         is_top_outer_brim = top_level_objects_idx.find(object->id().id) != top_level_objects_idx.end();
 
@@ -309,7 +318,7 @@ static std::vector<InnerBrimExPolygons> inner_brim_area(const Print             
     for(size_t print_object_idx = 0; print_object_idx < print.objects().size(); ++print_object_idx) {
         const PrintObject *object          = &print.objects()[print_object_idx];
         const BrimType     brim_type       = object->config().brim_type.value;
-        const float        brim_separation = scale_(object->config().brim_separation.value);
+        const float        brim_separation = scale_(brim_separation_value(object->config()));
         const float        brim_width      = scale_(object->config().brim_width.value);
         const bool         top_outer_brim  = top_level_objects_idx.find(object->id().id) != top_level_objects_idx.end();
 
@@ -1019,7 +1028,7 @@ Polylines reorder_brim_polyline(Polylines lines, ExtrusionEntityCollection& out,
 void make_brim(const Print& print, const Flow& flow, const PrintObjectPtrs& objects, const BrimGenerationParameters &parameters, ExPolygons& unbrimmable, ExtrusionEntityCollection& out) {
     const coord_t scaled_spacing = flow.scaled_spacing();
     const PrintObjectConfig& brim_config = objects.front()->config();
-    coord_t brim_offset = scale_i(brim_config.brim_separation.value);
+    coord_t brim_offset = scale_i(brim_separation_value(brim_config));
     ExPolygons    islands;
     for (PrintObject* object : objects) {
         ExPolygons object_islands;
@@ -1106,7 +1115,7 @@ void make_brim(const Print& print, const Flow& flow, const PrintObjectPtrs& obje
 
 
     //get the brimmable area
-    const size_t num_loops = size_t(floor(std::max(0., (brim_config.brim_width.value - brim_config.brim_separation.value)) / flow.spacing()));
+    const size_t num_loops = size_t(floor(std::max(0., (brim_config.brim_width.value - brim_separation_value(brim_config))) / flow.spacing()));
     ExPolygons brimmable_areas;
     for (ExPolygon& expoly : islands) {
         expoly.contour.assert_valid();
@@ -1208,7 +1217,7 @@ void make_brim(const Print& print, const Flow& flow, const PrintObjectPtrs& obje
 void make_brim_ears(const Print& print, const Flow& flow, const PrintObjectPtrs& objects, const BrimGenerationParameters &parameters, ExPolygons& unbrimmable, ExtrusionEntityCollection& out) {
     const PrintObjectConfig& brim_config = objects.front()->config();
     Points pt_ears;
-    coord_t brim_offset = scale_i(brim_config.brim_separation.value);
+    coord_t brim_offset = scale_i(brim_separation_value(brim_config));
     ExPolygons islands;
     ExPolygons unbrimmable_with_support = unbrimmable;
     for (PrintObject* object : objects) {
@@ -1306,7 +1315,7 @@ void make_brim_ears(const Print& print, const Flow& flow, const PrintObjectPtrs&
     islands = union_safety_offset_ex(islands);
 
     //get the brimmable area (for the return value only)
-    const size_t num_loops = size_t(floor((brim_config.brim_width.value - brim_config.brim_separation.value) / flow.spacing()));
+    const size_t num_loops = size_t(floor((brim_config.brim_width.value - brim_separation_value(brim_config)) / flow.spacing()));
     ExPolygons brimmable_areas;
     Polygons contours;
     Polygons holes;
@@ -1345,7 +1354,7 @@ void make_brim_ears(const Print& print, const Flow& flow, const PrintObjectPtrs&
         loops = union_pt_chained_outside_in(loops);
 
         //create ear pattern
-        coord_t size_ear = (scale_i((brim_config.brim_width.value - brim_config.brim_separation.value)) - flow.scaled_spacing());
+        coord_t size_ear = (scale_i((brim_config.brim_width.value - brim_separation_value(brim_config))) - flow.scaled_spacing());
         Polygon point_round;
         for (size_t i = 0; i < POLY_SIDES; i++) {
             double angle = (2.0 * PI * i) / POLY_SIDES;
@@ -1380,7 +1389,7 @@ void make_brim_ears(const Print& print, const Flow& flow, const PrintObjectPtrs&
     } else /* parameters.ear_pattern == BrimEarPattern::Rectilinear */ {
 
         //create ear pattern
-        coord_t size_ear = (scale_i((brim_config.brim_width.value - brim_config.brim_separation.value)) - flow.scaled_spacing());
+        coord_t size_ear = (scale_i((brim_config.brim_width.value - brim_separation_value(brim_config))) - flow.scaled_spacing());
         Polygon point_round;
         for (size_t i = 0; i < POLY_SIDES; i++) {
             double angle = (2.0 * PI * i) / POLY_SIDES;
@@ -1461,7 +1470,7 @@ void make_brim_interior(const Print& print, const Flow& flow, const PrintObjectP
     // Brim is only printed on first layer and uses perimeter extruder.
 
     const PrintObjectConfig& brim_config = objects.front()->config();
-    coord_t brim_offset = scale_i(brim_config.brim_separation.value);
+    coord_t brim_offset = scale_i(brim_separation_value(brim_config));
     ExPolygons    islands;
     coordf_t spacing;
     for (PrintObject* object : objects) {
@@ -1515,7 +1524,7 @@ void make_brim_interior(const Print& print, const Flow& flow, const PrintObjectP
     islands = union_ex(islands);
 
     //to have the brimmable areas, get all holes, use them as contour , add smaller hole inside and make a diff with unbrimmable
-    const size_t num_loops = size_t(floor((brim_config.brim_width_interior.value - brim_config.brim_separation.value) / flow.spacing()));
+    const size_t num_loops = size_t(floor((brim_config.brim_width_interior.value - brim_separation_value(brim_config)) / flow.spacing()));
     ExPolygons brimmable_areas;
     Polygons islands_to_loops;
     for (const ExPolygon& expoly : islands) {
