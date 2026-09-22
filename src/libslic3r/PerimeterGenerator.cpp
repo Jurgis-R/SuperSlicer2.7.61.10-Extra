@@ -91,6 +91,14 @@ bool region_setting_solo_bool(const RegionSettings &settings, const ConfigBase &
     return option != nullptr && settings.get_solo_config(option).get_bool();
 }
 
+double region_setting_solo_float(const RegionSettings &settings, const ConfigBase &config, const char *key)
+{
+    const ConfigOption *option = config.option(key);
+    if (option == nullptr || settings.has_many_config(option))
+        return 0.;
+    return settings.get_solo_config(option).get_float();
+}
+
 std::map<RegionSettings::SettingsValue, RegionSettings::ClipExpoly> region_setting_areas(
     const RegionSettings &settings, const ConfigBase &config, const char *key)
 {
@@ -3647,11 +3655,11 @@ ProcessSurfaceResult PerimeterGenerator::process_arachne(const Parameters &param
     }
 
     // extra_perimeters_below_area
-    if (params.region_setting.has_many_config(&params.config.extra_perimeters_below_area) ||
-        params.region_setting.get_solo_config(&params.config.extra_perimeters_below_area).get_float() > 0) {
+    if (region_setting_has_many(params.region_setting, params.config, "extra_perimeters_below_area") ||
+        region_setting_solo_float(params.region_setting, params.config, "extra_perimeters_below_area") > 0) {
         ExPolygons small_polygons;
         for (auto const &[extra_perimeters_below_area, areas] :
-             params.region_setting.get_areas(&params.config.extra_perimeters_below_area)) {
+             region_setting_areas(params.region_setting, params.config, "extra_perimeters_below_area")) {
             if (extra_perimeters_below_area.get_float() > 0) {
                 double area_mm2 = extra_perimeters_below_area.is_percent() ?
                     sqr(extra_perimeters_below_area.get_effective_value((coordf_t) params.get_perimeter_width())) :
@@ -5451,11 +5459,11 @@ ProcessSurfaceResult PerimeterGenerator::process_classic(const Parameters &     
 
                 // extra_perimeters_below_area
                 if (perimeter_idx > 0 && !skip_extra_peri &&
-                    (params.region_setting.has_many_config(&params.config.extra_perimeters_below_area) ||
-                     params.region_setting.get_solo_config(&params.config.extra_perimeters_below_area).get_float() > 0)) {
+                    (region_setting_has_many(params.region_setting, params.config, "extra_perimeters_below_area") ||
+                     region_setting_solo_float(params.region_setting, params.config, "extra_perimeters_below_area") > 0)) {
                     ExPolygons small_expolygons;
                     for (auto const &[extra_perimeters_below_area, areas] :
-                         params.region_setting.get_areas(&params.config.extra_perimeters_below_area)) {
+                         region_setting_areas(params.region_setting, params.config, "extra_perimeters_below_area")) {
                         if (extra_perimeters_below_area.get_float() > 0) {
                             double area_mm2 = extra_perimeters_below_area.is_percent() ?
                                 sqr(extra_perimeters_below_area.get_effective_value(

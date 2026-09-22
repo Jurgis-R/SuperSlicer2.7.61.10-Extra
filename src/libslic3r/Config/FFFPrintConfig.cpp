@@ -376,6 +376,24 @@ double min_object_distance(const ConfigBase *config, double ref_height /* = 0*/)
     return base_dist;
 }
 
+namespace {
+
+// Read one optional switch/number from a full config; an absent plugin-owned
+// setting reads as disabled/zero.
+bool config_option_truthy(const FullPrintConfig &config, const char *key)
+{
+    const ConfigOption *option = config.option(key);
+    return option != nullptr && option->get_bool();
+}
+
+bool config_option_positive(const FullPrintConfig &config, const char *key)
+{
+    const ConfigOption *option = config.option(key);
+    return option != nullptr && option->get_float() > 0.;
+}
+
+} // namespace
+
 //FIXME localize this function.
 //note: seems only called for config export & command line. Most of the validation work for the gui is done elsewhere... So this function may be a bit out-of-sync
 std::string validate(const FullPrintConfig& cfg)
@@ -489,7 +507,11 @@ std::string validate(const FullPrintConfig& cfg)
             return "Spiral vase mode is not compatible with support material";
         if (cfg.infill_dense)
             return "Spiral vase mode can only print hollow objects and have no top surface, so you don't need any dense infill";
-        if (cfg.extra_perimeters || cfg.extra_perimeters_below_area.value > 0 || cfg.extra_perimeters_count.value > 0 || cfg.extra_perimeters_on_overhangs || cfg.extra_perimeters_odd_layers)
+        if (config_option_truthy(cfg, "extra_perimeters") ||
+            config_option_positive(cfg, "extra_perimeters_below_area") ||
+            config_option_positive(cfg, "extra_perimeters_count") ||
+            config_option_truthy(cfg, "extra_perimeters_on_overhangs") ||
+            config_option_truthy(cfg, "extra_perimeters_odd_layers"))
             return "Can't make more than one perimeter when spiral vase mode is enabled";
         if (cfg.overhangs_reverse)
             return "Can't reverse the direction of the overhangs every layer when spiral vase mode is enabled";
@@ -780,7 +802,6 @@ void init_categories(PrintConfigDef &definition)
         "duplicate_distance",
         "ensure_vertical_shell_thickness",
         "extra_perimeters",
-        "extra_perimeters_below_area",
         "extra_perimeters_count",
         "extra_perimeters_odd_layers",
         "extra_perimeters_on_overhangs",
@@ -2364,17 +2385,6 @@ void init_fff_params(PrintConfigDef &definition)
         " Personally, I think it's useless.");
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("extra_perimeters_below_area", coFloatOrPercent, ptFFF);
-    def->label = L("Extra perimeters on small areas");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("After laying all the perimeters, if there is an area smaller (in mm²) than this value, then fill it with more perimeters."
-                    "\nUseful if you want to fortify a small cylinder while not messing with the larger main object."
-                    "\nCan be a percentage of the perimeter width (squared)."
-                    "\nSet zero to disable.");
-    def->mode = comAdvancedE | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0,false));
 
     def = definition.add("extra_perimeters_count", coInt, ptFFF);
     def->label = L("Extra perimeters");

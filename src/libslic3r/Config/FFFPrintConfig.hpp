@@ -408,7 +408,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionBool,                 external_perimeters_hole))
     ((ConfigOptionBool,                 external_perimeters_nothole))
     ((ConfigOptionBool,                 extra_perimeters))
-    ((ConfigOptionFloatOrPercent,       extra_perimeters_below_area))
     ((ConfigOptionInt,                  extra_perimeters_count))
     ((ConfigOptionBool,                 extra_perimeters_odd_layers))
     ((ConfigOptionBool,                 extra_perimeters_on_overhangs))
