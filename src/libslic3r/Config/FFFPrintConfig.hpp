@@ -409,7 +409,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionBool,                 external_perimeters_nothole))
     ((ConfigOptionBool,                 extra_perimeters))
     ((ConfigOptionBool,                 only_one_perimeter_top))
-    ((ConfigOptionBool,                 only_one_perimeter_top_other_algo))
     ((ConfigOptionBool,                 fill_aligned_z))
     ((ConfigOptionFloat,                fill_angle))
     ((ConfigOptionBool,                 fill_angle_cross))
@@ -459,7 +458,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionBool,                 milling_post_process))
     ((ConfigOptionFloatOrPercent,       min_bead_width))
     ((ConfigOptionFloatOrPercent,       min_feature_size))
-    ((ConfigOptionFloatOrPercent,       min_width_top_surface))
     // Detect bridging perimeters
     ((ConfigOptionBool,                 overhangs))
     ((ConfigOptionGraph,                overhangs_dynamic_flow))

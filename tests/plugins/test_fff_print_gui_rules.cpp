@@ -159,8 +159,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("overhangs_flow_ratio", overhangs);
     set("overhangs_width", overhangs && en("overhangs_flow_ratio"));
 
-    set("min_width_top_surface", P && b("only_one_perimeter_top"));
-
     set("seam_angle_cost", seam_cost);
     set("seam_travel_cost", seam_cost);
     set("seam_visibility", seam_cost);

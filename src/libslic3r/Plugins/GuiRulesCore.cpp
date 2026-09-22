@@ -248,8 +248,6 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     // perimeter details
 
 
-    add_rule({ "min_width_top_surface" },
-             all_of({ non_zero("perimeters"), true_("only_one_perimeter_top") }));
 
     const GuiCondition seam_cost = all_of({ non_zero("perimeters"), int_equals("seam_position", int(spCost)) });
     add_rule({ "seam_angle_cost", "seam_travel_cost", "seam_visibility" }, seam_cost);

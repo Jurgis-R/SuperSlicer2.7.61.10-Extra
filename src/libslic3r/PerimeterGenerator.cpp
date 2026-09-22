@@ -3478,8 +3478,8 @@ ProcessSurfaceResult PerimeterGenerator::process_arachne(const Parameters &param
                 split_top_surfaces(this->lower_slices, upper_slices, offset_ex(*last_onion, -params.get_ext_perimeter_spacing() / 2),
                     result.top_fills, non_top_polygons, result.fill_clip,
                     loop_number - 1,
-                    scale_d(opt_values.get_effective_value(unscaled(params.perimeter_flow.scaled_width()), &params.config.min_width_top_surface)),
-                    opt_values.get_bool(&params.config.only_one_perimeter_top_other_algo));
+                    scale_d(opt_values.get_effective_value(unscaled(params.perimeter_flow.scaled_width()), params.config.option("min_width_top_surface"))),
+                    opt_values.get_bool(params.config.option("only_one_perimeter_top_other_algo")));
             }
         }
         // has to set the outer polygon to the centerline of the external perimeter
@@ -6013,8 +6013,8 @@ ProcessSurfaceResult PerimeterGenerator::process_classic(const Parameters &     
                         split_top_surfaces(this->lower_slices, upper_slices, last,
                                             results.top_fills, next, results.fill_clip,
                                             std::max(contour_count, holes_count) - 1,
-                                            scale_d(opt_values.get_effective_value(unscaled(params.perimeter_flow.scaled_width()), &params.config.min_width_top_surface)),
-                                            opt_values.get_bool(&params.config.only_one_perimeter_top_other_algo));
+                                            scale_d(opt_values.get_effective_value(unscaled(params.perimeter_flow.scaled_width()), params.config.option("min_width_top_surface"))),
+                                            opt_values.get_bool(params.config.option("only_one_perimeter_top_other_algo")));
                     }
                 }
                 last = next;

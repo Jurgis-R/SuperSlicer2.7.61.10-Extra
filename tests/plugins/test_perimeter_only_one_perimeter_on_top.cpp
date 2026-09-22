@@ -1,6 +1,11 @@
 #include <catch2/catch.hpp>
 
 #include "perimeter_test_helpers.hpp"
+#include "plugin_test_helpers.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 namespace {
 using namespace Slic3r;
@@ -146,4 +151,49 @@ TEST_CASE("Only one perimeter on top limits top branches", "[plugins][perimeter]
         require_default_loop_count(run, 1);
         require_simple_generator_first_child_area_partition(run, wider_than_upper);
     }
+}
+TEST_CASE("Only one perimeter on top owns its settings and activation rule",
+          "[plugins][perimeter][only-one-on-top][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("perimeter.module.only_one_perimeter_on_top");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 2);
+    CHECK(std::find(defined_keys.begin(), defined_keys.end(), "min_width_top_surface") != defined_keys.end());
+    CHECK(std::find(defined_keys.begin(), defined_keys.end(), "only_one_perimeter_top_other_algo") != defined_keys.end());
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("min_width_top_surface");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_PERIMETER);
+    CHECK(PrintConfig::defaults().option("min_width_top_surface") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("min_width_top_surface") != nullptr);
+
+    def = PrintConfigDef::instance().get("only_one_perimeter_top_other_algo");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(PrintRegionConfig::defaults().option("only_one_perimeter_top_other_algo") != nullptr);
+
+    // This is the only rule that uses the perimeters switch, so it is checked
+    // through its structure: the generated implementation rule of the plugin's
+    // own exclusive group may stay active.
+    bool found_moved_rule = false;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != "perimeter.module.only_one_perimeter_on_top" ||
+            rule.target_key != "min_width_top_surface")
+            continue;
+        if (rule.clauses.size() != 2)
+            continue;
+        found_moved_rule = true;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        CHECK(rule.clauses[0].condition_key == "perimeters");
+        CHECK(rule.clauses[1].condition_key == "only_one_perimeter_top");
+    }
+    CHECK(found_moved_rule);
 }

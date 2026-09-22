@@ -804,7 +804,6 @@ void init_categories(PrintConfigDef &definition)
         "extra_perimeters",
         "avoid_crossing_curled_overhangs",
         "only_one_perimeter_top",
-        "only_one_perimeter_top_other_algo",
         "allow_empty_layers",
         "avoid_crossing_perimeters", 
         "avoid_crossing_not_first_layer",
@@ -872,7 +871,6 @@ void init_categories(PrintConfigDef &definition)
         "infill_first",
         "avoid_crossing_perimeters_max_detour",
         "max_volumetric_extrusion_rate_slope_positive", "max_volumetric_extrusion_rate_slope_negative", 
-        "min_width_top_surface",
         // speeds
         "default_speed",
         "first_layer_speed_over_raft",
@@ -4645,21 +4643,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->is_vector_extruder = true;
     def->set_default_value(new ConfigOptionFloatsOrPercents{ FloatOrPercent{ 5, true} });
 
-    def = definition.add("min_width_top_surface", coFloatOrPercent, ptFFF);
-    def->label = L("Minimum top width for infill");
-    def->category = OptionCategory::speed;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("If a top surface has to be printed and it's partially covered by another layer, it won't be considered at a top layer where its width is below this value."
-        " This can be useful to not let the 'one perimeter on top' trigger on surface that should be covered only by perimeters."
-        " This value can be a mm or a % of the perimeter extrusion width."
-        "\nWarning: If enabled, artifacts can be created is you have some thin features on the next layer, like letters. Set this setting to 0 to remove these artifacts.");
-    def->sidetext = L("mm or %");
-    def->ratio_over = "perimeter_extrusion_width";
-    def->min = 0;
-    def->max_literal = { 15, false };
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloatOrPercent(100, true));
-
     def = definition.add("min_print_speed", coFloats, ptFFF);
     def->label = L("Min print speed");
     def->category = OptionCategory::speed;
@@ -4783,14 +4766,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->tooltip = L("Use only one perimeter on flat top surface, to give more space to the top infill pattern.");
     def->mode = comSimpleAE | comSuSi;
     def->set_default_value(new ConfigOptionBool(true));
-
-    def = definition.add("only_one_perimeter_top_other_algo", coBool, ptFFF);
-    def->label = L("Only one peri - other algo");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("If you have some problem with the 'Only one perimeter on Top surfaces' option, you can try to activate this on the problematic layer.");
-    def->mode = comHidden;
-    def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("only_retract_when_crossing_perimeters", coBool, ptFFF);
     def->label = L("Only retract when crossing perimeters");
