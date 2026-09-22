@@ -3712,10 +3712,10 @@ ProcessSurfaceResult PerimeterGenerator::process_arachne(const Parameters &param
 
     // extra_perimeters_odd_layers
     if (params.layer->id() % 2 == 1 &&
-        params.region_setting.has_many_config(&params.config.extra_perimeters_odd_layers)) {
+        region_setting_has_many(params.region_setting, params.config, "extra_perimeters_odd_layers")) {
         ExPolygons extra_perimeter_areas;
         for (auto const &[is_extra_perimeters_odd_layers, areas] :
-             params.region_setting.get_areas(&params.config.extra_perimeters_odd_layers)) {
+             region_setting_areas(params.region_setting, params.config, "extra_perimeters_odd_layers")) {
             if (is_extra_perimeters_odd_layers.get_bool()) {
                 ExPolygons last_onion = union_ex(wallToolPaths.getInnerContour());
                 append(extra_perimeter_areas, areas.intersections(last_onion));
@@ -4441,8 +4441,8 @@ void PerimeterGenerator::process(// Input:
     int surface_idx = 0;
     // extra perimeter if on the right layer id and if the setting is for the whole region. (if it's split in multiple regions, then we ned to clip it after textruding current ones)
     const int extra_odd_perimeter = params.layer->id() % 2 == 1 &&
-            !params.region_setting.has_many_config(&params.config.extra_perimeters_odd_layers) &&
-            params.region_setting.get_solo_config(&params.config.extra_perimeters_odd_layers).get_bool() ?
+            !region_setting_has_many(params.region_setting, params.config, "extra_perimeters_odd_layers") &&
+            region_setting_solo_bool(params.region_setting, params.config, "extra_perimeters_odd_layers") ?
         1 :
         0;
 
@@ -5454,9 +5454,9 @@ ProcessSurfaceResult PerimeterGenerator::process_classic(const Parameters &     
                 // extra_perimeters_odd_layers
                 if (perimeter_idx > 0 && !skip_extra_peri &&
                     params.layer->id() % 2 == 1 && !already_have_extra_odd_perimeter &&
-                    params.region_setting.has_many_config(&params.config.extra_perimeters_odd_layers)) {
+                    region_setting_has_many(params.region_setting, params.config, "extra_perimeters_odd_layers")) {
                     for (auto const &[is_extra_perimeters_odd_layers, areas] :
-                         params.region_setting.get_areas(&params.config.extra_perimeters_odd_layers)) {
+                         region_setting_areas(params.region_setting, params.config, "extra_perimeters_odd_layers")) {
                         if (is_extra_perimeters_odd_layers.get_bool()) {
                             append(extra_perimeter_next_onion, areas.intersections(previous_spacing/2, last));
                         }

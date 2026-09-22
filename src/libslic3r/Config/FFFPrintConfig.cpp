@@ -802,7 +802,6 @@ void init_categories(PrintConfigDef &definition)
         "duplicate_distance",
         "ensure_vertical_shell_thickness",
         "extra_perimeters",
-        "extra_perimeters_odd_layers",
         "extra_perimeters_on_overhangs",
         "avoid_crossing_curled_overhangs",
         "only_one_perimeter_first_layer",
@@ -2394,16 +2393,6 @@ void init_fff_params(PrintConfigDef &definition)
                     "\nIf you use this setting, strongly consider also using overhangs_reverse.");
     def->aliases = {"extra_perimeters_overhangs"};
     def->mode = comAdvancedE | comPrusa;
-    def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("extra_perimeters_odd_layers", coBool, ptFFF);
-    def->label = L("On even layers");
-    def->full_label = L("Extra perimeter on even layers");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Adds one extra perimeter on alternating layers, allowing infill to be captured between "
-                     "perimeter shells. This can significantly reduce how much infill needs to encroach into perimeters.");
-    def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("extruder", coInt, ptFFF);
