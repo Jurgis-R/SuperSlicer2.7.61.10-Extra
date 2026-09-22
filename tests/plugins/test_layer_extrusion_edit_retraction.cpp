@@ -542,7 +542,7 @@ TEST_CASE("Configured tool and filament scripts keep separate ordered owners",
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
     config.nozzle_diameter.set(std::vector<double>{0.4, 0.4});
     config.option<ConfigOptionString>("toolchange_gcode")->value = "; toolchange";
-    config.start_filament_gcode.set(
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(
         std::vector<std::string>{"", "; start filament"});
 
     PrintingLayerGroup &layer = print.mutable_printing_plan().groups.front()

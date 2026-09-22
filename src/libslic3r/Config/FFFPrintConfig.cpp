@@ -1155,7 +1155,6 @@ void init_categories(PrintConfigDef &definition)
         "max_speed_reduction",
         "min_print_speed",
         // custom gcode
-        "start_filament_gcode", "end_filament_gcode",
         // Retract overrides
         "filament_retract_length", "filament_retract_lift", "filament_retract_lift_above", "filament_retract_lift_below", 
         "filament_retract_length_toolchange",
@@ -1226,14 +1225,10 @@ void init_categories(PrintConfigDef &definition)
         "host_type", "print_host", "printhost_apikey", "printhost_cafile", "printhost_port",
         "single_extruder_multi_material", 
         // custom gcode
-        "start_gcode",
         "start_gcode_manual",
-        "end_gcode",
         "before_layer_gcode",
         "layer_gcode",
         "color_change_gcode", "pause_print_gcode", "template_custom_gcode","feature_gcode",
-        "between_objects_gcode",
-        "between_objects_gcode_before_move",
         //printer fields
         "printer_custom_variables",
         "printer_vendor",
@@ -1578,25 +1573,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->height = 5;
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionString(""));
-
-    def = definition.add("between_objects_gcode", coString, ptFFF);
-    def->label = L("Between objects G-code");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This code is inserted between objects when using sequential printing. By default extruder and bed temperature are reset using non-wait command; however if M104, M109, M140 or M190 are detected in this custom code, Slic3r will not add temperature commands. Note that you can use placeholder variables for all Slic3r settings, so you can put a \"M109 S{first_layer_temperature}\" command wherever you want.");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 12;
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionString(""));
-
-    def = definition.add("between_objects_gcode_before_move", coBool, ptFFF);
-    def->label = L("Put gcode before the move");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("'This'between_objects_gcode' code is inserted before moving to the next object, instead of after moving to the next object.");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("bottom_solid_layers", coInt, ptFFF);
     //TRN Print Settings: "Bottom solid layers"
@@ -2048,34 +2024,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->min = 0;
     def->mode = comExpert | comPrusa | comSuSi;
     def->set_default_value(new ConfigOptionFloat(6));
-
-    def = definition.add("end_gcode", coString, ptFFF);
-    def->label = L("End G-code");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This end procedure is inserted at the end of the output file. "
-                   "Note that you can use placeholder variables for all Slic3r settings.");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 12;
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionString("M104 S0 ; turn off temperature\nG28 X0  ; home X axis\nM84     ; disable motors\n"));
-
-    def = definition.add("end_filament_gcode", coStrings, ptFFF);
-    def->label = L("End G-code");
-    def->full_label = L("Filament end G-code");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This end procedure is inserted at the end of the output file, before the printer end gcode (and "
-                   "before any toolchange from this filament in case of multimaterial printers). "
-                   "Note that you can use placeholder variables for all Slic3r settings. "
-                   "If you have multiple extruders, the gcode is processed in extruder order.");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 120;
-    def->mode = comExpert | comPrusa;
-    def->is_vector_extruder = true;
-    def->set_default_value(new ConfigOptionStrings { "; Filament-specific end gcode \n;END gcode for filament\n" });
 
     def = definition.add("top_fill_pattern", coEnum, ptFFF);
     def->label = L("Top");
@@ -6316,18 +6264,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionBool(true));
 
-    def = definition.add("start_gcode", coString, ptFFF);
-    def->label = L("Start G-code");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This start procedure is inserted at the beginning, possibly prepended by "
-                     "temperature-changing commands and others. See 'autoemit_temperature_commands' and 'start_gcode_manual'.");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 12;
-    def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionString("G28 ; home all axes\nG1 Z5 F5000 ; lift nozzle\n"));
-
     def = definition.add("start_gcode_manual", coBool, ptFFF);
     def->label = L("Only custom Start G-code");
     def->category = OptionCategory::customgcode;
@@ -6337,27 +6273,6 @@ void init_fff_params(PrintConfigDef &definition)
                     "\nExemple:\nG21 ; set units to millimeters\nG90 ; use absolute coordinates\n{if use_relative_e_distances}M83{else}M82{endif}\nG92 E0 ; reset extrusion distance");
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("start_filament_gcode", coStrings, ptFFF);
-    def->label = L("Start G-code");
-    def->full_label = L("Filament start G-code");
-    def->category = OptionCategory::customgcode;
-    def->invalidates_step = psGCodeExport;
-    def->tooltip = L("This start procedure is inserted at the beginning, after any printer start gcode (and "
-                   "after any toolchange to this filament in case of multi-material printers). "
-                   "This is used to override settings for a specific filament. If Slic3r detects "
-                   "M104, M109, M140 or M190 in your custom codes, such commands will "
-                   "not be prepended automatically so you're free to customize the order "
-                   "of heating commands and other custom actions. Note that you can use placeholder variables "
-                   "for all Slic3r settings, so you can put a \"M109 S{first_layer_temperature}\" command "
-                   "wherever you want. If you have multiple extruders, the gcode is processed "
-                   "in extruder order.");
-    def->multiline = true;
-    def->full_width = true;
-    def->height = 12;
-    def->mode = comExpert | comPrusa;
-    def->is_vector_extruder = true;
-    def->set_default_value(new ConfigOptionStrings { "; Filament gcode\n" });
 
     def = definition.add("color_change_gcode", coString, ptFFF);
     def->label = L("Color change G-code");

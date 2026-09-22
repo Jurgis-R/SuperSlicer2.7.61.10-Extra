@@ -233,6 +233,34 @@ uint16_t tool_id_from_extruder(const extruder_index_t extruder_id)
         return option != nullptr && option->is_enabled();
     }
 
+    // Read one optional script string; an absent plugin-owned setting reads as
+    // an empty script.
+    std::string config_string(const ConfigBase &config, const char *key) {
+        const ConfigOptionString *option = config.option<ConfigOptionString>(key);
+        return option != nullptr ? option->value : std::string();
+    }
+
+    // Read every value of one optional script list; an absent setting reads as
+    // an empty list.
+    std::vector<std::string> config_string_list(const ConfigBase &config, const char *key) {
+        const ConfigOptionStrings *option = config.option<ConfigOptionStrings>(key);
+        return option != nullptr ? option->get_values() : std::vector<std::string>();
+    }
+
+    // Read one extruder value of an optional script list; an absent setting
+    // reads as an empty script.
+    std::string config_string_at(const ConfigBase &config, const char *key, size_t idx) {
+        const ConfigOptionStrings *option = config.option<ConfigOptionStrings>(key);
+        return option != nullptr ? option->get_at(idx) : std::string();
+    }
+
+    // Whether one optional switch exists and is set; an absent setting reads as
+    // false.
+    bool config_truthy(const ConfigBase &config, const char *key) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr && option->get_bool();
+    }
+
     double get_default_acceleration(PrintConfig& config) {
         double max = 0;
         max = machine_limit_value(config, "machine_max_acceleration_extruding");
@@ -1388,8 +1416,8 @@ namespace DoExport {
         };
 
         const GCodeConfig& config = print.config();
-        check(_u8L("Start G-code"), config.start_gcode.value);
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("End G-code"), config.end_gcode.value);
+        check(_u8L("Start G-code"), config_string(config, "start_gcode"));
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("End G-code"), config_string(config, "end_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Before layer change G-code"), config.before_layer_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("After layer change G-code"), config.layer_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Extrusion type change G-code"), config.feature_gcode.value);
@@ -1399,19 +1427,19 @@ namespace DoExport {
             if (toolchange_gcode_opt != nullptr)
                 check(_u8L("Tool change G-code"), toolchange_gcode_opt->value);
         }
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Between objects G-code (for sequential printing"), config.between_objects_gcode.value);
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Between objects G-code (for sequential printing"), config_string(config, "between_objects_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Color Change G-code"), GCodeWriter::get_default_color_change_gcode(config));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Pause Print G-code"), GCodeWriter::get_default_pause_gcode(config));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Template Custom G-code"), config.template_custom_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) {
-            for (const std::string& value : config.start_filament_gcode.get_values()) {
+            for (const std::string& value : config_string_list(config, "start_filament_gcode")) {
                 check(_u8L("Filament Start G-code"), value);
                 if (ret.size() == MAX_TAGS_COUNT)
                     break;
             }
         }
         if (ret.size() < MAX_TAGS_COUNT) {
-            for (const std::string& value : config.end_filament_gcode.get_values()) {
+            for (const std::string& value : config_string_list(config, "end_filament_gcode")) {
                 check(_u8L("Filament End G-code"), value);
                 if (ret.size() == MAX_TAGS_COUNT)
                     break;
@@ -2493,16 +2521,16 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     {
         DynamicConfig config;
         config.set_key_value("start_gcode_bed_temperature", new ConfigOptionInt(print.first_layer_bed_temperature()));
-        start_gcode = this->placeholder_parser_process("start_gcode", print.config().start_gcode.value, initial_extruder_id, &config);
+        start_gcode = this->placeholder_parser_process("start_gcode", config_string(print.config(), "start_gcode"), initial_extruder_id, &config);
     }
     // get the start_filament_gcode to check if M109 or others are inside it
     std::string start_filament_gcode;
-    if (!m_config.start_filament_gcode.get_at(initial_extruder_id).empty()) {
+    if (!config_string_at(m_config, "start_filament_gcode", size_t(initial_extruder_id)).empty()) {
         DynamicConfig config;
         config.set_key_value("previous_extruder", new ConfigOptionInt(-1));
         config.set_key_value("next_extruder", new ConfigOptionInt((int)initial_extruder_id));
         config.set_key_value("filament_extruder_id", new ConfigOptionInt((int)initial_extruder_id));
-        start_filament_gcode = this->placeholder_parser_process("start_filament_gcode", m_config.start_filament_gcode.get_at(initial_extruder_id), initial_extruder_id, &config);
+        start_filament_gcode = this->placeholder_parser_process("start_filament_gcode", config_string_at(m_config, "start_filament_gcode", size_t(initial_extruder_id)), initial_extruder_id, &config);
     }
     std::string start_all_gcode = start_gcode + "\"n" + start_filament_gcode;
 
@@ -2521,7 +2549,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     }
 
     // Set extruder(s) temperature before and after start G-code.
-    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && (this->config().gcode_flavor != gcfKlipper || print.config().start_gcode.value.empty()) && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && (this->config().gcode_flavor != gcfKlipper || config_string(print.config(), "start_gcode").empty()) && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
         this->_print_first_layer_extruder_temperatures(preamble_to_put_start_layer, print, start_all_gcode, initial_extruder_id, false);
 
     // adds tag for processor
@@ -2642,7 +2670,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                 this->m_throw_if_canceled();
                 this->set_origin(unscale_p((*print_object_instance_sequential_active)->shift));
                 if (finished_objects > 0) {
-                    if (!this->config().between_objects_gcode_before_move.value) {
+                    if (!config_truthy(this->config(), "between_objects_gcode_before_move")) {
                         _move_to_print_object(preamble_to_put_start_layer, print, finished_objects,
                                               initial_extruder_id);
                     } else {
@@ -2657,7 +2685,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                     config.set_key_value("next_object_name", new ConfigOptionString(m_label_objects->get_object_name(object)));
                     std::string between_objects_gcode =
                         this->placeholder_parser_process("between_objects_gcode",
-                                                         print.config().between_objects_gcode.value,
+                                                         config_string(print.config(), "between_objects_gcode"),
                                                          initial_extruder_id, &config);
                     // Set first layer extruder temperatures, don't wait for it to reach the temperature.
                     // don't change the bed temp for each object, it can lead to auto-removel
@@ -2665,7 +2693,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                     this->_print_first_layer_extruder_temperatures(set_temperature, print, between_objects_gcode, initial_extruder_id, false);
                     preamble_to_put_start_layer.append(set_temperature).append("\n");
                     preamble_to_put_start_layer.append(between_objects_gcode).append("\n");
-                    if (this->config().between_objects_gcode_before_move.value) {
+                    if (config_truthy(this->config(), "between_objects_gcode_before_move")) {
                         _move_to_print_object(preamble_to_put_start_layer, print, finished_objects,
                                               initial_extruder_id);
                     }
@@ -3267,7 +3295,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
             if (m_writer.tool_is_extruder()) {
                 // Process the end_filament_gcode for the active filament only.
                 file.writeln(this->placeholder_parser_process("end_filament_gcode",
-                                                              print.config().end_filament_gcode.get_at(current_extruder_id),
+                                                              config_string_at(print.config(), "end_filament_gcode", size_t(current_extruder_id)),
                                                               current_extruder_id, &config));
             }
         } else {
@@ -3278,7 +3306,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                 auto extr_ids = m_writer.extruder_ids();
                     if (std::find(extr_ids.begin(), extr_ids.end(), extruder_id) != extr_ids.end()) {
                         // write end flament gcode.
-                        const std::string &end_gcode = print.config().end_filament_gcode.get_at(extruder_id);
+                        const std::string end_gcode = config_string_at(print.config(), "end_filament_gcode", size_t(extruder_id));
                     config.set_key_value("filament_extruder_id", new ConfigOptionInt(extruder_id));
                     config.set_key_value("previous_extruder", new ConfigOptionInt(current_extruder_id));
                         file.writeln(
@@ -3287,7 +3315,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
             }
         }
         }
-        file.writeln(this->placeholder_parser_process("end_gcode", print.config().end_gcode, m_writer.tool()->id(), &config));
+        file.writeln(this->placeholder_parser_process("end_gcode", config_string(print.config(), "end_gcode"), m_writer.tool()->id(), &config));
     } else {
         assert(false); // what is the use-case?
     }
@@ -10401,7 +10429,7 @@ std::string GCodeGenerator::set_extruder(extruder_index_t extruder_id, coord_t p
         this->placeholder_parser().set("current_extruder", extruder_id);
 
         // Append the filament start G-code.
-        const std::string &start_filament_gcode = m_config.start_filament_gcode.get_at(extruder_id);
+        const std::string start_filament_gcode = config_string_at(m_config, "start_filament_gcode", size_t(extruder_id));
         if (! start_filament_gcode.empty()) {
             DynamicConfig config;
             assert((m_layer == nullptr ? m_last_layer_z_ : m_layer->scaled_print_z()) == print_z);
@@ -10433,7 +10461,7 @@ std::string GCodeGenerator::set_extruder(extruder_index_t extruder_id, coord_t p
     if (m_writer.tool() != nullptr) {
         // Process the custom end_filament_gcode. set_extruder() is only called if there is no wipe tower
         // so it should not be injected twice.
-        const std::string  &end_filament_gcode  = m_config.end_filament_gcode.get_at(old_extruder_id);
+        const std::string  end_filament_gcode  = config_string_at(m_config, "end_filament_gcode", size_t(old_extruder_id));
         if (! end_filament_gcode.empty()) {
             DynamicConfig config;
             assert((m_layer == nullptr ? m_last_layer_z_ : m_layer->scaled_print_z()) == print_z);
@@ -10469,7 +10497,7 @@ std::string GCodeGenerator::set_extruder(extruder_index_t extruder_id, coord_t p
     this->placeholder_parser().set("current_extruder", extruder_id);
 
     // Append the filament start G-code.
-    const std::string &start_filament_gcode = m_config.start_filament_gcode.get_at(extruder_id);
+    const std::string start_filament_gcode = config_string_at(m_config, "start_filament_gcode", size_t(extruder_id));
     if (!start_filament_gcode.empty()) {
         DynamicConfig config;
         assert((m_layer == nullptr ? m_last_layer_z_ : m_layer->scaled_print_z()) == print_z);

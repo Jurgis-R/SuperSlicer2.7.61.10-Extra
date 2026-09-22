@@ -73,14 +73,14 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     select_printing_plan_writer(print);
     configure_standard_firmware(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value.clear();
-    config.end_gcode.value.clear();
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
     config.before_layer_gcode.value.clear();
     config.layer_gcode.value.clear();
     config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
-    config.between_objects_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{""});
-    config.end_filament_gcode.set(std::vector<std::string>{""});
+    config.option<ConfigOptionString>("between_objects_gcode")->value.clear();
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{""});
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{""});
     config.feature_gcode.value =
         "; FEATURE [previous_extrusion_role]>[next_extrusion_role]";
 

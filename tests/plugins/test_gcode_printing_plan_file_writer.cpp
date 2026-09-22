@@ -745,8 +745,8 @@ TEST_CASE("Orchestrator export_gcode still routes through ordering and STEP_GCOD
     Print print;
     select_printing_plan_writer(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value.clear();
-    config.end_gcode.value.clear();
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
     for (slicing_step_t step : Steps::execution_order())
         print.mark_step_executed(step);
 

@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
@@ -71,6 +72,15 @@ namespace {
 
 const char *const k_no_dependencies[] = {nullptr};
 
+const char *const k_defined_config_keys[] = {
+    "start_gcode",
+    "end_gcode",
+    "between_objects_gcode",
+    "between_objects_gcode_before_move",
+    "start_filament_gcode",
+    "end_filament_gcode"
+};
+
 enum class ScopeEventPosition : uint8_t { Before, After };
 
 struct LayerContext
@@ -97,6 +107,9 @@ std::optional<uint32_t> group_object_index(const Print &print,
                                            const PrintingPlan &plan,
                                            const PrintingGroup &group,
                                            const plugin_run_context *run_ctx);
+// Register the option definitions owned by this plugin; it runs once from
+// inilialize_impl().
+void initialize_settings_gcode_scripts_settings(orchestrator_handle *orchestrator);
 // Add one typed scalar to the temporary Config transported with a script.
 void set_int_argument(MutableConfig &config, const char *key, int32_t value);
 void set_float_argument(MutableConfig &config, const char *key, double value);
@@ -354,6 +367,131 @@ void append_start_filament_script(
         arguments, processing_extruder_id);
 }
 
+void initialize_settings_gcode_scripts_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "start_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "Start G-code";
+    def.tooltip = "This start procedure is inserted at the beginning, possibly prepended by "
+                  "temperature-changing commands and others. See 'autoemit_temperature_commands' and 'start_gcode_manual'.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 12;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "G28 ; home all axes\\nG1 Z5 F5000 ; lift nozzle\\n";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "end_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "End G-code";
+    def.tooltip = "This end procedure is inserted at the end of the output file. "
+                  "Note that you can use placeholder variables for all Slic3r settings.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 12;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "M104 S0 ; turn off temperature\\nG28 X0  ; home X axis\\nM84     ; disable motors\\n";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "between_objects_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "Between objects G-code";
+    def.tooltip = "This code is inserted between objects when using sequential printing. By default extruder and bed temperature are reset using non-wait command; however if M104, M109, M140 or M190 are detected in this custom code, Slic3r will not add temperature commands. Note that you can use placeholder variables for all Slic3r settings, so you can put a \"M109 S{first_layer_temperature}\" command wherever you want.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 12;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "between_objects_gcode_before_move";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "Put gcode before the move";
+    def.tooltip = "'This'between_objects_gcode' code is inserted before moving to the next object, instead of after moving to the next object.";
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "start_filament_gcode";
+    def.type = RAW_CO_VECTOR_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "Start G-code";
+    def.full_label = "Filament start G-code";
+    def.tooltip = "This start procedure is inserted at the beginning, after any printer start gcode (and "
+                  "after any toolchange to this filament in case of multi-material printers). "
+                  "This is used to override settings for a specific filament. If Slic3r detects "
+                  "M104, M109, M140 or M190 in your custom codes, such commands will "
+                  "not be prepended automatically so you're free to customize the order "
+                  "of heating commands and other custom actions. Note that you can use placeholder variables "
+                  "for all Slic3r settings, so you can put a \"M109 S{first_layer_temperature}\" command "
+                  "wherever you want. If you have multiple extruders, the gcode is processed "
+                  "in extruder order.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 12;
+    def.is_vector_extruder = 1;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "\"; Filament gcode\\n\"";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "end_filament_gcode";
+    def.type = RAW_CO_VECTOR_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "End G-code";
+    def.full_label = "Filament end G-code";
+    def.tooltip = "This end procedure is inserted at the end of the output file, before the printer end gcode (and "
+                  "before any toolchange from this filament in case of multimaterial printers). "
+                  "Note that you can use placeholder variables for all Slic3r settings. "
+                  "If you have multiple extruders, the gcode is processed in extruder order.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 120;
+    def.is_vector_extruder = 1;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "\"; Filament-specific end gcode \\n;END gcode for filament\\n\"";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
 class SettingsGCodeScripts final : public PluginBase
 {
 public:
@@ -389,6 +527,15 @@ private:
         keys[7] = raw_used_config_key{"end_filament_gcode", RAW_CO_VECTOR_STRING, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         keys[8] = raw_used_config_key{"single_extruder_multi_material", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         return 9;
+    }
+    int32_t defined_config_keys(const char **keys) const noexcept override {
+        if (keys != nullptr)
+            for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+                keys[idx] = k_defined_config_keys[idx];
+        return int32_t(std::size(k_defined_config_keys));
+    }
+    void inilialize_impl(storage_handle *) const override {
+        initialize_settings_gcode_scripts_settings(m_orchestrator);
     }
     void run_impl(const plugin_run_context *run_context) const override {
         throw_if_cancelled(run_context);

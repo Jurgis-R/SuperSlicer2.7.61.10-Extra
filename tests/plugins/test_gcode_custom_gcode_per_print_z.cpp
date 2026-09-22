@@ -211,7 +211,7 @@ TEST_CASE("Custom height markers become ordered typed plan events",
     config.color_change_gcode.value.clear();
     config.pause_print_gcode.value.clear();
     config.template_custom_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{"M117 filament start"});
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{"M117 filament start"});
 
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
@@ -312,7 +312,7 @@ TEST_CASE("Custom height semantic tags precede exactly one script payload",
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
     config.color_change_gcode.value = "M600\n";
     config.pause_print_gcode.value = "M601\n";
-    config.start_filament_gcode.set(std::vector<std::string>{""});
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{""});
 
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
