@@ -802,7 +802,6 @@ void init_categories(PrintConfigDef &definition)
         "duplicate_distance",
         "ensure_vertical_shell_thickness",
         "extra_perimeters",
-        "extra_perimeters_on_overhangs",
         "avoid_crossing_curled_overhangs",
         "only_one_perimeter_first_layer",
         "only_one_perimeter_top",
@@ -2382,17 +2381,6 @@ void init_fff_params(PrintConfigDef &definition)
         "\nIf you succeed in triggering the algorithm behind this setting, please send me a message."
         " Personally, I think it's useless.");
     def->mode = comExpert | comPrusa;
-    def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("extra_perimeters_on_overhangs", coBool, ptFFF);
-    def->label = L("Extra perimeters on overhangs (Experimental)");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Detect overhang areas where bridges cannot be anchored, and fill them with "
-                    "extra perimeter paths. These paths are anchored to the nearby non-overhang area when possible."
-                    "\nIf you use this setting, strongly consider also using overhangs_reverse.");
-    def->aliases = {"extra_perimeters_overhangs"};
-    def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("extruder", coInt, ptFFF);

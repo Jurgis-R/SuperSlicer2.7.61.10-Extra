@@ -2,6 +2,11 @@
 
 #include "perimeter_test_helpers.hpp"
 #include "plugin_test_helpers.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
+#include "plugin_test_helpers.hpp"
 
 #include "libslic3r/AABBTreeLines.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
@@ -586,4 +591,42 @@ TEST_CASE("Extra perimeter overhang wave places the strategy selector beside the
     CHECK(group_fragment->content.find("insert$aftersetting$extra_perimeters_on_overhangs") != std::string::npos);
     CHECK(group_fragment->content.find(
         "exclusive_group_700_perimeter_post_process_extra_perimeters_on_overhangs_plugin") != std::string::npos);
+}
+TEST_CASE("Extra perimeters on overhangs owns its setting and activation rule",
+          "[plugins][perimeter][extra-overhang][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("perimeter.post_process.extra_perimeters_on_overhangs");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "extra_perimeters_on_overhangs");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("extra_perimeters_on_overhangs");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_PERIMETER);
+    CHECK(PrintConfig::defaults().option("extra_perimeters_on_overhangs") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("extra_perimeters_on_overhangs") != nullptr);
+
+    // The generated implementation rule of an exclusive group is always active
+    // for a single provider, so this test checks the plugin rule through its
+    // structure instead of the evaluated union.
+    bool found_moved_rule = false;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != "perimeter.post_process.extra_perimeters_on_overhangs" ||
+            rule.target_key != "extra_perimeters_on_overhangs")
+            continue;
+        if (rule.clauses.size() != 1 || rule.clauses[0].condition_key != "perimeters")
+            continue;
+        found_moved_rule = true;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        CHECK(rule.clauses[0].condition == RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO);
+    }
+    CHECK(found_moved_rule);
 }

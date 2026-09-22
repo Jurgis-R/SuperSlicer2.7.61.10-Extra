@@ -4217,8 +4217,8 @@ void PerimeterGenerator::process(// Input:
     //note: config.overhangs_width can't be enabled (has to be ignored) if config.overhangs_width_speed is disabled (for now)
     bool overhang_enabled = params.region_setting.has_many_config(&params.config.overhangs) ||
         params.region_setting.get_solo_config(&params.config.overhangs).get_bool();
-    const bool overhang_extra_enabled = params.region_setting.has_many_config(&params.config.extra_perimeters_on_overhangs) ||
-        params.region_setting.get_solo_config(&params.config.extra_perimeters_on_overhangs).get_bool();
+    const bool overhang_extra_enabled = region_setting_has_many(params.region_setting, params.config, "extra_perimeters_on_overhangs") ||
+        region_setting_solo_bool(params.region_setting, params.config, "extra_perimeters_on_overhangs");
     const bool has_no_gapfill_overhang = (params.region_setting.has_many_config(&params.config.gap_fill_no_overhang) ||
                 params.region_setting.get_solo_config(&params.config.gap_fill_no_overhang).get_bool());
 
@@ -4257,12 +4257,12 @@ void PerimeterGenerator::process(// Input:
 
         params.lower_slices_bridge_for_extra_overhangs.clear();
         if (overhang_extra_enabled || params.get_overhang_spacing() > 0) {
-            if (params.region_setting.has_many_config(&params.config.extra_perimeters_on_overhangs)) {
+            if (region_setting_has_many(params.region_setting, params.config, "extra_perimeters_on_overhangs")) {
                 // offset to ensure it avoid detecting fake overhangs.
                 ExPolygons expolys = offset_ex(*simplified, min_feature + SCALED_EPSILON);
                 for (auto const &[opt_values, areas] :
-                     params.region_setting.get_areas(&params.config.extra_perimeters_on_overhangs)) {
-                    if (!opt_values.get_bool(&params.config.extra_perimeters_on_overhangs)) {
+                     region_setting_areas(params.region_setting, params.config, "extra_perimeters_on_overhangs")) {
+                    if (!opt_values.get_bool(params.config.option("extra_perimeters_on_overhangs"))) {
                         expolys = union_ex(expolys, areas.expolys);
                     }
                 }
@@ -4644,10 +4644,10 @@ void PerimeterGenerator::process(// Input:
 
             const ExPolygons *infill_area = polyWithoutOverlap.empty() ? &infill_exp : &polyWithoutOverlap;
             ExPolygons infill_areas_without_no_extra_overhangs;
-            if (params.region_setting.has_many_config(&params.config.extra_perimeters_on_overhangs)) {
+            if (region_setting_has_many(params.region_setting, params.config, "extra_perimeters_on_overhangs")) {
                 for (auto const &[opt_values, areas] :
-                     params.region_setting.get_areas(&params.config.extra_perimeters_on_overhangs)) {
-                    if (!opt_values.get_bool(&params.config.extra_perimeters_on_overhangs)) {
+                     region_setting_areas(params.region_setting, params.config, "extra_perimeters_on_overhangs")) {
+                    if (!opt_values.get_bool(params.config.option("extra_perimeters_on_overhangs"))) {
                         infill_areas_without_no_extra_overhangs = diff_ex(*infill_area, areas.expolys);
                     }
                 }
@@ -4662,10 +4662,10 @@ void PerimeterGenerator::process(// Input:
                                                                                             scaled_resolution_infill);
             if (!extra_perimeters.empty()) {
 
-                if (params.region_setting.has_many_config(&params.config.extra_perimeters_on_overhangs)) {
+                if (region_setting_has_many(params.region_setting, params.config, "extra_perimeters_on_overhangs")) {
                     for (auto const &[opt_values, areas] :
-                         params.region_setting.get_areas(&params.config.extra_perimeters_on_overhangs)) {
-                        if (!opt_values.get_bool(&params.config.extra_perimeters_on_overhangs)) {
+                         region_setting_areas(params.region_setting, params.config, "extra_perimeters_on_overhangs")) {
+                        if (!opt_values.get_bool(params.config.option("extra_perimeters_on_overhangs"))) {
                             unfilled_area = union_ex(unfilled_area, areas.expolys);
                         }
                     }
