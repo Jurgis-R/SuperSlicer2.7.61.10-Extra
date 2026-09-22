@@ -473,6 +473,36 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     CHECK(config.option("brim_ears_pattern")->serialize() == "rectilinear");
 }
 
+TEST_CASE("Default skirt generator owns its serialized option and activation rules",
+          "[plugins][skirt-brim][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const ConfigOptionDef *one_skirt = PrintConfigDef::instance().get("complete_objects_one_skirt");
+    REQUIRE(one_skirt != nullptr);
+
+    CHECK(one_skirt->container_type == ConfigOptionContainerType::Plater);
+    CHECK(one_skirt->option_preset_type == RAW_PRESET_TYPE_FFF_PRINT);
+    CHECK(one_skirt->invalidates_step == STEP_SKIRT_BRIM);
+    CHECK(one_skirt->type == coBool);
+    CHECK(one_skirt->default_value->serialize() == "0");
+    CHECK(PrintConfig::defaults().option("complete_objects_one_skirt") != nullptr);
+
+    /*
+    The plugin owns one activation reason per accepted case, in the print scope:
+    sequential printing or the parallel-objects stepping both need one skirt.
+    */
+    Orchestrator &orchestrator = Orchestrator::instance();
+    size_t rule_count = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != DEFAULT_SKIRT_GENERATOR || rule.target_key != "complete_objects_one_skirt")
+            continue;
+        ++rule_count;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+    }
+    CHECK(rule_count == 2);
+}
+
 TEST_CASE("Default skirt/brim plugins are active by default for plugin tests", "[plugins][skirt-brim]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();

@@ -313,8 +313,11 @@ double min_object_distance(const ConfigBase *config, double ref_height /* = 0*/)
             int skirts = config->option("skirts")->get_int();
             if (skirts > 0 && ref_height == 0)
                 skirts += config->option("skirt_brim")->get_int();
-            if (skirts > 0 && config->option("skirt_height")->get_int() >= 1 &&
-                !config->option("complete_objects_one_skirt")->get_bool()) {
+            // The skirt generator owns complete_objects_one_skirt: a disabled
+            // plugin leaves the option absent, which reads as the default.
+            const ConfigOption *one_skirt_option = config->option("complete_objects_one_skirt");
+            const bool one_skirt = one_skirt_option != nullptr && one_skirt_option->get_bool();
+            if (skirts > 0 && config->option("skirt_height")->get_int() >= 1 && !one_skirt) {
                 float overlap_ratio = 1;
                 //can't know the extruder, so we settle on the worst: 100%
                 //if (config->option<ConfigOptionPercents>("filament_max_overlap")) overlap_ratio = config->get_computed_value("filament_max_overlap");
@@ -951,7 +954,6 @@ void init_categories(PrintConfigDef &definition)
         "parallel_islands",
         "parallel_objects_step",
         "parallel_objects_step_max_z",
-        "complete_objects_one_skirt",
         "complete_objects_sort",
         "extruder_clearance_radius", 
         "extruder_clearance_height", "gcode_comments", "gcode_label_objects", "output_filename_format", "post_process", "perimeter_extruder",
@@ -1876,15 +1878,6 @@ void init_fff_params(PrintConfigDef &definition)
         "This feature is useful to avoid the risk of ruined prints. "
         "Slic3r should warn and prevent you from extruder collisions, but beware.");
     def->mode = comSimpleAE | comPrusa;
-    def->set_default_value(new ConfigOptionBool(false));
-
-    def = definition.add("complete_objects_one_skirt", coBool, ptFFF);
-    def->label = L("Allow only one skirt loop");
-    def->category = OptionCategory::output;
-    def->invalidates_step = psSkirtBrim;
-    def->tooltip = L("When using 'Complete individual objects', the default behavior is to draw the skirt around each object."
-        " if you prefer to have only one skirt for the whole platter, use this option.");
-    def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("complete_objects_sort", coEnum, ptFFF);

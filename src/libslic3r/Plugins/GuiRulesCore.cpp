@@ -423,7 +423,7 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     add_rule({ "first_layer_infill_extrusion_spacing" }, enabled("first_layer_infill_extrusion_width"));
 
     // ----- sequential printing, wipe tower, MMU -------------------------
-    add_rule({ "complete_objects_one_skirt", "complete_objects_sort" }, any_of({
+    add_rule({ "complete_objects_sort" }, any_of({
         true_("complete_objects"),
         non_zero("parallel_objects_step")
     }));

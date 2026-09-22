@@ -297,7 +297,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("first_layer_extrusion_spacing", en("first_layer_extrusion_width"));
     set("first_layer_infill_extrusion_spacing", en("first_layer_infill_extrusion_width"));
 
-    set("complete_objects_one_skirt", seq);
     set("complete_objects_sort", seq);
     set("parallel_objects_step", !b("complete_objects"));
     set("parallel_objects_step_max_z", parallel_ok);
