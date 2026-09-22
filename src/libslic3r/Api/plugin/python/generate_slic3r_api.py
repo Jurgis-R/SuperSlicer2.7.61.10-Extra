@@ -99,6 +99,7 @@ TYPE_ALIASES = {
     "raw_extrusion_arc_orientation": "int",
     "raw_facet_painting_value": "int",
     "raw_gui_rule_condition": "int",
+    "raw_option_def_patch_kind": "int",
     "raw_gui_type": "int",
     "raw_mesh_slicing_mode": "int",
     "raw_option_category": "int",

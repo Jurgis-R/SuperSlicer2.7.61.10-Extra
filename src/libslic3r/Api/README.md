@@ -20,6 +20,7 @@ Developer guides:
 - [Using Plugin Properties](/doc/plugins/properties.md)
 - [Using Unified Extrusion Entities](/doc/plugins/extrusions.md)
 - [GUI Activation Rules](../../../doc/plugins/gui-rules.md)
+- [Plugin-defined Option Lists](../../../doc/plugins/plugin-option-lists.md)
 - [Package ABI Compatibility](../../../doc/plugins/package-abi.md)
 
 Useful C++ entry points:

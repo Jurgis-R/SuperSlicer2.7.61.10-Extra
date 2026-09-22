@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -309,6 +310,7 @@ static bool config_option_def_compatible(const ConfigOptionDef &existing,
     if (existing.type != candidate.type) return fail("type");
     if (existing.plugin_api_level != candidate.plugin_api_level) return fail("level");
     if (existing.plugin_api_flags != candidate.plugin_api_flags) return fail("flags");
+    if (existing.contains_plugin_id != candidate.contains_plugin_id) return fail("contains_plugin_id");
     if (existing.category != candidate.category) return fail("category");
     if (existing.gui_type != candidate.gui_type) return fail("gui_type");
     if (existing.printer_technology != candidate.printer_technology) return fail("printer_technology");
@@ -405,6 +407,7 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
     out.type = config_option_type(def->type);
     out.plugin_api_level = uint32_t(def->level);
     out.plugin_api_flags = def->flags;
+    out.contains_plugin_id = def->contains_plugin_id != 0;
     out.category = static_cast<OptionCategory>(def->category);
     out.gui_type = static_cast<ConfigOptionDef::GUIType>(def->gui_type);
     out.printer_technology = static_cast<PrinterTechnology>(def->printer_technology);
@@ -614,6 +617,15 @@ option_def_error_code orchestrator_create_option_def(orchestrator_handle *me, co
 
     try {
         return Slic3r::orchestrator_from_handle(me)->create_new_print_config(def);
+    } catch (...) { return OPTION_DEF_ERROR_INTERNAL; }
+}
+
+option_def_error_code orchestrator_modify_option_def(orchestrator_handle *me, const raw_option_def_patch *patch) {
+    if (patch == nullptr)
+        return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+
+    try {
+        return Slic3r::orchestrator_from_handle(me)->modify_print_config(patch);
     } catch (...) { return OPTION_DEF_ERROR_INTERNAL; }
 }
 
@@ -1604,6 +1616,275 @@ option_def_error_code Orchestrator::create_new_print_config(const raw_config_opt
             m_initializing_plugin->get_exclusive_group()
         };
     return OPTION_DEF_ERROR_OK;
+}
+
+namespace {
+
+using PluginEnumValues = std::vector<std::pair<std::string, std::string>>;
+
+bool plugin_enum_has_value(const PluginEnumValues &values, const std::string &value)
+{
+    return std::any_of(values.begin(), values.end(),
+                       [&value](const std::pair<std::string, std::string> &entry) {
+                           return entry.first == value;
+                       });
+}
+
+// Snapshot the visible value/label pairs of one enum definition.
+PluginEnumValues option_def_enum_values(const ConfigOptionDef &def)
+{
+    PluginEnumValues out;
+    if (def.enum_def.get() == nullptr)
+        return out;
+
+    const std::vector<std::string> &values = def.enum_def->values();
+    const std::vector<std::string> &labels = def.enum_def->labels();
+    out.reserve(values.size());
+    for (size_t index = 0; index < values.size(); ++index)
+        out.emplace_back(values[index], index < labels.size() ? labels[index] : values[index]);
+    return out;
+}
+
+} // namespace
+
+// Record one deferred option definition patch. Nothing is applied until
+// finalize_plugin_option_defs() runs, so patches stay valid when a target key is
+// created by a later plugin.
+option_def_error_code Orchestrator::modify_print_config(const raw_option_def_patch *patch)
+{
+    if (patch == nullptr || patch->opt_key == nullptr || patch->opt_key[0] == '\0')
+        return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+
+    OptionDefPatch stored;
+    stored.kind = patch->kind;
+    stored.opt_key = patch->opt_key;
+    stored.plugin_id = m_initializing_plugin != nullptr ? m_initializing_plugin->get_id() : std::string();
+
+    switch (patch->kind) {
+    case RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES: {
+        if (patch->enum_values.items == nullptr || patch->enum_values.count == 0)
+            return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+        for (uint32_t index = 0; index < patch->enum_values.count; ++index) {
+            const key_value_string_pair_t &pair = patch->enum_values.items[index];
+            if (pair.value == nullptr || pair.value[0] == '\0')
+                return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+            stored.enum_values.emplace_back(pair.value, pair.label != nullptr ? pair.label : pair.value);
+        }
+        stored.prepend = patch->prepend != 0;
+        break;
+    }
+    case RAW_OPTION_DEF_PATCH_REMOVE_ENUM_VALUES: {
+        if (patch->remove_values.items == nullptr || patch->remove_values.size == 0)
+            return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+        for (size_t index = 0; index < patch->remove_values.size; ++index) {
+            const char *value = patch->remove_values.items[index];
+            if (value == nullptr || value[0] == '\0')
+                return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+            stored.remove_values.emplace_back(value);
+        }
+        break;
+    }
+    case RAW_OPTION_DEF_PATCH_SET_DEFAULT:
+        if (patch->default_serialized_value == nullptr)
+            return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+        stored.default_serialized_value = patch->default_serialized_value;
+        break;
+    case RAW_OPTION_DEF_PATCH_REPLICATE_ENUM:
+        if (patch->source_option_key == nullptr || patch->source_option_key[0] == '\0')
+            return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+        stored.source_option_key = patch->source_option_key;
+        break;
+    default:
+        return OPTION_DEF_ERROR_INVALID_ARGUMENT;
+    }
+
+    m_option_def_patches[stored.opt_key].emplace_back(std::move(stored));
+    return OPTION_DEF_ERROR_OK;
+}
+
+// Apply every recorded patch in dependency order, prune plugin-id lists and
+// rebuild the scripted enum maps. Missing target keys are ignored.
+void Orchestrator::finalize_plugin_option_defs()
+{
+    ConfigDef &definition = PrintConfigDef::instance_mutable();
+
+    // Resolve a key after its dependencies: replication patches create edges to
+    // the source option, so the source is finalized first (leaves first in the
+    // dependency tree). A key already on the current path breaks the cycle
+    // softly: the edge is ignored and each option still resolves once.
+    std::map<std::string, PluginEnumValues> base_values;
+    std::set<std::string> target_keys;
+    for (const std::pair<const std::string, ConfigOptionDef> &entry : definition.options) {
+        if (!entry.second.contains_plugin_id)
+            continue;
+        target_keys.insert(entry.first);
+        base_values[entry.first] = option_def_enum_values(entry.second);
+    }
+    for (const std::pair<const std::string, std::vector<OptionDefPatch>> &entry : m_option_def_patches) {
+        target_keys.insert(entry.first);
+        const std::map<std::string, PluginEnumValues>::iterator base = base_values.find(entry.first);
+        if (base == base_values.end()) {
+            const ConfigOptionDef *def = definition.get(entry.first);
+            if (def != nullptr)
+                base_values[entry.first] = option_def_enum_values(*def);
+        }
+    }
+    if (target_keys.empty())
+        return;
+
+    std::map<std::string, PluginEnumValues> resolved;
+    std::set<std::string> resolving;
+
+    std::function<const PluginEnumValues &(const std::string &)> resolve =
+        [&](const std::string &key) -> const PluginEnumValues & {
+            const std::map<std::string, PluginEnumValues>::iterator done = resolved.find(key);
+            if (done != resolved.end())
+                return done->second;
+
+            static const PluginEnumValues s_empty;
+            if (!resolving.insert(key).second) {
+                BOOST_LOG_TRIVIAL(warning)
+                    << "Plugin option definition dependency cycle detected at '" << key
+                    << "'; the cyclic edge is ignored.";
+                return s_empty;
+            }
+
+            PluginEnumValues effect;
+            const std::map<std::string, PluginEnumValues>::const_iterator base = base_values.find(key);
+            if (base != base_values.end()) {
+                effect = base->second;
+            } else if (const ConfigOptionDef *source_def = definition.get(key)) {
+                // A replication source that is not itself a patch target still
+                // starts from its current definition values.
+                effect = option_def_enum_values(*source_def);
+            }
+
+            std::string requested_default;
+            const std::map<std::string, std::vector<OptionDefPatch>>::const_iterator patches =
+                m_option_def_patches.find(key);
+            if (patches != m_option_def_patches.end()) {
+                // Replication replaces the whole list, so it must run before
+                // every contribution no matter which plugin initialized first.
+                // Otherwise a contribution recorded before the target existed
+                // would be erased by a later replication patch.
+                for (const OptionDefPatch &patch : patches->second) {
+                    if (patch.kind != RAW_OPTION_DEF_PATCH_REPLICATE_ENUM)
+                        continue;
+
+                    // A source that is still being resolved is an ancestor in
+                    // the dependency tree: ignore the edge and keep the current
+                    // values instead of erasing them.
+                    if (resolving.find(patch.source_option_key) != resolving.end()) {
+                        BOOST_LOG_TRIVIAL(warning)
+                            << "Ignored cyclic plugin option definition edge '"
+                            << key << "' -> '" << patch.source_option_key << "'.";
+                        continue;
+                    }
+                    // Snapshot the source now that its own patches applied.
+                    effect = resolve(patch.source_option_key);
+                }
+
+                for (const OptionDefPatch &patch : patches->second) {
+                    switch (patch.kind) {
+                    case RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES:
+                        for (const std::pair<std::string, std::string> &entry : patch.enum_values) {
+                            if (plugin_enum_has_value(effect, entry.first))
+                                continue;
+                            if (patch.prepend)
+                                effect.insert(effect.begin(), entry);
+                            else
+                                effect.emplace_back(entry);
+                        }
+                        break;
+                    case RAW_OPTION_DEF_PATCH_REMOVE_ENUM_VALUES:
+                        effect.erase(
+                            std::remove_if(effect.begin(), effect.end(),
+                                           [&patch](const std::pair<std::string, std::string> &entry) {
+                                               return std::find(patch.remove_values.begin(),
+                                                                patch.remove_values.end(),
+                                                                entry.first) != patch.remove_values.end();
+                                           }),
+                            effect.end());
+                        break;
+                    case RAW_OPTION_DEF_PATCH_SET_DEFAULT:
+                        requested_default = patch.default_serialized_value;
+                        break;
+                    case RAW_OPTION_DEF_PATCH_REPLICATE_ENUM:
+                        // Applied in the first pass.
+                        break;
+                    default:
+                        break;
+                    }
+                }
+            }
+
+            ConfigOptionDef *def = nullptr;
+            t_optiondef_map::iterator def_it = definition.options.find(key);
+            if (def_it != definition.options.end())
+                def = &def_it->second;
+
+            const bool contains_plugin_id = def != nullptr && def->contains_plugin_id;
+            if (contains_plugin_id) {
+                effect.erase(
+                    std::remove_if(effect.begin(), effect.end(),
+                                   [this](const std::pair<std::string, std::string> &entry) {
+                                       const Plugin *plugin = this->get_plugin(entry.first);
+                                       return plugin == nullptr || !this->is_plugin_active(plugin);
+                                   }),
+                    effect.end());
+
+                if (effect.empty()) {
+                    const std::string message = "Plugin-id option '" + key +
+                        "' has no active value; the setting is left empty.";
+                    BOOST_LOG_TRIVIAL(error) << message;
+                    this->add_plugin_message(PluginMessageLevel::Error, nullptr, STEP_NONE, message.c_str());
+                }
+            }
+
+            if (def != nullptr && def->enum_def.get() != nullptr) {
+                // Plugin-created enums own a scripted map that must be rebuilt
+                // whenever their value set changes.
+                if (def->enum_is_scripted() || contains_plugin_id) {
+                    // Read the current default before rebuilding the map: a
+                    // ConfigOptionEnumGeneric borrows the map pointer, which
+                    // set_enum_as_closed_for_scripted_enum() releases.
+                    std::string desired = requested_default;
+                    if (desired.empty() && def->default_value)
+                        desired = def->default_value->serialize();
+                    if (!desired.empty() && desired.front() == '!')
+                        desired.erase(desired.begin());
+
+                    def->set_enum_as_closed_for_scripted_enum(effect);
+
+                    if (!plugin_enum_has_value(effect, desired))
+                        desired = effect.empty() ? std::string() : effect.front().first;
+
+                    if (!desired.empty()) {
+                        ConfigOption *default_option = def->create_empty_option();
+                        if (default_option->deserialize(desired))
+                            def->set_default_value(default_option);
+                        else
+                            delete default_option;
+                    } else {
+                        // The rebuilt list is empty: replace the default too so
+                        // it does not keep borrowing the released map.
+                        def->set_default_value(def->create_empty_option());
+                    }
+                } else {
+                    BOOST_LOG_TRIVIAL(warning)
+                        << "Ignored plugin option patches for '" << key
+                        << "': the setting is not a plugin-defined enum.";
+                }
+            }
+
+            resolving.erase(key);
+            const std::map<std::string, PluginEnumValues>::iterator stored =
+                resolved.emplace(key, std::move(effect)).first;
+            return stored->second;
+        };
+
+    for (const std::string &key : target_keys)
+        resolve(key);
 }
 
 // Return a priority-ordered snapshot of every plugin registered for a step.

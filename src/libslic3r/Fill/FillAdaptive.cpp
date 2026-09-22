@@ -310,8 +310,8 @@ std::pair<double, double> adaptive_fill_line_spacing(const PrintObject &print_ob
     for (size_t region_id = 0; region_id < print_object.num_printing_regions(); ++ region_id) {
         const PrintRegionConfig &config                 = print_object.printing_region(region_id).config();
         bool                     nonempty               = config.fill_density > 0;
-        bool                     has_adaptive_infill    = nonempty && config.fill_pattern.value == ipAdaptiveCubic;
-        bool                     has_support_infill     = nonempty && config.fill_pattern.value == ipSupportCubic;
+        bool                     has_adaptive_infill    = nonempty && region_infill_pattern(config, "fill_pattern", ipRectilinear) == ipAdaptiveCubic;
+        bool                     has_support_infill     = nonempty && region_infill_pattern(config, "fill_pattern", ipRectilinear) == ipSupportCubic;
         double                   infill_extrusion_width = config.infill_extrusion_width.get_effective_value(max_nozzle_diameter);
         region_fill_data.push_back(RegionFillData({
             has_adaptive_infill ? Tristate::Maybe : Tristate::No,

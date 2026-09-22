@@ -247,6 +247,22 @@ public:
         std::string exclusive_group;
     };
 
+    // One deferred modification of an existing option definition. Patches are
+    // recorded while plugins initialize and applied together once every plugin
+    // has been loaded, so the result does not depend on initialization order.
+    struct OptionDefPatch
+    {
+        raw_option_def_patch_kind kind = RAW_OPTION_DEF_PATCH_NONE;
+        std::string opt_key;
+        std::vector<std::pair<std::string, std::string>> enum_values;
+        std::vector<std::string> remove_values;
+        std::string default_serialized_value;
+        std::string source_option_key;
+        bool prepend = false;
+        // Plugin that recorded the patch; empty for host code.
+        std::string plugin_id;
+    };
+
     enum class PluginMessageLevel
     {
         Warning,
@@ -350,6 +366,16 @@ public:
     // definitions are accepted only inside the same exclusive group, where
     // several alternative plugins intentionally publish the same option.
     option_def_error_code create_new_print_config(const raw_config_option_def *def);
+
+    // Record a deferred option definition patch. Nothing is applied until
+    // finalize_plugin_option_defs() runs.
+    option_def_error_code modify_print_config(const raw_option_def_patch *patch);
+
+    // Apply every recorded patch, prune enum values whose plugin is missing or
+    // inactive when the definition advertises contains_plugin_id, and rebuild
+    // the scripted enum maps. Missing target keys are ignored. A plugin-id list
+    // that becomes empty reports a non-fatal plugin error and stays empty.
+    void finalize_plugin_option_defs();
 
     // Register a plugin instance and transfer its lifetime to the orchestrator.
     bool register_plugin(plugin_instance plugin);
@@ -537,6 +563,7 @@ private:
     uint64_t m_next_ui_fragment_order { 0 };
     GuiRuleRegistry m_gui_rule_registry;
     std::map<std::string, ConfigOptionOwner> m_config_option_owners;
+    std::map<std::string, std::vector<OptionDefPatch>> m_option_def_patches;
     std::vector<TranslationCatalog> m_translation_catalogs;
     std::vector<PluginRegistrationSource> m_plugin_registration_sources;
     std::map<std::string, PluginPackageLoadReport> m_plugin_package_load_reports;

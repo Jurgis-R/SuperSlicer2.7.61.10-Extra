@@ -135,9 +135,10 @@ def _gui_rule_clause(clause) -> "RawGuiRuleClause":
 
     A clause is either a RawGuiRuleClause, a mapping using the clause field
     names, or a sequence (condition, condition_key[, condition_index
-    [, condition_float_value]]). The numeric operand rounds for INT_* and is
-    compared directly for FLOAT_* conditions. Missing fields keep the native
-    defaults.
+    [, condition_float_value[, condition_string_value]]]). The numeric operand
+    rounds for INT_* and is compared directly for FLOAT_* conditions. The string
+    operand is compared with the serialized option value for STRING_EQUALS.
+    Missing fields keep the native defaults.
     """
     if isinstance(clause, RawGuiRuleClause):
         return clause
@@ -147,6 +148,7 @@ def _gui_rule_clause(clause) -> "RawGuiRuleClause":
         condition_key = clause.get("condition_key")
         condition_index_value = clause.get("condition_index", RAW_GUI_RULE_INDEX_ALL)
         condition_float_value = clause.get("condition_float_value", 0.0)
+        condition_string_value = clause.get("condition_string_value")
     else:
         try:
             fields = tuple(clause)
@@ -154,15 +156,17 @@ def _gui_rule_clause(clause) -> "RawGuiRuleClause":
             raise ValueError(
                 "A GUI rule clause must be a RawGuiRuleClause, a mapping or a sequence."
             ) from exc
-        if len(fields) < 2 or len(fields) > 4:
+        if len(fields) < 2 or len(fields) > 5:
             raise ValueError(
-                "A GUI rule clause sequence needs 2 to 4 items: "
-                "condition, condition_key[, condition_index[, condition_float_value]]."
+                "A GUI rule clause sequence needs 2 to 5 items: "
+                "condition, condition_key[, condition_index[, condition_float_value"
+                "[, condition_string_value]]]."
             )
         condition_value = fields[0]
         condition_key = fields[1]
         condition_index_value = fields[2] if len(fields) > 2 else RAW_GUI_RULE_INDEX_ALL
         condition_float_value = fields[3] if len(fields) > 3 else 0.0
+        condition_string_value = fields[4] if len(fields) > 4 else None
 
     if condition_key is None:
         raise ValueError("A GUI rule clause needs a condition_key.")
@@ -172,6 +176,7 @@ def _gui_rule_clause(clause) -> "RawGuiRuleClause":
         _as_bytes(str(condition_key)),
         int(condition_index_value),
         float(condition_float_value),
+        _as_bytes(str(condition_string_value)) if condition_string_value is not None else None,
     )
 
 
@@ -499,6 +504,7 @@ class Slic3rAPI:
         target_index: int = RAW_GUI_RULE_INDEX_ALL,
         condition_index: int = RAW_GUI_RULE_INDEX_ALL,
         condition_float_value: float = 0.0,
+        condition_string_value: Optional[str] = None,
         clauses: Optional[Iterable] = None,
         scope: int = RAW_PRESET_TYPE_NONE,
     ) -> int:
@@ -506,10 +512,12 @@ class Slic3rAPI:
 
         The clauses of a rule are ANDed. Pass clauses as an iterable of
         mappings or (condition, condition_key[, condition_index
-        [, condition_float_value]]) sequences. The numeric operand is rounded
-        for INT_* conditions and compared directly for FLOAT_* conditions.
-        When clauses is omitted, one clause is built from condition_key and the
-        single-condition keyword arguments.
+        [, condition_float_value[, condition_string_value]]]) sequences. The
+        numeric operand is rounded for INT_* conditions and compared directly
+        for FLOAT_* conditions; the string operand is compared with the
+        serialized option value for STRING_EQUALS. When clauses is omitted, one
+        clause is built from condition_key and the single-condition keyword
+        arguments.
 
         Every rule is one activation reason: the target is enabled when at
         least one rule registered for it is true. scope restricts the rule to
@@ -528,6 +536,7 @@ class Slic3rAPI:
                 "condition_key": condition_key,
                 "condition_index": condition_index,
                 "condition_float_value": condition_float_value,
+                "condition_string_value": condition_string_value,
             }]
         else:
             clause_inputs = list(clauses)
@@ -543,6 +552,7 @@ class Slic3rAPI:
 
         rule = RawGuiRule()
         rule.struct_size = ctypes.sizeof(RawGuiRule)
+        rule.clause_struct_size = ctypes.sizeof(RawGuiRuleClause)
         rule.target_key = _as_bytes(target_key)
         rule.target_index = int(target_index)
         rule.scope = int(scope)

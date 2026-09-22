@@ -434,8 +434,8 @@ void CalibrationFlowSpeedDialog::create_geometry(
         objs[i]->config.set_key_value("solid_infill_every_layers", new ConfigOptionInt(1));
         objs[i]->config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
         objs[i]->config.set_key_value("first_layer_height", new ConfigOptionFloatOrPercent(layer_height, false));
-        objs[i]->config.set_key_value("solid_fill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
-        objs[i]->config.set_key_value("top_fill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+        objs[i]->config.set_deserialize_strict("solid_fill_pattern", "rectilinear");
+        objs[i]->config.set_deserialize_strict("top_fill_pattern", "rectilinear");
         objs[i]->config.set_key_value("perimeter_generator", new ConfigOptionEnum<PerimeterGeneratorType>(PerimeterGeneratorType::Classic));
         //disable ironing post-process
         objs[i]->config.set_key_value("ironing", new ConfigOptionBool(false));

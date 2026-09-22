@@ -107,7 +107,7 @@ void CalibrationCubeDialog::create_geometry(std::string calibration_path) {
     int idx_goal = calibrate->GetSelection();
     if (idx_goal == 1) {
         model.objects()[objs_idx[0]].config.set_key_value("perimeters", new ConfigOptionInt(1));
-        model.objects()[objs_idx[0]].config.set_key_value("fill_pattern", new ConfigOptionEnum<InfillPattern>(ipCubic));
+        model.objects()[objs_idx[0]].config.set_deserialize_strict("fill_pattern", "cubic");
     } else if (idx_goal == 2) {
         model.objects()[objs_idx[0]].config.set_key_value("perimeters", new ConfigOptionInt(3));
         //add full solid layers

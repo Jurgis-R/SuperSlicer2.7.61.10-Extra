@@ -263,7 +263,11 @@ void ConfigDef::finalize()
         ConfigOptionDef& def = kvp.second;
         if (def.type == coEnum) {
             assert(def.enum_def);
-            assert(def.enum_def->is_valid_closed_enum());
+            // A plugin-id enum may be empty after inactive plugins are pruned.
+            if (!def.contains_plugin_id)
+                assert(def.enum_def->is_valid_closed_enum());
+            else
+                assert(def.enum_def->m_enum_names != nullptr && def.enum_def->m_enum_keys_map != nullptr);
             assert(! def.is_gui_type_enum_open());
             def.enum_def->finalize_closed_enum();
         } else if (def.type != coEnum && def.is_gui_type_enum_open()) {
@@ -525,6 +529,13 @@ void ConfigOptionEnumDef::set_labels(const std::initializer_list<std::string_vie
 }
 void ConfigOptionEnumDef::finalize_closed_enum()
 {
+    // A plugin-id list can legitimately end up empty after inactive plugins are
+    // pruned; the host reports a non-fatal error instead.
+    if (m_values.empty()) {
+        m_values_ordinary = false;
+        return;
+    }
+
     assert(this->is_valid_closed_enum());
     // Check whether def.enum_values contains all the values of def.enum_keys_map and
     // that they are sorted by their ordinary values.
@@ -588,7 +599,7 @@ void ConfigOptionDef::set_enum_as_closed_for_scripted_enum(const std::vector<std
         (*enum_def->m_enum_keys_map_storage_for_script)[enum_def->m_values[i]] = i;
     }
     enum_def->finalize_closed_enum();
-    assert(enum_def->m_values_ordinary);
+    assert(enum_def->m_values.empty() || enum_def->m_values_ordinary);
 }
 
 void ConfigOptionDef::set_enum_values(GUIType gui_type, const std::initializer_list<std::pair<std::string_view, std::string_view>> il)
