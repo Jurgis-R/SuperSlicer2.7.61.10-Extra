@@ -4479,7 +4479,7 @@ void PerimeterGenerator::process(// Input:
 
         bool has_only_one_perimeter_top = (params.region_setting.has_many_config(&params.config.only_one_perimeter_top) ||
                                            params.region_setting.get_solo_config(&params.config.only_one_perimeter_top).get_bool());
-        if ((params.layer->id() == 0 && params.config.only_one_perimeter_first_layer) ||
+        if ((params.layer->id() == 0 && (region_option_value(params.config, "only_one_perimeter_first_layer") != 0)) ||
             (has_only_one_perimeter_top && this->upper_slices == NULL)) {
             nb_loop_contour = std::min(nb_loop_contour, 1);
             nb_loop_holes = std::min(nb_loop_holes, 1);

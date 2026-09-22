@@ -923,7 +923,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && config.infill_overlap            == other_config.infill_overlap
         && config.no_perimeter_unsupported_algo == other_config.no_perimeter_unsupported_algo
         //&& config.min_width_top_surface == other_config.min_width_top_surface // can be used in modifiers with only_one_perimeter_top
-        && (!is_first_layer || config.only_one_perimeter_first_layer == other_config.only_one_perimeter_first_layer)
+        && (!is_first_layer || region_config_option_equal(config, other_config, "only_one_perimeter_first_layer"))
         //&& config.only_one_perimeter_top    == other_config.only_one_perimeter_top // can be used in modifiers
         //&& config.only_one_perimeter_top_other_algo == other_config.only_one_perimeter_top_other_algo // can be used in modifiers with only_one_perimeter_top
         && region_config_option_equal(config, other_config, "overhangs_acceleration")

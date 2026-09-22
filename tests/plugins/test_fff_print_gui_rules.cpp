@@ -149,7 +149,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("external_perimeters_nothole", ext_not_loop && !A && !b("external_perimeters_first_force"));
     set("external_perimeters_hole", ext_not_loop && !A && !b("external_perimeters_first_force"));
     set("perimeter_bonding", ext && !A && fl("perimeter_overlap") == 100 && fl("external_perimeter_overlap") == 100);
-    set("only_one_perimeter_first_layer", i("perimeters") > 1);
+
 
     set("overhangs_reverse", can_reverse);
     set("overhangs_reverse_threshold", can_reverse && b("overhangs_reverse"));

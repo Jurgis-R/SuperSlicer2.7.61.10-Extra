@@ -803,7 +803,6 @@ void init_categories(PrintConfigDef &definition)
         "ensure_vertical_shell_thickness",
         "extra_perimeters",
         "avoid_crossing_curled_overhangs",
-        "only_one_perimeter_first_layer",
         "only_one_perimeter_top",
         "only_one_perimeter_top_other_algo",
         "allow_empty_layers",
@@ -4776,14 +4775,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->height = 10;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionString(""));
-
-    def = definition.add("only_one_perimeter_first_layer", coBool, ptFFF);
-    def->label = L("Only one perimeter on First layer");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Use only one perimeter on first layer, to give more space to the top infill pattern.");
-    def->mode = comAdvancedE | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("only_one_perimeter_top", coBool, ptFFF);
     def->label = L("Only one perimeter on Top surfaces");

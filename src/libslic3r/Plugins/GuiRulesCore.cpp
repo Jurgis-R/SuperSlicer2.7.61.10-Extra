@@ -196,10 +196,7 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     add_rule({ "perimeters_hole", "overhangs_extrusion_spacing" }, not_arachne);
     add_rule({ "perimeter_loop" },
              all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
-    add_rule({ "only_one_perimeter_first_layer" }, all_of({
-        int_not_equals("perimeters", 0),
-        int_not_equals("perimeters", 1)
-    }));
+
 
     // external perimeter / seam slope
     add_rule({ "seam_slope_type" }, any_of({
