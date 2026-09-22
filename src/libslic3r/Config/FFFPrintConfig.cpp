@@ -788,7 +788,6 @@ void init_categories(PrintConfigDef &definition)
         "layer_height", 
         "first_layer_height",
         "perimeters",
-        "perimeters_hole",
         "spiral_vase",
         "slice_closing_radius",
         "slice_merge_dent",
@@ -5258,23 +5257,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->max = 10000;
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionInt(3));
-
-    def = definition.add("perimeters_hole", coInt, ptFFF);
-    def->label = L("Max perimeter count for holes");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("This option sets the number of perimeters to have over holes."
-                   " Note that if a hole-perimeter fuse with the contour, then it will go around like a contour perimeter."
-                   "\nIf disabled, holes will have the same number of perimeters as contour. Cannot be enabled at the same time as Arachne generator."
-                   "\nNote that Slic3r may increase this number automatically when it detects "
-                   "sloping surfaces which benefit from a higher number of perimeters "
-                   "if the Extra Perimeters option is enabled.");
-    def->sidetext = L("(minimum).");
-    def->min = 0;
-    def->max = 10000;
-    def->can_be_disabled = true;
-    def->mode = comAdvancedE | comSuSi;
-    def->set_default_value(disable_default_option(new ConfigOptionInt(0)));
 
     def = definition.add("post_process", coStrings, ptFFF);
     def->label = L("Post-processing scripts");

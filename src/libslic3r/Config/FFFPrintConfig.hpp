@@ -483,7 +483,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionPercent,              perimeter_overlap))
     // Total number of perimeters.
     ((ConfigOptionInt,                  perimeters))
-    ((ConfigOptionInt,                  perimeters_hole))
     ((ConfigOptionPercent,              print_extrusion_multiplier))
     ((ConfigOptionString,               region_gcode))
     ((ConfigOptionFloatOrPercent,       slice_merge_dent))

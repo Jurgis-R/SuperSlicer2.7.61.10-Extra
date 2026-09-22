@@ -137,7 +137,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     };
     for (const char *key : arachne_keys)
         set(key, A);
-    set("perimeters_hole", not_A);
+
     set("overhangs_extrusion_spacing", not_A);
     set("perimeter_loop", P && !A);
 

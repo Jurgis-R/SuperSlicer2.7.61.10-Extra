@@ -3,19 +3,36 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+SeparateHoleContour.cpp
+=======================
+
+Implementation of the separate hole contour module declared in
+SeparateHoleContour.hpp.
+
+The file holds the plugin metadata, the owned option definition and activation
+rule, the hole and contour counting helpers, the module callbacks (start, after,
+end) and the registration entry point. after() erases the perimeter loops whose
+class count is exhausted and requests a rebuild of the remaining areas so the
+generator can keep processing them.
+*/
+
 #include "SeparateHoleContour.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
 
 namespace slic3r_api { namespace Perimeter { namespace SeparateHoleContourPlugin {
@@ -28,6 +45,44 @@ const raw_used_config_key k_used_config_keys[] = {
     { "perimeters_hole", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
     { "perimeters", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "perimeters_hole"
+};
+
+void initialize_separate_hole_contour_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- perimeters_hole | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "perimeters_hole";
+    def.type = RAW_CO_INT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Max perimeter count for holes";
+    def.tooltip = "This option sets the number of perimeters to have over holes. Note that if a hole-perimeter fuse with the contour, then it will go around like a contour perimeter.\nIf disabled, holes will have the same number of perimeters as contour. Cannot be enabled at the same time as Arachne generator.\nNote that Slic3r may increase this number automatically when it detects sloping surfaces which benefit from a higher number of perimeters if the Extra Perimeters option is enabled.";
+    def.sidetext = "(minimum).";
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 10000;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
 const char *k_perimeters_hole_key = "perimeters_hole";
 const char *k_perimeters_key = "perimeters";
 
@@ -558,6 +613,27 @@ SeparateHoleContour::instance(orchestrator_handle *orch)
     return s_instance;
 }
 
+void add_separate_hole_contour_gui_rules(orchestrator_handle *orchestrator)
+{
+    using slic3r_api::any_of;
+    using slic3r_api::false_;
+    using slic3r_api::GuiCondition;
+    using slic3r_api::GuiRule;
+
+    // Membership test shared with gui_rules.core: the print may turn perimeters
+    // off, and the Arachne generator is rejected.
+    const GuiCondition not_arachne = any_of({
+        false_("perimeters"),
+        perimeter_generator_is_not_arachne()
+    });
+
+    // Hole perimeter counts are a classic-generator feature: perimeters may be
+    // off and the Arachne generator is rejected.
+    GuiRule::activate({ "perimeters_hole" })
+        .when(not_arachne)
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const char *SeparateHoleContour::id_impl() const noexcept
 {
     return k_separate_hole_contour_id;
@@ -584,6 +660,20 @@ int32_t SeparateHoleContour::used_config_keys(raw_used_config_key *keys) const n
         for (uint32_t idx = 0; idx < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++idx)
             keys[idx] = k_used_config_keys[idx];
     return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
+}
+
+int32_t SeparateHoleContour::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void SeparateHoleContour::inilialize_impl(storage_handle *) const
+{
+    initialize_separate_hole_contour_settings(m_orchestrator);
+    add_separate_hole_contour_gui_rules(m_orchestrator);
 }
 
 const char *SeparateHoleContour::progress_message_format_impl() const noexcept

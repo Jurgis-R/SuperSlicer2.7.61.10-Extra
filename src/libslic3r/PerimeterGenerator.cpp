@@ -127,6 +127,12 @@ double region_option_value(const ConfigBase &config, const char *key)
     return option != nullptr ? option->get_float() : 0.;
 }
 
+bool region_option_is_enabled(const ConfigBase &config, const char *key)
+{
+    const ConfigOption *option = config.option(key);
+    return option != nullptr && option->is_enabled();
+}
+
 } // namespace
 
 
@@ -4461,13 +4467,13 @@ void PerimeterGenerator::process(// Input:
         if (nb_loop_contour > 0)
             nb_loop_contour += extra_odd_perimeter + extra_surface_perimeter;
         assert(nb_loop_contour >= 0);
-        int nb_loop_holes = params.config.perimeters_hole.value;
+        int nb_loop_holes = int(region_option_value(params.config, "perimeters_hole"));
         assert(nb_loop_holes >= 0);
-        if (params.config.perimeters_hole.is_enabled() && nb_loop_holes > 0)
+        if (region_option_is_enabled(params.config, "perimeters_hole") && nb_loop_holes > 0)
             nb_loop_holes += extra_odd_perimeter + extra_surface_perimeter;
         assert(nb_loop_holes >= 0);
         
-        if (!params.config.perimeters_hole.is_enabled())
+        if (!region_option_is_enabled(params.config, "perimeters_hole"))
             nb_loop_holes = std::max(0, nb_loop_contour);
 
         if (params.print_config.spiral_vase) {
@@ -4498,7 +4504,7 @@ void PerimeterGenerator::process(// Input:
 
         ProcessSurfaceResult surface_process_result;
         //core generation
-        if (params.use_arachne && !params.config.perimeters_hole.is_enabled()) {
+        if (params.use_arachne && !region_option_is_enabled(params.config, "perimeters_hole")) {
             surface_process_result = process_arachne(params, nb_loop_contour, surface_expolygon, *loops);
             nb_loop_holes = nb_loop_contour; // nb_loop_contour is in/out
         } else {

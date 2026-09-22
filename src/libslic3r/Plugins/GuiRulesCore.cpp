@@ -193,7 +193,7 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
              all_of({ non_zero("perimeters"), int_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
 
     const GuiCondition not_arachne = any_of({ false_("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) });
-    add_rule({ "perimeters_hole", "overhangs_extrusion_spacing" }, not_arachne);
+    add_rule({ "overhangs_extrusion_spacing" }, not_arachne);
     add_rule({ "perimeter_loop" },
              all_of({ non_zero("perimeters"), int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)) }));
 
