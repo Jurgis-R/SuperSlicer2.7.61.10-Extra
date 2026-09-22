@@ -885,7 +885,6 @@ void init_categories(PrintConfigDef &definition)
         "travel_speed", "travel_speed_z",
         // gapfill
         "gap_fill_flow_match_perimeter",
-        "gap_fill_no_overhang",
         "gap_fill_perimeter",
         // fuzzy
         "fuzzy_skin",
@@ -3734,14 +3733,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->min = 0;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(0));
-
-    def = definition.add("gap_fill_no_overhang", coBool, ptFFF);
-    def->label = L("No gap fill on overhang areas");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("Prevent gapfill into overhang areas. May create some holes.");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("gap_fill_perimeter", coBool, ptFFF);
     def->label = L("Allow Perimeter inside Gap fill");

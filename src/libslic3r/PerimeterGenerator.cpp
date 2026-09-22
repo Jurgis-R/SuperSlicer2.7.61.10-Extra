@@ -4219,8 +4219,8 @@ void PerimeterGenerator::process(// Input:
         params.region_setting.get_solo_config(&params.config.overhangs).get_bool();
     const bool overhang_extra_enabled = region_setting_has_many(params.region_setting, params.config, "extra_perimeters_on_overhangs") ||
         region_setting_solo_bool(params.region_setting, params.config, "extra_perimeters_on_overhangs");
-    const bool has_no_gapfill_overhang = (params.region_setting.has_many_config(&params.config.gap_fill_no_overhang) ||
-                params.region_setting.get_solo_config(&params.config.gap_fill_no_overhang).get_bool());
+    const bool has_no_gapfill_overhang = (region_setting_has_many(params.region_setting, params.config, "gap_fill_no_overhang") ||
+                region_setting_solo_bool(params.region_setting, params.config, "gap_fill_no_overhang"));
 
     if (this->lower_slices != NULL && (overhang_extra_enabled || overhang_enabled || params.get_overhang_spacing() > 0 || has_no_gapfill_overhang)) {
         // We consider overhang any part where the entire nozzle diameter is not supported by the
@@ -6045,10 +6045,10 @@ ProcessSurfaceResult PerimeterGenerator::process_classic(const Parameters &     
         // check for extracting extra perimeters from gapfill
         if (!gaps.empty() && params.config.gap_fill_perimeter.value) {
             // remove overhangs areas
-            if (params.region_setting.has_many_config(&params.config.gap_fill_no_overhang) ||
-                params.region_setting.get_solo_config(&params.config.gap_fill_no_overhang).get_bool()) {
+            if (region_setting_has_many(params.region_setting, params.config, "gap_fill_no_overhang") ||
+                region_setting_solo_bool(params.region_setting, params.config, "gap_fill_no_overhang")) {
                 for (auto const &[gap_fill_no_overhang, areas] :
-                        params.region_setting.get_areas(&params.config.gap_fill_no_overhang)) {
+                        region_setting_areas(params.region_setting, params.config, "gap_fill_no_overhang")) {
                     if (gap_fill_no_overhang.get_bool()) {
                         gaps = diff_ex(gaps, areas.intersections(params.overhang_areas));
                     }

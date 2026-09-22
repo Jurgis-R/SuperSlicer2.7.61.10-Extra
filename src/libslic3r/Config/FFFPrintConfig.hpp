@@ -423,7 +423,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionPercent,              fill_smooth_distribution))
     ((ConfigOptionFloatOrPercent,       fill_smooth_width))
     ((ConfigOptionPercent,              gap_fill_flow_match_perimeter))
-    ((ConfigOptionBool,                 gap_fill_no_overhang))
     ((ConfigOptionBool,                 gap_fill_perimeter))
     ((ConfigOptionFloatOrPercent,       infill_anchor))
     ((ConfigOptionFloatOrPercent,       infill_anchor_max))

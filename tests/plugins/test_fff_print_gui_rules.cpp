@@ -88,8 +88,8 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         config.opt_enum<SupportZDistanceType>("support_material_contact_distance_type") == zdNone;
     const bool seam_cost = P && config.opt_enum<SeamPosition>("seam_position") == spCost;
     const bool notch = P && (fl("seam_notch_all") != 0 || fl("seam_notch_inner") != 0 || fl("seam_notch_outer") != 0);
-    const bool gap = !A;
-    const bool have_gap = gap && b("gap_fill_enabled");
+
+
     const bool seq = b("complete_objects") || fl("parallel_objects_step") > 0;
     const bool parallel_ok = !b("complete_objects") && fl("parallel_objects_step") > 0;
     const bool have_wipe = fl("parallel_objects_step") <= 0 || b("parallel_islands");
@@ -165,7 +165,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("perimeter_loop_seam", loop_seam);
     set("seam_notch_angle", notch);
 
-    set("gap_fill_no_overhang", have_gap);
+
 
     const bool fuzzy = config.opt_enum<FuzzySkinType>("fuzzy_skin") != FuzzySkinType::None;
     set("fuzzy_skin_thickness", fuzzy);

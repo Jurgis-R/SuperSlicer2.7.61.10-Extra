@@ -262,13 +262,6 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     }));
 
     // ----- gap fill -----------------------------------------------------
-    const GuiCondition gap_enabled = true_("gap_fill_enabled");
-    const GuiCondition gap_base = any_of({
-        all_of({ false_("perimeters"), gap_enabled }),
-        all_of({ int_not_equals("perimeter_generator", int(PerimeterGeneratorType::Arachne)), gap_enabled })
-    });
-    add_rule({ "gap_fill_no_overhang" }, gap_base);
-
     // fuzzy skin
     add_rule({ "fuzzy_skin_thickness", "fuzzy_skin_point_dist" },
              int_not_equals("fuzzy_skin", int(FuzzySkinType::None)));

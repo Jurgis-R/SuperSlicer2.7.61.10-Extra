@@ -1,6 +1,11 @@
 #include <catch2/catch.hpp>
 
 #include "perimeter_test_helpers.hpp"
+#include "plugin_test_helpers.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
@@ -93,4 +98,43 @@ TEST_CASE("Remove gap fill on overhangs honors cancellation before nested geomet
                                    true),
         slic3r_api::PluginCancelled);
     orchestrator.reset_plugin_cancel();
+}
+TEST_CASE("Remove gap fill on overhangs owns its setting and activation rule",
+          "[plugins][perimeter][remove-gap-fill][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("perimeter.module.remove_gap_fill_on_overhangs");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "gap_fill_no_overhang");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("gap_fill_no_overhang");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_PERIMETER);
+    CHECK(PrintConfig::defaults().option("gap_fill_no_overhang") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("gap_fill_no_overhang") != nullptr);
+
+    // The gap_base disjunction expands to two activation reasons whose second
+    // clause is the gap_fill_enabled switch. The generated implementation rule
+    // of the plugin's own exclusive group stays active, so the plugin rules are
+    // checked through their structure.
+    size_t moved_rules = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != "perimeter.module.remove_gap_fill_on_overhangs" ||
+            rule.target_key != "gap_fill_no_overhang")
+            continue;
+        if (rule.clauses.size() != 2 || rule.clauses[1].condition_key != "gap_fill_enabled")
+            continue;
+        ++moved_rules;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        CHECK(rule.clauses[1].condition == RAW_GUI_RULE_CONDITION_BOOL_TRUE);
+    }
+    CHECK(moved_rules == 2);
 }
