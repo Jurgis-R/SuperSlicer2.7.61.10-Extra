@@ -279,7 +279,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionBool,                 first_layer_size_compensation_no_collapse))
     ((ConfigOptionFloatOrPercent,       first_layer_speed_over_raft))
     ((ConfigOptionPercent,              first_layer_strong_start))
-    ((ConfigOptionFloat,                hole_size_compensation))
     ((ConfigOptionFloat,                hole_size_threshold))
     //((ConfigOptionBool,                 infill_only_where_needed))
     // Force the generation of solid shells between adjacent materials/volumes.
@@ -354,8 +353,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloat,                support_tree_branch_distance))
     ((ConfigOptionFloat,                support_tree_tip_diameter))
     // The rest
-    ((ConfigOptionFloat,                xy_size_compensation))
-    ((ConfigOptionFloat,                xy_inner_size_compensation))
     ((ConfigOptionBool,                 wipe_into_objects))
     ((ConfigOptionBool,                 wipe_tower))
     ((ConfigOptionFloat,                wipe_tower_bridging))

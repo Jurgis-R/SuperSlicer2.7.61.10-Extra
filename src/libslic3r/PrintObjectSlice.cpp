@@ -40,6 +40,14 @@ static extruder_index_t checked_region_extruder_index(const int64_t one_based_id
     return static_cast<extruder_index_t>(one_based_id - 1);
 }
 
+// Read one optional XY size compensation; an absent plugin-owned setting reads
+// as zero.
+static float size_compensation_value(const PrintObjectConfig &config, const char *key)
+{
+    const ConfigOptionFloat *option = config.option<ConfigOptionFloat>(key);
+    return option != nullptr ? float(option->value) : 0.f;
+}
+
 LayerUPtrs new_layers(
     PrintObject                 *print_object,
     // Object layers (pairs of bottom/top Z coordinate), without the raft.
@@ -187,9 +195,9 @@ static std::vector<VolumeSlices> slice_volumes_inner(
     const size_t num_extruders = print_config.nozzle_diameter.size();
     const bool   is_mm_painted = num_extruders > 1 && std::any_of(model_volumes.cbegin(), model_volumes.cend(), [](const ModelVolume *mv) { return mv->is_mm_painted(); });
     // Apply size compensation and perform clipping of multi-part objects.
-    float outter_delta = print_object_config.xy_size_compensation.value;
-    float inner_delta = print_object_config.xy_inner_size_compensation.value;
-    float hole_delta = inner_delta + (print_object_config.hole_size_compensation.value);
+    float outter_delta = size_compensation_value(print_object_config, "xy_size_compensation");
+    float inner_delta = size_compensation_value(print_object_config, "xy_inner_size_compensation");
+    float hole_delta = inner_delta + size_compensation_value(print_object_config, "hole_size_compensation");
     float min_delta = std::min(outter_delta, std::min(inner_delta, hole_delta));
     const float extra_offset = is_mm_painted ? 0.f : std::max(0.f, min_delta);
 
@@ -1642,7 +1650,9 @@ void PrintObject::slice_volumes()
 
         // If XY Size compensation is also enabled, notify the user that XY Size compensation
         // would not be used because the object is multi-material painted.
-        if (m_config.xy_size_compensation.value != 0.f || m_config.xy_inner_size_compensation.value != 0.f || m_config.hole_size_compensation.value != 0.f) {
+        if (size_compensation_value(m_config, "xy_size_compensation") != 0.f ||
+            size_compensation_value(m_config, "xy_inner_size_compensation") != 0.f ||
+            size_compensation_value(m_config, "hole_size_compensation") != 0.f) {
             this->active_step_add_warning(
                 PrintStateBase::WarningLevel::CRITICAL,
                 _u8L("An object has enabled XY Size compensation which will not be used because it is also multi-material painted.\nXY Size "
@@ -1670,9 +1680,9 @@ void PrintObject::slice_volumes()
 	                m_print->throw_if_canceled();
 	                Layer *layer = m_layers[layer_id].get();
 	                // Apply size compensation and perform clipping of multi-part objects.
-                    coord_t outter_delta = scale_i(m_config.xy_size_compensation.value);
-                    coord_t inner_delta = scale_i(m_config.xy_inner_size_compensation.value);
-                    coord_t hole_delta = inner_delta + scale_i(m_config.hole_size_compensation.value);
+                    coord_t outter_delta = scale_i(size_compensation_value(m_config, "xy_size_compensation"));
+                    coord_t inner_delta = scale_i(size_compensation_value(m_config, "xy_inner_size_compensation"));
+                    coord_t hole_delta = inner_delta + scale_i(size_compensation_value(m_config, "hole_size_compensation"));
                     //FIXME only apply the compensation if no raft is enabled.
                     coord_t first_layer_compensation = 0;
                     const int first_layers = m_config.first_layer_size_compensation_layers.value;

@@ -1547,6 +1547,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         if (!print_object_regions || model_object_status.print_object_regions_status != ModelObjectStatus::PrintObjectRegionsStatus::Valid) {
             // Layer ranges with their associated configurations. Remove overlaps between the ranges
             // and create the regions from scratch.
+            const ConfigOptionFloat *xy_size_compensation =
+                print_object.config().option<ConfigOptionFloat>("xy_size_compensation");
             print_object_regions = generate_print_object_regions(
                 *this,
                 print_object_regions,
@@ -1555,7 +1557,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 m_default_region_config,
                 model_object_status.print_instances.front().trafo,
                 num_extruders,
-                print_object.is_mm_painted() ? 0.f : float(print_object.config().xy_size_compensation.value),
+                print_object.is_mm_painted() ? 0.f : float(xy_size_compensation != nullptr ? xy_size_compensation->value : 0.),
                 painting_extruders);
         }
         for (auto it = it_print_object; it != it_print_object_end; ++it) {

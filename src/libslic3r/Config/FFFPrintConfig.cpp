@@ -1004,9 +1004,6 @@ void init_categories(PrintConfigDef &definition)
         "first_layer_size_compensation",
         "first_layer_size_compensation_layers",
         "first_layer_size_compensation_no_collapse",
-        "xy_size_compensation",
-        "xy_inner_size_compensation",
-        "hole_size_compensation",
         "hole_size_threshold",
 //        "threads",
         // wipe tower
@@ -7474,44 +7471,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->min = 0;
     def->mode = comExpert |comPrusa;
     def->set_default_value(new ConfigOptionInt(0));
-
-    def = definition.add("xy_size_compensation", coFloat, ptFFF);
-    def->label = L("Outer");
-    def->full_label = L("Outer XY size compensation");
-    def->category = OptionCategory::slicing;
-    def->invalidates_step = posSlice;
-    def->tooltip = L("The object will be grown/shrunk in the XY plane by the configured value "
-        "(negative = inwards = remove area, positive = outwards = add area). This might be useful for fine-tuning sizes."
-        "\nThis one only applies to the 'exterior' shell of the object."
-        "\n !!! it's recommended you put the same value into the 'Inner XY size compensation', unless you are sure you don't have horizontal holes. !!! ");
-    def->sidetext = L("mm");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloat(0));
-
-    def = definition.add("xy_inner_size_compensation", coFloat, ptFFF);
-    def->label = L("Inner");
-    def->full_label = L("Inner XY size compensation");
-    def->category = OptionCategory::slicing;
-    def->invalidates_step = posSlice;
-    def->tooltip = L("The object will be grown/shrunk in the XY plane by the configured value "
-        "(negative = inwards = remove area, positive = outwards = add area). This might be useful for fine-tuning sizes."
-        "\nThis one only applies to the 'inner' shell of the object (!!! horizontal holes break the shell !!!)");
-    def->sidetext = L("mm");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloat(0));
-
-    def = definition.add("hole_size_compensation", coFloat, ptFFF);
-    def->label = L("XY compensation");
-    def->full_label = L("XY holes compensation");
-    def->category = OptionCategory::slicing;
-    def->invalidates_step = posSlice;
-    def->tooltip = L("The convex holes will be grown / shrunk in the XY plane by the configured value"
-        " (negative = inwards = remove area, positive = outwards = add area, should be negative as the holes are always a bit smaller irl)."
-        " This might be useful for fine-tuning hole sizes."
-        "\nThis setting behaves the same as 'Inner XY size compensation' but only for convex shapes. It's added to 'Inner XY size compensation', it does not replace it. ");
-    def->sidetext = L("mm");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloat(0));
 
     def = definition.add("hole_size_threshold", coFloat, ptFFF);
     def->label = L("Threshold");
