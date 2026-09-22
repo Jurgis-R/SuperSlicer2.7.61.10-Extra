@@ -2576,6 +2576,14 @@ const PrintConfigDef& PrintConfigDef::instance()
     return def;
 }
 
+void PrintConfigDef::set_gui_activation_id(const t_config_option_key &opt_key, uint32_t activation_id)
+{
+    PrintConfigDef &def = private_instance();
+    t_optiondef_map::iterator option = def.options.find(opt_key);
+    if (option != def.options.end())
+        option->second.gui_activation_id = activation_id;
+}
+
 DynamicPrintConfig DynamicPrintConfig::full_print_config()
 {
 	return DynamicPrintConfig((const PrintRegionConfig&)FullPrintConfig::defaults());

@@ -500,14 +500,12 @@ class Slic3rAPI:
         *,
         target_key: str,
         condition_key: Optional[str] = None,
-        action: int = RAW_GUI_RULE_ACTION_ENABLE,
         condition: int = RAW_GUI_RULE_CONDITION_BOOL_TRUE,
         target_index: int = RAW_GUI_RULE_INDEX_ALL,
         condition_index: int = RAW_GUI_RULE_INDEX_ALL,
         condition_float_value: float = 0.0,
         condition_string_value: Optional[str] = None,
         clauses: Optional[Iterable] = None,
-        rule_group: Optional[str] = None,
         scope: int = RAW_PRESET_TYPE_NONE,
     ) -> int:
         """Register one GUI activation rule.
@@ -521,10 +519,9 @@ class Slic3rAPI:
         clause is built from condition_key and the single-condition keyword
         arguments.
 
-        Rule groups are ANDed together on the same target, while rules inside
-        one group follow the action contract: ENABLE rules are ANDed and
-        ENABLE_ANY rules are ORed. scope restricts the rule to one preset kind
-        (RAW_PRESET_TYPE_NONE applies everywhere).
+        Every rule is one activation reason: the target is enabled when at
+        least one rule registered for it is true. scope restricts the rule to
+        one preset kind (RAW_PRESET_TYPE_NONE applies everywhere).
 
         Returns 1 when the rule was added and 0 when an identical rule was
         already registered. Raises ValueError when the host rejects the
@@ -556,11 +553,9 @@ class Slic3rAPI:
         rule = RawGuiRule()
         rule.struct_size = ctypes.sizeof(RawGuiRule)
         rule.clause_struct_size = ctypes.sizeof(RawGuiRuleClause)
-        rule.action = int(action)
         rule.target_key = _as_bytes(target_key)
         rule.target_index = int(target_index)
         rule.scope = int(scope)
-        rule.rule_group = _as_bytes(rule_group) if rule_group else None
         rule.clauses = ctypes.cast(clause_array, ctypes.POINTER(RawGuiRuleClause))
         rule.clause_count = len(clause_instances)
         result = int(self.host.orchestrator_add_gui_rule(self.orchestrator, ctypes.byref(rule)))

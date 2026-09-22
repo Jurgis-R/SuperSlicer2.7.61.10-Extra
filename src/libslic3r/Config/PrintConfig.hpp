@@ -146,6 +146,11 @@ public:
     // Get print_config_def stored in the singleton
     static const PrintConfigDef& instance();
     static PrintConfigDef& instance_mutable();
+    // Host-only: link one setting to its GUI activation group. Unlike
+    // instance_mutable(), this stays valid after finalize() because GUI
+    // activation rules may be registered later (deferred plugin init, tests)
+    // without changing any user-visible definition.
+    static void set_gui_activation_id(const t_config_option_key &opt_key, uint32_t activation_id);
     static void handle_legacy_map(std::unordered_map<t_config_option_key, std::pair<t_config_option_key, std::string>> &dict, bool remove_unkown_keys = true);
     static void handle_legacy_pair(t_config_option_key &opt_key, std::string &value, bool remove_unkown_keys = true);
     static bool is_defined(const t_config_option_key& opt_key);

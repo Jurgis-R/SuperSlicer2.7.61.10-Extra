@@ -250,6 +250,11 @@ public:
     // orchestrator prunes values whose plugin is missing or inactive when
     // plugin option definitions are finalized.
     bool                                contains_plugin_id = false;
+    // Host-only link (1-based, 0 = none) into the orchestrator GUI activation
+    // pool. It lets the GUI ask for the activation rules of the settings a page
+    // displays. Never set from a plugin definition and excluded from the plugin
+    // option-definition compatibility contract.
+    uint32_t                            gui_activation_id = 0;
 	// If a type can be disabled (beforeit was nullable be that was a whole circus to make it works and it's dumb concept for "is enbaled": a flag is better)
 	bool								can_be_disabled = false;
     // if a setting can be disabled, and is enabled, it won't be serialized, or kept.

@@ -196,6 +196,16 @@ public:
 							return m_fields.at(id).get();
     }
 
+    // Keys of every field currently built on this group. The GUI uses them to
+    // evaluate only the activation rules of the settings it displays.
+    std::vector<OptionKeyIdx> field_keys() const {
+        std::vector<OptionKeyIdx> out;
+        out.reserve(m_fields.size());
+        for (const std::pair<const OptionKeyIdx, t_field> &entry : m_fields)
+            out.push_back(entry.first);
+        return out;
+    }
+
     inline Line*	get_line(const t_config_option_key& id) {
 		for (Line& line : m_lines)
 			if (line.has_only_option(id))

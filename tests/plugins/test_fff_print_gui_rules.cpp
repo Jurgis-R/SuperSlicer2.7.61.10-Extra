@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <random>
@@ -386,7 +387,7 @@ EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConf
 {
     EnabledMap out;
     for (const Orchestrator::GuiRuleApplication &application :
-         orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, FFF_PRINT_GUI_RULE_GROUP))
+         orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, CORE_GUI_RULE_OWNER))
         out[application.target_key] = application.enabled;
     return out;
 }
@@ -465,15 +466,15 @@ TEST_CASE("FFF print GUI rules match the legacy toggle logic", "[plugins][gui-ru
     Orchestrator &orchestrator = Orchestrator::instance();
 
     bool has_fff_rules = false;
-    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules())
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
         has_fff_rules = has_fff_rules ||
-            (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.group == FFF_PRINT_GUI_RULE_GROUP);
+            (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.owner == CORE_GUI_RULE_OWNER);
     REQUIRE(has_fff_rules);
 
     // The rules are registered once: a second initialization must not add any.
-    const size_t rule_count = orchestrator.gui_rules().size();
+    const size_t rule_count = orchestrator.gui_rules().rules().size();
     initialize_fff_print_gui_rules();
-    CHECK(orchestrator.gui_rules().size() == rule_count);
+    CHECK(orchestrator.gui_rules().rules().size() == rule_count);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     const EnabledMap expected = reference_enabled(config);
@@ -510,7 +511,7 @@ TEST_CASE("FFF print GUI rules match the legacy toggle logic on a seeded fuzz",
     }
 }
 
-TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui-rules][abi]")
+TEST_CASE("GUI rules preserve clauses, scope and owner", "[plugins][gui-rules][abi]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
@@ -519,23 +520,25 @@ TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui
     clauses[0].condition = RAW_GUI_RULE_CONDITION_BOOL_TRUE;
     clauses[0].condition_key = "spiral_vase";
 
+    const char *const test_owner = "gui_rule_abi_test_owner";
     raw_gui_rule rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
-    rule.target_key = "gui_rule_abi_test_target";
+    rule.target_key = "fill_aligned_z";
     rule.scope = RAW_PRESET_TYPE_FFF_PRINT;
-    rule.rule_group = "gui_rule_abi_test_group";
     rule.clauses = clauses;
     rule.clause_count = 1;
 
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Duplicate);
+    CHECK(orchestrator.gui_rules().add(&rule, test_owner) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, test_owner) == Orchestrator::GuiRuleRegistration::Duplicate);
 
     bool found = false;
-    for (const Orchestrator::PluginGuiRule &stored : orchestrator.gui_rules()) {
-        if (stored.target_key != "gui_rule_abi_test_target")
+    size_t stored_index = 0;
+    for (size_t rule_idx = 0; rule_idx < orchestrator.gui_rules().rules().size(); ++rule_idx) {
+        const Orchestrator::PluginGuiRule &stored = orchestrator.gui_rules().rules()[rule_idx];
+        if (stored.owner != test_owner)
             continue;
         found = true;
-        CHECK(stored.group == "gui_rule_abi_test_group");
+        stored_index = rule_idx;
+        CHECK(stored.target_key == "fill_aligned_z");
         CHECK(stored.scope == RAW_PRESET_TYPE_FFF_PRINT);
         REQUIRE(stored.clauses.size() == 1);
         CHECK(stored.clauses[0].condition == RAW_GUI_RULE_CONDITION_BOOL_TRUE);
@@ -543,24 +546,23 @@ TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui
     }
     CHECK(found);
 
-    const size_t stored_count = orchestrator.gui_rules().size();
+    // The rule is attached to the activation group of its setting.
+    const Orchestrator::SettingActivation *activation = orchestrator.gui_rules().setting_activation_for("fill_aligned_z");
+    REQUIRE(activation != nullptr);
+    CHECK(activation->setting_key == "fill_aligned_z");
+    CHECK(std::find(activation->rule_indices.begin(), activation->rule_indices.end(), stored_index) !=
+          activation->rule_indices.end());
+
+    const size_t stored_count = orchestrator.gui_rules().rules().size();
     const auto expect_invalid = [&orchestrator, stored_count](raw_gui_rule &candidate, const char *reason) {
         INFO(reason);
-        CHECK(orchestrator.add_gui_rule(&candidate) == Orchestrator::GuiRuleRegistration::Invalid);
-        CHECK(orchestrator.gui_rules().size() == stored_count);
+        CHECK(orchestrator.gui_rules().add(&candidate) == Orchestrator::GuiRuleRegistration::Invalid);
+        CHECK(orchestrator.gui_rules().rules().size() == stored_count);
     };
 
     // Descriptor level validation: an unknown enum value must be rejected
     // instead of being stored and silently ignored by the evaluator.
     raw_gui_rule invalid = rule;
-    invalid.action = RAW_GUI_RULE_ACTION_NONE;
-    expect_invalid(invalid, "action NONE");
-
-    invalid = rule;
-    invalid.action = static_cast<raw_gui_rule_action>(99);
-    expect_invalid(invalid, "unknown action");
-
-    invalid = rule;
     invalid.target_key = nullptr;
     expect_invalid(invalid, "null target_key");
 
@@ -642,9 +644,30 @@ TEST_CASE("Extended GUI rules preserve clauses, group and scope", "[plugins][gui
     relay.target_key = "gui_rule_c_relay_target";
     CHECK(orchestrator_add_gui_rule(handle, &relay) == 1);
     CHECK(orchestrator_add_gui_rule(handle, &relay) == 0);
-    relay.action = RAW_GUI_RULE_ACTION_NONE;
+    relay.scope = static_cast<raw_option_preset_type>(RAW_PRESET_TYPE_COUNT + 10);
     CHECK(orchestrator_add_gui_rule(handle, &relay) == -1);
     CHECK(orchestrator_add_gui_rule(handle, nullptr) == -1);
+}
+
+TEST_CASE("GUI activation rules attach to settings and queue unknown ones", "[plugins][gui-rules][abi]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
+    clause.condition = RAW_GUI_RULE_CONDITION_BOOL_TRUE;
+    clause.condition_key = "spiral_vase";
+
+    raw_gui_rule pending = raw_gui_rule_init();
+    pending.target_key = "gui_rule_pending_test_target";
+    pending.scope = RAW_PRESET_TYPE_FFF_PRINT;
+    pending.clauses = &clause;
+    pending.clause_count = 1;
+    CHECK(orchestrator.gui_rules().add(&pending, "gui_rule_pending_owner") ==
+          Orchestrator::GuiRuleRegistration::Added);
+    // Unknown settings have no activation group and stay queued for a warning.
+    CHECK(orchestrator.gui_rules().setting_activation_for("gui_rule_pending_test_target") == nullptr);
+    CHECK(orchestrator.gui_rules().warn_pending_rules() >= 1);
 }
 
 TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins][gui-rules][abi]")
@@ -657,13 +680,13 @@ TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins
     int_equals.condition_key = "solid_infill_every_layers";
     int_equals.condition_float_value = 2.4;
 
+    const char *const int_owner = "gui_rule_int_owner";
     raw_gui_rule equals_rule = raw_gui_rule_init();
-    equals_rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
     equals_rule.target_key = "fill_aligned_z";
-    equals_rule.rule_group = "gui_rule_int_group";
+    equals_rule.scope = RAW_PRESET_TYPE_FFF_PRINT;
     equals_rule.clauses = &int_equals;
     equals_rule.clause_count = 1;
-    CHECK(orchestrator.add_gui_rule(&equals_rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&equals_rule, int_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     raw_gui_rule_clause int_not_equals = int_equals;
     int_not_equals.condition = RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS;
@@ -671,12 +694,12 @@ TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins
     raw_gui_rule not_equals_rule = equals_rule;
     not_equals_rule.target_key = "infill_every_layers";
     not_equals_rule.clauses = &int_not_equals;
-    CHECK(orchestrator.add_gui_rule(&not_equals_rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&not_equals_rule, int_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
-    const auto enabled_for = [&orchestrator, &config](const char *target_key) {
+    const auto enabled_for = [&orchestrator, &config, int_owner](const char *target_key) {
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, "gui_rule_int_group"))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, int_owner))
             if (application.target_key == target_key)
                 return application.enabled;
         return false;
@@ -689,4 +712,71 @@ TEST_CASE("GUI rule INT conditions compare the rounded float operand", "[plugins
     config.option<ConfigOptionInt>("solid_infill_every_layers")->value = 3;
     CHECK_FALSE(enabled_for("fill_aligned_z"));
     CHECK(enabled_for("infill_every_layers"));
+}
+
+TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][filter]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const auto evaluate_map = [&orchestrator, &config](int32_t current_index,
+                                                       const std::vector<OptionKeyIdx> &filter,
+                                                       const char *owner = CORE_GUI_RULE_OWNER) {
+        EnabledMap out;
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, owner, filter))
+            out[application.target_key + "#" + std::to_string(application.target_index)] = application.enabled;
+        return out;
+    };
+
+    // A filtered refresh only visits the rules of the displayed settings and
+    // returns the same state as the full scan for those settings.
+    const std::vector<OptionKeyIdx> page = {
+        OptionKeyIdx{ "fill_aligned_z", -1 },
+        OptionKeyIdx{ "infill_every_layers", -1 },
+    };
+    const EnabledMap full = evaluate_map(-1, {});
+    const EnabledMap filtered = evaluate_map(-1, page);
+    CHECK_FALSE(filtered.empty());
+    CHECK(filtered.size() <= page.size());
+    for (const auto &entry : filtered) {
+        const auto found = full.find(entry.first);
+        REQUIRE(found != full.end());
+        CHECK(found->second == entry.second);
+    }
+
+    // The per-extruder pass only keeps fields of the current index: a field of
+    // index 0 is not evaluated while refreshing extruder 1.
+    const std::vector<OptionKeyIdx> extruder_zero = { OptionKeyIdx{ "fill_aligned_z", 0 } };
+    CHECK(evaluate_map(1, extruder_zero).empty());
+    CHECK_FALSE(evaluate_map(-1, extruder_zero).empty());
+
+    // A rule whose setting has no definition is queued and only reachable
+    // through the full scan.
+    raw_gui_rule_clause clause = raw_gui_rule_clause_init();
+    clause.condition = RAW_GUI_RULE_CONDITION_BOOL_TRUE;
+    clause.condition_key = "spiral_vase";
+
+    raw_gui_rule unattached = raw_gui_rule_init();
+    unattached.target_key = "gui_rule_filter_pending_target";
+    unattached.scope = RAW_PRESET_TYPE_FFF_PRINT;
+    unattached.clauses = &clause;
+    unattached.clause_count = 1;
+    CHECK(orchestrator.gui_rules().add(&unattached, "gui_rule_filter_owner") ==
+          Orchestrator::GuiRuleRegistration::Added);
+
+    config.set_key_value("gui_rule_filter_pending_target", new ConfigOptionBool(false));
+    const std::vector<OptionKeyIdx> pending_page = { OptionKeyIdx{ "gui_rule_filter_pending_target", -1 } };
+    const EnabledMap filtered_pending = evaluate_map(-1, pending_page, "gui_rule_filter_owner");
+    CHECK(filtered_pending.empty());
+
+    const auto full_pending = [&orchestrator, &config]() {
+        EnabledMap out;
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, "gui_rule_filter_owner"))
+            out[application.target_key] = application.enabled;
+        return out;
+    }();
+    CHECK(full_pending.find("gui_rule_filter_pending_target") != full_pending.end());
 }

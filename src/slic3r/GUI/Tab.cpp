@@ -3157,7 +3157,10 @@ void TabPrint::toggle_options()
 {
     if (!m_active_page) return;
 
-    m_config_manipulation.toggle_print_fff_options(m_config);
+    // Only the settings displayed on the active page need their activation
+    // rules evaluated; the other pages are refreshed when they are displayed.
+    const std::vector<OptionKeyIdx> visible_settings = m_active_page->field_keys();
+    m_config_manipulation.toggle_print_fff_options(m_config, &visible_settings);
     
     // toogle scripted fields
     // TODO: shouldn't work with arrays. fix it
@@ -4226,7 +4229,8 @@ void TabPrinter::toggle_options()
     full_print_config.apply(filament_config);
     full_print_config.apply(printer_config);
 
-    m_config_manipulation.toggle_printer_fff_options(m_config, full_print_config);
+    const std::vector<OptionKeyIdx> visible_settings = m_active_page->field_keys();
+    m_config_manipulation.toggle_printer_fff_options(m_config, full_print_config, &visible_settings);
     
     if (m_last_gcode_flavor != uint8_t(m_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor")->value)) {
         m_last_gcode_flavor = uint8_t(m_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor")->value);
@@ -6328,6 +6332,18 @@ void Page::refresh()
         group->refresh();
 }
 
+std::vector<OptionKeyIdx> Page::field_keys() const
+{
+    // OptionKeyIdx has const members, so range insertion (which assigns) is not
+    // available; copy each key explicitly.
+    std::vector<OptionKeyIdx> out;
+    for (const ConfigOptionsGroupShp &group : m_optgroups)
+        if (group)
+            for (const OptionKeyIdx &key : group->field_keys())
+                out.push_back(key);
+    return out;
+}
+
 Field* Page::get_field(const t_config_option_key& opt_key, int32_t opt_index /*= -1*/) const
 {
     Field* field = nullptr;
@@ -6646,8 +6662,10 @@ void TabSLAPrint::update_description_lines()
 
 void TabSLAPrint::toggle_options()
 {
-    if (m_active_page)
-        m_config_manipulation.toggle_print_sla_options(m_config);
+    if (m_active_page) {
+        const std::vector<OptionKeyIdx> visible_settings = m_active_page->field_keys();
+        m_config_manipulation.toggle_print_sla_options(m_config, &visible_settings);
+    }
 }
 
 void TabSLAPrint::update()

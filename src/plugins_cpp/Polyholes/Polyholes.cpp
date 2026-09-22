@@ -543,7 +543,7 @@ void Polyholes::inilialize_impl(storage_handle *storage) const {
                                  Polyholes::print_ui_fragment(),
                                  0);
 
-    GuiRule::enable({ "hole_to_polyhole_threshold", "hole_to_polyhole_twisted" })
+    GuiRule::activate({ "hole_to_polyhole_threshold", "hole_to_polyhole_twisted" })
         .when_true("hole_to_polyhole")
         .add_to(m_orchestrator);
 }

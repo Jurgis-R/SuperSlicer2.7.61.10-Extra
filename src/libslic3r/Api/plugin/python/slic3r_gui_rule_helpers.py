@@ -7,14 +7,15 @@
 
 ``GuiCondition`` and ``GuiRule`` mirror ``Api/plugin/cpp/GuiRuleHelpers.hpp``.
 A condition is a leaf predicate or an ``any_of``/``all_of`` combination of
-sub-conditions; a rule owns one action, one or more target keys and one root
-condition. ``add_to()`` normalizes the tree to disjunctive normal form and calls
-``Slic3rAPI.add_gui_rule`` once per disjunction and target.
+sub-conditions; a rule owns one or more target keys and one root condition.
+``add_to()`` normalizes the tree to disjunctive normal form and calls
+``Slic3rAPI.add_gui_rule`` once per disjunction and target. Every registered
+rule is one activation reason: the target is enabled when at least one rule is
+true, so a disjunction naturally expands to several reasons.
 
-``enable()`` requires a single conjunction. ``enable_any()`` accepts a
-disjunction and is the usual form for an OR expression. Builder input is
-validated eagerly with ``ValueError``; the host rejection of a descriptor is
-also raised as ``ValueError`` while a duplicate registration is a silent no-op.
+Builder input is validated eagerly with ``ValueError``; the host rejection of a
+descriptor is also raised as ``ValueError`` while a duplicate registration is a
+silent no-op.
 """
 
 from __future__ import annotations
@@ -22,8 +23,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from slic3r_api_generated import (
-    RAW_GUI_RULE_ACTION_ENABLE,
-    RAW_GUI_RULE_ACTION_ENABLE_ANY,
     RAW_GUI_RULE_CONDITION_BOOL_FALSE,
     RAW_GUI_RULE_CONDITION_BOOL_TRUE,
     RAW_GUI_RULE_CONDITION_FLOAT_EQUALS,
@@ -182,14 +181,12 @@ def _append_disjuncts(condition: GuiCondition, out: list) -> None:
 class GuiRule:
     """One owning GUI activation rule for one or more target keys."""
 
-    __slots__ = ("_action", "_targets", "_target_index", "_scope", "_group", "_conditions")
+    __slots__ = ("_targets", "_target_index", "_scope", "_conditions")
 
-    def __init__(self, action: int, targets) -> None:
-        self._action = int(action)
+    def __init__(self, targets) -> None:
         self._targets = self._normalize_targets(targets)
         self._target_index = RAW_GUI_RULE_INDEX_ALL
         self._scope = RAW_PRESET_TYPE_NONE
-        self._group = ""
         self._conditions: tuple = ()
 
     @staticmethod
@@ -206,14 +203,9 @@ class GuiRule:
         return tuple(str(target) for target in targets)
 
     @classmethod
-    def enable(cls, targets) -> "GuiRule":
-        """Return a rule whose registered rules are ANDed per target."""
-        return cls(RAW_GUI_RULE_ACTION_ENABLE, targets)
-
-    @classmethod
-    def enable_any(cls, targets) -> "GuiRule":
-        """Return a rule whose registered rules are ORed per target."""
-        return cls(RAW_GUI_RULE_ACTION_ENABLE_ANY, targets)
+    def activate(cls, targets) -> "GuiRule":
+        """Return one activation reason per target under the given condition."""
+        return cls(targets)
 
     def when(self, *conditions) -> "GuiRule":
         """Append conditions that must all hold (AND)."""
@@ -272,10 +264,6 @@ class GuiRule:
         self._scope = scope
         return self
 
-    def group(self, group) -> "GuiRule":
-        self._group = "" if group is None else str(group)
-        return self
-
     def _normalized_disjuncts(self) -> list:
         if not self._conditions:
             raise ValueError("A GUI rule needs at least one condition before it can be registered.")
@@ -283,10 +271,6 @@ class GuiRule:
 
         disjuncts: list = []
         _append_disjuncts(root, disjuncts)
-        if self._action == RAW_GUI_RULE_ACTION_ENABLE and len(disjuncts) > 1:
-            raise ValueError(
-                "GuiRule.enable() only accepts a conjunction; use enable_any() for a disjunction."
-            )
         if not disjuncts:
             raise ValueError("A GUI rule needs at least one condition.")
         return disjuncts
@@ -310,10 +294,8 @@ class GuiRule:
                 ]
                 api.add_gui_rule(
                     target_key=target,
-                    action=self._action,
                     clauses=clauses,
                     target_index=self._target_index,
-                    rule_group=self._group or None,
                     scope=self._scope,
                 )
 

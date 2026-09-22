@@ -60,11 +60,9 @@ class RecordingHost:
             )
         self.rules.append(
             {
-                "action": int(rule.action),
                 "target_key": rule.target_key.decode("utf-8"),
                 "target_index": int(rule.target_index),
                 "scope": int(rule.scope),
-                "rule_group": None if not rule.rule_group else rule.rule_group.decode("utf-8"),
                 "clauses": clauses,
             }
         )
@@ -96,7 +94,7 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
         GuiCondition = self.helpers.GuiCondition
         GuiRule = self.helpers.GuiRule
 
-        GuiRule.enable_any(["gui_rule_target_a", "gui_rule_target_b"]).when(
+        GuiRule.activate(["gui_rule_target_a", "gui_rule_target_b"]).when(
             self.helpers.all_of(
                 GuiCondition.non_zero("gui_rule_int"),
                 self.helpers.any_of(
@@ -104,12 +102,10 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
                     GuiCondition.int_equals("gui_rule_int", 3),
                 ),
             )
-        ).group("gui_rule_helpers.python").add_to(api)
+        ).add_to(api)
 
         self.assertEqual(len(api.calls), 4)
         for call in api.calls:
-            self.assertEqual(call["action"], self.generated.RAW_GUI_RULE_ACTION_ENABLE_ANY)
-            self.assertEqual(call["rule_group"], "gui_rule_helpers.python")
             self.assertEqual(call["target_index"], self.generated.RAW_GUI_RULE_INDEX_ALL)
             self.assertEqual(call["scope"], self.generated.RAW_PRESET_TYPE_NONE)
             self.assertEqual(len(call["clauses"]), 2)
@@ -122,22 +118,21 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
         self.assertEqual(second_clauses, [self.generated.RAW_GUI_RULE_CONDITION_BOOL_TRUE] * 2
                          + [self.generated.RAW_GUI_RULE_CONDITION_INT_EQUALS] * 2)
 
-    def test_index_scope_and_group_are_preserved(self):
+    def test_index_and_scope_are_preserved(self):
         api = RecordingGuiRuleApi(self.generated)
         GuiCondition = self.helpers.GuiCondition
         GuiRule = self.helpers.GuiRule
 
-        GuiRule.enable("gui_rule_target").when(
+        GuiRule.activate("gui_rule_target").when(
             GuiCondition.enabled("gui_rule_bool", 2)
         ).target_index(
             self.generated.RAW_GUI_RULE_INDEX_CURRENT
         ).scope(
             self.generated.RAW_PRESET_TYPE_FFF_PRINT
-        ).group("gui_rule_helpers.attributes").add_to(api)
+        ).add_to(api)
 
         self.assertEqual(len(api.calls), 1)
         call = api.calls[0]
-        self.assertEqual(call["action"], self.generated.RAW_GUI_RULE_ACTION_ENABLE)
         self.assertEqual(call["target_index"], self.generated.RAW_GUI_RULE_INDEX_CURRENT)
         self.assertEqual(call["scope"], self.generated.RAW_PRESET_TYPE_FFF_PRINT)
         self.assertEqual(call["clauses"][0]["condition_index"], 2)
@@ -150,9 +145,9 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
         all_of = self.helpers.all_of
 
         with self.assertRaises(ValueError):
-            GuiRule.enable("")
+            GuiRule.activate("")
         with self.assertRaises(ValueError):
-            GuiRule.enable([])
+            GuiRule.activate([])
         with self.assertRaises(ValueError):
             GuiCondition.true_("")
         with self.assertRaises(ValueError):
@@ -164,24 +159,17 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             all_of([])
         with self.assertRaises(ValueError):
-            GuiRule.enable("gui_rule_target").add_to(api)
+            GuiRule.activate("gui_rule_target").add_to(api)
         with self.assertRaises(ValueError):
-            GuiRule.enable("gui_rule_target").when(object())
+            GuiRule.activate("gui_rule_target").when(object())
         with self.assertRaises(ValueError):
-            GuiRule.enable("gui_rule_target").when_true("gui_rule_bool").target_index(-3)
+            GuiRule.activate("gui_rule_target").when_true("gui_rule_bool").target_index(-3)
         with self.assertRaises(ValueError):
-            GuiRule.enable("gui_rule_target").when_true("gui_rule_bool").scope(
+            GuiRule.activate("gui_rule_target").when_true("gui_rule_bool").scope(
                 self.generated.RAW_PRESET_TYPE_COUNT + 1
             )
         with self.assertRaises(TypeError):
-            GuiRule.enable("gui_rule_target").when_true("gui_rule_bool").add_to(None)
-
-        disjunction = any_of(
-            GuiCondition.true_("gui_rule_bool"),
-            GuiCondition.int_equals("gui_rule_int", 1),
-        )
-        with self.assertRaises(ValueError):
-            GuiRule.enable("gui_rule_target").when(disjunction).add_to(api)
+            GuiRule.activate("gui_rule_target").when_true("gui_rule_bool").add_to(None)
         self.assertEqual(api.calls, [])
 
     def test_duplicate_registration_is_not_an_error(self):
@@ -189,7 +177,7 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
         api.duplicate_after_first = True
         GuiRule = self.helpers.GuiRule
 
-        rule = GuiRule.enable("gui_rule_target").when_true("gui_rule_bool")
+        rule = GuiRule.activate("gui_rule_target").when_true("gui_rule_bool")
         rule.add_to(api)
         rule.add_to(api)
         self.assertEqual(len(api.calls), 2)
@@ -203,7 +191,7 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
         GuiCondition = self.helpers.GuiCondition
         GuiRule = self.helpers.GuiRule
 
-        GuiRule.enable_any("gui_rule_target").when(
+        GuiRule.activate("gui_rule_target").when(
             self.helpers.any_of([
                 GuiCondition.true_("gui_rule_bool"),
                 self.helpers.all_of(
@@ -211,13 +199,11 @@ class PythonGuiRuleHelperTests(unittest.TestCase):
                     GuiCondition.percent("gui_rule_percent"),
                 ),
             ])
-        ).group("gui_rule_helpers.real").add_to(api)
+        ).add_to(api)
 
         self.assertEqual(len(host.rules), 2)
         for rule in host.rules:
-            self.assertEqual(rule["action"], self.generated.RAW_GUI_RULE_ACTION_ENABLE_ANY)
             self.assertEqual(rule["target_key"], "gui_rule_target")
-            self.assertEqual(rule["rule_group"], "gui_rule_helpers.real")
         self.assertEqual(host.rules[0]["clauses"][0][1], "gui_rule_bool")
         self.assertEqual(
             [(clause[0], clause[1]) for clause in host.rules[1]["clauses"]],

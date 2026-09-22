@@ -240,9 +240,10 @@ DefaultBrimSettings read_default_brim_settings(const PrintObject &object)
 void initialize_default_brim_settings(orchestrator_handle *orchestrator)
 {
     /*
-    These definitions deliberately keep the historic serialized keys and
-    defaults. Existing profiles therefore load unchanged even though ownership
-    moves from FFFPrintConfig to this plugin.
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
     */
     raw_config_option_def def = raw_config_option_def_init();
     def.opt_key = "brim_inside_holes";
@@ -354,22 +355,22 @@ void initialize_default_brim_settings(orchestrator_handle *orchestrator)
     Registering a conjunction for one target mirrors the geometric
     preconditions without hardcoded option names in ConfigManipulation.
     */
-    GuiRule::enable("brim_ears")
+    GuiRule::activate("brim_ears")
         .when_non_zero("brim_width")
         .add_to(orchestrator);
-    GuiRule::enable("brim_inside_holes")
+    GuiRule::activate("brim_inside_holes")
         .when_non_zero("brim_width")
         .when_false("brim_width_interior")
         .add_to(orchestrator);
-    GuiRule::enable("brim_ears_max_angle")
+    GuiRule::activate("brim_ears_max_angle")
         .when_true("brim_ears")
         .when_non_zero("brim_width")
         .add_to(orchestrator);
-    GuiRule::enable("brim_ears_detection_length")
+    GuiRule::activate("brim_ears_detection_length")
         .when_true("brim_ears")
         .when_non_zero("brim_width")
         .add_to(orchestrator);
-    GuiRule::enable("brim_ears_pattern")
+    GuiRule::activate("brim_ears_pattern")
         .when_true("brim_ears")
         .when_non_zero("brim_width")
         .add_to(orchestrator);

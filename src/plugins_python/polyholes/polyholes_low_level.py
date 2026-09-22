@@ -282,7 +282,7 @@ class PythonPolyholesPlugin(PluginBase):
             "end_line\n",
             priority=1,
         )
-        GuiRule.enable([
+        GuiRule.activate([
             POLYHOLES_THRESHOLD_KEY,
             POLYHOLES_TWISTED_KEY,
             POLYHOLES_ANGLE_START_KEY,

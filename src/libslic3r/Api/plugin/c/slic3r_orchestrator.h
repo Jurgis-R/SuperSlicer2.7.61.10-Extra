@@ -5,8 +5,10 @@
 #ifndef slic3r_orchestrator_h_
 #define slic3r_orchestrator_h_
 
-/* Version 2 removes the version-1 single-condition GUI rule API. */
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 2u
+/* Version 3 removes the GUI rule action and group fields: every rule is now
+an independent activation reason and the target is enabled when any of them is
+true. */
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 3u
 #define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 1u
 
 /*
@@ -442,12 +444,6 @@ typedef enum raw_gui_rule_condition {
     RAW_GUI_RULE_CONDITION_COUNT
 } raw_gui_rule_condition;
 
-typedef enum raw_gui_rule_action {
-    RAW_GUI_RULE_ACTION_NONE = 0,
-    RAW_GUI_RULE_ACTION_ENABLE,
-    RAW_GUI_RULE_ACTION_ENABLE_ANY
-} raw_gui_rule_action;
-
 /*
 Index values shared by target_index and condition_index.
 
@@ -504,26 +500,17 @@ static inline raw_gui_rule_clause raw_gui_rule_clause_init()
 /*
 GUI activation rule.
 
-Rules are evaluated by ConfigManipulation when a tab refreshes its enabled
-state.
+A rule is one reason to keep target_key editable. Several rules may share the
+same target:
 
-The clauses of one rule are combined with a logical AND. Several rules may
-share one target_key:
+- the clauses of one rule are combined with a logical AND;
+- the target is enabled when at least one rule registered for it evaluates to
+  true (OR). There is no separate "must hold" rule kind: every caller that
+  registers a rule for a setting declares a condition under which that setting
+  is useful to someone.
 
-- RAW_GUI_RULE_ACTION_ENABLE enables target_key when every ENABLE rule
-  registered for the same target and group is true.
-- RAW_GUI_RULE_ACTION_ENABLE_ANY enables target_key when at least one
-  ENABLE_ANY rule registered for the same target and group is true. It is
-  useful for OR conditions such as "support is enabled when support_material
-  is true or raft_layers is non-zero".
-- If both actions are used for the same target and group, the target is
-  enabled only when all ENABLE rules are true and at least one ENABLE_ANY rule
-  is true.
-- rule_group partitions rules into independent expressions. Rules from
-  different groups are ANDed on the same target, so a core feature can publish
-  a complete disjunctive expression in its own group without merging with
-  unrelated ENABLE_ANY rules registered by plugins. An empty or null
-  rule_group is the default group.
+A setting with no rule at all stays enabled.
+
 - scope restricts a rule to GUI contexts that refresh one preset kind.
   RAW_PRESET_TYPE_NONE applies to every context. The FFF print settings use
   RAW_PRESET_TYPE_FFF_PRINT so their rules are never evaluated while the
@@ -537,13 +524,16 @@ share one target_key:
   without breaking already compiled callers: the host rejects a descriptor
   whose struct_size or clause_struct_size is smaller than the host layout.
 
+Rules whose target setting is not defined yet are queued and attached when the
+definition appears; a non-blocking warning lists the keys that never appeared.
+
 Rejected descriptors are never stored and are reported through the host log.
 
 Returns:
 - 1 when the rule was added;
 - 0 when an identical rule was already registered;
 - -1 when the descriptor is invalid. Validation rejects a null descriptor or
-  a truncated struct_size, an unknown action, condition or scope, a negative
+  a truncated struct_size, an unknown condition or scope, a negative
   target_index or condition_index other than RAW_GUI_RULE_INDEX_ALL and
   RAW_GUI_RULE_INDEX_CURRENT, a null or empty target_key or clause
   condition_key, a null clause array or an empty clause list, and a
@@ -552,11 +542,9 @@ Returns:
 */
 typedef struct raw_gui_rule {
     uint32_t struct_size;
-    raw_gui_rule_action action;
     const char *target_key;
     int32_t target_index;
     raw_option_preset_type scope;
-    const char *rule_group;
     const raw_gui_rule_clause *clauses;
     uint32_t clause_count;
     /* Size of one element of clauses; must be sizeof(raw_gui_rule_clause). */

@@ -243,8 +243,8 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
             "end_line\n",
             priority=0,
         )
-        GuiRule.enable(POLYHOLES_THRESHOLD_KEY).when_true(POLYHOLES_KEY).add_to(self.api)
-        GuiRule.enable(POLYHOLES_TWISTED_KEY).when_true(POLYHOLES_KEY).add_to(self.api)
+        GuiRule.activate(POLYHOLES_THRESHOLD_KEY).when_true(POLYHOLES_KEY).add_to(self.api)
+        GuiRule.activate(POLYHOLES_TWISTED_KEY).when_true(POLYHOLES_KEY).add_to(self.api)
 
     def run(self, run_ctx_address: int) -> None:
         throw_if_cancelled(run_ctx_address)

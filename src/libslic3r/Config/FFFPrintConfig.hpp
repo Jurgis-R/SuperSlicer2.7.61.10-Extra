@@ -20,10 +20,6 @@ namespace Slic3r {
 
 void initialize_fff_print_config_cache();
 
-// Rule group used by the FFF print GUI rules migrated from
-// ConfigManipulation::toggle_print_fff_options.
-inline constexpr const char *FFF_PRINT_GUI_RULE_GROUP = "fff_print.legacy";
-
 // Register the GUI activation rules that select which FFF print settings are
 // editable. Called once, after plugins are loaded, by
 // initialize_fff_print_config_cache().
