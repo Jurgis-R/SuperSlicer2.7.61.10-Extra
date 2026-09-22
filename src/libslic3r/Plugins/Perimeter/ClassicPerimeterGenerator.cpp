@@ -34,7 +34,6 @@ the generator contract seen by the host and by the perimeter modules.
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
 #include "libslic3r/Api/plugin/cpp/RegionSettingsViews.hpp"
-#include "libslic3r/Config/FFFPrintConfig.hpp"
 
 /*
 ClassicPerimeterGenerator
@@ -485,15 +484,15 @@ void add_classic_perimeter_gui_rules(orchestrator_handle *orchestrator)
     // these conditions for the settings it hosts.
     const GuiCondition not_arachne = any_of({
         false_("perimeters"),
-        int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Arachne))
+        perimeter_generator_is_not_arachne()
     });
     const GuiCondition classic_only = all_of({
         non_zero("perimeters"),
-        int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Arachne))
+        perimeter_generator_is_not_arachne()
     });
     const GuiCondition gap_base = any_of({
         all_of({ false_("perimeters"), true_("gap_fill_enabled") }),
-        all_of({ int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Arachne)),
+        all_of({ perimeter_generator_is_not_arachne(),
                  true_("gap_fill_enabled") })
     });
     const GuiCondition gap_extended = any_of({
@@ -515,11 +514,11 @@ void add_classic_perimeter_gui_rules(orchestrator_handle *orchestrator)
 
     add_rule({ "thin_perimeters", "perimeter_round_corners" }, classic_only);
     add_rule({ "thin_perimeters_all" }, all_of({ non_zero("perimeters"), non_zero("thin_perimeters"),
-                                                 int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Arachne)) }));
+                                                 perimeter_generator_is_not_arachne() }));
     add_rule({ "thin_walls" }, classic_only);
     add_rule({ "thin_walls_min_width", "thin_walls_overlap", "thin_walls_merge" },
              all_of({ non_zero("perimeters"),
-                      int_not_equals("perimeter_generator", int(Slic3r::PerimeterGeneratorType::Arachne)),
+                      perimeter_generator_is_not_arachne(),
                       true_("thin_walls") }));
     add_rule({ "gap_fill_enabled" }, not_arachne);
     add_rule({ "gap_fill_last" }, gap_base);

@@ -62,6 +62,12 @@ using slic3r_api::vector_empty;
 // generator, support style, ...) declared in Slic3r.
 using namespace Slic3r;
 
+// Keep the selector values mirrored by GuiRuleHelpers.hpp in sync with the host
+// enums; plugins read the mirrored values instead of the configuration headers.
+static_assert(int(Slic3r::PerimeterGeneratorType::Classic) == 0, "perimeter generator selector changed");
+static_assert(int(Slic3r::PerimeterGeneratorType::Arachne) == 1, "perimeter generator selector changed");
+static_assert(int(Slic3r::InfillPattern::ipSmooth) == 19, "infill pattern selector changed");
+
 // Shared conjunctions used by several rules below.
 const GuiCondition has_top = any_of({
     non_zero("top_solid_layers"),

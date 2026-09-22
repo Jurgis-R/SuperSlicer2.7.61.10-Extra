@@ -40,7 +40,6 @@ and hoist acceleration without depending on this strategy.
 #include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
-#include "libslic3r/Config/FFFPrintConfig.hpp"
 
 namespace slic3r_api { namespace LayerExtrusionEdit { namespace DefaultSpeedPlugin {
 namespace {
@@ -600,9 +599,9 @@ void add_default_speed_gui_rules(orchestrator_handle *orchestrator)
     const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
     const GuiCondition ironing_any = any_of({
         ironing_pp,
-        int_equals("top_fill_pattern", int(Slic3r::InfillPattern::ipSmooth)),
-        int_equals("bottom_fill_pattern", int(Slic3r::InfillPattern::ipSmooth)),
-        int_equals("solid_fill_pattern", int(Slic3r::InfillPattern::ipSmooth))
+        fill_pattern_is_smooth("top_fill_pattern"),
+        fill_pattern_is_smooth("bottom_fill_pattern"),
+        fill_pattern_is_smooth("solid_fill_pattern")
     });
     const GuiCondition brim_or_skirt = any_of({
         non_zero("brim_width"),
