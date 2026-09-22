@@ -493,7 +493,7 @@ std::string validate(const FullPrintConfig& cfg)
             return "Can't make more than one perimeter when spiral vase mode is enabled";
         if (cfg.overhangs_reverse)
             return "Can't reverse the direction of the overhangs every layer when spiral vase mode is enabled";
-        if (cfg.perimeter_reverse)
+        if (cfg.option("perimeter_reverse") != nullptr && cfg.option("perimeter_reverse")->get_bool())
             return "Can't reverse the direction of the perimeters every layer when spiral vase mode is enabled";
     }
 
@@ -804,7 +804,6 @@ void init_categories(PrintConfigDef &definition)
         "overhangs_width_speed", 
         "overhangs_reverse",
         "overhangs_reverse_threshold",
-        "perimeter_reverse",
         "perimeter_direction",
         "seam_position",
         "seam_angle_cost",
@@ -5306,15 +5305,6 @@ void init_fff_params(PrintConfigDef &definition)
     def->max = 100;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(80));
-
-    def = definition.add("perimeter_reverse", coBool, ptFFF);
-    def->label = L("Perimeter reversal on even layers");
-    def->category = OptionCategory::perimeter;
-    def->invalidates_step = posPerimeters;
-    def->tooltip = L("On even layers, all perimeter loops are reversed (it disables the overhang reversal, so it doesn't double-reverse)."
-                    "That setting will likely create defects on the perimeters, so it's only useful is for materials that have some direction-dependent properties (stress lines).");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("perimeters", coInt, ptFFF);
     def->label = L("Perimeters");

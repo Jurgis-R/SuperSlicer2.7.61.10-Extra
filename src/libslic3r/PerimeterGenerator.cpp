@@ -762,14 +762,14 @@ ExtrusionEntityCollection PerimeterGenerator::_traverse_loops_classic(const Para
             }
             coll[idx.first] = nullptr;
             bool has_steep_overhangs_this_loop = false;
-            if (loop.is_steep_overhang && params.layer->id() % 2 == 1 && !params.config.perimeter_reverse) {
+            if (loop.is_steep_overhang && params.layer->id() % 2 == 1 && !(region_option_value(params.config, "perimeter_reverse") != 0)) {
                 has_steep_overhangs_this_loop = HasRoleVisitor::search(*eloop, HasThisRoleVisitor{ExtrusionRole::OverhangPerimeter});
             }
             if ((loop.is_contour && !reverse_contour) || (!loop.is_contour && reverse_hole)) {
                 //note: params.layer->id() % 2 == 1 already taken into account in the is_steep_overhang compute (to save time).
                 // if CCW: reverse if steep_overhang & odd. if CW: the opposite
                 bool clockwise = !(loop.is_contour ? CCW_contour : CCW_hole);
-                if ((params.config.perimeter_reverse || has_steep_overhangs_this_loop) && params.layer->id() % 2 == 1) {
+                if (((region_option_value(params.config, "perimeter_reverse") != 0) || has_steep_overhangs_this_loop) && params.layer->id() % 2 == 1) {
                     clockwise = !clockwise;
                 }
                 // has to reverse the direction if print external first, as the whole thing will be reverse afterwards
@@ -803,7 +803,7 @@ ExtrusionEntityCollection PerimeterGenerator::_traverse_loops_classic(const Para
                 }
             } else {
                 bool counter_clockwise = (loop.is_contour ? CCW_contour : CCW_hole);
-                if ((params.config.perimeter_reverse || has_steep_overhangs_this_loop) && params.layer->id() % 2 == 1) {
+                if (((region_option_value(params.config, "perimeter_reverse") != 0) || has_steep_overhangs_this_loop) && params.layer->id() % 2 == 1) {
                     counter_clockwise = !counter_clockwise;
                 }
                 // has to reverse the direction if print external first, as the whole thing will be reverse afterwards
@@ -2023,7 +2023,7 @@ ExtrusionEntityCollection PerimeterGenerator::_traverse_extrusions(const Paramet
                 ExtrusionLoop extrusion_loop(std::move(paths), loop_role);
                 // Restore the orientation of the extrusion loop.
                 //TODO: use if (loop.is_steep_overhang && params.layer->id() % 2 == 1) to make_clockwise => need to detect is_steep_overhang on the arachne path
-                bool need_ccw = ((params.config.perimeter_reverse /*|| pg_extrusion.is_steep_overhang*/ && params.layer->id() % 2 == 1)
+                bool need_ccw = (((region_option_value(params.config, "perimeter_reverse") != 0) /*|| pg_extrusion.is_steep_overhang*/ && params.layer->id() % 2 == 1)
                                  == (pg_extrusion.is_contour ? CCW_contour : CCW_hole));
                 if (need_ccw != extrusion_loop.is_clockwise()) {
                     extrusion_loop.reverse();

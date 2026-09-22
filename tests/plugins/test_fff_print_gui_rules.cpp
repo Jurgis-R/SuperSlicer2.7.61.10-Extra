@@ -118,7 +118,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs", "external_perimeters_first",
         "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing",
         "external_perimeter_extrusion_change_odd_layers", "overhangs", "seam_position",
-        "staggered_inner_seams", "perimeter_reverse", "perimeter_generator",
+        "staggered_inner_seams", "perimeter_generator",
         "small_perimeter_speed", "spiral_vase",
         "seam_notch_all", "seam_notch_inner", "seam_notch_outer",
         "no_perimeter_unsupported_algo", "only_one_perimeter_top"

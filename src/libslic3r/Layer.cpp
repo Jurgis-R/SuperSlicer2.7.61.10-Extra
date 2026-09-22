@@ -945,7 +945,7 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && config.perimeter_loop            == other_config.perimeter_loop
         && config.perimeter_loop_seam       == other_config.perimeter_loop_seam
         && config.perimeter_overlap         == other_config.perimeter_overlap
-        && config.perimeter_reverse         == other_config.perimeter_reverse
+        && region_config_option_equal(config, other_config, "perimeter_reverse")
         && region_config_option_equal(config, other_config, "perimeter_speed") // it is mandatory? can't this be set at gcode.cpp?
         // print -modifier, because region are fused in gode wiew if not.
         && config.print_extrusion_multiplier        == other_config.print_extrusion_multiplier

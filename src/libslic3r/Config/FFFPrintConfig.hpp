@@ -489,7 +489,6 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionBool,                 perimeter_loop))
     ((ConfigOptionEnum<SeamPosition>,   perimeter_loop_seam))
     ((ConfigOptionPercent,              perimeter_overlap))
-    ((ConfigOptionBool,                 perimeter_reverse))
     // Total number of perimeters.
     ((ConfigOptionInt,                  perimeters))
     ((ConfigOptionInt,                  perimeters_hole))
