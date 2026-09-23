@@ -136,7 +136,7 @@ void CalibrationOverBridgeDialog::create_geometry(bool over_bridge) {
         model.objects()[objs_idx[i]].config.set_key_value("bottom_solid_layers", new ConfigOptionInt(1)); // at least the first, to prevent adhesion issues.
         model.objects()[objs_idx[i]].config.set_key_value("top_solid_layers", new ConfigOptionInt(3));
         model.objects()[objs_idx[i]].config.set_key_value("fill_density", new ConfigOptionPercent(5.5));
-        model.objects()[objs_idx[i]].config.set_key_value("fill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+        model.objects()[objs_idx[i]].config.set_deserialize_strict("fill_pattern", "rectilinear");
         model.objects()[objs_idx[i]].config.set_key_value("infill_dense", new ConfigOptionBool(false));
         model.objects()[objs_idx[i]].config.set_key_value("ironing", new ConfigOptionBool(false));
         //calibration setting. Use 100 & 5 step as it's the numbers printed on the samples
@@ -147,7 +147,7 @@ void CalibrationOverBridgeDialog::create_geometry(bool over_bridge) {
         }
         model.objects()[objs_idx[i]].config.set_key_value("layer_height", new ConfigOptionFloat(nozzle_diameter / 2));
         model.objects()[objs_idx[i]].config.set_key_value("external_infill_margin", new ConfigOptionFloatOrPercent(400,true));
-        model.objects()[objs_idx[i]].config.set_key_value("top_fill_pattern", new ConfigOptionEnum<InfillPattern>(ipSmooth));
+        model.objects()[objs_idx[i]].config.set_deserialize_strict("top_fill_pattern", "smooth");
         model.objects()[objs_idx[i]].config.set_key_value("fill_angle", new ConfigOptionFloat(45));
     }
 

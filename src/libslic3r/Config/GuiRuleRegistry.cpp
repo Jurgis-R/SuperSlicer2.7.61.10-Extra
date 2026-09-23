@@ -43,6 +43,7 @@ bool gui_rule_condition_value_at_index(const ConfigOption &condition_option,
 {
     // Scalar get_bool() ignores the index. Vector get_bool() needs a real item
     // index, so "-1 / unspecified" falls back to 0 only for this low-level read.
+    // STRING_EQUALS uses the same resolved index to pick the serialized item.
     const size_t value_index = condition_index < 0 ? 0 : size_t(condition_index);
 
     switch (clause.condition) {
@@ -72,6 +73,22 @@ bool gui_rule_condition_value_at_index(const ConfigOption &condition_option,
         const ConfigOptionVectorBase *vector_option =
             dynamic_cast<const ConfigOptionVectorBase *>(&condition_option);
         return vector_option != nullptr && vector_option->empty();
+    }
+    case RAW_GUI_RULE_CONDITION_STRING_EQUALS: {
+        // A vector option must compare the serialized text of the resolved
+        // item, not the serialization of the whole vector.
+        std::string serialized;
+        if (const ConfigOptionVectorBase *vector_option =
+                dynamic_cast<const ConfigOptionVectorBase *>(&condition_option)) {
+            if (value_index >= vector_option->size())
+                return false;
+            serialized = vector_option->serialize_at(int(value_index));
+        } else {
+            serialized = condition_option.serialize();
+        }
+        if (!serialized.empty() && serialized.front() == '!')
+            serialized.erase(serialized.begin());
+        return serialized == clause.condition_string_value;
     }
     case RAW_GUI_RULE_CONDITION_NONE:
     default:
@@ -185,13 +202,16 @@ struct GuiRuleClauseCacheKey
     int32_t condition_index;
     double condition_float_value;
     std::string_view condition_key;
+    std::string_view condition_string_value;
+
 
     bool operator==(const GuiRuleClauseCacheKey &rhs) const
     {
         return condition == rhs.condition &&
                condition_index == rhs.condition_index &&
                condition_float_value == rhs.condition_float_value &&
-               condition_key == rhs.condition_key;
+               condition_key == rhs.condition_key &&
+               condition_string_value == rhs.condition_string_value;
     }
 };
 
@@ -204,6 +224,7 @@ struct GuiRuleClauseCacheHash
         config_hash_combine(seed, key.condition_index);
         config_hash_combine(seed, key.condition_float_value);
         config_hash_combine(seed, key.condition_key);
+        config_hash_combine(seed, key.condition_string_value);
         return seed;
     }
 };
@@ -279,7 +300,8 @@ struct GuiRuleEvaluationContext
         bool rule_skipped = false;
         for (const GuiRuleRegistry::Clause &clause : rule.clauses) {
             const GuiRuleClauseCacheKey cache_key{
-                clause.condition, clause.condition_index, clause.condition_float_value, clause.condition_key };
+                clause.condition, clause.condition_index, clause.condition_float_value,
+                clause.condition_key, clause.condition_string_value };
             GuiRuleClauseResult result = GuiRuleClauseResult::False;
             const auto cached = clause_cache.find(cache_key);
             if (cached != clause_cache.end()) {
@@ -328,6 +350,8 @@ std::string gui_rule_validation_error(const raw_gui_rule *rule)
         return "Rejected GUI rule: null descriptor.";
     if (rule->struct_size < sizeof(raw_gui_rule))
         return "Rejected GUI rule: struct_size is smaller than the host descriptor.";
+    if (rule->clause_struct_size != sizeof(raw_gui_rule_clause))
+        return "Rejected GUI rule: clause_struct_size does not match the host clause layout.";
 
     const std::string prefix = std::string("Rejected GUI rule for target '") +
         (rule->target_key != nullptr ? rule->target_key : "<null>") + "':";
@@ -357,6 +381,9 @@ std::string gui_rule_validation_error(const raw_gui_rule *rule)
         if (gui_rule_condition_needs_finite_float(clause.condition) &&
             !std::isfinite(clause.condition_float_value))
             return reject("non-finite condition_float_value");
+        if (clause.condition == RAW_GUI_RULE_CONDITION_STRING_EQUALS &&
+            (clause.condition_string_value == nullptr || clause.condition_string_value[0] == '\0'))
+            return reject("missing condition_string_value");
     }
     return std::string();
 }
@@ -547,6 +574,8 @@ GuiRuleRegistry::Registration GuiRuleRegistry::add(const raw_gui_rule *rule, con
         stored.condition_key = clause.condition_key;
         stored.condition_index = clause.condition_index;
         stored.condition_float_value = clause.condition_float_value;
+        stored.condition_string_value =
+            clause.condition_string_value != nullptr ? clause.condition_string_value : "";
         gui_rule.clauses.emplace_back(std::move(stored));
     }
 
@@ -565,7 +594,8 @@ GuiRuleRegistry::Registration GuiRuleRegistry::add(const raw_gui_rule *rule, con
             identical = lhs.condition == rhs.condition &&
                 lhs.condition_key == rhs.condition_key &&
                 lhs.condition_index == rhs.condition_index &&
-                lhs.condition_float_value == rhs.condition_float_value;
+                lhs.condition_float_value == rhs.condition_float_value &&
+                lhs.condition_string_value == rhs.condition_string_value;
         }
         if (identical)
             return GuiRuleRegistration::Duplicate;

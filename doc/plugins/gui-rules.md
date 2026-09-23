@@ -43,11 +43,16 @@ compares it using `condition_float_value`:
 | `FLOAT_EQUALS` / `FLOAT_LESS_THAN` / `FLOAT_GREATER_OR_EQUAL` | `get_float()` equals / is below / is at least `condition_float_value` |
 | `IS_PERCENT` | the option stores a percentage |
 | `VECTOR_EMPTY` | the option is a vector with no item |
+| `STRING_EQUALS` | the serialized value equals `condition_string_value` |
 
 `condition_float_value` is the single numeric operand: `INT_*` conditions round
 it, so enum comparisons pass the enum value directly. `FLOAT_*` compares the
 normalized value: a percent option uses a fraction, so 50% is `0.5`.
 `IS_PERCENT` and `VECTOR_EMPTY` ignore the numeric value.
+`STRING_EQUALS` compares the serialized value of any option type, so it works
+for plugin-defined enums that store plugin ids: for example
+`string_equals("solid_fill_pattern", "smooth")`. A leading `!` (disabled
+option) is not part of the compared value.
 
 `condition_index` may be a real item index, `RAW_GUI_RULE_INDEX_ALL` (default)
 or `RAW_GUI_RULE_INDEX_CURRENT`. For an extruder-sized vector, `ALL` means

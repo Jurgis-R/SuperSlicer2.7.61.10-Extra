@@ -377,7 +377,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionBool,                 avoid_travel_island))
     ((ConfigOptionFloat,                avoid_travel_island_weight))
     ((ConfigOptionFloat,                bridge_angle))
-    ((ConfigOptionEnum<InfillPattern>,  bridge_fill_pattern))
+    // bridge_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionEnum<BridgeType>,     bridge_type))
     ((ConfigOptionInt,                  bottom_solid_layers))
     ((ConfigOptionFloat,                bottom_solid_min_thickness))
@@ -385,7 +385,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionPercent,              over_bridge_flow_ratio))
     ((ConfigOptionPercent,              bridge_overlap))
     ((ConfigOptionPercent,              bridge_overlap_min))
-    ((ConfigOptionEnum<InfillPattern>,  bottom_fill_pattern))
+    // bottom_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionFloatOrPercent,       bridged_infill_margin))
     ((ConfigOptionFloat,                curve_smoothing_precision))
     ((ConfigOptionFloat,                curve_smoothing_cutoff_dist))
@@ -411,7 +411,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloat,                fill_angle_increment))
     ((ConfigOptionFloats,               fill_angle_template))
     ((ConfigOptionPercent,              fill_density))
-    ((ConfigOptionEnum<InfillPattern>,  fill_pattern))
+    // fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionEnum<FuzzySkinType>,  fuzzy_skin))
     ((ConfigOptionFloatOrPercent,       fuzzy_skin_thickness))
     ((ConfigOptionFloatOrPercent,       fuzzy_skin_point_dist))
@@ -494,7 +494,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloatOrPercent,       small_perimeter_speed))
     ((ConfigOptionFloatOrPercent,       small_perimeter_min_length))
     ((ConfigOptionFloatOrPercent,       small_perimeter_max_length))
-    ((ConfigOptionEnum<InfillPattern>,  solid_fill_pattern))
+    // solid_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionFloat,                solid_infill_below_area))
     ((ConfigOptionFloat,                solid_infill_below_layer_area))
     ((ConfigOptionFloatOrPercent,       solid_infill_below_width))
@@ -507,7 +507,7 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionInt,                  solid_over_perimeters))
     ((ConfigOptionInt,                  print_first_layer_temperature))
     ((ConfigOptionInt,                  print_temperature))
-    ((ConfigOptionEnum<InfillPattern>,  top_fill_pattern))
+    // top_fill_pattern is defined by the infill.generator.default plugin.
     ((ConfigOptionFloatOrPercent,       top_infill_extrusion_width))
     ((ConfigOptionFloatOrPercent,       top_infill_extrusion_spacing))
     ((ConfigOptionInt,                  top_solid_layers))

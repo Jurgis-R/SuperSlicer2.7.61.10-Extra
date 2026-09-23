@@ -9,7 +9,7 @@
 an independent activation reason and the target is enabled when any of them is
 true. */
 #define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 3u
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 0u
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 1u
 
 /*
 Property registration guide:
@@ -428,6 +428,18 @@ typedef enum raw_gui_rule_condition {
     RAW_GUI_RULE_CONDITION_IS_PERCENT,
     /* True when the option is a vector and holds no item. */
     RAW_GUI_RULE_CONDITION_VECTOR_EMPTY,
+    /*
+    Compare the option's serialized value with condition_string_value.
+
+    The comparison is string-based, so it works for every option type: enums
+    compare their value name (for example "smooth"), strings their text. For a
+    vector option, the item selected by condition_index is compared: an explicit
+    index reads that item, RAW_GUI_RULE_INDEX_CURRENT reads the current extruder
+    item and RAW_GUI_RULE_INDEX_ALL is true when any item matches. A leading '!'
+    (disabled option) is not part of the compared value, matching serialize()
+    normalization used elsewhere in the GUI.
+    */
+    RAW_GUI_RULE_CONDITION_STRING_EQUALS,
     /* Number of declared condition kinds; unknown values are rejected. */
     RAW_GUI_RULE_CONDITION_COUNT
 } raw_gui_rule_condition;
@@ -461,13 +473,21 @@ operand:
 - RAW_GUI_RULE_CONDITION_FLOAT_EQUALS, RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN
   and RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL compare the normalized
   option float value directly;
-- IS_PERCENT and VECTOR_EMPTY ignore condition_float_value.
+- RAW_GUI_RULE_CONDITION_STRING_EQUALS compares the serialized option value
+  (or, for a vector option, the serialized item selected by condition_index)
+  with condition_string_value;
+- IS_PERCENT and VECTOR_EMPTY ignore both operands.
 */
 typedef struct raw_gui_rule_clause {
     raw_gui_rule_condition condition;
     const char *condition_key;
     int32_t condition_index;
     double condition_float_value;
+    /*
+    Expected serialized value for STRING_EQUALS. Borrowed only for the duration
+    of orchestrator_add_gui_rule(); the host copies it.
+    */
+    const char *condition_string_value;
 } raw_gui_rule_clause;
 
 static inline raw_gui_rule_clause raw_gui_rule_clause_init()
@@ -499,8 +519,10 @@ A setting with no rule at all stays enabled.
   options. Use RAW_GUI_RULE_INDEX_ALL for scalar options or when the whole
   field should be affected. Use RAW_GUI_RULE_INDEX_CURRENT for a target that
   must be applied item by item in the current extruder loop.
-- struct_size must be set to sizeof(raw_gui_rule). It allows later
-  additions to the structure without breaking already compiled callers.
+- struct_size must be set to sizeof(raw_gui_rule) and clause_struct_size to
+  sizeof(raw_gui_rule_clause). They allow later additions to the structures
+  without breaking already compiled callers: the host rejects a descriptor
+  whose struct_size or clause_struct_size is smaller than the host layout.
 
 Rules whose target setting is not defined yet are queued and attached when the
 definition appears; a non-blocking warning lists the keys that never appeared.
@@ -525,12 +547,15 @@ typedef struct raw_gui_rule {
     raw_option_preset_type scope;
     const raw_gui_rule_clause *clauses;
     uint32_t clause_count;
+    /* Size of one element of clauses; must be sizeof(raw_gui_rule_clause). */
+    uint32_t clause_struct_size;
 } raw_gui_rule;
 
 static inline raw_gui_rule raw_gui_rule_init()
 {
     raw_gui_rule rule = {0};
     rule.struct_size = (uint32_t)sizeof(raw_gui_rule);
+    rule.clause_struct_size = (uint32_t)sizeof(raw_gui_rule_clause);
     rule.target_index = RAW_GUI_RULE_INDEX_ALL;
     rule.scope = RAW_PRESET_TYPE_NONE;
     return rule;

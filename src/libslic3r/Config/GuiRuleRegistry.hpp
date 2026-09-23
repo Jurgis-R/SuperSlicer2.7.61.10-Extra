@@ -38,6 +38,9 @@ public:
         // Numeric operand: llround() for INT_EQUALS/INT_NOT_EQUALS, normalized
         // float for FLOAT_* conditions, ignored by IS_PERCENT/VECTOR_EMPTY.
         double condition_float_value = 0.0;
+        // Serialized operand for STRING_EQUALS; for a vector option it is
+        // compared against the item resolved from condition_index.
+        std::string condition_string_value;
     };
 
     struct PluginGuiRule

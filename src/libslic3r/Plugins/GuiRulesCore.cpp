@@ -267,7 +267,7 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
              int_not_equals("fuzzy_skin", int(FuzzySkinType::None)));
 
     // ----- infill -------------------------------------------------------
-    add_rule({ "fill_aligned_z", "fill_pattern", "infill_connection",
+    add_rule({ "fill_aligned_z", "infill_connection",
                "solid_infill_every_layers", "solid_infill_below_area",
                "solid_infill_below_layer_area", "solid_infill_below_width",
                "infill_extruder" }, non_zero("fill_density"));
@@ -319,21 +319,20 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     }));
 
     // solid / top / bottom surfaces
-    add_rule({ "ironing", "top_fill_pattern", "infill_connection_top",
+    add_rule({ "ironing", "infill_connection_top",
                "top_infill_extrusion_width", "top_infill_extrusion_spacing" }, has_top);
-    add_rule({ "bottom_fill_pattern", "infill_connection_bottom" }, has_bottom);
-    add_rule({ "solid_fill_pattern", "infill_connection_solid",
-               "bridge_fill_pattern", "infill_connection_bridge" }, has_solid);
+    add_rule({ "infill_connection_bottom" }, has_bottom);
+    add_rule({"infill_connection_solid", "bridge_fill_pattern", "infill_connection_bridge"}, has_solid);
 
     const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
     add_rule({ "ironing_type", "ironing_flowrate", "ironing_spacing", "ironing_angle" }, ironing_pp);
 
     const GuiCondition fill_smooth = any_of({
-        all_of({ has_top, int_equals("top_fill_pattern", int(InfillPattern::ipSmooth)) }),
-        all_of({ has_bottom, int_equals("bottom_fill_pattern", int(InfillPattern::ipSmooth)) }),
-        all_of({ has_solid, int_equals("solid_fill_pattern", int(InfillPattern::ipSmooth)) }),
-        all_of({ have_support, int_equals("support_material_top_interface_pattern", int(InfillPattern::ipSmooth)) }),
-        all_of({ have_support, int_equals("support_material_bottom_interface_pattern", int(InfillPattern::ipSmooth)) })
+        all_of({ has_top, string_equals("top_fill_pattern", "smooth") }),
+        all_of({ has_bottom, string_equals("bottom_fill_pattern", "smooth") }),
+        all_of({ has_solid, string_equals("solid_fill_pattern", "smooth") }),
+        all_of({ have_support, string_equals("support_material_top_interface_pattern", "smooth") }),
+        all_of({ have_support, string_equals("support_material_bottom_interface_pattern", "smooth") })
     });
     add_rule({ "fill_smooth_width", "fill_smooth_distribution" }, fill_smooth);
 

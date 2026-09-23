@@ -226,7 +226,8 @@ SCENARIO("Flow: stats are okay") {
     config.set_key_value("bottom_solid_layers", new ConfigOptionInt{1000});
     config.set_key_value("extruder", new ConfigOptionInt{0});
     config.set_key_value("nozzle_diameter", new ConfigOptionFloats(1, 0.5f));
-    config.set_key_value("solid_fill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+    // solid_fill_pattern is plugin-defined; without loaded plugins the legacy
+    // Fill path falls back to rectilinear, which is what this scenario wants.
     config.set_key_value("first_layer_extrusion_width", new ConfigOptionFloatOrPercent(0.5, false));
     config.set_key_value("solid_infill_extrusion_width", new ConfigOptionFloatOrPercent(0.5, false));
     config.set_key_value("top_infill_extrusion_width", new ConfigOptionFloatOrPercent(0.5, false));

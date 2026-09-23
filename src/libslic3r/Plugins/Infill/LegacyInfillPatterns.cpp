@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_infill.h"
 #include "libslic3r/Fill/FillBase.hpp"
@@ -116,6 +117,60 @@ bool requires_unmigrated_object_state(Slic3r::InfillPattern pattern)
            pattern == Slic3r::ipLightning;
 }
 
+// Option keys whose pattern list this plugin wants to join. Each pattern
+// declares the lists it is valid for; the host ignores unknown keys, so a
+// pattern never needs to know whether a list already exists.
+const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
+{
+    static const char *const k_none[] = { nullptr };
+    static const char *const k_all_five[] = {
+        "fill_pattern", "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", "bridge_fill_pattern", nullptr
+    };
+    static const char *const k_sparse_top_bottom_solid[] = {
+        "fill_pattern", "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
+    };
+    static const char *const k_top_bottom_solid[] = {
+        "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
+    };
+    static const char *const k_sparse_only[] = { "fill_pattern", nullptr };
+    static const char *const k_top_only[] = { "top_fill_pattern", nullptr };
+    static const char *const k_solid_only[] = { "solid_fill_pattern", nullptr };
+
+    switch (pattern) {
+    case Slic3r::ipRectilinear:
+    case Slic3r::ipMonotonic:
+        return k_all_five;
+    case Slic3r::ipAlignedRectilinear:
+    case Slic3r::ipConcentric:
+    case Slic3r::ipHilbertCurve:
+    case Slic3r::ipArchimedeanChords:
+    case Slic3r::ipOctagramSpiral:
+        return k_sparse_top_bottom_solid;
+    case Slic3r::ipMonotonicLines:
+    case Slic3r::ipSmooth:
+        return k_top_bottom_solid;
+    case Slic3r::ipGrid:
+    case Slic3r::ipTriangles:
+    case Slic3r::ipStars:
+    case Slic3r::ipCubic:
+    case Slic3r::ipLine:
+    case Slic3r::ipHoneycomb:
+    case Slic3r::ip3DHoneycomb:
+    case Slic3r::ipGyroid:
+    case Slic3r::ipAdaptiveCubic:
+    case Slic3r::ipSupportCubic:
+    case Slic3r::ipScatteredRectilinear:
+    case Slic3r::ipLightning:
+        return k_sparse_only;
+    case Slic3r::ipSawtooth:
+        return k_top_only;
+    case Slic3r::ipEnsuring:
+        return k_solid_only;
+    default:
+        return k_none;
+    }
+}
+
 Slic3r::Flow flow_from_raw(const c_flow &flow)
 {
     // c_flow is the ABI representation prepared by the host step. Flow does
@@ -183,6 +238,23 @@ private:
     const char *const *dependencies_impl() const noexcept override { return k_no_dependencies; }
     int32_t priority_impl() const noexcept override { return m_priority; }
     const char *progress_message_format_impl() const noexcept override { return "Generating infill pattern: %u / %u"; }
+
+    void inilialize_impl(storage_handle *) const override
+    {
+        // Join every pattern list this pattern is valid for. The host keeps
+        // contributions for keys that do not exist yet and applies them when the
+        // list is created by another plugin.
+        for (const char *const *key = pattern_option_memberships(m_pattern); *key != nullptr; ++key) {
+            key_value_string_pair_t entry = { m_id, m_name };
+            key_value_string_pair_array_t entries = { &entry, 1 };
+
+            raw_option_def_patch patch = raw_option_def_patch_init();
+            patch.kind = RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES;
+            patch.opt_key = *key;
+            patch.enum_values = entries;
+            orchestrator_modify_option_def(m_orchestrator, &patch);
+        }
+    }
 
     void run_impl(const plugin_run_context *run_ctx) const override
     {

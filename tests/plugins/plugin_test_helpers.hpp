@@ -11,6 +11,8 @@ void register_regional_seam_test_provider(orchestrator_handle *orchestrator);
 void register_gcode_reader_test_providers(orchestrator_handle *orchestrator);
 void ensure_plugin_test_runtime_initialized();
 bool python_plugin_test_runtime_available();
+/* True when the runtime reported the empty plugin-id option list fixture. */
+bool plugin_test_empty_option_list_error_reported();
 
 } // namespace Slic3r::Test::Plugins
 

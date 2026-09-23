@@ -6,7 +6,7 @@
 #define slic3r_config_def_h_
 
 #define SLIC3R_PLUGIN_API_CONFIG_DEF_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CONFIG_DEF_MINOR 2u
+#define SLIC3R_PLUGIN_API_CONFIG_DEF_MINOR 3u
 
 #include "slic3r_config_option.h"
 #include "slic3r_config_types.h"
@@ -372,8 +372,23 @@ typedef struct raw_config_option_def {
     /* Enum definition (for select/enum types) */
     option_enum_def_t enum_def;
 
+    /*
+    Set to 1 when every value of this enum is a plugin id.
+
+    Such a list may only contain ids of registered plugins. When plugin option
+    definitions are finalized, the host removes values whose plugin is missing
+    or inactive and reports a non-fatal error when the remaining list is empty.
+    No host-only value may be mixed into a plugin-id list.
+
+    This consumes the first reserved 64-bit slot. The remaining reserved_u64
+    entries keep the structure size and every following offset unchanged, so
+    already compiled callers that zero the reserved area keep working.
+    */
+    int32_t contains_plugin_id;
+    uint32_t reserved_u64_0;
+
     /* Reserved for future expansion (must be zero) */
-    uint64_t reserved_u64[8];
+    uint64_t reserved_u64[7];
 
     /*
     Optional graph editor definition. It is accepted only for GRAPH and
@@ -462,6 +477,83 @@ SLIC3R_HOST_API int32_t orchestrator_get_option_def(
     const orchestrator_handle *orchestrator,
     const char *key,
     raw_config_option_def *out);
+
+/* ========================= CONFIG DEFINITION PATCH ========================= */
+
+/*
+One deferred modification of an existing configuration option definition.
+
+Patches are recorded while plugins initialize and applied together after every
+plugin has been loaded. Keeping them deferred makes the result independent of
+plugin initialization order and lets a patch target a key that another plugin
+creates later. A patch whose target key is never defined is ignored.
+
+Patch kinds:
+
+- ADD_ENUM_VALUES appends (prepend != 0: prepends) entries to an enum. Already
+  present values keep their first position and label.
+- REMOVE_ENUM_VALUES removes the listed values from an enum.
+- SET_DEFAULT replaces the default with default_serialized_value.
+- REPLICATE_ENUM replaces the enum with a snapshot of source_option_key's
+  resolved values. The source is resolved first and may itself be built from
+  patches; a dependency cycle is broken softly, so each option still resolves
+  deterministically.
+
+Replicating an option whose values change later is impossible because the
+snapshot is taken once during finalization.
+*/
+typedef enum raw_option_def_patch_kind {
+    RAW_OPTION_DEF_PATCH_NONE = 0,
+    RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES,
+    RAW_OPTION_DEF_PATCH_REMOVE_ENUM_VALUES,
+    RAW_OPTION_DEF_PATCH_SET_DEFAULT,
+    RAW_OPTION_DEF_PATCH_REPLICATE_ENUM
+} raw_option_def_patch_kind;
+
+typedef struct raw_option_def_patch {
+    raw_option_def_patch_kind kind;
+
+    /* Target option key. Required for every kind. */
+    const char *opt_key;
+
+    /* ADD_ENUM_VALUES entries. The host copies values and labels. */
+    key_value_string_pair_array_t enum_values;
+
+    /* REMOVE_ENUM_VALUES entries. Only the value strings are read. */
+    const_strings_t remove_values;
+
+    /* SET_DEFAULT serialized value, for example "rectilinear". */
+    const char *default_serialized_value;
+
+    /* REPLICATE_ENUM source option key. */
+    const char *source_option_key;
+
+    /* ADD_ENUM_VALUES position: 0 appends, 1 prepends. */
+    int32_t prepend;
+
+    /* Reserved for future expansion (must be zero). */
+    uint64_t reserved[4];
+} raw_option_def_patch;
+
+static inline raw_option_def_patch raw_option_def_patch_init()
+{
+    raw_option_def_patch patch = {0};
+    return patch;
+}
+
+/*
+Record one deferred option definition patch.
+
+The patch is retained until the host finalizes plugin option definitions. An
+invalid descriptor is rejected and nothing is recorded. Reusing a key owned by
+another plugin or exclusive group is intentionally allowed: a patch adds values
+to an existing list, it does not redefine the option.
+
+Returns OPTION_DEF_ERROR_OK when the patch was recorded.
+*/
+SLIC3R_HOST_API option_def_error_code orchestrator_modify_option_def(
+    orchestrator_handle *orch,
+    const raw_option_def_patch *patch);
 
 #ifdef __cplusplus
 } // extern "C"

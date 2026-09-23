@@ -45,6 +45,7 @@
 #include "ExPolygon.hpp"
 #include "ExtrusionEntityVisitors.hpp"
 #include "Fill/FillAdaptive.hpp"
+#include "Fill/FillBase.hpp"
 #include "Fill/FillLightning.hpp"
 #include "Flow.hpp"
 #include "format.hpp"
@@ -1478,7 +1479,8 @@ FillLightning::GeneratorPtr PrintObject::prepare_lightning_infill_data()
     coordf_t lightning_density    = 0.;
     size_t   lightning_cnt        = 0;
     for (size_t region_id = 0; region_id < this->num_printing_regions(); ++region_id)
-        if (const PrintRegionConfig &config = this->printing_region(region_id).config(); config.fill_density > 0 && config.fill_pattern.value == ipLightning) {
+        if (const PrintRegionConfig &config = this->printing_region(region_id).config();
+            config.fill_density > 0 && region_infill_pattern(config, "fill_pattern", ipRectilinear) == ipLightning) {
             has_lightning_infill = true;
             lightning_density   += config.fill_density;
             ++lightning_cnt;
@@ -3321,7 +3323,7 @@ void PrintObject::bridge_over_infill()
     // It requires modifying this instance of print object in a specific way, so that we do not invalidate the pointers in our surfaces_by_layer structure.
     bool has_lightning_infill = false;
     for (size_t i = 0; i < this->num_printing_regions(); i++) {
-        if (this->printing_region(i).config().fill_pattern.value == InfillPattern::ipLightning) {
+        if (region_infill_pattern(this->printing_region(i).config(), "fill_pattern", ipRectilinear) == InfillPattern::ipLightning) {
             has_lightning_infill = true;
             break;
         }
@@ -3348,7 +3350,7 @@ void PrintObject::bridge_over_infill()
 
                 Polygons lightning_fill;
                 for (const LayerRegion &region : lower_layer->regions()) {
-                    if (region.region().config().fill_pattern.value == InfillPattern::ipLightning) {
+                    if (region_infill_pattern(region.region().config(), "fill_pattern", ipRectilinear) == InfillPattern::ipLightning) {
                         Polygons lf = to_polygons(region.fill_surfaces().filter_by_type(stPosInternal | stDensSparse));
                         lightning_fill.insert(lightning_fill.end(), lf.begin(), lf.end());
                     }
@@ -3876,7 +3878,7 @@ void PrintObject::bridge_over_infill()
                     expansion_area.insert(expansion_area.end(), internal_polys.begin(), internal_polys.end());
                     Polygons fill_polys = to_polygons(region.fill_expolygons());
                     total_fill_area.insert(total_fill_area.end(), fill_polys.begin(), fill_polys.end());
-                    if (region.region().config().fill_pattern.value == ipLightning) {
+                    if (region_infill_pattern(region.region().config(), "fill_pattern", ipRectilinear) == ipLightning) {
                         Polygons l = to_polygons(region.fill_surfaces().filter_by_types(
                             {(stPosInternal | stDensSparse), (stPosInternal | stDensSparse | stModBridge)}));
                         lightning_area.insert(lightning_area.end(), l.begin(), l.end());
@@ -3955,7 +3957,8 @@ void PrintObject::bridge_over_infill()
                         if (!anchors.empty()) {
                             bridging_angle =
                                 determine_bridging_angle(area_to_be_bridge, to_lines(anchors),
-                                                         candidate.region->region().config().fill_pattern.value);
+                                                         region_infill_pattern(candidate.region->region().config(),
+                                                                               "fill_pattern", ipRectilinear));
                         } else {
                             // use expansion boundaries as anchors.
                             // Also, use Infill pattern that is neutral for angle determination, since there are no
@@ -4743,15 +4746,16 @@ void PrintObject::combine_infill()
             intersection_with_clearance.reserve(intersection.size());
             //TODO: check if that 'hack' isn't counter-productive : the overlap is done at perimetergenerator (so before this)
             // and the not-overlap area is stored in the LayerRegion object
+            const InfillPattern fill_pattern = region_infill_pattern(region.config(), "fill_pattern", ipRectilinear);
             float clearance_offset =
                 0.5f * layerms.back()->flow(frPerimeter).scaled_width() +
                  // Because fill areas for rectilinear and honeycomb are grown 
                  // later to overlap perimeters, we need to counteract that too.
-                ((region.config().fill_pattern.value == ipRectilinear   ||
-                  region.config().fill_pattern.value == ipMonotonic     ||
-                  region.config().fill_pattern.value == ipGrid          ||
-                  region.config().fill_pattern.value == ipLine          ||
-                  region.config().fill_pattern.value == ipHoneycomb) ? 1.5f : 0.5f) *
+                ((fill_pattern == ipRectilinear   ||
+                  fill_pattern == ipMonotonic     ||
+                  fill_pattern == ipGrid          ||
+                  fill_pattern == ipLine          ||
+                  fill_pattern == ipHoneycomb) ? 1.5f : 0.5f) *
                     layerms.back()->flow(frSolidInfill).scaled_width();
             for (ExPolygon& expoly : intersection) {
                 polygons_append(intersection_with_clearance, offset(expoly, clearance_offset));

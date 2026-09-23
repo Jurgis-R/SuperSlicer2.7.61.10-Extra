@@ -779,65 +779,6 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::GuiRulesCorePlugin::register_gui_rules_core_plugin);
 }
 
-std::vector<std::pair<std::string, std::string>> active_infill_pattern_choices(Orchestrator &orchestrator)
-{
-    std::vector<std::pair<std::string, std::string>> choices;
-    std::set<std::string> seen_ids;
-
-    for (const Plugin *plugin : orchestrator.get_active_plugins_for_step(INFILL_PATTERN)) {
-        Slic3r::InfillPattern typed_value = Slic3r::ipCount;
-        if (!Slic3r::ConfigOptionEnum<Slic3r::InfillPattern>::from_string(plugin->get_id(), typed_value)) {
-            BOOST_LOG_TRIVIAL(warning)
-                << "Active infill pattern plugin '" << plugin->get_id()
-                << "' cannot be exposed yet because fill pattern options still use the static InfillPattern enum.";
-            continue;
-        }
-
-        if (seen_ids.insert(plugin->get_id()).second)
-            choices.emplace_back(plugin->get_id(), plugin->get_name());
-    }
-
-    return choices;
-}
-
-void apply_infill_pattern_choices_to_option(ConfigOptionDef &def,
-                                            const std::vector<std::pair<std::string, std::string>> &choices,
-                                            const std::string &default_id)
-{
-    // The GUI list is dynamic, but the stored option is still
-    // ConfigOptionEnum<InfillPattern>. set_enum<InfillPattern>() therefore
-    // keeps the existing string-to-enum map while restricting the visible
-    // choices to active INFILL_PATTERN plugins.
-    def.set_enum<InfillPattern>(choices);
-
-    InfillPattern default_pattern = ipRectilinear;
-    if (!ConfigOptionEnum<InfillPattern>::from_string(default_id, default_pattern))
-        ConfigOptionEnum<InfillPattern>::from_string(choices.front().first, default_pattern);
-    def.set_default_value(new ConfigOptionEnum<InfillPattern>(default_pattern));
-}
-
-void register_infill_pattern_config_choices(Orchestrator &orchestrator)
-{
-    const std::vector<std::pair<std::string, std::string>> choices =
-        active_infill_pattern_choices(orchestrator);
-    if (choices.empty())
-        return;
-
-    ConfigDef &definition = PrintConfigDef::instance_mutable();
-    const char *const option_keys[] = {
-        "fill_pattern",
-        "top_fill_pattern",
-        "bottom_fill_pattern",
-        "solid_fill_pattern",
-        "bridge_fill_pattern"
-    };
-
-    for (const char *option_key : option_keys) {
-        t_optiondef_map::iterator option = definition.options.find(option_key);
-        if (option != definition.options.end())
-            apply_infill_pattern_choices_to_option(option->second, choices, "rectilinear");
-    }
-}
 
 void add_exclusive_step_used_setting_rules(Orchestrator &orchestrator,
                                            const Steps::StepExclusiveGroup &group,
@@ -1221,10 +1162,12 @@ void load_plugins()
                             << (user_configuration_available ? plugin_activation_config_path(config_dir).string() :
                                 (boost::filesystem::path(resources_dir()) / "plugins/default_activated.ini").string()) << ".";
     activate_plugins_from_ids(orchestrator, active_plugin_ids, user_configuration_available);
-    register_infill_pattern_config_choices(orchestrator);
     register_exclusive_step_group_options_impl(orchestrator);
 
     orchestrator.initialize_plugins();
+    // Plugins may have recorded deferred option definition patches while they
+    // initialized. Apply them before the GUI or presets read the definitions.
+    orchestrator.finalize_plugin_option_defs();
     register_exclusive_step_group_ui_fragments_impl(orchestrator);
     //note: --loglevel 4 is read too late for this log, use $env:SLIC3R_LOGLEVEL = "4" (or SLIC3R_LOGLEVEL=4 in visual studio environement line)
     BOOST_LOG_TRIVIAL(debug) << "Loaded the entire plugin library in "
