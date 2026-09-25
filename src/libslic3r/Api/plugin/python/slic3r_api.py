@@ -1005,9 +1005,9 @@ class Slic3rAPI:
     def ordering_context(self, address: int) -> OrderingContext | None:
         return OrderingContext.from_ordering_run_context(self, address)
 
-    @abi_requires_headers("steps/slic3r_step_pre_gcode.h")
-    def pre_gcode_context(self, address: int) -> PreGCodeContext | None:
-        return PreGCodeContext.from_pre_gcode_run_context(self, address)
+    @abi_requires_headers("steps/slic3r_step_finalize_slicing.h")
+    def finalize_slicing_context(self, address: int) -> FinalizeSlicingContext | None:
+        return FinalizeSlicingContext.from_finalize_slicing_run_context(self, address)
 
     @abi_requires_headers("steps/slic3r_step_gcode.h")
     def gcode_context(self, address: int) -> GCodeContext | None:

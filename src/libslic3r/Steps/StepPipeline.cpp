@@ -19,6 +19,7 @@
 #include "libslic3r/Steps/StepExtrusionEdition.hpp"
 #include "libslic3r/Steps/StepExtrusionOrdering.hpp"
 #include "libslic3r/Steps/StepExtrusionSimplification.hpp"
+#include "libslic3r/Steps/StepFinalizeSlicing.hpp"
 #include "libslic3r/Steps/StepGenerateGcode.hpp"
 #include "libslic3r/Steps/StepReadGeneratedGcode.hpp"
 #include "libslic3r/Steps/StepGenerateInfill.hpp"
@@ -33,7 +34,6 @@
 #include "libslic3r/Steps/StepPostPerimeterGeneration.hpp"
 #include "libslic3r/Steps/StepPostSlicing.hpp"
 #include "libslic3r/Steps/StepPrepareForPeriemters.hpp"
-#include "libslic3r/Steps/StepPrepareGcode.hpp"
 #include "libslic3r/Steps/StepPrepareInfill.hpp"
 #include "libslic3r/Steps/StepSlicing.hpp"
 #include "libslic3r/Steps/StepRunner.hpp"
@@ -83,7 +83,7 @@ const std::vector<slicing_step_t> &execution_order()
         STEP_SUPPORT_DEMAND,
         STEP_SUPPORT,
         STEP_SKIRT_BRIM,
-        STEP_PRE_GCODE,
+        STEP_FINALIZE_SLICING,
         STEP_ORDERING,
         STEP_WIPETOWER,
         STEP_SUPPORT_SPOT,
@@ -112,8 +112,8 @@ const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
         {STEP_POST_INFILL, {STEP_SUPPORT_DEMAND}},
         {STEP_SUPPORT_DEMAND, {STEP_SUPPORT}},
         {STEP_SUPPORT, {STEP_SKIRT_BRIM}},
-        {STEP_SKIRT_BRIM, {STEP_PRE_GCODE}},
-        {STEP_PRE_GCODE, {STEP_ORDERING}},
+        {STEP_SKIRT_BRIM, {STEP_FINALIZE_SLICING}},
+        {STEP_FINALIZE_SLICING, {STEP_ORDERING}},
         {STEP_ORDERING, {STEP_WIPETOWER}},
         {STEP_WIPETOWER, {STEP_SUPPORT_SPOT}},
         {STEP_SUPPORT_SPOT, {STEP_LAYER_EXTRUSION_EDIT}},
@@ -251,7 +251,7 @@ bool is_known_builtin_step(slicing_step_t step)
     case STEP_POST_INFILL:
     case STEP_SUPPORT_DEMAND:
     case STEP_SUPPORT:
-    case STEP_PRE_GCODE:
+    case STEP_FINALIZE_SLICING:
     case STEP_CHECK_CONFLICT:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
@@ -294,7 +294,6 @@ raw_option_category option_category_for_step(slicing_step_t step)
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
     case GCODE_READER:
-    case STEP_PRE_GCODE:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
     case STEP_LAYER_STICHING:
@@ -818,7 +817,7 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
                          GCodeProcessorResult *gcode_result = nullptr)
 {
     // This helper is shared by slice preparation and export. Print::process()
-    // stops it at STEP_PRE_GCODE, while Orchestrator::export_gcode() calls it
+    // stops it at STEP_FINALIZE_SLICING, while Orchestrator::export_gcode() calls it
     // again with only the export-side steps marked for execution.
     StepSupportDemand::State support_demand;
 
@@ -907,15 +906,16 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_SKIRT_BRIM, L("Generating skirt and brim"));
         StepSkirtBrim::clean_and_prepare(print);
         StepSkirtBrim::run_step(orchestrator, print);
+        mark_legacy_step_done(print, psSkirtBrim);
     });
     if (stop_after(STEP_SKIRT_BRIM, until)) return;
 
-    run_step_if_requested(print, STEP_PRE_GCODE, [&] {
-        begin_step(print, STEP_PRE_GCODE, L("Preparing G-code"));
-        StepPrepareGcode::clean_and_prepare(print);
-        StepPrepareGcode::run_step(orchestrator, print);
+    run_step_if_requested(print, STEP_FINALIZE_SLICING, [&] {
+        begin_step(print, STEP_FINALIZE_SLICING, L("Finalizing slicing"));
+        StepFinalizeSlicing::clean_and_prepare(print);
+        StepFinalizeSlicing::run_step(orchestrator, print);
     });
-    if (stop_after(STEP_PRE_GCODE, until)) return;
+    if (stop_after(STEP_FINALIZE_SLICING, until)) return;
 
     run_step_if_requested(print, STEP_ORDERING, [&] {
         begin_step(print, STEP_ORDERING, L("Ordering extrusions"));
@@ -1127,7 +1127,7 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
     run_layer_height_generation(orchestrator, print, path);
     run_slicing(orchestrator, print, path);
     run_post_slicing(orchestrator, print, path);
-    run_remaining_steps(orchestrator, print, path, STEP_PRE_GCODE);
+    run_remaining_steps(orchestrator, print, path, STEP_FINALIZE_SLICING);
 }
 
 std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,

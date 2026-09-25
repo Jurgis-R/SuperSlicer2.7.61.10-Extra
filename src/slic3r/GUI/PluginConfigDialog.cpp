@@ -420,7 +420,7 @@ wxString step_name(slicing_step_t step)
     case STEP_POST_INFILL:               return _L("Infill post-processing");
     case STEP_SUPPORT_DEMAND:            return _L("Support demand");
     case STEP_SUPPORT:                   return _L("Support generation");
-    case STEP_PRE_GCODE:                 return _L("G-code preparation");
+    case STEP_FINALIZE_SLICING:          return _L("Slicing finalization");
     case STEP_CHECK_CONFLICT:            return _L("Conflict detection");
     case STEP_ORDERING:                  return _L("Extrusion ordering");
     case STEP_WIPETOWER:                 return _L("Wipe tower");
@@ -483,6 +483,7 @@ std::optional<PluginPhase> phase_for_step(slicing_step_t step)
     case STEP_ALERT_SUPPORTS_NEEDED:
     case STEP_WIPETOWER:
     case STEP_SUPPORT_SPOT:
+    case STEP_FINALIZE_SLICING:
         return PluginPhase::SupportAdhesion;
     case STEP_ORDERING:
     case SEAM_PLACER:
@@ -493,7 +494,6 @@ std::optional<PluginPhase> phase_for_step(slicing_step_t step)
     case STEP_EXTRUSION_EDIT:
     case STEP_EXTRUSION_SIMPLIFICATION:
         return PluginPhase::PostProcessing;
-    case STEP_PRE_GCODE:
     case STEP_GCODE:
     case GCODE_FIRMWARE:
         return PluginPhase::Output;
@@ -1203,10 +1203,10 @@ void PluginConfigDialog::build_navigation()
         INFILL_PATTERN, INFILL_SURFACE_RECIPE_MODIFIER, BRIDGE_DETECTOR,
         STEP_ALERT_SUPPORTS_NEEDED, STEP_SKIRT_BRIM, STEP_SUPPORT_DEMAND, STEP_SUPPORT,
         STEP_WIPETOWER, STEP_SUPPORT_SPOT,
-        STEP_ORDERING, SEAM_PLACER,
+        STEP_FINALIZE_SLICING, STEP_ORDERING, SEAM_PLACER,
         STEP_CHECK_CONFLICT, STEP_LAYER_EXTRUSION_EDIT, STEP_LAYER_STICHING,
         STEP_EXTRUSION_EDIT, STEP_EXTRUSION_SIMPLIFICATION,
-        STEP_PRE_GCODE, STEP_GCODE, GCODE_FIRMWARE
+        STEP_GCODE, GCODE_FIRMWARE
     };
     for (PluginPhase phase : phases) {
         const NavigationScope phase_scope { PluginNavigationKind::Phase, phase, STEP_NONE };

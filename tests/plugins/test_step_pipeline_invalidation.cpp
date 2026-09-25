@@ -28,7 +28,7 @@ TEST_CASE("Step pipeline DAG invalidates only skirt/brim dependents", "[plugins]
 
     CHECK_FALSE(contains_step(dependents, STEP_SUPPORT_DEMAND));
     CHECK_FALSE(contains_step(dependents, STEP_SUPPORT));
-    CHECK(contains_step(dependents, STEP_PRE_GCODE));
+    CHECK(contains_step(dependents, STEP_FINALIZE_SLICING));
     CHECK(contains_step(dependents, STEP_ORDERING));
     CHECK(contains_step(dependents, STEP_WIPETOWER));
     CHECK(contains_step(dependents, STEP_GCODE));
@@ -49,7 +49,7 @@ TEST_CASE("Step pipeline DAG invalidates only skirt/brim dependents", "[plugins]
     print.mark_step_and_dependents_for_execution(STEP_SKIRT_BRIM);
 
     CHECK(print.should_execute_step(STEP_SKIRT_BRIM));
-    CHECK(print.should_execute_step(STEP_PRE_GCODE));
+    CHECK(print.should_execute_step(STEP_FINALIZE_SLICING));
     CHECK(print.should_execute_step(STEP_ORDERING));
     CHECK(print.should_execute_step(STEP_GCODE));
 

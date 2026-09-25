@@ -127,6 +127,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/steps/slic3r_step_common.h
 	Api/plugin/c/steps/slic3r_step_extrusion_edit.h
 	Api/plugin/c/steps/slic3r_step_extrusion_simplification.h
+	Api/plugin/c/steps/slic3r_step_finalize_slicing.h
 	Api/plugin/c/steps/slic3r_step_gcode.h
 	Api/plugin/c/steps/slic3r_step_gcode_firmware.h
 	Api/plugin/c/steps/slic3r_step_gcode_reader.h
@@ -141,7 +142,6 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/steps/slic3r_step_post_infill.h
 	Api/plugin/c/steps/slic3r_step_post_perimeter.h
 	Api/plugin/c/steps/slic3r_step_post_slicing.h
-	Api/plugin/c/steps/slic3r_step_pre_gcode.h
 	Api/plugin/c/steps/slic3r_step_pre_infill.h
 	Api/plugin/c/steps/slic3r_step_pre_perimeter.h
 	Api/plugin/c/steps/slic3r_step_seam_placer.h
@@ -450,6 +450,8 @@ set(SLIC3R_SOURCES
 	Steps/StepExtrusionOrdering.hpp
 	Steps/StepExtrusionSimplification.cpp
 	Steps/StepExtrusionSimplification.hpp
+	Steps/StepFinalizeSlicing.cpp
+	Steps/StepFinalizeSlicing.hpp
 	Steps/StepGenerateGcode.cpp
 	Steps/StepGenerateGcode.hpp
 	Steps/StepGenerateInfill.cpp
@@ -480,8 +482,6 @@ set(SLIC3R_SOURCES
 	Steps/StepPipeline.hpp
 	Steps/StepPrepareForPeriemters.cpp
 	Steps/StepPrepareForPeriemters.hpp
-	Steps/StepPrepareGcode.cpp
-	Steps/StepPrepareGcode.hpp
 	Steps/StepPrepareInfill.cpp
 	Steps/StepPrepareInfill.hpp
 	Steps/StepReadGeneratedGcode.cpp

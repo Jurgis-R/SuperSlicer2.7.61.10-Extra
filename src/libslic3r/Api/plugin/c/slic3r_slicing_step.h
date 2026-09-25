@@ -5,8 +5,8 @@
 #ifndef slic3r_slicing_step_h_
 #define slic3r_slicing_step_h_
 
-#define SLIC3R_PLUGIN_API_SLICING_STEP_MAJOR 1u
-#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 2u
+#define SLIC3R_PLUGIN_API_SLICING_STEP_MAJOR 2u
+#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 0u
 
 #include <stdint.h>
 
@@ -51,7 +51,11 @@ typedef enum slicing_step_t : uint16_t
     STEP_POST_INFILL               = 1100,
     STEP_SUPPORT_DEMAND            = 1200,
     STEP_SUPPORT                   = 1300,
-    STEP_PRE_GCODE                 = 1400,
+    /*
+    Last step allowed to edit the Print data tree. Later steps read it and
+    write their results into the PrintingPlan.
+    */
+    STEP_FINALIZE_SLICING          = 1400,
     STEP_CHECK_CONFLICT            = 1450,
     STEP_ORDERING                  = 1500,
     STEP_WIPETOWER                 = 1600,

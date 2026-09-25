@@ -15,7 +15,7 @@ using PrintObjectStep = slicing_step_t;
 
 // Compatibility aliases for the historical FFF print-level steps.
 static constexpr PrintStep psAlertWhenSupportsNeeded = STEP_ALERT_SUPPORTS_NEEDED;
-static constexpr PrintStep psSkirtBrim               = STEP_PRE_GCODE;
+static constexpr PrintStep psSkirtBrim               = STEP_SKIRT_BRIM;
 static constexpr PrintStep psCheckConflict           = STEP_CHECK_CONFLICT;
 static constexpr PrintStep psSlicingFinished         = STEP_CHECK_CONFLICT;
 static constexpr PrintStep psToolOrdering            = STEP_ORDERING;
