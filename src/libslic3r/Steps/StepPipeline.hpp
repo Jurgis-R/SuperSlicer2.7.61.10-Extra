@@ -83,6 +83,21 @@ Plugin *selected_active_plugin_from_group(Orchestrator &orchestrator,
 // pipeline definition error, not something the graph should silently repair.
 const std::vector<slicing_step_t> &execution_order();
 
+// Return a step's position in execution_order(), or execution_order().size()
+// when the value is not an executable pipeline step.
+size_t execution_index(slicing_step_t step);
+
+// Compare executable steps by the written pipeline order, never by their ABI
+// numeric values. Both arguments must belong to execution_order().
+bool executes_before(slicing_step_t lhs, slicing_step_t rhs);
+
+// Return the invalidation step of a setting once a plugin running at
+// consumer_step reads it. STEP_ANY and an explicit STEP_NONE are kept; any other
+// value becomes the earlier of both steps in execution_order(), so a changed
+// value replays both its original producer and the consumer. Apart from
+// STEP_ANY and STEP_NONE, both steps must belong to execution_order().
+slicing_step_t tightened_invalidation_step(slicing_step_t current, slicing_step_t consumer_step);
+
 // Direct dependency graph used by Print's new invalidation plan. If A maps to
 // B, invalidating A also asks B to run on the next process().
 const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents();

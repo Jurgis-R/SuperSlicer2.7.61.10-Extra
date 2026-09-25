@@ -356,7 +356,7 @@ TEST_CASE("Feature G-code plugin owns its script setting",
     CHECK(def->type == coString);
     CHECK(def->container_type == ConfigOptionContainerType::Plater);
     CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
-    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
     CHECK(def->multiline);
     CHECK(def->full_width);
     CHECK(def->cli == "feature-gcode");

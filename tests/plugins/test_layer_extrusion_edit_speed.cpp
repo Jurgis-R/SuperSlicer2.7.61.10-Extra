@@ -1622,7 +1622,7 @@ TEST_CASE("Layer fan plugin exposes its independent contract",
     CHECK(fan_def->type == coInts);
     CHECK(fan_def->is_vector_extruder);
     CHECK(fan_def->can_be_disabled);
-    CHECK(fan_def->invalidates_step == STEP_GCODE);
+    CHECK(fan_def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(fan_def->default_value->serialize() == "100");
 
     fan_def = PrintConfigDef::instance().get("default_fan_speed");
@@ -1920,7 +1920,7 @@ TEST_CASE("Acceleration plugin owns its settings and activation rules",
     const ConfigOptionDef *def = PrintConfigDef::instance().get("default_acceleration");
     REQUIRE(def != nullptr);
     CHECK(def->type == coFloatOrPercent);
-    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(def->default_value->serialize() == "0");
 
     def = PrintConfigDef::instance().get("machine_max_acceleration_travel");
@@ -1987,7 +1987,7 @@ TEST_CASE("Speed plugin owns its settings and activation rules",
     const ConfigOptionDef *def = PrintConfigDef::instance().get("perimeter_speed");
     REQUIRE(def != nullptr);
     CHECK(def->type == coFloatOrPercent);
-    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(def->default_value->serialize() == "60%");
 
     def = PrintConfigDef::instance().get("first_layer_flow_ratio");

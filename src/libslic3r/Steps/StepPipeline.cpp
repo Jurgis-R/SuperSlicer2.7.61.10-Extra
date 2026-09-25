@@ -96,6 +96,36 @@ const std::vector<slicing_step_t> &execution_order()
     return steps;
 }
 
+size_t execution_index(const slicing_step_t step)
+{
+    const std::vector<slicing_step_t> &steps = execution_order();
+    const std::vector<slicing_step_t>::const_iterator found =
+        std::find(steps.begin(), steps.end(), step);
+    return found == steps.end() ? steps.size() : size_t(std::distance(steps.begin(), found));
+}
+
+bool executes_before(const slicing_step_t lhs, const slicing_step_t rhs)
+{
+    const size_t lhs_index = execution_index(lhs);
+    const size_t rhs_index = execution_index(rhs);
+    assert(lhs_index < execution_order().size());
+    assert(rhs_index < execution_order().size());
+    return lhs_index < rhs_index;
+}
+
+slicing_step_t tightened_invalidation_step(const slicing_step_t current,
+                                           const slicing_step_t consumer_step)
+{
+    // STEP_ANY already replays every producer. STEP_NONE declares that a value
+    // change never affects slicing, for example an import-only placement
+    // setting, so a reader must not turn it into a replay.
+    if (current == STEP_ANY || current == STEP_NONE)
+        return current;
+    // Replaying a step also replays every later step through the dependency
+    // chain, so the earlier of the two covers both producers.
+    return executes_before(consumer_step, current) ? consumer_step : current;
+}
+
 const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
 {
     static const std::map<slicing_step_t, std::vector<slicing_step_t>> dependents {

@@ -74,3 +74,23 @@ TEST_CASE("Step pipeline dependency order matches written execution order", "[pl
     SUCCEED("Dependency order validation is a debug-only guard.");
 #endif
 }
+
+TEST_CASE("A setting read by a plugin invalidates no later than that plugin",
+          "[plugins][step-pipeline][invalidation][config]")
+{
+    using Slic3r::Steps::tightened_invalidation_step;
+
+    // A full replay and an explicit no-replay declaration are kept as is.
+    CHECK(tightened_invalidation_step(STEP_ANY, STEP_INFILL) == STEP_ANY);
+    CHECK(tightened_invalidation_step(STEP_NONE, STEP_INFILL) == STEP_NONE);
+
+    // An earlier or equal step already replays the reader.
+    CHECK(tightened_invalidation_step(STEP_PERIMETER, STEP_INFILL) == STEP_PERIMETER);
+    CHECK(tightened_invalidation_step(STEP_INFILL, STEP_INFILL) == STEP_INFILL);
+    // A later legacy step moves back to the reader.
+    CHECK(tightened_invalidation_step(STEP_GCODE, STEP_INFILL) == STEP_INFILL);
+
+    // Support runs before skirt/brim although its ABI value is larger.
+    CHECK(tightened_invalidation_step(STEP_SKIRT_BRIM, STEP_SUPPORT) == STEP_SUPPORT);
+    CHECK(tightened_invalidation_step(STEP_SUPPORT, STEP_SKIRT_BRIM) == STEP_SUPPORT);
+}

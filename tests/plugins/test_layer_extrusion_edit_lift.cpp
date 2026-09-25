@@ -158,7 +158,7 @@ TEST_CASE("CreateRetractionLift registers after travel routing",
     REQUIRE(def != nullptr);
     CHECK(def->type == coFloat);
     CHECK(def->container_type == ConfigOptionContainerType::Region);
-    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(def->can_be_disabled);
     CHECK(def->default_value->serialize() == "!0");
     CHECK(PrintConfig::defaults().option("print_retract_lift") == nullptr);

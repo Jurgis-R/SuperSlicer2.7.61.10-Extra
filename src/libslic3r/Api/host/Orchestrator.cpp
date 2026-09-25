@@ -528,17 +528,39 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
         out.set_default_value(temp_default_option);
 }
 
+static slicing_step_t plan_owner_step(const Plugin &plugin)
+{
+    const slicing_step_t step = plugin.get_step();
+    switch (step) {
+    case INFILL_PATTERN:
+    case INFILL_SURFACE_RECIPE_MODIFIER:
+        return STEP_INFILL;
+    case BRIDGE_DETECTOR:
+    case PERIMETER_GENERATION_MODULE:
+        return STEP_PERIMETER;
+    case SEAM_PLACER:
+        return STEP_ORDERING;
+    case GCODE_FIRMWARE:
+    case GCODE_THUMBNAIL:
+    case GCODE_READER:
+        return STEP_GCODE;
+    default:
+        return Steps::execution_index(step) < Steps::execution_order().size() ?
+            step : STEP_NONE;
+    }
+}
+
 static raw_config_option_def config_option_def_with_resolved_invalidation(const raw_config_option_def &def,
                                                                           const Plugin *plugin)
 {
     raw_config_option_def resolved = def;
 
-    // raw_config_option_def_init() leaves invalidates_step at STEP_NONE. During
-    // plugin initialization this means "use the plugin's own pipeline step" so
-    // plugin authors only need to override options that invalidate an earlier
-    // step or intentionally use STEP_ANY for full invalidation.
-    if (plugin != nullptr && resolved.invalidates_step == STEP_NONE)
-        resolved.invalidates_step = plugin->get_step();
+    // A service plugin runs inside its owning pipeline producer. Resolve the
+    // default there so config changes never schedule a non-executable service.
+    if (plugin != nullptr && resolved.invalidates_step == STEP_NONE) {
+        const slicing_step_t owner_step = plan_owner_step(*plugin);
+        resolved.invalidates_step = owner_step == STEP_NONE ? STEP_ANY : owner_step;
+    }
 
     return resolved;
 }
@@ -591,6 +613,26 @@ static bool validate_used_config_key_definition(const Plugin &,
     }
 
     return true;
+}
+
+// A setting read by a plugin contributes to that plugin's output, so changing
+// it must replay the pipeline step that runs the plugin, even when the setting
+// definition predates the plugin pipeline and still points at a later legacy
+// step. Service plugins use the executable step that owns them. A key without
+// a definition is skipped; this only happens for a plugin activated after
+// initialize_plugins() validated the used keys.
+static void tighten_used_config_key_invalidations(ConfigDef &definition, const Plugin &plugin)
+{
+    const slicing_step_t owner_step = plan_owner_step(plugin);
+    if (owner_step == STEP_NONE)
+        return;
+
+    for (const Plugin::UsedConfigKey &used_key : plugin.get_used_config_keys()) {
+        const t_optiondef_map::iterator option = definition.options.find(used_key.key);
+        if (option != definition.options.end())
+            option->second.invalidates_step = Steps::tightened_invalidation_step(
+                option->second.invalidates_step, owner_step);
+    }
 }
 
 static std::chrono::milliseconds elapsed_ms(const std::chrono::steady_clock::time_point &start)
@@ -1719,11 +1761,19 @@ option_def_error_code Orchestrator::modify_print_config(const raw_option_def_pat
     return OPTION_DEF_ERROR_OK;
 }
 
-// Apply every recorded patch in dependency order, prune plugin-id lists and
-// rebuild the scripted enum maps. Missing target keys are ignored.
+// Tighten the invalidation of settings read by active plugins, then apply every
+// recorded patch in dependency order, prune plugin-id lists and rebuild the
+// scripted enum maps. Missing target keys are ignored.
 void Orchestrator::finalize_plugin_option_defs()
 {
     ConfigDef &definition = PrintConfigDef::instance_mutable();
+
+    // initialize_plugins() has already disabled every plugin whose used-key
+    // contract failed, so only real consumers move a definition. This must run
+    // before the early return below, which only concerns enum patches.
+    for (const std::unique_ptr<Plugin> &plugin : m_registered_plugins)
+        if (this->is_plugin_active(plugin.get()))
+            tighten_used_config_key_invalidations(definition, *plugin);
 
     // Resolve a key after its dependencies: replication patches create edges to
     // the source option, so the source is finalized first (leaves first in the

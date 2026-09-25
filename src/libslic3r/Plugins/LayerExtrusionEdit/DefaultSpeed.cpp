@@ -204,7 +204,7 @@ void initialize_default_speed_settings(orchestrator_handle *orchestrator)
     def.container_type = RAW_CONTAINER_TYPE_PLATER;
     def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
     def.printer_technology = RAW_PT_FFF;
-    def.invalidates_step = STEP_FINALIZE_SLICING;
+    def.invalidates_step = STEP_LAYER_EXTRUSION_EDIT;
     def.category = RAW_OPTION_CATEGORY_FILAMENT;
     def.label = "Max speed";
     def.tooltip = "Maximum speed allowed for this filament. Limits the maximum speed of a print to the minimum of the print speed and the filament speed. Set zero for no limit.";
@@ -224,7 +224,7 @@ void initialize_default_speed_settings(orchestrator_handle *orchestrator)
     def.container_type = RAW_CONTAINER_TYPE_PLATER;
     def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
     def.printer_technology = RAW_PT_FFF;
-    def.invalidates_step = STEP_FINALIZE_SLICING;
+    def.invalidates_step = STEP_LAYER_EXTRUSION_EDIT;
     def.category = RAW_OPTION_CATEGORY_FILAMENT;
     def.label = "Max volumetric speed";
     def.tooltip = "Maximum volumetric speed allowed for this filament. Limits the maximum volumetric speed of a print to the minimum of print and filament volumetric speed. Set zero for no limit.";
