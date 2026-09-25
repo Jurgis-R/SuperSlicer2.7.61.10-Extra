@@ -100,12 +100,12 @@ struct PlanSummary
 };
 
 // Read global facts once before scripts are inserted, including values needed by plan-level events.
-PlanSummary summarize_plan(const PrintingPlan &plan,
+PlanSummary summarize_plan(const ConstPrintingPlan &plan,
                            const plugin_run_context *run_ctx);
 // Resolve a one-object group to the stable object index expected by PlaceholderParser.
 std::optional<uint32_t> group_object_index(const Print &print,
-                                           const PrintingPlan &plan,
-                                           const PrintingGroup &group,
+                                           const ConstPrintingPlan &plan,
+                                           const ConstPrintingGroup &group,
                                            const plugin_run_context *run_ctx);
 // Register the option definitions owned by this plugin; it runs once from
 // inilialize_impl().
@@ -122,7 +122,7 @@ StoredConfig layer_arguments(storage_handle *storage,
 StoredConfig copy_arguments(storage_handle *storage, const Config &source);
 // Build one temporary event and move its contents into the selected fixed scope root.
 void append_script_event(storage_handle *storage,
-                         const PrintingScopeEvents &events,
+                         PrintingScopeEvents events,
                          const std::string &script,
                          gcode_script_type script_type,
                          const Config &arguments,
@@ -135,7 +135,7 @@ MutableExtrusionEntity first_toolchange_scope_in_entity(
     const plugin_run_context *run_ctx);
 // Return the first tool-change scope owned by one tool visit.
 MutableExtrusionEntity first_toolchange_scope(
-    const PrintingToolGroup &tool_group,
+    PrintingToolGroup tool_group,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const plugin_run_context *run_ctx);
 // Find the semantic Unretract event in one phase subtree.
@@ -150,7 +150,7 @@ void append_start_filament_script(
     extruder_index_t processing_extruder_id,
     const plugin_run_context *run_ctx);
 
-PlanSummary summarize_plan(const PrintingPlan &plan,
+PlanSummary summarize_plan(const ConstPrintingPlan &plan,
                            const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);
@@ -159,11 +159,11 @@ PlanSummary summarize_plan(const PrintingPlan &plan,
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         if ((group_idx & 63u) == 0)
             throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             if ((layer_idx & 63u) == 0)
                 throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             summary.max_print_z = std::max(summary.max_print_z, layer.print_z());
             const LayerContext current_layer{layer_number++, layer.print_z()};
             if (!summary.first_layer)
@@ -186,8 +186,8 @@ PlanSummary summarize_plan(const PrintingPlan &plan,
 }
 
 std::optional<uint32_t> group_object_index(const Print &print,
-                                           const PrintingPlan &plan,
-                                           const PrintingGroup &group,
+                                           const ConstPrintingPlan &plan,
+                                           const ConstPrintingGroup &group,
                                            const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);
@@ -239,7 +239,7 @@ StoredConfig copy_arguments(storage_handle *storage, const Config &source)
 }
 
 void append_script_event(storage_handle *storage,
-                         const PrintingScopeEvents &events,
+                         PrintingScopeEvents events,
                          const std::string &script,
                          gcode_script_type script_type,
                          const Config &arguments,
@@ -287,7 +287,7 @@ MutableExtrusionEntity first_toolchange_scope_in_entity(
 }
 
 MutableExtrusionEntity first_toolchange_scope(
-    const PrintingToolGroup &tool_group,
+    PrintingToolGroup tool_group,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const plugin_run_context *run_ctx)
 {
@@ -547,9 +547,10 @@ private:
 
         const Print print(context->print);
         const Config config = print.config();
-        const PrintingPlan plan(context->plan);
-        const PrintingScopeEvents plan_events = plan.events();
-        const PlanSummary summary = summarize_plan(plan, run_context);
+        PrintingPlan plan(context->plan);
+        const ConstPrintingPlan read_only_plan(plan);
+        PrintingScopeEvents plan_events = plan.events();
+        const PlanSummary summary = summarize_plan(read_only_plan, run_context);
 
         const LayerContext first_layer = summary.first_layer.value_or(LayerContext{});
         StoredConfig start_arguments = layer_arguments(
@@ -585,10 +586,10 @@ private:
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
             if ((group_idx & 63u) == 0)
                 throw_if_cancelled(run_context);
-            const PrintingGroup group = plan.group(group_idx);
-            const PrintingScopeEvents group_events = group.events();
+            PrintingGroup group = plan.group(group_idx);
+            PrintingScopeEvents group_events = group.events();
             const std::optional<uint32_t> current_object =
-                group_object_index(print, plan, group, run_context);
+                group_object_index(print, read_only_plan, ConstPrintingGroup(group), run_context);
             if (current_object && previous_object && !between_objects.empty()) {
                 StoredConfig arguments(run_context->plugin_storage);
                 const LayerContext object_layer = previous_layer.value_or(LayerContext{});
@@ -616,13 +617,13 @@ private:
             for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
                 if ((layer_idx & 63u) == 0)
                     throw_if_cancelled(run_context);
-                const PrintingLayerGroup layer = group.layer_group(layer_idx);
-                const PrintingScopeEvents layer_events = layer.events();
+                PrintingLayerGroup layer = group.layer_group(layer_idx);
+                PrintingScopeEvents layer_events = layer.events();
                 const LayerContext current_layer{layer_number++, layer.print_z()};
                 const StoredConfig current_layer_arguments = layer_arguments(
                     run_context->plugin_storage, current_layer, previous_layer, summary.max_print_z);
 
-                const PrintingScopeEvents before_layer_events = previous_layer_events ?
+                PrintingScopeEvents before_layer_events = previous_layer_events ?
                     *previous_layer_events : group_events;
                 const ScopeEventPosition before_layer_position = previous_layer_events ?
                     ScopeEventPosition::After : ScopeEventPosition::Before;
@@ -639,8 +640,8 @@ private:
                 for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                     if ((tool_idx & 63u) == 0)
                         throw_if_cancelled(run_context);
-                    const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
-                    const PrintingScopeEvents tool_events = tool_group.events();
+                    PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                    PrintingScopeEvents tool_events = tool_group.events();
                     const extruder_index_t target_tool = tool_group.extruder_id();
                     used_tools.insert(target_tool);
                     if (current_tool == target_tool) {

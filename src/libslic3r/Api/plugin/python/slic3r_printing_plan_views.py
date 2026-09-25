@@ -396,7 +396,10 @@ class MutablePrintingToolGroup(PrintingToolGroup):
     def properties(self) -> PluginProperties:
         """Borrow writable metadata only through this fully mutable plan view."""
         return PluginProperties(
-            self.api, self.api.host.printing_tool_group_get_properties(self.c_handle())
+            self.api,
+            self.api.host.printing_tool_group_get_properties_mutable(
+                self.mutable_c_handle()
+            ),
         )
 
     def mutable_c_handle(self) -> ctypes.c_void_p:
@@ -604,7 +607,10 @@ class MutablePrintingLayerGroup(PrintingLayerGroup):
     def properties(self) -> PluginProperties:
         """Borrow writable metadata only through this fully mutable plan view."""
         return PluginProperties(
-            self.api, self.api.host.printing_layer_group_get_properties(self.c_handle())
+            self.api,
+            self.api.host.printing_layer_group_get_properties_mutable(
+                self.mutable_c_handle()
+            ),
         )
 
     def mutable_c_handle(self) -> ctypes.c_void_p:
@@ -804,7 +810,10 @@ class MutablePrintingGroup(PrintingGroup):
     def properties(self) -> PluginProperties:
         """Borrow writable metadata only through this fully mutable plan view."""
         return PluginProperties(
-            self.api, self.api.host.printing_group_get_properties(self.c_handle())
+            self.api,
+            self.api.host.printing_group_get_properties_mutable(
+                self.mutable_c_handle()
+            ),
         )
 
     def mutable_c_handle(self) -> ctypes.c_void_p:
@@ -949,7 +958,10 @@ class MutablePrintingPlan(PrintingPlan):
     def properties(self) -> PluginProperties:
         """Borrow writable metadata only through this fully mutable plan view."""
         return PluginProperties(
-            self.api, self.api.host.printing_plan_get_properties(self.c_handle())
+            self.api,
+            self.api.host.printing_plan_get_properties_mutable(
+                self.mutable_c_handle()
+            ),
         )
 
     def mutable_c_handle(self) -> ctypes.c_void_p:

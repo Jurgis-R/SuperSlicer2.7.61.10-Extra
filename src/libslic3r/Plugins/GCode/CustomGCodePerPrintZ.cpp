@@ -116,7 +116,7 @@ keeps the processor marker immediately before the script, while script_gcode()
 clones the producer Config into the extrusion property for later execution.
 */
 void append_tagged_script(storage_handle *storage,
-                          const PrintingScopeEvents &events,
+                           PrintingScopeEvents events,
                           const std::string &tag,
                            const std::string &script,
                            gcode_script_type script_type,
@@ -129,7 +129,7 @@ rows because their text is already final G-code and must bypass the placeholder
 processor.
 */
 void append_tagged_raw_gcode(storage_handle *storage,
-                             const PrintingScopeEvents &events,
+                              PrintingScopeEvents events,
                              const std::string &tag,
                              const std::string &gcode);
 
@@ -190,7 +190,7 @@ std::string processor_tag(const CustomGCodeRow &row, extruder_index_t color_tool
 }
 
 void append_tagged_script(storage_handle *storage,
-                          const PrintingScopeEvents &events,
+                           PrintingScopeEvents events,
                           const std::string &tag,
                            const std::string &script,
                            gcode_script_type script_type,
@@ -210,7 +210,7 @@ void append_tagged_script(storage_handle *storage,
 }
 
 void append_tagged_raw_gcode(storage_handle *storage,
-                             const PrintingScopeEvents &events,
+                             PrintingScopeEvents events,
                              const std::string &tag,
                              const std::string &gcode)
 {
@@ -335,7 +335,7 @@ private:
             return;
 
         const Print print(context->print);
-        const PrintingPlan plan(context->plan);
+        PrintingPlan plan(context->plan);
         const std::optional<CustomGCodeTable> table_optional = read_custom_gcode_per_print_z(print);
         if (!table_optional || table_optional->rows.empty())
             return;
@@ -351,12 +351,12 @@ private:
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
             if ((group_idx & 63u) == 0)
                 throw_if_cancelled(run_context);
-            const PrintingGroup group = plan.group(group_idx);
+            PrintingGroup group = plan.group(group_idx);
             const std::vector<std::vector<const CustomGCodeRow *>> layer_rows = rows_by_layer(table, group);
             for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
                 if ((layer_idx & 63u) == 0)
                     throw_if_cancelled(run_context);
-                const PrintingLayerGroup layer = group.layer_group(layer_idx);
+                PrintingLayerGroup layer = group.layer_group(layer_idx);
                 if (layer_rows[layer_idx].empty()) {
                     if (layer.tool_group_count() > 0)
                         last_tool = layer.tool_group(layer.tool_group_count() - 1).extruder_id();
@@ -364,7 +364,7 @@ private:
                 }
 
                 const bool has_tool_group = layer.tool_group_count() > 0;
-                const PrintingScopeEvents destination_events = has_tool_group ?
+                PrintingScopeEvents destination_events = has_tool_group ?
                     layer.tool_group(0).events() : layer.events();
                 const extruder_index_t current_tool = has_tool_group ?
                     layer.tool_group(0).extruder_id() :

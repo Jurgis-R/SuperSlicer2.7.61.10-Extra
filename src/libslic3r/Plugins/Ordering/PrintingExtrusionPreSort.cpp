@@ -77,14 +77,14 @@ Empty roots keep their positions relative to the vector and do not participate
 in route costs. Their stale EntryPointProperty is removed because they no
 longer describe printable geometry.
 */
-c_point order_tool_group(const PrintingToolGroup &tool_group,
+c_point order_tool_group(PrintingToolGroup tool_group,
                          c_point initial_position,
                          const OrderingEngine &engine,
                          const PluginPropertyKey<EntryPointProperty> &entry_point_key,
                          const plugin_run_context *run_ctx);
 
 /* Apply a full target permutation with the PrintingPlan's index-based mover. */
-void apply_permutation(const PrintingToolGroup &tool_group,
+void apply_permutation(PrintingToolGroup tool_group,
                        const std::vector<uint32_t> &target_original_indices,
                        const plugin_run_context *run_ctx);
 
@@ -170,7 +170,7 @@ void append_distinct_candidate(OrderingItem &item, const c_point point)
     item.candidates.push_back(candidate);
 }
 
-c_point order_tool_group(const PrintingToolGroup &tool_group,
+c_point order_tool_group(PrintingToolGroup tool_group,
                          const c_point initial_position,
                          const OrderingEngine &engine,
                          const PluginPropertyKey<EntryPointProperty> &entry_point_key,
@@ -234,7 +234,7 @@ c_point order_tool_group(const PrintingToolGroup &tool_group,
     return ordered.back().selected_candidate.estimated_exit;
 }
 
-void apply_permutation(const PrintingToolGroup &tool_group,
+void apply_permutation(PrintingToolGroup tool_group,
                        const std::vector<uint32_t> &target_original_indices,
                        const plugin_run_context *run_ctx)
 {
@@ -332,7 +332,7 @@ private:
 
         throw_if_cancelled(run_ctx);
         c_point current_position = initial_print_position(Print(ctx->print));
-        const PrintingPlan plan(ctx->plan);
+        PrintingPlan plan(ctx->plan);
 
         /*
         The outer hierarchy is already final. Carrying one scalar position
@@ -341,10 +341,10 @@ private:
         */
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingGroup group = plan.group(group_idx);
+            PrintingGroup group = plan.group(group_idx);
             for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingLayerGroup layer = group.layer_group(layer_idx);
+                PrintingLayerGroup layer = group.layer_group(layer_idx);
                 for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                     throw_if_cancelled(run_ctx);
                     current_position = order_tool_group(

@@ -230,22 +230,22 @@ void clear_feature_scripts(storage_handle *storage,
 }
 
 void clear_plan_feature_scripts(storage_handle *storage,
-                                const PrintingPlan &plan,
+                                PrintingPlan &plan,
                                 const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         if ((group_idx & 63u) == 0)
             throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             if ((layer_idx & 63u) == 0)
                 throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 if ((tool_idx & 63u) == 0)
                     throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     if ((extrusion_idx & 63u) == 0)
                         throw_if_cancelled(run_ctx);
@@ -319,7 +319,7 @@ void FeatureRoleVisitor::add_transition(MutableExtrusionEntity entity,
 }
 
 void add_plan_feature_scripts(storage_handle *storage,
-                              const PrintingPlan &plan,
+                              PrintingPlan &plan,
                               const std::string &script,
                               const plugin_run_context *run_ctx)
 {
@@ -328,15 +328,15 @@ void add_plan_feature_scripts(storage_handle *storage,
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         if ((group_idx & 63u) == 0)
             throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             if ((layer_idx & 63u) == 0)
                 throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 if ((tool_idx & 63u) == 0)
                     throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     if ((extrusion_idx & 63u) == 0)
                         throw_if_cancelled(run_ctx);
@@ -427,7 +427,7 @@ private:
             return;
 
         const Print print(context->print);
-        const PrintingPlan plan(context->plan);
+        PrintingPlan plan(context->plan);
         clear_plan_feature_scripts(run_context->plugin_storage, plan, run_context);
 
         const std::string script = print.config().string_or_default("feature_gcode", std::string());

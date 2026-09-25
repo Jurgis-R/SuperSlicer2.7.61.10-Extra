@@ -191,7 +191,7 @@ void populate_object_instance_catalog(
         throw std::invalid_argument("Print, PrintingPlan and storage are required.");
 
     const Print print(print_handle_value);
-    const PrintingPlan plan(plan_handle_value);
+    PrintingPlan plan(plan_handle_value);
     const uint32_t count = plan.object_instance_count();
     for (uint32_t id = 0; id < count; ++id) {
         const PrintingObjectInstance instance = plan.object_instance(id);

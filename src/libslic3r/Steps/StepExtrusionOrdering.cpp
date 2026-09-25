@@ -367,6 +367,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
     if (!validate_post(print, &validation_error))
         throw RuntimeError("STEP_ORDERING post-validation failed after the plugin pipeline "
                            "(last executed plugin: '" + last_plugin_id + "'): " + validation_error);
+
 }
 
 } // namespace Slic3r::Steps::StepExtrusionOrdering

@@ -404,9 +404,9 @@ class GCodeContext(_PrintingPlanContext):
     def gcode_plan_handle(self) -> int:
         return self._plan_handle()
 
-    def gcode_plan(self) -> MutablePrintingPlan:
-        """Borrow the mutable plan work copy owned by this G-code run."""
-        return self._plan()
+    def gcode_plan(self) -> PrintingPlan:
+        """Borrow the finalized read-only plan owned by this G-code run."""
+        return PrintingPlan(self.api, self.payload.plan)
 
     def gcode_firmware_handle(self) -> int:
         """Return a borrowed firmware instance; invoke it only through its service adapter."""

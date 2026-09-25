@@ -17,6 +17,10 @@ class Print;
 class PrintingExtrusion;
 class PrintingGroup;
 class PrintingPlan;
+class ConstPrintingPlan;
+class ConstPrintingGroup;
+class ConstPrintingExtrusion;
+class ConstPrintingLayerGroup;
 }
 
 namespace slic3r_api::GCodeGeneration::CustomGCodePerPrintZPlugin {
@@ -66,17 +70,17 @@ extruder_index_t custom_gcode_row_extruder_index(const CustomGCodeRow &row,
 Slic3r::CustomGCode::Mode effective_record_mode(const CustomGCodeTable &table);
 
 /* Infer the active print mode from the final object extrusions in the plan. */
-Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingPlan &plan);
+Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const ConstPrintingPlan &plan);
 
 /* Return true only for extrusion roots sourced from a normal object layer. */
-bool printing_extrusion_is_object(const PrintingPlan &plan,
-                                  const PrintingGroup &group,
-                                  const PrintingExtrusion &extrusion);
+bool printing_extrusion_is_object(const ConstPrintingPlan &plan,
+                                  const ConstPrintingGroup &group,
+                                  const ConstPrintingExtrusion &extrusion);
 
 /* Map every row to the first layer at or above its Z, preserving row order. */
 std::vector<std::vector<const CustomGCodeRow *>> rows_by_layer(
     const CustomGCodeTable &table,
-    const PrintingGroup &group);
+    const ConstPrintingGroup &group);
 
 } // namespace slic3r_api::GCodeGeneration::CustomGCodePerPrintZPlugin
 

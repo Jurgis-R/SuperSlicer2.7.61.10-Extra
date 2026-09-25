@@ -242,9 +242,10 @@ data instead of putting an owning pointer in a property.
 - Pointers and references returned by property access are borrowed. Treat them
   as short-lived and reacquire them after modifying, moving or replacing the
   owner.
-- A const data-tree view may expose mutable plugin metadata through
-  `properties()`. This does not make the object's geometry or native fields
-  mutable.
+- Some const source data-tree views expose mutable plugin metadata through
+  `properties()` when their step contract permits annotation. Finalized
+  `ConstPrintingPlan` scopes expose `ConstPluginProperties` instead; mutation
+  requires a mutable plan-scope view from an editing step.
 - Property containers are not synchronized. Parallel workers may modify
   distinct owners. Concurrent mutation of the same owner requires plugin-side
   synchronization.

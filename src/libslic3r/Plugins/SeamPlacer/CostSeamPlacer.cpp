@@ -217,15 +217,15 @@ void CostSession::initialize(const PrintingPlan &plan, const std::vector<PrintRe
     */
     for (uint32_t group_index = 0; group_index < plan.group_count(); ++group_index) {
         InitializationCancellation::check(m_run_context);
-        const PrintingGroup group = plan.group(group_index);
+        const ConstPrintingGroup group = plan.group(group_index);
         for (uint32_t layer_index = 0; layer_index < group.layer_group_count(); ++layer_index) {
-            const PrintingLayerGroup layer_group = group.layer_group(layer_index);
+            const ConstPrintingLayerGroup layer_group = group.layer_group(layer_index);
             for (uint32_t tool_index = 0; tool_index < layer_group.tool_group_count(); ++tool_index) {
-                const PrintingToolGroup tool = layer_group.tool_group(tool_index);
+                const ConstPrintingToolGroup tool = layer_group.tool_group(tool_index);
                 for (uint32_t extrusion_index = 0; extrusion_index < tool.extrusion_count(); ++extrusion_index) {
                     InitializationCancellation::check_periodic(
                         m_run_context, extrusion_index);
-                    const PrintingExtrusion extrusion = tool.extrusion(extrusion_index);
+                    const ConstPrintingExtrusion extrusion = tool.extrusion(extrusion_index);
                     const LayerRegionIsland island = extrusion.region_island();
                     const std::vector<CandidatePreparation::CollectedLoop> collected =
                         CandidatePreparation::collect_perimeter_loops(

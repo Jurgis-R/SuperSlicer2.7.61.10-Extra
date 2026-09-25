@@ -394,7 +394,8 @@ void AvoidCrossingPerimetersTravel::setup_run_impl(const plugin_run_context *run
     const run_ctx_layer_extrusion_edition *ctx = plugin_ctx_as_layer_extrusion_edition(run_ctx);
     if (ctx == nullptr || ctx->layer_group == nullptr)
         return;
-    m_connector.setup_run(PrintingLayerGroup(ctx->layer_group),
+    PrintingLayerGroup layer_group(ctx->layer_group);
+    m_connector.setup_run(layer_group,
                           ctx->group_idx, ctx->layer_group_idx, progress());
 }
 
@@ -408,14 +409,15 @@ void AvoidCrossingPerimetersTravel::run_impl(const plugin_run_context *run_ctx) 
 
     if (ctx->plan == nullptr)
         return;
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     LayerTravelPlanner planner(Print(ctx->print), plan, run_ctx);
     const TravelPathPlanner route = [&planner](const TravelEndpoint &source,
                                                const TravelEndpoint &target,
                                                const extruder_index_t extruder_id) {
         return planner.path(source, target, extruder_id);
     };
-    m_connector.run(PrintingLayerGroup(ctx->layer_group),
+    PrintingLayerGroup layer_group(ctx->layer_group);
+    m_connector.run(layer_group,
                     ctx->group_idx, ctx->layer_group_idx,
                     route, progress());
 }

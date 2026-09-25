@@ -179,23 +179,23 @@ TEST_CASE("Printing property traversal streams direct properties with their owne
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Slic3r::Print print;
     Slic3r::Printing::PrintingLayerGroup &core_layer = make_test_layer(print);
-    const slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
+    slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
     const slic3r_api::PluginPropertyKey<TestTraversalProperty> key =
         traversal_property_key();
 
-    const slic3r_api::PrintingToolGroup first_tool = layer.tool_group(0);
-    const slic3r_api::PrintingExtrusion first_extrusion = first_tool.extrusion(0);
+    slic3r_api::PrintingToolGroup first_tool = layer.tool_group(0);
+    slic3r_api::PrintingExtrusion first_extrusion = first_tool.extrusion(0);
     slic3r_api::MutableExtrusionEntity first_root = first_extrusion.mutable_root();
     first_root.get_or_add(key).id = 10;
     slic3r_api::MutableExtrusionEntity nested_child = first_root.child_mutable(1);
     nested_child.get_or_add(key).id = 20;
 
-    const slic3r_api::PrintingExtrusion middle_extrusion = first_tool.extrusion(1);
+    slic3r_api::PrintingExtrusion middle_extrusion = first_tool.extrusion(1);
     slic3r_api::MutableExtrusionEntity middle_root = middle_extrusion.mutable_root();
     middle_root.get_or_add(key).id = 25;
 
-    const slic3r_api::PrintingToolGroup second_tool = layer.tool_group(1);
-    const slic3r_api::PrintingExtrusion last_extrusion = second_tool.extrusion(0);
+    slic3r_api::PrintingToolGroup second_tool = layer.tool_group(1);
+    slic3r_api::PrintingExtrusion last_extrusion = second_tool.extrusion(0);
     slic3r_api::MutableExtrusionEntity last_root = last_extrusion.mutable_root();
     last_root.get_or_add(key).id = 30;
 
@@ -278,7 +278,7 @@ TEST_CASE("Printing property traversal permits isolated phase subtree edits",
     append_extrusion(core_layer.tool_groups[0], scope_shaped_entity(), 10);
     append_extrusion(core_layer.tool_groups[0], scope_shaped_entity(), 11);
 
-    const slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
+    slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
     const slic3r_api::PluginPropertyKey<TestTraversalProperty> key =
         traversal_property_key();
     const slic3r_api::PluginPropertyKey<TestTraversalAuxiliaryProperty> auxiliary_key =
@@ -346,7 +346,7 @@ TEST_CASE("Printing property traversal is independent for every layer call",
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Slic3r::Print print;
     Slic3r::Printing::PrintingLayerGroup &core_layer = make_test_layer(print);
-    const slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
+    slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
     const slic3r_api::PluginPropertyKey<TestTraversalProperty> key =
         traversal_property_key();
 
@@ -372,7 +372,7 @@ TEST_CASE("Printing property traversal can skip descendants of a matching entity
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Slic3r::Print print;
     Slic3r::Printing::PrintingLayerGroup &core_layer = make_test_layer(print);
-    const slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
+    slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
     const slic3r_api::PluginPropertyKey<TestTraversalProperty> key =
         traversal_property_key();
 
@@ -418,14 +418,14 @@ TEST_CASE("Printing property traversal reports invalid use and callback errors",
                   static_cast<slic3r_api::MatchingEntityDescendants>(255)),
         std::invalid_argument);
 
-    const slic3r_api::PrintingLayerGroup invalid_layer(
+    slic3r_api::PrintingLayerGroup invalid_layer(
         static_cast<printing_layer_group_handle *>(nullptr));
     Traversal valid_traversal(key, [](Entity *, Entity *) {});
     CHECK_THROWS_AS(valid_traversal.process(invalid_layer), std::invalid_argument);
 
     Slic3r::Print print;
     Slic3r::Printing::PrintingLayerGroup &core_layer = make_test_layer(print);
-    const slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
+    slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
     layer.tool_group(0).extrusion(0).mutable_root().get_or_add(key).id = 1;
     Traversal throwing_traversal(
         key,
@@ -442,7 +442,7 @@ TEST_CASE("Printing property traversal rejects removal of its selecting property
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Slic3r::Print print;
     Slic3r::Printing::PrintingLayerGroup &core_layer = make_test_layer(print);
-    const slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
+    slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
     const slic3r_api::PluginPropertyKey<TestTraversalProperty> key =
         traversal_property_key();
     layer.tool_group(0).extrusion(0).mutable_root().get_or_add(key).id = 1;
@@ -487,7 +487,7 @@ TEST_CASE("Printing property traversal resolves inherited state lazily",
             std::move(root_children), false, false, true),
         12);
 
-    const slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
+    slic3r_api::PrintingLayerGroup layer = layer_view(core_layer);
     const slic3r_api::PluginPropertyKey<TestTraversalProperty> marker_key =
         traversal_property_key();
     const slic3r_api::PluginPropertyKey<TestTraversalAuxiliaryProperty> first_key =

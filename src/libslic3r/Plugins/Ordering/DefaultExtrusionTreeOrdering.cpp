@@ -154,7 +154,7 @@ double distance_to_square(c_point lhs, c_point rhs);
 
 /* Count roots in the complete plan before the sequential ordering pass. */
 uint32_t extrusion_count(
-    const PrintingPlan &plan,
+    const ConstPrintingPlan &plan,
     const plugin_run_context *run_ctx);
 
 void order_sortable_extrusion_children(storage_handle *storage,
@@ -551,10 +551,10 @@ uint32_t extrusion_count(
     uint32_t count = 0;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
                 count += layer.tool_group(tool_idx).extrusion_count();
@@ -617,20 +617,20 @@ private:
             return;
 
         throw_if_cancelled(run_ctx);
-        const PrintingPlan plan(ctx->plan);
+        PrintingPlan plan(ctx->plan);
         progress().add_max(extrusion_count(plan, run_ctx));
         c_point current_point = {};
         bool has_current_point = false;
 
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingGroup group = plan.group(group_idx);
+            PrintingGroup group = plan.group(group_idx);
             for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingLayerGroup layer = group.layer_group(layer_idx);
+                PrintingLayerGroup layer = group.layer_group(layer_idx);
                 for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                    PrintingToolGroup tool = layer.tool_group(tool_idx);
                     for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
                         throw_if_cancelled(run_ctx);
                         MutableExtrusionEntity root = tool.extrusion(extrusion_idx).mutable_root();

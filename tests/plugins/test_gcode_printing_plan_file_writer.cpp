@@ -63,6 +63,13 @@ using namespace Slic3r;
 using namespace Slic3r::Printing;
 using namespace Slic3r::Test::GCode;
 
+static_assert(std::is_same_v<decltype(run_ctx_generate_gcode{}.plan),
+                             const printing_plan_handle *>);
+static_assert(std::is_constructible_v<slic3r_api::ConstPrintingPlan,
+                                      const printing_plan_handle *>);
+static_assert(!std::is_constructible_v<slic3r_api::PrintingPlan,
+                                       const printing_plan_handle *>);
+
 struct FirmwareRecorder
 {
     std::vector<std::string> calls;
@@ -81,31 +88,31 @@ public:
     ~RecordingFirmwareSession() override { ++m_recorder.destruction_count; }
 
     std::string begin_print(const slic3r_api::Print &,
-                            const slic3r_api::PrintingPlan &plan) override
+                            const slic3r_api::ConstPrintingPlan &plan) override
     {
         m_recorder.calls.emplace_back("begin_print");
         return std::string("begin_print\n") + (plan.events().has_before() ? write_event(plan.events().before()) : std::string());
     }
 
-    std::string begin_group(const slic3r_api::PrintingGroup &) override
+    std::string begin_group(const slic3r_api::ConstPrintingGroup &) override
     {
         m_recorder.calls.emplace_back("begin_group");
         return "begin_group\n";
     }
 
-    std::string begin_layer(const slic3r_api::PrintingLayerGroup &) override
+    std::string begin_layer(const slic3r_api::ConstPrintingLayerGroup &) override
     {
         m_recorder.calls.emplace_back("begin_layer");
         return "begin_layer\n";
     }
 
-    std::string begin_tool_group(const slic3r_api::PrintingToolGroup &) override
+    std::string begin_tool_group(const slic3r_api::ConstPrintingToolGroup &) override
     {
         m_recorder.calls.emplace_back("begin_tool_group");
         return "begin_tool_group\n";
     }
 
-    std::string write_extrusion(const slic3r_api::PrintingExtrusion &extrusion) override
+    std::string write_extrusion(const slic3r_api::ConstPrintingExtrusion &extrusion) override
     {
         if (m_recorder.throw_on_extrusion)
             throw std::runtime_error("test firmware extrusion failure");

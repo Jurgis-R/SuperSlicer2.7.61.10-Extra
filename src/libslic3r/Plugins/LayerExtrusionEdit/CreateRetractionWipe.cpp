@@ -1012,11 +1012,11 @@ void CreateRetractionWipe::run_impl(const plugin_run_context *run_ctx) const
     if (ctx == nullptr || ctx->layer_group == nullptr || ctx->print == nullptr)
         return;
 
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingLayerGroup layer(ctx->layer_group);
     const Config print_config = Print(ctx->print).config();
     if (ctx->plan == nullptr)
         return;
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     WipeCrossingChecker crossing_checker(print_config, plan, run_ctx);
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
         m_scope_property,

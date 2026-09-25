@@ -389,6 +389,13 @@ Use `PrintingExtrusion::root()` for a read-only view and `mutable_root()` only
 in a step whose contract allows tree mutation. `set_root_clone()` keeps its
 source unchanged; `set_root_move()` consumes a standalone mutable entity.
 
+The mutable `PrintingPlan`, `PrintingGroup`, `PrintingLayerGroup`,
+`PrintingToolGroup`, and `PrintingExtrusion` views are accepted only by plan
+construction and editing steps. `STEP_GCODE` receives a
+`ConstPrintingPlan`; its child scopes and property containers remain const all
+the way down. A G-code writer may inspect geometry and metadata, but it cannot
+cast the final-plan handle back to a mutable C++ wrapper or add properties.
+
 Extrusions attached directly to data-tree objects may use object-local
 coordinates. Printing-plan roots are cloned and transformed according to their
 plan instance. Check the contract of the step that supplied the handle before

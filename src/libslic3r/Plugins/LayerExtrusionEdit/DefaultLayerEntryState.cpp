@@ -151,7 +151,8 @@ void update_position_from_entity(const ExtrusionEntity &entity,
     position.state = RAW_PRINTING_LAYER_ENTRY_POSITION_KNOWN;
 }
 
-std::vector<std::vector<LayerEntryState>> collect_layer_entry_states(const PrintingPlan &plan)
+std::vector<std::vector<LayerEntryState>> collect_layer_entry_states(
+    const ConstPrintingPlan &plan)
 {
     std::vector<std::vector<LayerEntryState>> states(plan.group_count());
     LayerEntryState current = {};
@@ -159,17 +160,17 @@ std::vector<std::vector<LayerEntryState>> collect_layer_entry_states(const Print
     current.tool.extruder_id = EXTRUDER_ID_UNKNOWN;
 
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         states[group_idx].reserve(group.layer_group_count());
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
 
             // The cached value is the state on entry, not the state after this
             // layer. This also makes empty layers preserve continuity.
             states[group_idx].push_back(current);
 
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                const ConstPrintingToolGroup tool = layer.tool_group(tool_idx);
 
                 // Tool selection is part of the serialized order even when this
                 // tool-group contains no extrusion geometry.
@@ -262,7 +263,7 @@ void DefaultLayerEntryState::setup_impl(const plugin_run_context *run_ctx, uint3
 
     // Build every entry state before any parallel worker starts. Only value
     // copies are retained, and run callbacks address them by context index.
-    m_entry_states = collect_layer_entry_states(PrintingPlan(ctx->plan));
+    m_entry_states = collect_layer_entry_states(ConstPrintingPlan(ctx->plan));
     m_setup_valid = true;
 }
 
@@ -289,7 +290,7 @@ void DefaultLayerEntryState::run_impl(const plugin_run_context *run_ctx) const
         return;
 
     const LayerEntryState &entry = m_entry_states[ctx->group_idx][ctx->layer_group_idx];
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingLayerGroup layer(ctx->layer_group);
     PluginProperties properties = layer.properties();
     m_position_property.get_or_add(properties) = entry.position;
     m_tool_property.get_or_add(properties) = entry.tool;

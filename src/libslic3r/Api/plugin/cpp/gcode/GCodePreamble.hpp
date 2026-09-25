@@ -18,7 +18,7 @@ class GCodePreamble {
 public:
     explicit GCodePreamble(DefaultGCodeFirmwareSession &session) : m_session(session) {}
     std::string begin(const Print &print,
-                      const PrintingPlan &plan,
+                       const ConstPrintingPlan &plan,
                       const std::array<std::string, 3> &thumbnail_blocks);
     std::string finish();
     std::string pre_start(const std::string &resolved);

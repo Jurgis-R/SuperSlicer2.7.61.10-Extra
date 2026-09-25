@@ -173,7 +173,7 @@ void scan_last_speed(const MutableExtrusionEntity &entity,
                      const plugin_run_context *run_ctx);
 
 /* Cache the movement speed visible immediately before every layer-group. */
-void prepare_layer_entry_speeds(const PrintingPlan &plan,
+void prepare_layer_entry_speeds(PrintingPlan &plan,
                                 std::vector<std::vector<LayerEntrySpeed>> &entry_speeds,
                                 const plugin_run_context *run_ctx);
 
@@ -188,8 +188,8 @@ void collect_ordered_leaves(
 
 /* Flatten one tool-group across tree and PrintingExtrusion boundaries. */
 std::vector<OrderedLeaf> ordered_tool_leaves(
-    const PrintingPlan &plan,
-    const PrintingToolGroup &tool,
+    PrintingPlan &plan,
+    PrintingToolGroup tool,
     PluginProgress &progress,
     const plugin_run_context *run_ctx);
 
@@ -234,16 +234,16 @@ void apply_split_travel_acceleration(const std::vector<OrderedLeaf> &leaves,
 
 /* Process homogeneous Travel runs within one tool-group. */
 void process_tool_group(const Print &print,
-                        const PrintingPlan &plan,
-                        const PrintingToolGroup &tool,
+                        PrintingPlan &plan,
+                        PrintingToolGroup tool,
                         LayerEntrySpeed &previous,
                         PluginProgress &progress,
                         const plugin_run_context *run_ctx);
 
 /* Apply target deceleration to eligible travels of one independently processed layer. */
 void process_layer(const Print &print,
-                   const PrintingPlan &plan,
-                   const PrintingLayerGroup &layer,
+                   PrintingPlan &plan,
+                   PrintingLayerGroup &layer,
                    const LayerEntrySpeed &entry_speed,
                    PluginProgress &progress,
                    const plugin_run_context *run_ctx);
@@ -329,7 +329,7 @@ void scan_last_speed(const MutableExtrusionEntity &entity,
     }
 }
 
-void prepare_layer_entry_speeds(const PrintingPlan &plan,
+void prepare_layer_entry_speeds(PrintingPlan &plan,
                                 std::vector<std::vector<LayerEntrySpeed>> &entry_speeds,
                                 const plugin_run_context *run_ctx)
 {
@@ -342,15 +342,15 @@ void prepare_layer_entry_speeds(const PrintingPlan &plan,
     // writer. The resulting scalar snapshots are safe for parallel readers.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         entry_speeds[group_idx].resize(group.layer_group_count());
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
             entry_speeds[group_idx][layer_idx] = last_speed;
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                PrintingToolGroup tool = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
                     scan_last_speed(tool.extrusion(extrusion_idx).mutable_root(),
@@ -393,8 +393,8 @@ void collect_ordered_leaves(
 }
 
 std::vector<OrderedLeaf> ordered_tool_leaves(
-    const PrintingPlan &plan,
-    const PrintingToolGroup &tool,
+    PrintingPlan &plan,
+    PrintingToolGroup tool,
     PluginProgress &progress,
     const plugin_run_context *run_ctx)
 {
@@ -404,7 +404,7 @@ std::vector<OrderedLeaf> ordered_tool_leaves(
         throw std::runtime_error("Travel deceleration encountered a tool group without an extruder.");
     for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
+        PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
         const LayerRegionIsland region_island = extrusion.region_island();
         if (!region_island.valid() || region_island.region_count() == 0)
             throw std::runtime_error(
@@ -667,8 +667,8 @@ void apply_split_travel_acceleration(const std::vector<OrderedLeaf> &leaves,
 }
 
 void process_tool_group(const Print &print,
-                        const PrintingPlan &plan,
-                        const PrintingToolGroup &tool,
+                        PrintingPlan &plan,
+                        PrintingToolGroup tool,
                         LayerEntrySpeed &previous,
                         PluginProgress &progress,
                         const plugin_run_context *run_ctx)
@@ -723,8 +723,8 @@ void process_tool_group(const Print &print,
 }
 
 void process_layer(const Print &print,
-                   const PrintingPlan &plan,
-                   const PrintingLayerGroup &layer,
+                   PrintingPlan &plan,
+                   PrintingLayerGroup &layer,
                    const LayerEntrySpeed &entry_speed,
                    PluginProgress &progress,
                    const plugin_run_context *run_ctx)
@@ -828,7 +828,8 @@ void DefaultTravelDeceleration::setup_impl(const plugin_run_context *run_ctx, ui
     if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr)
         return;
 
-    prepare_layer_entry_speeds(PrintingPlan(ctx->plan), m_entry_speeds, run_ctx);
+    PrintingPlan plan(ctx->plan);
+    prepare_layer_entry_speeds(plan, m_entry_speeds, run_ctx);
     throw_if_cancelled(run_ctx);
     m_setup_valid = true;
 }
@@ -859,8 +860,10 @@ void DefaultTravelDeceleration::run_impl(const plugin_run_context *run_ctx) cons
         ctx->layer_group_idx >= m_entry_speeds[ctx->group_idx].size())
         throw std::runtime_error("Travel-deceleration layer location is outside its setup cache.");
 
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer_group(ctx->layer_group);
     process_layer(
-        Print(ctx->print), PrintingPlan(ctx->plan), PrintingLayerGroup(ctx->layer_group),
+        Print(ctx->print), plan, layer_group,
         m_entry_speeds[ctx->group_idx][ctx->layer_group_idx], progress(), run_ctx);
 }
 

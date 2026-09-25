@@ -148,7 +148,7 @@ Ownership then transfers to the consumer, which must clear or otherwise
 invalidate the source value and eventually invoke destroy exactly once.
 */
 typedef struct run_ctx_seam_placer {
-    const printing_plan_handle *plan;
+    printing_plan_handle *plan;
     const print_region_handle *const *regions;
     uint32_t region_count;
     raw_seam_placer_instance instance;

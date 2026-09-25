@@ -36,6 +36,7 @@ namespace {
 using namespace Slic3r;
 using namespace Slic3r::Printing;
 using slic3r_api::PluginBase;
+using slic3r_api::ConstPluginProperties;
 using slic3r_api::PluginProperties;
 using slic3r_api::PluginPropertyKey;
 using slic3r_api::PrintingLayerEntryPositionProperty;
@@ -126,7 +127,7 @@ private:
         }
 
         const slic3r_api::PrintingLayerGroup layer(ctx->layer_group);
-        const PluginProperties properties = layer.properties();
+        const ConstPluginProperties properties = layer.properties();
         if (m_position_key.get(properties) == nullptr || m_tool_key.get(properties) == nullptr)
             ++m_missing_count;
         ++m_run_count;
