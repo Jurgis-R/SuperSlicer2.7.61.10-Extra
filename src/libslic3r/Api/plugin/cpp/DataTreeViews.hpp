@@ -221,6 +221,51 @@ private:
     plugin_property_container_handle *m_handle = nullptr;
 };
 
+/* Read-only metadata borrowed from a finalized plan scope. */
+class ConstPluginProperties
+{
+public:
+    explicit ConstPluginProperties(const plugin_property_container_handle *handle = nullptr) :
+        m_handle(handle) {}
+
+    bool valid() const { return m_handle != nullptr; }
+    const plugin_property_container_handle *handle() const { return m_handle; }
+    uint32_t count() const { return plugin_property_count(handle()); }
+    plugin_property_type type_at(uint32_t idx) const {
+        return plugin_property_type_at(handle(), idx);
+    }
+    bool has(plugin_property_type type) const {
+        return plugin_property_has(handle(), type) != 0;
+    }
+    template<class PropertyType> bool has(const PluginPropertyKey<PropertyType> &key) const {
+        return has(key.type());
+    }
+    uint32_t data_size(plugin_property_type type) const {
+        return plugin_property_data_size(handle(), type);
+    }
+    const void *data(plugin_property_type type) const {
+        return plugin_property_data(handle(), type);
+    }
+
+    template<class PropertyType> const PropertyType *get(plugin_property_type type) const
+    {
+        static_assert(std::is_trivially_copyable<PropertyType>::value,
+                      "Plugin property payloads are copied as bytes and must be trivially copyable.");
+        if (data_size(type) != sizeof(PropertyType))
+            return nullptr;
+        return reinterpret_cast<const PropertyType *>(data(type));
+    }
+
+    template<class PropertyType> const PropertyType *get(
+        const PluginPropertyKey<PropertyType> &key) const
+    {
+        return get<PropertyType>(key.type());
+    }
+
+private:
+    const plugin_property_container_handle *m_handle = nullptr;
+};
+
 // Configuration shared by LayerRegion objects that belong to the same print
 // region. It is a link to print-wide region settings, not a layer geometry
 // container.

@@ -345,7 +345,7 @@ public:
     The method does not preserve a previous entity between calls. Exceptions
     raised by the callback are deliberately propagated to the caller.
     */
-    void process(const PrintingLayerGroup &layer_group) const
+    void process(PrintingLayerGroup &layer_group) const
     {
         if (!layer_group.valid())
             throw std::invalid_argument(
@@ -355,10 +355,10 @@ public:
         if (m_state_definition) {
             std::vector<StateFrame> active_path;
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0;
                      extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
-                    const PrintingExtrusion printing_extrusion =
+                    PrintingExtrusion printing_extrusion =
                         tool_group.extrusion(extrusion_idx);
                     process_tree_with_state(
                         layer_group, tool_group, printing_extrusion,
@@ -374,10 +374,10 @@ public:
         }
 
         for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
-            const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+            PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
             for (uint32_t extrusion_idx = 0;
                  extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
-                const PrintingExtrusion printing_extrusion =
+                PrintingExtrusion printing_extrusion =
                     tool_group.extrusion(extrusion_idx);
                 process_tree(layer_group, tool_group, printing_extrusion,
                              printing_extrusion.mutable_root(), previous);
@@ -397,9 +397,9 @@ private:
     previous is the sole traversal state. Keeping only this context avoids a
     temporary vector while still allowing a callback to compare two neighbors.
     */
-    void process_tree(const PrintingLayerGroup &layer_group,
-                      const PrintingToolGroup &tool_group,
-                      const PrintingExtrusion &printing_extrusion,
+    void process_tree(PrintingLayerGroup &layer_group,
+                      PrintingToolGroup &tool_group,
+                      PrintingExtrusion &printing_extrusion,
                       MutableExtrusionEntity entity,
                       std::optional<Entity> &previous) const
     {
@@ -450,9 +450,9 @@ private:
     empty until this branch reaches a matching entity.
     */
     void process_tree_with_state(
-        const PrintingLayerGroup &layer_group,
-        const PrintingToolGroup &tool_group,
-        const PrintingExtrusion &printing_extrusion,
+        PrintingLayerGroup &layer_group,
+        PrintingToolGroup &tool_group,
+        PrintingExtrusion &printing_extrusion,
         MutableExtrusionEntity entity,
         std::optional<Entity> &previous,
         std::vector<StateFrame> &active_path) const

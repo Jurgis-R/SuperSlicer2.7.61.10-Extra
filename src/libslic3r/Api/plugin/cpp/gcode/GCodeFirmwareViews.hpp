@@ -73,24 +73,24 @@ public:
     // Compose the preamble and consume the plan before-events exactly once.
     // The provider may acquire thumbnail services using its creation context.
     virtual std::string begin_print(const Print &,
-                                    const PrintingPlan &) = 0;
+                                    const ConstPrintingPlan &) = 0;
 
     // Enter one PrintingGroup. Groups represent independent ordered batches;
     // the preceding group has already received end_group().
-    virtual std::string begin_group(const PrintingGroup &) = 0;
+    virtual std::string begin_group(const ConstPrintingGroup &) = 0;
 
     // Enter one layer of the current group before any of its tool sections.
     // Layer-related transitions such as a future Z change belong here.
-    virtual std::string begin_layer(const PrintingLayerGroup &) = 0;
+    virtual std::string begin_layer(const ConstPrintingLayerGroup &) = 0;
 
     // Enter an ordered section for one tool. Future tool selection and
     // restoration of tool-specific state belong at this boundary.
-    virtual std::string begin_tool_group(const PrintingToolGroup &) = 0;
+    virtual std::string begin_tool_group(const ConstPrintingToolGroup &) = 0;
 
     // Serialize one PrintingExtrusion in its stored order. The firmware owns
     // the policy for traversing its extrusion root and interpreting its
     // inherited properties; the file writer does not inspect that geometry.
-    virtual std::string write_extrusion(const PrintingExtrusion &) = 0;
+    virtual std::string write_extrusion(const ConstPrintingExtrusion &) = 0;
 
     // Serialize one ordered scope-event tree. The matching begin_* callback
     // has already established the scope context, and the matching end_* has
@@ -180,7 +180,7 @@ inline void begin_print_thunk(void *opaque,
     invoke_firmware_callback(opaque, result, [print, plan](GCodeFirmwareSession &session) {
         if (print == nullptr || plan == nullptr)
             throw std::invalid_argument("Firmware begin_print received a null Print or plan.");
-        return session.begin_print(Print(print), PrintingPlan(plan));
+        return session.begin_print(Print(print), ConstPrintingPlan(plan));
     });
 }
 
@@ -191,7 +191,7 @@ inline void begin_group_thunk(void *opaque,
     invoke_firmware_callback(opaque, result, [group](GCodeFirmwareSession &session) {
         if (group == nullptr)
             throw std::invalid_argument("Firmware begin_group received a null group.");
-        return session.begin_group(PrintingGroup(group));
+        return session.begin_group(ConstPrintingGroup(group));
     });
 }
 
@@ -202,7 +202,7 @@ inline void begin_layer_thunk(void *opaque,
     invoke_firmware_callback(opaque, result, [layer_group](GCodeFirmwareSession &session) {
         if (layer_group == nullptr)
             throw std::invalid_argument("Firmware begin_layer received a null layer group.");
-        return session.begin_layer(PrintingLayerGroup(layer_group));
+        return session.begin_layer(ConstPrintingLayerGroup(layer_group));
     });
 }
 
@@ -213,7 +213,7 @@ inline void begin_tool_group_thunk(void *opaque,
     invoke_firmware_callback(opaque, result, [tool_group](GCodeFirmwareSession &session) {
         if (tool_group == nullptr)
             throw std::invalid_argument("Firmware begin_tool_group received a null tool group.");
-        return session.begin_tool_group(PrintingToolGroup(tool_group));
+        return session.begin_tool_group(ConstPrintingToolGroup(tool_group));
     });
 }
 
@@ -224,7 +224,7 @@ inline void write_extrusion_thunk(void *opaque,
     invoke_firmware_callback(opaque, result, [extrusion](GCodeFirmwareSession &session) {
         if (extrusion == nullptr)
             throw std::invalid_argument("Firmware write_extrusion received a null extrusion.");
-        return session.write_extrusion(PrintingExtrusion(extrusion));
+        return session.write_extrusion(ConstPrintingExtrusion(extrusion));
     });
 }
 
@@ -322,35 +322,35 @@ public:
 
     std::string_view begin_print(
         const Print &print,
-        const PrintingPlan &plan) const
+        const ConstPrintingPlan &plan) const
     {
         raw_gcode_firmware_result result = make_result();
         m_instance->vtable->begin_print(m_instance->session, print.handle(), plan.handle(), &result);
         return consume(result);
     }
 
-    std::string_view begin_group(const PrintingGroup &group) const
+    std::string_view begin_group(const ConstPrintingGroup &group) const
     {
         raw_gcode_firmware_result result = make_result();
         m_instance->vtable->begin_group(m_instance->session, group.handle(), &result);
         return consume(result);
     }
 
-    std::string_view begin_layer(const PrintingLayerGroup &layer_group) const
+    std::string_view begin_layer(const ConstPrintingLayerGroup &layer_group) const
     {
         raw_gcode_firmware_result result = make_result();
         m_instance->vtable->begin_layer(m_instance->session, layer_group.handle(), &result);
         return consume(result);
     }
 
-    std::string_view begin_tool_group(const PrintingToolGroup &tool_group) const
+    std::string_view begin_tool_group(const ConstPrintingToolGroup &tool_group) const
     {
         raw_gcode_firmware_result result = make_result();
         m_instance->vtable->begin_tool_group(m_instance->session, tool_group.handle(), &result);
         return consume(result);
     }
 
-    std::string_view write_extrusion(const PrintingExtrusion &extrusion) const
+    std::string_view write_extrusion(const ConstPrintingExtrusion &extrusion) const
     {
         raw_gcode_firmware_result result = make_result();
         m_instance->vtable->write_extrusion(m_instance->session, extrusion.handle(), &result);

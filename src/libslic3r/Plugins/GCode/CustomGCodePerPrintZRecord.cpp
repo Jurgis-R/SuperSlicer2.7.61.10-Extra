@@ -207,7 +207,7 @@ Slic3r::CustomGCode::Mode effective_record_mode(const CustomGCodeTable &table)
         Slic3r::CustomGCode::SingleExtruder : Slic3r::CustomGCode::MultiExtruder;
 }
 
-Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingPlan &plan)
+Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const ConstPrintingPlan &plan)
 {
     const Config print_config = print.config();
     const uint32_t extruder_count = print_config.get("nozzle_diameter").size();
@@ -216,11 +216,11 @@ Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingP
 
     std::set<extruder_index_t> object_tools;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                const ConstPrintingToolGroup tool = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx)
                     if (printing_extrusion_is_object(plan, group, tool.extrusion(extrusion_idx)))
                         object_tools.insert(tool.extruder_id());
@@ -231,9 +231,9 @@ Slic3r::CustomGCode::Mode printing_plan_mode(const Print &print, const PrintingP
         Slic3r::CustomGCode::MultiAsSingle : Slic3r::CustomGCode::MultiExtruder;
 }
 
-bool printing_extrusion_is_object(const PrintingPlan &plan,
-                                  const PrintingGroup &group,
-                                  const PrintingExtrusion &extrusion)
+bool printing_extrusion_is_object(const ConstPrintingPlan &plan,
+                                  const ConstPrintingGroup &group,
+                                  const ConstPrintingExtrusion &extrusion)
 {
     const LayerRegionIsland region_island = extrusion.region_island();
     if (region_island.region_count() == 0)
@@ -254,7 +254,7 @@ bool printing_extrusion_is_object(const PrintingPlan &plan,
 
 std::vector<std::vector<const CustomGCodeRow *>> rows_by_layer(
     const CustomGCodeTable &table,
-    const PrintingGroup &group)
+    const ConstPrintingGroup &group)
 {
     std::vector<std::vector<const CustomGCodeRow *>> result(group.layer_group_count());
     for (const CustomGCodeRow &row : table.rows) {

@@ -113,7 +113,10 @@ class PythonExecutionContextTests(unittest.TestCase):
 
         self.assertEqual(context.gcode_print().address, 21)
         self.assertEqual(context.gcode_plan_handle(), 22)
-        self.assertEqual(context.gcode_plan().address, 22)
+        plan = context.gcode_plan()
+        self.assertEqual(plan.address, 22)
+        self.assertIsInstance(plan, self.execution.PrintingPlan)
+        self.assertNotIsInstance(plan, self.execution.MutablePrintingPlan)
         self.assertEqual(
             context.gcode_firmware_handle(), ctypes.addressof(firmware)
         )

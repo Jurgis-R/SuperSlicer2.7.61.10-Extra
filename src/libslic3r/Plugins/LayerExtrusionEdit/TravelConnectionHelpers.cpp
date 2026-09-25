@@ -95,7 +95,7 @@ PlannedPosition layer_entry_position(
     const PluginPropertyKey<PrintingLayerEntryPositionProperty> &key);
 
 /* Count marked roots for progress without retaining a flattened list. */
-uint32_t scope_count(const PrintingLayerGroup &layer,
+uint32_t scope_count(PrintingLayerGroup &layer,
                      const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
 
 /* Record each marked root's parent Z contribution. */
@@ -106,7 +106,7 @@ void collect_scope_z_contexts(
 
 /* Build the layer-local inherited-Z lookup. */
 std::map<const extrusion_entity_handle *, coord_t> scope_z_contexts(
-    const PrintingLayerGroup &layer,
+    PrintingLayerGroup &layer,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key);
 
 /* Read one marked root's inherited-Z entry. */
@@ -352,7 +352,7 @@ PlannedPosition layer_entry_position(
     return position;
 }
 
-uint32_t scope_count(const PrintingLayerGroup &layer,
+uint32_t scope_count(PrintingLayerGroup &layer,
                      const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
 {
     uint32_t count = 0;
@@ -381,12 +381,12 @@ void collect_scope_z_contexts(
 }
 
 std::map<const extrusion_entity_handle *, coord_t> scope_z_contexts(
-    const PrintingLayerGroup &layer,
+    PrintingLayerGroup &layer,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key)
 {
     std::map<const extrusion_entity_handle *, coord_t> contexts;
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-        const PrintingToolGroup tool = layer.tool_group(tool_idx);
+        PrintingToolGroup tool = layer.tool_group(tool_idx);
         for (uint32_t idx = 0; idx < tool.extrusion_count(); ++idx)
             collect_scope_z_contexts(tool.extrusion(idx).mutable_root(), 0, key, contexts);
     }
@@ -523,7 +523,7 @@ void ScopeTravelConnector::reset()
 }
 
 /* Build a stable layer index without scanning extrusion geometry. */
-void ScopeTravelConnector::setup(const PrintingPlan &plan, const uint32_t run_count)
+void ScopeTravelConnector::setup(const ConstPrintingPlan &plan, const uint32_t run_count)
 {
     reset();
     if (!plan.valid())
@@ -531,7 +531,7 @@ void ScopeTravelConnector::setup(const PrintingPlan &plan, const uint32_t run_co
     size_t flat_idx = 0;
     m_flat_indices.resize(plan.group_count());
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         m_flat_indices[group_idx].resize(group.layer_group_count());
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx)
             m_flat_indices[group_idx][layer_idx] = flat_idx++;
@@ -566,7 +566,7 @@ ScopeTravelConnector::next_nonempty_layer(const size_t flat_idx) const
 }
 
 /* Publish the first local scope's final incoming-travel prediction. */
-void ScopeTravelConnector::setup_run(const PrintingLayerGroup &layer,
+void ScopeTravelConnector::setup_run(PrintingLayerGroup &layer,
     const uint32_t group_idx, const uint32_t layer_idx, PluginProgress &progress)
 {
     const size_t flat_idx = flat_layer_index(group_idx, layer_idx);
@@ -592,7 +592,7 @@ void ScopeTravelConnector::setup_run(const PrintingLayerGroup &layer,
 }
 
 /* Connect local pairs and synchronize only flags owned by this layer. */
-void ScopeTravelConnector::run(const PrintingLayerGroup &layer,
+void ScopeTravelConnector::run(PrintingLayerGroup &layer,
     const uint32_t group_idx, const uint32_t layer_idx,
     const TravelPathPlanner &planner, PluginProgress &progress) const
 {

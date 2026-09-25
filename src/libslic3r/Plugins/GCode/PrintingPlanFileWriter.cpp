@@ -67,7 +67,7 @@ const char *const k_no_dependencies[] = { nullptr };
 
 // Count the ordered work units once so progress stays stable while chunks are
 // produced sequentially.
-uint32_t count_plan_extrusions(const PrintingPlan &plan,
+uint32_t count_plan_extrusions(const ConstPrintingPlan &plan,
                                const plugin_run_context *run_context);
 
 // Append one borrowed firmware result before another firmware callback can
@@ -81,7 +81,7 @@ void write_firmware_chunk(boost::nowide::ofstream &stream,
 void serialize_plan(boost::nowide::ofstream &stream,
                     const plugin_run_context *run_context,
                     const Print &print,
-                    const PrintingPlan &plan,
+                    const ConstPrintingPlan &plan,
                     const GCodeFirmwareView &firmware,
                     PluginProgress &progress);
 
@@ -95,16 +95,16 @@ void write_plan_file(const plugin_run_context &run_context,
                      const run_ctx_generate_gcode &context,
                      PluginProgress &progress);
 
-uint32_t count_plan_extrusions(const PrintingPlan &plan,
+uint32_t count_plan_extrusions(const ConstPrintingPlan &plan,
                                const plugin_run_context *run_context)
 {
     uint32_t count = 0;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_context);
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_context);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_context);
                 count += layer.tool_group(tool_idx).extrusion_count();
@@ -130,14 +130,14 @@ void write_firmware_chunk(boost::nowide::ofstream &stream,
 void serialize_plan(boost::nowide::ofstream &stream,
                     const plugin_run_context *run_context,
                     const Print &print,
-                    const PrintingPlan &plan,
+                    const ConstPrintingPlan &plan,
                     const GCodeFirmwareView &firmware,
                     PluginProgress &progress)
 {
     throw_if_cancelled(run_context);
     throw_if_cancelled(run_context);
     write_firmware_chunk(stream, run_context, firmware.begin_print(print, plan));
-    const PrintingScopeEvents plan_events = plan.events();
+    const ConstPrintingScopeEvents plan_events = plan.events();
     // begin_print consumes the plan before-events as part of its preamble.
 
     // Every begin call is matched before the enclosing scope is left. Empty
@@ -145,10 +145,10 @@ void serialize_plan(boost::nowide::ofstream &stream,
     // boundaries even when they contain no extrusion.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_context);
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         throw_if_cancelled(run_context);
         write_firmware_chunk(stream, run_context, firmware.begin_group(group));
-        const PrintingScopeEvents group_events = group.events();
+        const ConstPrintingScopeEvents group_events = group.events();
         if (group_events.has_before()) {
             throw_if_cancelled(run_context);
             write_firmware_chunk(stream, run_context, firmware.write_event(group_events.before()));
@@ -156,10 +156,10 @@ void serialize_plan(boost::nowide::ofstream &stream,
 
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_context);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             throw_if_cancelled(run_context);
             write_firmware_chunk(stream, run_context, firmware.begin_layer(layer));
-            const PrintingScopeEvents layer_events = layer.events();
+            const ConstPrintingScopeEvents layer_events = layer.events();
             if (layer_events.has_before()) {
                 throw_if_cancelled(run_context);
                 write_firmware_chunk(stream, run_context, firmware.write_event(layer_events.before()));
@@ -167,10 +167,10 @@ void serialize_plan(boost::nowide::ofstream &stream,
 
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_context);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                const ConstPrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 throw_if_cancelled(run_context);
                 write_firmware_chunk(stream, run_context, firmware.begin_tool_group(tool_group));
-                const PrintingScopeEvents tool_events = tool_group.events();
+                const ConstPrintingScopeEvents tool_events = tool_group.events();
                 if (tool_events.has_before()) {
                     throw_if_cancelled(run_context);
                     write_firmware_chunk(stream, run_context, firmware.write_event(tool_events.before()));
@@ -180,7 +180,7 @@ void serialize_plan(boost::nowide::ofstream &stream,
                      extrusion_idx < tool_group.extrusion_count();
                      ++extrusion_idx) {
                     throw_if_cancelled(run_context);
-                    const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    const ConstPrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     write_firmware_chunk(stream, run_context, firmware.write_extrusion(extrusion));
                     progress.increment();
                 }
@@ -260,7 +260,7 @@ void write_plan_file(const plugin_run_context &run_context,
 
     try {
         const Print print(context.print);
-        const PrintingPlan plan(context.plan);
+        const ConstPrintingPlan plan(context.plan);
         const GCodeFirmwareView firmware(context.firmware);
         serialize_plan(stream, &run_context, print, plan, firmware, progress);
 
@@ -327,7 +327,7 @@ private:
         throw_if_cancelled(run_ctx);
         const run_ctx_generate_gcode *context = plugin_ctx_as_generate_gcode(run_ctx);
         if (context != nullptr && context->plan != nullptr)
-            progress().add_max(count_plan_extrusions(PrintingPlan(context->plan), run_ctx));
+            progress().add_max(count_plan_extrusions(ConstPrintingPlan(context->plan), run_ctx));
     }
 
     void run_impl(const plugin_run_context *run_ctx) const override

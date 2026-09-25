@@ -38,7 +38,7 @@ class PrintingPlanTimeEstimator
 public:
     explicit PrintingPlanTimeEstimator(const Config &print_config);
 
-    std::vector<PrintingLayerTimeEstimate> estimate(const PrintingPlan &plan) const;
+    std::vector<PrintingLayerTimeEstimate> estimate(const ConstPrintingPlan &plan) const;
 
 private:
     double m_travel_speed_mm_per_s = 0.0;

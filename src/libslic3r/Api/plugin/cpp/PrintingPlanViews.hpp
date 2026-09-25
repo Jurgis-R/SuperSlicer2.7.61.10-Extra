@@ -25,6 +25,12 @@ class PrintingGroup;
 class PrintingLayerGroup;
 class PrintingToolGroup;
 class PrintingExtrusion;
+class ConstPrintingPlan;
+class ConstPrintingScopeEvents;
+class ConstPrintingGroup;
+class ConstPrintingLayerGroup;
+class ConstPrintingToolGroup;
+class ConstPrintingExtrusion;
 
 /*
 PrintingPlan C++ views
@@ -89,6 +95,176 @@ private:
     c_printing_object_instance m_value;
 };
 
+/* Read-only event sequence used by G-code writers and firmware sessions. */
+class ConstPrintingScopeEvents
+{
+public:
+    explicit ConstPrintingScopeEvents(const printing_scope_events_handle *handle) : m_handle(handle) {}
+    ConstPrintingScopeEvents(const PrintingScopeEvents &events);
+
+    bool valid() const { return m_handle != nullptr; }
+    const printing_scope_events_handle *handle() const { return m_handle; }
+    bool has_before() const { return printing_scope_events_has_before(handle()) != 0; }
+    bool has_after() const { return printing_scope_events_has_after(handle()) != 0; }
+    ExtrusionEntity before() const { return ExtrusionEntity(printing_scope_events_get_before(handle())); }
+    ExtrusionEntity after() const { return ExtrusionEntity(printing_scope_events_get_after(handle())); }
+
+private:
+    const printing_scope_events_handle *m_handle = nullptr;
+};
+
+/* Read-only view of one finalized plan extrusion. */
+class ConstPrintingExtrusion
+{
+public:
+    explicit ConstPrintingExtrusion(const printing_extrusion_handle *handle) : m_handle(handle) {}
+    ConstPrintingExtrusion(const PrintingExtrusion &extrusion);
+
+    bool valid() const { return m_handle != nullptr; }
+    const printing_extrusion_handle *handle() const { return m_handle; }
+    LayerRegionIsland region_island() const {
+        const layer_region_island_handle *source = printing_extrusion_get_region_island(handle());
+        return source != nullptr ? LayerRegionIsland(source) : LayerRegionIsland();
+    }
+    raw_extrusion_role role() const { return printing_extrusion_get_role(handle()); }
+    uint32_t printing_catalog_id() const {
+        return printing_extrusion_get_printing_catalog_id(handle());
+    }
+    ExtrusionEntity root() const {
+        return ExtrusionEntity(printing_extrusion_get_root(handle()));
+    }
+
+private:
+    const printing_extrusion_handle *m_handle = nullptr;
+};
+
+/* Read-only visit of one finalized tool section. */
+class ConstPrintingToolGroup
+{
+public:
+    explicit ConstPrintingToolGroup(const printing_tool_group_handle *handle) : m_handle(handle) {}
+    ConstPrintingToolGroup(const PrintingToolGroup &tool_group);
+
+    bool valid() const { return m_handle != nullptr; }
+    const printing_tool_group_handle *handle() const { return m_handle; }
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_tool_group_get_events(handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_tool_group_get_properties(handle()));
+    }
+    extruder_index_t extruder_id() const { return printing_tool_group_get_extruder_id(handle()); }
+    uint32_t region_island_count() const {
+        return printing_tool_group_count_region_island(handle());
+    }
+    LayerRegionIsland region_island(uint32_t idx) const {
+        return LayerRegionIsland(printing_tool_group_get_region_island(handle(), idx));
+    }
+    uint32_t extrusion_count() const { return printing_tool_group_count_extrusion(handle()); }
+    ConstPrintingExtrusion extrusion(uint32_t idx) const {
+        return ConstPrintingExtrusion(printing_tool_group_get_extrusion(handle(), idx));
+    }
+
+private:
+    const printing_tool_group_handle *m_handle = nullptr;
+};
+
+/* Read-only visit of one finalized plan layer. */
+class ConstPrintingLayerGroup
+{
+public:
+    explicit ConstPrintingLayerGroup(const printing_layer_group_handle *handle) : m_handle(handle) {}
+    ConstPrintingLayerGroup(const PrintingLayerGroup &layer_group);
+
+    bool valid() const { return m_handle != nullptr; }
+    const printing_layer_group_handle *handle() const { return m_handle; }
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_layer_group_get_events(handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_layer_group_get_properties(handle()));
+    }
+    coord_t print_z() const { return printing_layer_group_get_print_z(handle()); }
+    uint32_t layer_count() const { return printing_layer_group_count_layer(handle()); }
+    Layer layer(uint32_t idx) const {
+        return Layer(printing_layer_group_get_layer(handle(), idx));
+    }
+    uint32_t tool_group_count() const {
+        return printing_layer_group_count_tool_group(handle());
+    }
+    ConstPrintingToolGroup tool_group(uint32_t idx) const {
+        return ConstPrintingToolGroup(printing_layer_group_get_tool_group(handle(), idx));
+    }
+
+private:
+    const printing_layer_group_handle *m_handle = nullptr;
+};
+
+/* Read-only visit of one finalized independent plan batch. */
+class ConstPrintingGroup
+{
+public:
+    explicit ConstPrintingGroup(const printing_group_handle *handle) : m_handle(handle) {}
+    ConstPrintingGroup(const PrintingGroup &group);
+
+    bool valid() const { return m_handle != nullptr; }
+    const printing_group_handle *handle() const { return m_handle; }
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_group_get_events(handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_group_get_properties(handle()));
+    }
+    uint32_t object_instance_count() const {
+        return printing_group_count_object_instance(handle());
+    }
+    uint32_t printing_catalog_id(uint32_t idx) const {
+        return printing_group_get_printing_catalog_id(handle(), idx);
+    }
+    uint32_t layer_group_count() const {
+        return printing_group_count_layer_group(handle());
+    }
+    ConstPrintingLayerGroup layer_group(uint32_t idx) const {
+        return ConstPrintingLayerGroup(printing_group_get_layer_group(handle(), idx));
+    }
+
+private:
+    const printing_group_handle *m_handle = nullptr;
+};
+
+/* Read-only view of the finalized plan supplied to STEP_GCODE. */
+class ConstPrintingPlan
+{
+public:
+    ConstPrintingPlan() = default;
+    explicit ConstPrintingPlan(const printing_plan_handle *handle) : m_handle(handle) {}
+    ConstPrintingPlan(const PrintingPlan &plan);
+
+    bool valid() const { return m_handle != nullptr; }
+    const printing_plan_handle *handle() const { return m_handle; }
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_plan_get_events(handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_plan_get_properties(handle()));
+    }
+    uint32_t object_instance_count() const {
+        return printing_plan_count_object_instance(handle());
+    }
+    PrintingObjectInstance object_instance(uint32_t id) const {
+        return PrintingObjectInstance(
+            printing_plan_get_object_instance_by_printing_catalog_id(handle(), id));
+    }
+    c_point object_instance_shift(const ConstPrintingExtrusion &extrusion) const;
+    uint32_t group_count() const { return printing_plan_count_group(handle()); }
+    ConstPrintingGroup group(uint32_t idx) const {
+        return ConstPrintingGroup(printing_plan_get_group(handle(), idx));
+    }
+
+private:
+    const printing_plan_handle *m_handle = nullptr;
+};
+
 /*
 Borrowed view over the fixed before/after sequences of one plan scope.
 
@@ -100,11 +276,9 @@ class PrintingScopeEvents
 {
 public:
     explicit PrintingScopeEvents(printing_scope_events_handle *handle) : m_handle(handle) {}
-    explicit PrintingScopeEvents(const printing_scope_events_handle *handle) :
-        m_handle(const_cast<printing_scope_events_handle *>(handle)) {}
 
     bool valid() const { return m_handle != nullptr; }
-    printing_scope_events_handle *mutable_handle() const { return m_handle; }
+    printing_scope_events_handle *mutable_handle() { return m_handle; }
     const printing_scope_events_handle *handle() const { return m_handle; }
 
     bool has_before() const { return printing_scope_events_has_before(handle()) != 0; }
@@ -112,19 +286,19 @@ public:
     ExtrusionEntity before() const { return ExtrusionEntity(printing_scope_events_get_before(handle())); }
     ExtrusionEntity after() const { return ExtrusionEntity(printing_scope_events_get_after(handle())); }
 
-    MutableExtrusionEntity append_before_clone(const ExtrusionEntity &event) const {
+    MutableExtrusionEntity append_before_clone(const ExtrusionEntity &event) {
         return MutableExtrusionEntity(
             printing_scope_events_append_before_clone(mutable_handle(), event.handle()));
     }
-    MutableExtrusionEntity append_before_move(MutableExtrusionEntity event) const {
+    MutableExtrusionEntity append_before_move(MutableExtrusionEntity event) {
         return MutableExtrusionEntity(
             printing_scope_events_append_before_move(mutable_handle(), event.mutable_handle()));
     }
-    MutableExtrusionEntity append_after_clone(const ExtrusionEntity &event) const {
+    MutableExtrusionEntity append_after_clone(const ExtrusionEntity &event) {
         return MutableExtrusionEntity(
             printing_scope_events_append_after_clone(mutable_handle(), event.handle()));
     }
-    MutableExtrusionEntity append_after_move(MutableExtrusionEntity event) const {
+    MutableExtrusionEntity append_after_move(MutableExtrusionEntity event) {
         return MutableExtrusionEntity(
             printing_scope_events_append_after_move(mutable_handle(), event.mutable_handle()));
     }
@@ -137,11 +311,9 @@ class PrintingExtrusion
 {
 public:
     explicit PrintingExtrusion(printing_extrusion_handle *handle) : m_handle(handle) {}
-    explicit PrintingExtrusion(const printing_extrusion_handle *handle) :
-        m_handle(const_cast<printing_extrusion_handle *>(handle)) {}
 
     bool valid() const { return m_handle != nullptr; }
-    printing_extrusion_handle *mutable_handle() const { return m_handle; }
+    printing_extrusion_handle *mutable_handle() { return m_handle; }
     const printing_extrusion_handle *handle() const { return m_handle; }
 
     LayerRegionIsland region_island() const {
@@ -155,7 +327,7 @@ public:
     }
 
     raw_extrusion_role role() const { return printing_extrusion_get_role(handle()); }
-    void set_role(raw_extrusion_role role) const { printing_extrusion_set_role(mutable_handle(), role); }
+    void set_role(raw_extrusion_role role) { printing_extrusion_set_role(mutable_handle(), role); }
 
     uint32_t printing_catalog_id() const { return printing_extrusion_get_printing_catalog_id(handle()); }
 
@@ -163,15 +335,15 @@ public:
         return ExtrusionEntity(printing_extrusion_get_root(handle()));
     }
 
-    MutableExtrusionEntity mutable_root() const {
+    MutableExtrusionEntity mutable_root() {
         return MutableExtrusionEntity(printing_extrusion_get_root_mutable(mutable_handle()));
     }
 
-    bool set_root_clone(const ExtrusionEntity &root) const {
+    bool set_root_clone(const ExtrusionEntity &root) {
         return printing_extrusion_set_root_clone(mutable_handle(), root.handle()) != 0;
     }
 
-    bool set_root_move(MutableExtrusionEntity root) const {
+    bool set_root_move(MutableExtrusionEntity root) {
         return printing_extrusion_set_root_move(mutable_handle(), root.mutable_handle()) != 0;
     }
 
@@ -183,23 +355,27 @@ class PrintingToolGroup
 {
 public:
     explicit PrintingToolGroup(printing_tool_group_handle *handle) : m_handle(handle) {}
-    explicit PrintingToolGroup(const printing_tool_group_handle *handle) :
-        m_handle(const_cast<printing_tool_group_handle *>(handle)) {}
 
     bool valid() const { return m_handle != nullptr; }
-    printing_tool_group_handle *mutable_handle() const { return m_handle; }
+    printing_tool_group_handle *mutable_handle() { return m_handle; }
     const printing_tool_group_handle *handle() const { return m_handle; }
 
-    PrintingScopeEvents events() const {
+    PrintingScopeEvents events() {
         return PrintingScopeEvents(printing_tool_group_get_events_mutable(mutable_handle()));
     }
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_tool_group_get_events(handle()));
+    }
 
-    PluginProperties properties() const {
-        return PluginProperties(printing_tool_group_get_properties(handle()));
+    PluginProperties properties() {
+        return PluginProperties(printing_tool_group_get_properties_mutable(mutable_handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_tool_group_get_properties(handle()));
     }
 
     extruder_index_t extruder_id() const { return printing_tool_group_get_extruder_id(handle()); }
-    void set_extruder_id(int64_t extruder_id) const {
+    void set_extruder_id(int64_t extruder_id) {
         if (extruder_id < EXTRUDER_ID_UNKNOWN ||
             extruder_id > (std::numeric_limits<extruder_index_t>::max)())
             throw std::out_of_range("The extruder id does not fit in extruder_index_t.");
@@ -211,36 +387,39 @@ public:
     LayerRegionIsland region_island(uint32_t idx) const {
         return LayerRegionIsland(printing_tool_group_get_region_island(handle(), idx));
     }
-    void append_region_island(const LayerRegionIsland &region_island) const {
+    void append_region_island(const LayerRegionIsland &region_island) {
         printing_tool_group_append_region_island(mutable_handle(), region_island.handle());
     }
 
     uint32_t extrusion_count() const { return printing_tool_group_count_extrusion(handle()); }
-    PrintingExtrusion extrusion(uint32_t idx) const {
+    PrintingExtrusion extrusion(uint32_t idx) {
         return PrintingExtrusion(printing_tool_group_get_extrusion_mutable(mutable_handle(), idx));
     }
+    ConstPrintingExtrusion extrusion(uint32_t idx) const {
+        return ConstPrintingExtrusion(printing_tool_group_get_extrusion(handle(), idx));
+    }
 
-    PrintingExtrusion append_extrusion_clone(const PrintingPlan &plan,
+    PrintingExtrusion append_extrusion_clone(PrintingPlan &plan,
                                              const LayerRegionIsland &source,
                                              raw_extrusion_role role,
                                              const ExtrusionEntity &root,
-                                             uint32_t printing_catalog_id) const;
+                                             uint32_t printing_catalog_id);
 
     PrintingExtrusion append_extrusion_clone_from_region_island(
-        const PrintingPlan &plan, const LayerRegionIsland &source,
-        raw_extrusion_role role, uint32_t printing_catalog_id) const;
+        PrintingPlan &plan, const LayerRegionIsland &source,
+        raw_extrusion_role role, uint32_t printing_catalog_id);
 
-    PrintingExtrusion append_extrusion_move(const PrintingPlan &plan,
+    PrintingExtrusion append_extrusion_move(PrintingPlan &plan,
                                             const LayerRegionIsland &source,
                                             raw_extrusion_role role,
                                             MutableExtrusionEntity root,
-                                            uint32_t printing_catalog_id) const;
+                                            uint32_t printing_catalog_id);
 
-    bool move_extrusion(uint32_t from_idx, uint32_t to_idx) const {
+    bool move_extrusion(uint32_t from_idx, uint32_t to_idx) {
         return printing_tool_group_move_extrusion(mutable_handle(), from_idx, to_idx) != 0;
     }
 
-    bool transfer_extrusion_to(uint32_t source_idx, const PrintingToolGroup &destination) const {
+    bool transfer_extrusion_to(uint32_t source_idx, PrintingToolGroup &destination) {
         return printing_tool_group_transfer_extrusion(
                    mutable_handle(), source_idx, destination.mutable_handle()) != 0;
     }
@@ -253,45 +432,52 @@ class PrintingLayerGroup
 {
 public:
     explicit PrintingLayerGroup(printing_layer_group_handle *handle) : m_handle(handle) {}
-    explicit PrintingLayerGroup(const printing_layer_group_handle *handle) :
-        m_handle(const_cast<printing_layer_group_handle *>(handle)) {}
 
     bool valid() const { return m_handle != nullptr; }
-    printing_layer_group_handle *mutable_handle() const { return m_handle; }
+    printing_layer_group_handle *mutable_handle() { return m_handle; }
     const printing_layer_group_handle *handle() const { return m_handle; }
 
-    PrintingScopeEvents events() const {
+    PrintingScopeEvents events() {
         return PrintingScopeEvents(printing_layer_group_get_events_mutable(mutable_handle()));
     }
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_layer_group_get_events(handle()));
+    }
 
-    PluginProperties properties() const {
-        return PluginProperties(printing_layer_group_get_properties(handle()));
+    PluginProperties properties() {
+        return PluginProperties(printing_layer_group_get_properties_mutable(mutable_handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_layer_group_get_properties(handle()));
     }
 
     coord_t print_z() const { return printing_layer_group_get_print_z(handle()); }
-    void set_print_z(coord_t print_z) const { printing_layer_group_set_print_z(mutable_handle(), print_z); }
+    void set_print_z(coord_t print_z) { printing_layer_group_set_print_z(mutable_handle(), print_z); }
 
     uint32_t layer_count() const { return printing_layer_group_count_layer(handle()); }
     Layer layer(uint32_t idx) const { return Layer(printing_layer_group_get_layer(handle(), idx)); }
-    void append_layer(const Layer &layer) const {
+    void append_layer(const Layer &layer) {
         printing_layer_group_append_layer(mutable_handle(), layer.handle());
     }
 
     uint32_t tool_group_count() const { return printing_layer_group_count_tool_group(handle()); }
-    PrintingToolGroup tool_group(uint32_t idx) const {
+    PrintingToolGroup tool_group(uint32_t idx) {
         return PrintingToolGroup(printing_layer_group_get_tool_group_mutable(mutable_handle(), idx));
     }
-    PrintingToolGroup append_tool_group(int64_t extruder_id) const {
+    ConstPrintingToolGroup tool_group(uint32_t idx) const {
+        return ConstPrintingToolGroup(printing_layer_group_get_tool_group(handle(), idx));
+    }
+    PrintingToolGroup append_tool_group(int64_t extruder_id) {
         if (extruder_id < EXTRUDER_ID_UNKNOWN ||
             extruder_id > (std::numeric_limits<extruder_index_t>::max)())
             throw std::out_of_range("The extruder id does not fit in extruder_index_t.");
         return PrintingToolGroup(printing_layer_group_append_tool_group(
             mutable_handle(), static_cast<extruder_index_t>(extruder_id)));
     }
-    bool move_tool_group(uint32_t from_idx, uint32_t to_idx) const {
+    bool move_tool_group(uint32_t from_idx, uint32_t to_idx) {
         return printing_layer_group_move_tool_group(mutable_handle(), from_idx, to_idx) != 0;
     }
-    bool remove_empty_tool_group(uint32_t idx) const {
+    bool remove_empty_tool_group(uint32_t idx) {
         return printing_layer_group_remove_empty_tool_group(mutable_handle(), idx) != 0;
     }
 
@@ -303,37 +489,44 @@ class PrintingGroup
 {
 public:
     explicit PrintingGroup(printing_group_handle *handle) : m_handle(handle) {}
-    explicit PrintingGroup(const printing_group_handle *handle) :
-        m_handle(const_cast<printing_group_handle *>(handle)) {}
 
     bool valid() const { return m_handle != nullptr; }
-    printing_group_handle *mutable_handle() const { return m_handle; }
+    printing_group_handle *mutable_handle() { return m_handle; }
     const printing_group_handle *handle() const { return m_handle; }
 
-    PrintingScopeEvents events() const {
+    PrintingScopeEvents events() {
         return PrintingScopeEvents(printing_group_get_events_mutable(mutable_handle()));
     }
-
-    PluginProperties properties() const {
-        return PluginProperties(printing_group_get_properties(handle()));
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_group_get_events(handle()));
     }
 
-    void clear() const { printing_group_clear(mutable_handle()); }
+    PluginProperties properties() {
+        return PluginProperties(printing_group_get_properties_mutable(mutable_handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_group_get_properties(handle()));
+    }
+
+    void clear() { printing_group_clear(mutable_handle()); }
 
     uint32_t object_instance_count() const { return printing_group_count_object_instance(handle()); }
     uint32_t printing_catalog_id(uint32_t idx) const {
         return printing_group_get_printing_catalog_id(handle(), idx);
     }
-    void append_printing_catalog_id(const PrintingPlan &plan, uint32_t id) const;
+    void append_printing_catalog_id(const PrintingPlan &plan, uint32_t id);
 
     uint32_t layer_group_count() const { return printing_group_count_layer_group(handle()); }
-    PrintingLayerGroup layer_group(uint32_t idx) const {
+    PrintingLayerGroup layer_group(uint32_t idx) {
         return PrintingLayerGroup(printing_group_get_layer_group_mutable(mutable_handle(), idx));
     }
-    PrintingLayerGroup append_layer_group(coord_t print_z) const {
+    ConstPrintingLayerGroup layer_group(uint32_t idx) const {
+        return ConstPrintingLayerGroup(printing_group_get_layer_group(handle(), idx));
+    }
+    PrintingLayerGroup append_layer_group(coord_t print_z) {
         return PrintingLayerGroup(printing_group_append_layer_group(mutable_handle(), print_z));
     }
-    bool move_layer_group(uint32_t from_idx, uint32_t to_idx) const {
+    bool move_layer_group(uint32_t from_idx, uint32_t to_idx) {
         return printing_group_move_layer_group(mutable_handle(), from_idx, to_idx) != 0;
     }
 
@@ -346,24 +539,28 @@ class PrintingPlan
 public:
     PrintingPlan() = default;
     explicit PrintingPlan(printing_plan_handle *handle) : m_handle(handle) {}
-    explicit PrintingPlan(const printing_plan_handle *handle) :
-        m_handle(const_cast<printing_plan_handle *>(handle)) {}
 
     bool valid() const { return m_handle != nullptr; }
-    printing_plan_handle *mutable_handle() const { return m_handle; }
+    printing_plan_handle *mutable_handle() { return m_handle; }
     const printing_plan_handle *handle() const { return m_handle; }
 
-    PrintingScopeEvents events() const {
+    PrintingScopeEvents events() {
         return PrintingScopeEvents(printing_plan_get_events_mutable(mutable_handle()));
     }
-
-    PluginProperties properties() const {
-        return PluginProperties(printing_plan_get_properties(handle()));
+    ConstPrintingScopeEvents events() const {
+        return ConstPrintingScopeEvents(printing_plan_get_events(handle()));
     }
 
-    void clear() const { printing_plan_clear(mutable_handle()); }
+    PluginProperties properties() {
+        return PluginProperties(printing_plan_get_properties_mutable(mutable_handle()));
+    }
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(printing_plan_get_properties(handle()));
+    }
 
-    uint32_t find_or_add_object_instance(const Object &object, uint64_t object_instance_idx) const {
+    void clear() { printing_plan_clear(mutable_handle()); }
+
+    uint32_t find_or_add_object_instance(const Object &object, uint64_t object_instance_idx) {
         const uint32_t id = printing_plan_register_object_instance(
             mutable_handle(), object.handle(), object_instance_idx, nullptr, nullptr);
         if (id == UINT32_MAX)
@@ -372,7 +569,7 @@ public:
         return id;
     }
     uint32_t add_synthetic_object_instance(const std::string &name,
-                                           const Polygon &outline) const {
+                                           const Polygon &outline) {
         const uint32_t id = printing_plan_register_object_instance(
             mutable_handle(), nullptr, (std::numeric_limits<uint64_t>::max)(),
             name.c_str(), outline.handle());
@@ -381,7 +578,7 @@ public:
         return id;
     }
     void set_object_instance_metadata(uint32_t id, const std::string &name,
-                                      const Polygon &outline) const {
+                                      const Polygon &outline) {
         if (!printing_plan_set_object_instance_metadata(
                 mutable_handle(), id, name.c_str(), outline.handle()))
             throw std::invalid_argument("The object instance metadata is invalid.");
@@ -393,15 +590,19 @@ public:
         return PrintingObjectInstance(printing_plan_get_object_instance_by_printing_catalog_id(handle(), id));
     }
     c_point object_instance_shift(const PrintingExtrusion &extrusion) const;
+    c_point object_instance_shift(const ConstPrintingExtrusion &extrusion) const;
 
     uint32_t group_count() const { return printing_plan_count_group(handle()); }
-    PrintingGroup group(uint32_t idx) const {
+    PrintingGroup group(uint32_t idx) {
         return PrintingGroup(printing_plan_get_group_mutable(mutable_handle(), idx));
     }
-    PrintingGroup append_group() const {
+    ConstPrintingGroup group(uint32_t idx) const {
+        return ConstPrintingGroup(printing_plan_get_group(handle(), idx));
+    }
+    PrintingGroup append_group() {
         return PrintingGroup(printing_plan_append_group(mutable_handle()));
     }
-    bool move_group(uint32_t from_idx, uint32_t to_idx) const {
+    bool move_group(uint32_t from_idx, uint32_t to_idx) {
         return printing_plan_move_group(mutable_handle(), from_idx, to_idx) != 0;
     }
 
@@ -409,10 +610,34 @@ private:
     printing_plan_handle *m_handle = nullptr;
 };
 
+inline ConstPrintingScopeEvents::ConstPrintingScopeEvents(const PrintingScopeEvents &events)
+    : m_handle(events.handle())
+{}
+
+inline ConstPrintingExtrusion::ConstPrintingExtrusion(const PrintingExtrusion &extrusion)
+    : m_handle(extrusion.handle())
+{}
+
+inline ConstPrintingToolGroup::ConstPrintingToolGroup(const PrintingToolGroup &tool_group)
+    : m_handle(tool_group.handle())
+{}
+
+inline ConstPrintingLayerGroup::ConstPrintingLayerGroup(const PrintingLayerGroup &layer_group)
+    : m_handle(layer_group.handle())
+{}
+
+inline ConstPrintingGroup::ConstPrintingGroup(const PrintingGroup &group)
+    : m_handle(group.handle())
+{}
+
+inline ConstPrintingPlan::ConstPrintingPlan(const PrintingPlan &plan)
+    : m_handle(plan.handle())
+{}
+
 inline PrintingExtrusion PrintingToolGroup::append_extrusion_clone(
-    const PrintingPlan &plan, const LayerRegionIsland &source,
+    PrintingPlan &plan, const LayerRegionIsland &source,
     raw_extrusion_role role, const ExtrusionEntity &root,
-    uint32_t printing_catalog_id) const
+    uint32_t printing_catalog_id)
 {
     return PrintingExtrusion(printing_tool_group_append_extrusion_clone(
         plan.mutable_handle(), mutable_handle(), source.handle(), role,
@@ -420,8 +645,8 @@ inline PrintingExtrusion PrintingToolGroup::append_extrusion_clone(
 }
 
 inline PrintingExtrusion PrintingToolGroup::append_extrusion_clone_from_region_island(
-    const PrintingPlan &plan, const LayerRegionIsland &source,
-    raw_extrusion_role role, uint32_t printing_catalog_id) const
+    PrintingPlan &plan, const LayerRegionIsland &source,
+    raw_extrusion_role role, uint32_t printing_catalog_id)
 {
     return PrintingExtrusion(printing_tool_group_append_extrusion_clone_from_region_island(
         plan.mutable_handle(), mutable_handle(), source.handle(), role,
@@ -429,9 +654,9 @@ inline PrintingExtrusion PrintingToolGroup::append_extrusion_clone_from_region_i
 }
 
 inline PrintingExtrusion PrintingToolGroup::append_extrusion_move(
-    const PrintingPlan &plan, const LayerRegionIsland &source,
+    PrintingPlan &plan, const LayerRegionIsland &source,
     raw_extrusion_role role, MutableExtrusionEntity root,
-    uint32_t printing_catalog_id) const
+    uint32_t printing_catalog_id)
 {
     return PrintingExtrusion(printing_tool_group_append_extrusion_move(
         plan.mutable_handle(), mutable_handle(), source.handle(), role,
@@ -445,6 +670,17 @@ inline size_t printing_plan_object_instance_idx(const PrintingPlan &plan,
 {
     const uint32_t printing_catalog_id = extrusion.printing_catalog_id();
     // none -> auxiliary -> only one instance per auxiliary object
+    if (printing_catalog_id == SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE)
+        return 0;
+    if (printing_catalog_id >= plan.object_instance_count())
+        return size_t(-1);
+    return static_cast<size_t>(plan.object_instance(printing_catalog_id).object_instance_idx());
+}
+
+inline size_t printing_plan_object_instance_idx(const ConstPrintingPlan &plan,
+                                           const ConstPrintingExtrusion &extrusion)
+{
+    const uint32_t printing_catalog_id = extrusion.printing_catalog_id();
     if (printing_catalog_id == SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE)
         return 0;
     if (printing_catalog_id >= plan.object_instance_count())
@@ -477,8 +713,38 @@ inline c_point PrintingPlan::object_instance_shift(const PrintingExtrusion &extr
     return object.instance_shift(static_cast<uint32_t>(object_instance_idx));
 }
 
+inline c_point ConstPrintingPlan::object_instance_shift(
+    const ConstPrintingExtrusion &extrusion) const
+{
+    const uint32_t printing_catalog_id = extrusion.printing_catalog_id();
+    if (printing_catalog_id == SLIC3R_PRINTING_OBJECT_INSTANCE_ID_NONE)
+        return {0, 0};
+    if (printing_catalog_id >= object_instance_count())
+        throw std::invalid_argument(
+            "The PrintingExtrusion references an unknown catalog entry.");
+
+    const PrintingObjectInstance instance = object_instance(printing_catalog_id);
+    if (!instance.has_object())
+        throw std::invalid_argument(
+            "A synthetic PrintingObjectInstance has no source-object shift.");
+
+    const uint64_t object_instance_idx = instance.object_instance_idx();
+    const Object object = instance.object();
+    if (object_instance_idx > UINT32_MAX || object_instance_idx >= object.instance_count())
+        throw std::invalid_argument(
+            "The PrintingObjectInstance references an invalid local instance.");
+
+    return object.instance_shift(static_cast<uint32_t>(object_instance_idx));
+}
+
+inline c_point PrintingPlan::object_instance_shift(
+    const ConstPrintingExtrusion &extrusion) const
+{
+    return ConstPrintingPlan(handle()).object_instance_shift(extrusion);
+}
+
 inline void PrintingGroup::append_printing_catalog_id(
-    const PrintingPlan &plan, uint32_t id) const
+    const PrintingPlan &plan, uint32_t id)
 {
     if (printing_group_append_printing_catalog_id(plan.handle(), mutable_handle(), id) == 0)
         throw std::invalid_argument("The object instance ID does not belong to the PrintingPlan.");

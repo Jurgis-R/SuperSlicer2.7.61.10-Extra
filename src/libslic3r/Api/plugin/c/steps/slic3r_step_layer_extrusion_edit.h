@@ -27,8 +27,8 @@ scope events owned by their layer_group; other layers must not be modified.
 */
 typedef struct run_ctx_layer_extrusion_edition {
     const print_handle *print;
-    const printing_plan_handle *plan;
-    const printing_group_handle *group;
+    printing_plan_handle *plan;
+    printing_group_handle *group;
     printing_layer_group_handle *layer_group;
     uint32_t group_idx;
     uint32_t layer_group_idx;

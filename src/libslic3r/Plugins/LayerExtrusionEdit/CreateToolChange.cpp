@@ -115,7 +115,7 @@ void set_float_argument(MutableConfig &config, const char *key, double value);
 
 /* Append a configured script or semantic fallback to one target tool visit. */
 void append_tool_change_event(storage_handle *storage,
-                              const PrintingToolGroup &tool_group,
+                              PrintingToolGroup tool_group,
                               const std::string &script,
                               int32_t layer_number,
                               coord_t layer_z,
@@ -174,9 +174,9 @@ private:
 extruder_index_t initial_plan_extruder(const PrintingPlan &plan)
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 const extruder_index_t tool = layer.tool_group(tool_idx).extruder_id();
                 if (tool != EXTRUDER_ID_UNKNOWN)
@@ -203,7 +203,7 @@ void set_float_argument(MutableConfig &config, const char *key, const double val
 }
 
 void append_tool_change_event(storage_handle *storage,
-                              const PrintingToolGroup &tool_group,
+                              PrintingToolGroup tool_group,
                               const std::string &script,
                               const int32_t layer_number,
                               const coord_t layer_z,
@@ -337,7 +337,7 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
     if (ctx == nullptr || ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     m_layer_states.resize(plan.group_count());
     extruder_index_t current_extruder = initial_plan_extruder(plan);
     int32_t layer_number = 0;
@@ -347,12 +347,12 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
     // visits deliberately update current_extruder because the file writer will
     // still enter their tool-group and therefore change the selection history.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         std::vector<LayerToolState> &group_states = m_layer_states[group_idx];
         group_states.reserve(group.layer_group_count());
         for (uint32_t layer_idx = 0;
              layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             group_states.push_back(
                 LayerToolState{layer_number++, current_extruder, layer.print_z()});
             m_max_layer_z = std::max(m_max_layer_z, layer.print_z());
@@ -360,7 +360,7 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
 
             for (uint32_t tool_idx = 0;
                  tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 const extruder_index_t tool = tool_group.extruder_id();
                 if (tool == EXTRUDER_ID_UNKNOWN)
                     tool_group.set_extruder_id(current_extruder);
@@ -402,7 +402,7 @@ void CreateToolChange::run_impl(const plugin_run_context *run_ctx) const
 
     const LayerToolState &state =
         m_layer_states[ctx->group_idx][ctx->layer_group_idx];
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingLayerGroup layer(ctx->layer_group);
     const std::string script = Print(ctx->print).config().string_or_default(
         "toolchange_gcode", std::string());
     extruder_index_t current_extruder = state.incoming_extruder;
@@ -411,7 +411,7 @@ void CreateToolChange::run_impl(const plugin_run_context *run_ctx) const
     // repeated visits need no explicit event; every actual transition is added
     // before entering its target group.
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-        const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+        PrintingToolGroup tool_group = layer.tool_group(tool_idx);
         const extruder_index_t target_extruder = tool_group.extruder_id();
         if (target_extruder == EXTRUDER_ID_UNKNOWN)
             throw std::runtime_error(

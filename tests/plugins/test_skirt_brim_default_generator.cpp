@@ -52,6 +52,7 @@ const char *const DEFAULT_BRIM_GENERATOR = "skirt_brim.brim.default";
 const char *const DEFAULT_SKIRT_GENERATOR = "skirt_brim.skirt.default";
 const char *const DEFAULT_BRIM_SKIRT_TRIM = "skirt_brim.brim_skirt_trim.default";
 const char *const FAILING_SKIRT_BRIM_PLUGIN = "skirt_brim.test.report_error";
+const char *const BRIM_SEPARATION_READER = "skirt_brim.test.brim_separation_reader";
 
 enum class FailingPluginPhase
 {
@@ -119,6 +120,38 @@ void register_failing_skirt_brim_plugin()
     if (orchestrator.get_plugin(FAILING_SKIRT_BRIM_PLUGIN) == nullptr)
         REQUIRE(orchestrator.register_plugin(failing_skirt_brim_plugin().c_instance()));
 }
+
+// Reads brim_separation from a step that runs before support. The plugin is
+// registered only after the test runtime finalized the option definitions, so
+// it would move the setting's invalidation step only if plugin initialization
+// still edited definitions.
+class BrimSeparationReader final : public slic3r_api::PluginBase
+{
+public:
+    explicit BrimSeparationReader(orchestrator_handle *orchestrator)
+        : PluginBase(orchestrator)
+    {}
+
+private:
+    const char *id_impl() const noexcept override { return BRIM_SEPARATION_READER; }
+    slicing_step_t step_impl() const noexcept override { return STEP_POST_PERIMETER; }
+    const char *const *dependencies_impl() const noexcept override
+    {
+        static const char *dependencies[] = {nullptr};
+        return dependencies;
+    }
+    int32_t priority_impl() const noexcept override { return 0; }
+
+    int32_t used_config_keys(raw_used_config_key *keys) const noexcept override
+    {
+        if (keys != nullptr)
+            keys[0] = raw_used_config_key{
+                "brim_separation", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_OBJECT, RAW_PRESET_TYPE_FFF_PRINT};
+        return 1;
+    }
+
+    void run_impl(const plugin_run_context *) const override {}
+};
 
 class ScopedActivePlugins
 {
@@ -463,6 +496,9 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     CHECK(separation->type == coFloat);
     CHECK(separation->container_type == ConfigOptionContainerType::Object);
     CHECK(separation->option_preset_type == RAW_PRESET_TYPE_FFF_PRINT);
+    // Support material also reads this option and executes before skirt/brim,
+    // so finalizing the plugin definitions tightens the replay point by
+    // execution_order().
     CHECK(separation->invalidates_step == STEP_SUPPORT);
     CHECK(separation->sidetext == "mm");
     CHECK(separation->default_value->serialize() == "0");
@@ -496,6 +532,30 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     CHECK(config.option("brim_ears_max_angle")->serialize() == "73.5");
     CHECK(config.option("brim_ears_detection_length")->serialize() == "2.25");
     CHECK(config.option("brim_ears_pattern")->serialize() == "rectilinear");
+}
+
+TEST_CASE("Re-running plugin initialization leaves finalized invalidation steps unchanged",
+          "[plugins][skirt-brim][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    static BrimSeparationReader reader(reinterpret_cast<orchestrator_handle *>(&orchestrator));
+    if (orchestrator.get_plugin(BRIM_SEPARATION_READER) == nullptr)
+        REQUIRE(orchestrator.register_plugin(reader.c_instance()));
+
+    const ConfigOptionDef *separation = PrintConfigDef::instance().get("brim_separation");
+    REQUIRE(separation != nullptr);
+    REQUIRE(separation->invalidates_step == STEP_SUPPORT);
+
+    {
+        // Validation accepts the reader, whose step runs before support.
+        // Tightening happens only in finalize_plugin_option_defs(), which the
+        // finalized runtime never runs again.
+        ScopedActivePlugins active({BRIM_SEPARATION_READER});
+        orchestrator.initialize_plugins();
+        CHECK(orchestrator.is_plugin_active(BRIM_SEPARATION_READER));
+    }
+    CHECK(separation->invalidates_step == STEP_SUPPORT);
 }
 
 TEST_CASE("Default skirt generator owns its serialized option and activation rules",

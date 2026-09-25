@@ -371,10 +371,13 @@ public:
     // finalize_plugin_option_defs() runs.
     option_def_error_code modify_print_config(const raw_option_def_patch *patch);
 
-    // Apply every recorded patch, prune enum values whose plugin is missing or
-    // inactive when the definition advertises contains_plugin_id, and rebuild
-    // the scripted enum maps. Missing target keys are ignored. A plugin-id list
+    // Move the invalidation step of every setting read by an active plugin no
+    // later than the pipeline step running that plugin. Then apply every
+    // recorded patch, prune enum values whose plugin is missing or inactive
+    // when the definition advertises contains_plugin_id, and rebuild the
+    // scripted enum maps. Missing target keys are ignored. A plugin-id list
     // that becomes empty reports a non-fatal plugin error and stays empty.
+    // Runs once, after initialize_plugins() and before PrintConfigDef::finalize().
     void finalize_plugin_option_defs();
 
     // Register a plugin instance and transfer its lifetime to the orchestrator.

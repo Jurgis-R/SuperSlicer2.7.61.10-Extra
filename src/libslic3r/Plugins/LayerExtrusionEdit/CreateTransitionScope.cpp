@@ -218,7 +218,7 @@ EntityAnalysis append_entity_stream(
 
 /* Scan one complete layer and preserve empty tool selections in the stream. */
 std::vector<StreamEntry> collect_layer_stream(
-    const PrintingLayerGroup &layer,
+    PrintingLayerGroup layer,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const plugin_run_context *run_ctx);
 
@@ -562,9 +562,9 @@ EntityAnalysis append_entity_stream(
     return result;
 }
 
-/* Convert one PrintingLayerGroup into its immutable execution-order stream. */
+/* Convert one PrintingLayerGroup into its execution-order stream. */
 std::vector<StreamEntry> collect_layer_stream(
-    const PrintingLayerGroup &layer,
+    PrintingLayerGroup layer,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &scope_key,
     const plugin_run_context *run_ctx)
 {
@@ -576,7 +576,7 @@ std::vector<StreamEntry> collect_layer_stream(
     // change may be semantically important even when no extrusion follows it.
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingToolGroup tool = layer.tool_group(tool_idx);
+        PrintingToolGroup tool = layer.tool_group(tool_idx);
         StreamEntry selection;
         selection.kind = StreamEntryKind::ToolSelection;
         selection.selected_extruder = tool.extruder_id();
@@ -587,7 +587,7 @@ std::vector<StreamEntry> collect_layer_stream(
         for (uint32_t extrusion_idx = 0;
              extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
+            PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
             append_entity_stream(extrusion.mutable_root(), layer.print_z(),
                                  empty_state, tool.extruder_id(), scope_key,
                                  output, run_ctx);
@@ -841,7 +841,7 @@ void CreateTransitionScope::setup_impl(const plugin_run_context *run_ctx,
 
     // Build a deterministic flat order matching PrintingPlan group/layer order.
     // This order is later used to find neighbours across layer and group edges.
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     m_flat_indices.resize(plan.group_count());
     size_t flat_idx = 0;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {

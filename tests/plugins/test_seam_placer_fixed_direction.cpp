@@ -273,7 +273,7 @@ slic3r_api::SeamPlacer create_fixed_session(Print &print, const char *provider_i
             regions.push_back(object.print_region(region_idx).handle());
     }
     run_ctx_seam_placer context = {};
-    context.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
+    context.plan = reinterpret_cast<printing_plan_handle *>(&plan);
     context.regions = regions.empty() ? nullptr : regions.data();
     context.region_count = uint32_t(regions.size());
     REQUIRE(view.execute(
@@ -1059,7 +1059,7 @@ TEST_CASE("Fixed seam constraint cache is immutable across parallel requests", "
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     ConstraintFixture fixture;
     fixture.box(4,-1,2,2,ModelVolumeType::SEAM_POSITION_INSIDE);
-    const slic3r_api::PrintingExtrusion extrusion=fixture.add(composed_loop());
+    slic3r_api::PrintingExtrusion extrusion=fixture.add(composed_loop());
     slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print);
     const c_point expected=session.place_seam(extrusion.root(),fixture.view(),{0,0});
     std::vector<std::future<c_point>> futures;
@@ -1146,7 +1146,7 @@ TEST_CASE("Seam paint margins inherit width and fall back to regional flow", "[p
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     ConstraintFixture fixture;
     fixture.box(4,0.5,2,0.1,ModelVolumeType::MODEL_PART,EnforcerBlockerType::ENFORCER);
-    const slic3r_api::PrintingExtrusion extrusion=fixture.add(composed_loop());
+    slic3r_api::PrintingExtrusion extrusion=fixture.add(composed_loop());
     const bool explicit_width=GENERATE(false,true);
     if (explicit_width) {
         orchestrator_handle *orch=reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance());
@@ -1196,14 +1196,14 @@ TEST_CASE("Seam constraints isolate source objects and layers in one plan", "[pl
     const slic3r_api::LayerRegion upper_view(reinterpret_cast<const layer_region_handle *>(&upper));
     const ExtrusionEntity square=square_loop();
     const uint32_t high_id = plan.find_or_add_object_instance(upper_view.layer().object(), 0);
-    const slic3r_api::PrintingExtrusion high=plan.group(0).append_layer_group(upper_view.layer().print_z()).append_tool_group(0).append_extrusion_clone(
+    slic3r_api::PrintingExtrusion high=plan.group(0).append_layer_group(upper_view.layer().print_z()).append_tool_group(0).append_extrusion_clone(
         plan,
         slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&upper_source)),
         RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),high_id);
     REQUIRE(high.mutable_root().translate(upper_view.layer().object().instance_shift(0)));
     // A second independently sliced source object shares this synthetic plan.
     const uint32_t other_id = plan.find_or_add_object_instance(second.view().layer().object(), 0);
-    const slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
+    slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
         plan,
         slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&second.source)),
         RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),other_id);
@@ -1307,7 +1307,7 @@ TEST_CASE("Indexed seam classification preserves reversed paint fragments and de
     TriangleSelector selector(volume->mesh());
     for (size_t i=0;i<volume->mesh().its.indices.size();++i) selector.set_facet(int(i),EnforcerBlockerType::ENFORCER);
     volume->facets_annotation_mutable("builtin:seam").set(selector);
-    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
     PluginStorage storage;
     slic3r_api::SeamPlacement::SeamPlacementConstraints constraints;
     constraints.initialize(slic3r_api::PrintingPlan(reinterpret_cast<printing_plan_handle *>(&fixture.prepared.print.mutable_printing_plan())),
@@ -1323,7 +1323,7 @@ TEST_CASE("Indexed paint capsule endpoints bound admissible line portions", "[pl
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     ConstraintFixture fixture("right");
     fixture.box(4,0.3,2,0.1,ModelVolumeType::MODEL_PART,EnforcerBlockerType::ENFORCER,0,1);
-    const slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
+    slic3r_api::PrintingExtrusion extrusion=fixture.add(square_loop());
     c_extrusion_property_attributes *attributes=static_cast<c_extrusion_property_attributes *>(
         extrusion.mutable_root().get_or_add_property_data_mutable(
             reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),EXTRUSION_PROPERTY_TYPE_ATTRIBUTES));
@@ -1677,10 +1677,10 @@ TEST_CASE("Random inner seams align by projection or nearby vertex", "[plugins][
     ConstraintFixture fixture;
     random_options(fixture,true,true);
     const float width=GENERATE(0.1f,10.f);
-    const slic3r_api::PrintingExtrusion outer=fixture.add(random_rectangle(0,0,20,20));
+    slic3r_api::PrintingExtrusion outer=fixture.add(random_rectangle(0,0,20,20));
     random_tags(outer.mutable_root(),true);
     const slic3r_api::ExtrusionEntity outer_loop=outer.root();
-    const slic3r_api::PrintingExtrusion inner=fixture.add(random_rectangle(2,2,16,16));
+    slic3r_api::PrintingExtrusion inner=fixture.add(random_rectangle(2,2,16,16));
     random_tags(inner.mutable_root(),false,false,width);
     // Force the external seam to the middle of its right edge, without
     // intersecting the internal loop. Projection must then be between vertices.
@@ -1717,19 +1717,19 @@ TEST_CASE("Random alignment prefers contours unless holes improve by a third wid
     const bool contour_present=GENERATE(false,true);
     slic3r_api::ExtrusionEntity contour;
     if (contour_present) {
-        const slic3r_api::PrintingExtrusion external=fixture.add(random_rectangle(0,-22,20,64));
+        slic3r_api::PrintingExtrusion external=fixture.add(random_rectangle(0,-22,20,64));
         random_tags(external.mutable_root(),true);
         contour=external.root();
         fixture.box(19.9,9.999,0.2,0.002,ModelVolumeType::SEAM_POSITION_INSIDE);
     }
     const double right=16+improvement;
-    const slic3r_api::PrintingExtrusion hole=fixture.add(random_rectangle(5,5,right-5,10));
+    slic3r_api::PrintingExtrusion hole=fixture.add(random_rectangle(5,5,right-5,10));
     random_tags(hole.mutable_root(),true,true);
     const slic3r_api::ExtrusionEntity hole_loop=hole.root();
     fixture.box(right-0.001,11.999,0.002,0.002,ModelVolumeType::SEAM_POSITION_INSIDE);
-    const slic3r_api::PrintingExtrusion farther_hole=fixture.add(random_rectangle(5,0,3,3));
+    slic3r_api::PrintingExtrusion farther_hole=fixture.add(random_rectangle(5,0,3,3));
     random_tags(farther_hole.mutable_root(),true,true);
-    const slic3r_api::PrintingExtrusion inner=fixture.add(random_rectangle(2,-20,16,60));
+    slic3r_api::PrintingExtrusion inner=fixture.add(random_rectangle(2,-20,16,60));
     random_tags(inner.mutable_root(),false,false,3.f);
     slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
     const c_point h=fixture.local(session.place_seam(hole_loop,fixture.view(),{0,0}));
@@ -1753,7 +1753,7 @@ TEST_CASE("Random alignment handles nested real arcs and excludes crossing conto
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     ConstraintFixture fixture;
     random_options(fixture,true,true);
-    const slic3r_api::PrintingExtrusion external=fixture.add(constraint_arc_loop());
+    slic3r_api::PrintingExtrusion external=fixture.add(constraint_arc_loop());
     random_tags(external.mutable_root(),true);
     const slic3r_api::ExtrusionEntity outer=external.root();
     const bool crossing=GENERATE(false,true);
@@ -1761,7 +1761,7 @@ TEST_CASE("Random alignment handles nested real arcs and excludes crossing conto
     ArcPolyline path=constraint_arc_loop(8).as_polyline();
     if (crossing) path.translate(Point::new_scale(6,0));
     const ExtrusionEntity smaller(false,std::move(path));
-    const slic3r_api::PrintingExtrusion internal=fixture.add(smaller);
+    slic3r_api::PrintingExtrusion internal=fixture.add(smaller);
     random_tags(internal.mutable_root(),false,false,0.1f);
     slic3r_api::SeamPlacer session=create_fixed_session(fixture.prepared.print,"seam_placer.random");
     const c_point point=fixture.local(session.place_seam(internal.root(),fixture.view(),{0,0}));
@@ -1820,7 +1820,7 @@ TEST_CASE("Random seams keep independent instance coordinates and object seeds",
     slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(&first.prepared.print.mutable_printing_plan()));
     const ExtrusionEntity square=square_loop();
     const uint32_t other_id = plan.find_or_add_object_instance(second.view().layer().object(), 0);
-    const slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
+    slic3r_api::PrintingExtrusion other=plan.append_group().append_layer_group(second.view().layer().print_z()).append_tool_group(0).append_extrusion_clone(
         plan,
         slic3r_api::LayerRegionIsland(reinterpret_cast<const layer_region_island_handle *>(&second.source)),
         RAW_EXTRUSION_ROLE_PERIMETER,extrusion_view(square),other_id);

@@ -33,7 +33,7 @@ public:
     */
     SeamPlacerRouter(orchestrator_handle *orchestrator,
                      const Print &print,
-                     const PrintingPlan &plan,
+                     PrintingPlan plan,
                      storage_handle *scratch_storage);
     /* Release the immutable route table and its shared provider sessions. */
     ~SeamPlacerRouter();

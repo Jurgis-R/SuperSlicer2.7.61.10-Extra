@@ -109,7 +109,7 @@ EntityBounds collect_entity_bounds(const ExtrusionEntity &entity,
 
 /* Populate boxes for every extrusion root in the plan. */
 void build_bounds_for_plan(
-    const PrintingPlan &plan,
+    const ConstPrintingPlan &plan,
     EntityBoundsCache &cache,
     const plugin_run_context *run_ctx);
 
@@ -146,7 +146,7 @@ void apply_child_permutation(MutableExtrusionEntity parent,
                              const plugin_run_context *run_ctx);
 
 /* Apply spatial ordering to every local vector and sortable collection. */
-void spatially_order_plan(const PrintingPlan &plan,
+void spatially_order_plan(PrintingPlan &plan,
                           const EntityBoundsCache &cache,
                           const plugin_run_context *run_ctx);
 
@@ -159,7 +159,7 @@ c_point finalize_entity(MutableExtrusionEntity entity,
 
 /* Materialize seams/orientations and publish exact root endpoints. */
 void finalize_plan_geometry(
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     c_point initial_position,
     const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage,
@@ -169,7 +169,7 @@ void finalize_plan_geometry(
 
 /* Count roots so progress represents both empty and geometric extrusions. */
 uint32_t extrusion_count(
-    const PrintingPlan &plan,
+    const ConstPrintingPlan &plan,
     const plugin_run_context *run_ctx);
 
 /* Squared distance is sufficient for strict orientation comparisons. */
@@ -234,13 +234,13 @@ void build_bounds_for_plan(
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                const ConstPrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0;
                      extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
@@ -481,19 +481,19 @@ void apply_child_permutation(
     }
 }
 
-void spatially_order_plan(const PrintingPlan &plan,
+void spatially_order_plan(PrintingPlan &plan,
                           const EntityBoundsCache &cache,
                           const plugin_run_context *run_ctx)
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 spatially_order_tool_group(tool_group, cache, run_ctx);
                 for (uint32_t extrusion_idx = 0;
                      extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
@@ -550,7 +550,7 @@ c_point finalize_entity(MutableExtrusionEntity entity,
 }
 
 void finalize_plan_geometry(
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     c_point current_position,
     const SeamPlacement::SeamPlacerRouter &seam_router,
     storage_handle *scratch_storage,
@@ -560,17 +560,17 @@ void finalize_plan_geometry(
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0;
                      extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingExtrusion extrusion =
+                    PrintingExtrusion extrusion =
                         tool_group.extrusion(extrusion_idx);
                     MutableExtrusionEntity root = extrusion.mutable_root();
                     if (root.empty()) {
@@ -596,16 +596,16 @@ void finalize_plan_geometry(
 }
 
 uint32_t extrusion_count(
-    const PrintingPlan &plan,
+    const ConstPrintingPlan &plan,
     const plugin_run_context *run_ctx)
 {
     uint32_t count = 0;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
                 count += layer.tool_group(tool_idx).extrusion_count();
@@ -685,7 +685,7 @@ private:
 
         throw_if_cancelled(run_ctx);
         const Print print(ctx->print);
-        const PrintingPlan plan(ctx->plan);
+        PrintingPlan plan(ctx->plan);
         throw_if_cancelled(run_ctx);
         const SeamPlacement::SeamPlacerRouter seam_router(
             m_orchestrator, print, plan, run_ctx->plugin_storage);

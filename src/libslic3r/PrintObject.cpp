@@ -68,6 +68,7 @@
 #include "PrintObjectRegion.hpp"
 #include "PrintRegion.hpp"
 #include "Slicing.hpp"
+#include "Steps/StepPipeline.hpp"
 #include "Support/SupportMaterial.hpp"
 #include "Support/TreeSupport.hpp"
 #include "SupportSpotsGenerator.hpp"
@@ -1577,11 +1578,19 @@ bool PrintObject::invalidate_state_by_config_options(
     if (opt_keys.empty())
         return false;
 
-    // Deprecated: this is the historical PrintObject invalidation path. Object
-    // and region option ownership is still being migrated to plugin
-    // invalidates_step metadata, so this compatibility path conservatively asks
-    // the new Print execution plan for a full run.
-    return m_print->invalidate_all_steps();
+    bool invalidated = false;
+    for (const t_config_option_key &opt_key : opt_keys) {
+        const ConfigOptionDef *def = PrintConfigDef::instance().get(opt_key);
+        if (def != nullptr && def->invalidates_step == STEP_NONE)
+            continue;
+
+        // Unknown definitions have no proven reusable producer output. Known
+        // definitions resume from the last checkpoint before their step.
+        m_print->request_replay_from(Steps::checkpoint_before_step(
+            def == nullptr ? STEP_ANY : def->invalidates_step));
+        invalidated = true;
+    }
+    return invalidated;
 }
 
 bool PrintObject::invalidate_step(slicing_step_t step)

@@ -5,7 +5,7 @@
 #ifndef slic3r_printing_plan_h_
 #define slic3r_printing_plan_h_
 
-#define SLIC3R_PLUGIN_API_PRINTING_PLAN_MAJOR 6u
+#define SLIC3R_PLUGIN_API_PRINTING_PLAN_MAJOR 7u
 #define SLIC3R_PLUGIN_API_PRINTING_PLAN_MINOR 0u
 
 /*
@@ -130,10 +130,12 @@ the ordering strategy lives in the plugin that owns it.
 SLIC3R_HOST_API void printing_plan_clear(printing_plan_handle *me);
 SLIC3R_HOST_API printing_scope_events_handle *printing_plan_get_events_mutable(printing_plan_handle *me);
 SLIC3R_HOST_API const printing_scope_events_handle *printing_plan_get_events(const printing_plan_handle *me);
-/* Properties are auxiliary plugin metadata. The returned container is mutable
-   even from a const plan handle and remains borrowed from the plan. */
-SLIC3R_HOST_API plugin_property_container_handle *printing_plan_get_properties(
+/* Properties are auxiliary plugin metadata. Mutable access requires an
+   explicitly mutable plan-scope handle. */
+SLIC3R_HOST_API const plugin_property_container_handle *printing_plan_get_properties(
     const printing_plan_handle *me);
+SLIC3R_HOST_API plugin_property_container_handle *printing_plan_get_properties_mutable(
+    printing_plan_handle *me);
 /* Register a printable source instance while building the plan. Repeated calls
    with the same object and local index return the same zero-based ID. A new
    instance is appended to the catalog in first-registration order. For a
@@ -178,8 +180,10 @@ SLIC3R_HOST_API void printing_group_clear(printing_group_handle *me);
 SLIC3R_HOST_API printing_scope_events_handle *printing_group_get_events_mutable(printing_group_handle *me);
 SLIC3R_HOST_API const printing_scope_events_handle *printing_group_get_events(const printing_group_handle *me);
 /* The borrowed property container moves with this complete printing group. */
-SLIC3R_HOST_API plugin_property_container_handle *printing_group_get_properties(
+SLIC3R_HOST_API const plugin_property_container_handle *printing_group_get_properties(
     const printing_group_handle *me);
+SLIC3R_HOST_API plugin_property_container_handle *printing_group_get_properties_mutable(
+    printing_group_handle *me);
 SLIC3R_HOST_API uint32_t printing_group_count_object_instance(const printing_group_handle *me);
 SLIC3R_HOST_API uint32_t printing_group_get_printing_catalog_id(
     const printing_group_handle *me,
@@ -215,8 +219,10 @@ SLIC3R_HOST_API printing_scope_events_handle *printing_layer_group_get_events_mu
 SLIC3R_HOST_API const printing_scope_events_handle *printing_layer_group_get_events(
     const printing_layer_group_handle *me);
 /* The borrowed property container moves with this ordered layer group. */
-SLIC3R_HOST_API plugin_property_container_handle *printing_layer_group_get_properties(
+SLIC3R_HOST_API const plugin_property_container_handle *printing_layer_group_get_properties(
     const printing_layer_group_handle *me);
+SLIC3R_HOST_API plugin_property_container_handle *printing_layer_group_get_properties_mutable(
+    printing_layer_group_handle *me);
 SLIC3R_HOST_API coord_t printing_layer_group_get_print_z(const printing_layer_group_handle *me);
 SLIC3R_HOST_API void printing_layer_group_set_print_z(printing_layer_group_handle *me, coord_t print_z);
 SLIC3R_HOST_API uint32_t printing_layer_group_count_layer(const printing_layer_group_handle *me);
@@ -259,8 +265,10 @@ SLIC3R_HOST_API printing_scope_events_handle *printing_tool_group_get_events_mut
 SLIC3R_HOST_API const printing_scope_events_handle *printing_tool_group_get_events(
     const printing_tool_group_handle *me);
 /* The borrowed property container moves with this complete tool visit. */
-SLIC3R_HOST_API plugin_property_container_handle *printing_tool_group_get_properties(
+SLIC3R_HOST_API const plugin_property_container_handle *printing_tool_group_get_properties(
     const printing_tool_group_handle *me);
+SLIC3R_HOST_API plugin_property_container_handle *printing_tool_group_get_properties_mutable(
+    printing_tool_group_handle *me);
 /* Null groups report EXTRUDER_ID_UNKNOWN. */
 SLIC3R_HOST_API extruder_index_t printing_tool_group_get_extruder_id(const printing_tool_group_handle *me);
 /* Invalid negative identities leave the existing value unchanged. */

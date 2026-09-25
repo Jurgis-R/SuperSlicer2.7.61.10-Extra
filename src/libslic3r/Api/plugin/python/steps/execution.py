@@ -30,6 +30,7 @@ from slic3r_api_generated import (
     RunCtxExtrusionEdition,
     RunCtxExtrusionOrdering,
     RunCtxExtrusionSimplification,
+    RunCtxFinalizeSlicing,
     RunCtxGenerateGcode,
     RunCtxGenerateInfill,
     RunCtxGenerateSupport,
@@ -40,19 +41,18 @@ from slic3r_api_generated import (
     RunCtxLayerExtrusionEdition,
     RunCtxLayerStiching,
     RunCtxPrepareForPerimeters,
-    RunCtxPrepareGcode,
     RunCtxPrepareInfill,
     RunCtxSkirtBrim,
     RunCtxSupportDemand,
     STEP_EXTRUSION_EDIT,
     STEP_EXTRUSION_SIMPLIFICATION,
+    STEP_FINALIZE_SLICING,
     STEP_GCODE,
     STEP_INFILL,
     STEP_INFILL_GROUP,
     STEP_LAYER_EXTRUSION_EDIT,
     STEP_LAYER_STICHING,
     STEP_ORDERING,
-    STEP_PRE_GCODE,
     STEP_PRE_INFILL,
     STEP_PRE_PERIMETER,
     STEP_SKIRT_BRIM,
@@ -224,18 +224,18 @@ class WipeTowerContext(_PrintObjectContext):
         return self._object()
 
 
-@abi_requires_headers("steps/slic3r_step_pre_gcode.h")
-class PreGCodeContext(_PrintObjectContext):
+@abi_requires_headers("steps/slic3r_step_finalize_slicing.h")
+class FinalizeSlicingContext(_PrintObjectContext):
     """Read-only object context used before construction of the printing plan."""
 
     @classmethod
-    def from_pre_gcode_run_context(cls, api, address: int):
-        return cls._from_run_context(api, address, STEP_PRE_GCODE, RunCtxPrepareGcode, ("print", "object"))
+    def from_finalize_slicing_run_context(cls, api, address: int):
+        return cls._from_run_context(api, address, STEP_FINALIZE_SLICING, RunCtxFinalizeSlicing, ("print", "object"))
 
-    def pre_gcode_print(self) -> Print:
+    def finalize_slicing_print(self) -> Print:
         return self._print()
 
-    def pre_gcode_object(self) -> Object:
+    def finalize_slicing_object(self) -> Object:
         return self._object()
 
 
@@ -404,9 +404,9 @@ class GCodeContext(_PrintingPlanContext):
     def gcode_plan_handle(self) -> int:
         return self._plan_handle()
 
-    def gcode_plan(self) -> MutablePrintingPlan:
-        """Borrow the mutable plan work copy owned by this G-code run."""
-        return self._plan()
+    def gcode_plan(self) -> PrintingPlan:
+        """Borrow the finalized read-only plan owned by this G-code run."""
+        return PrintingPlan(self.api, self.payload.plan)
 
     def gcode_firmware_handle(self) -> int:
         """Return a borrowed firmware instance; invoke it only through its service adapter."""
@@ -614,7 +614,7 @@ __all__ = [
     "LayerExtrusionEditContext",
     "LayerStitchingContext",
     "OrderingContext",
-    "PreGCodeContext",
+    "FinalizeSlicingContext",
     "PreInfillContext",
     "PrePerimeterContext",
     "SkirtBrimContext",

@@ -190,7 +190,7 @@ bool has_semantic_toolchange(const ExtrusionEntity &root, const extruder_index_t
 }
 
 // Inspect every ordered location where a provider may materialize selection.
-bool tool_group_has_semantic_toolchange(const PrintingToolGroup &tool_group)
+bool tool_group_has_semantic_toolchange(const ConstPrintingToolGroup &tool_group)
 {
     // The built-in CreateToolChange provider owns the tool-group event. Keep
     // scanning extrusion roots as a compatibility path for external providers
@@ -422,11 +422,11 @@ void DefaultGCodeFirmwareSession::set_reader_state_id(orchestrator_runtime_id re
     m_reader_state_id = reader_state_id;
 }
 std::vector<GCodeThumbnailRequest> DefaultGCodeFirmwareSession::thumbnail_requests(
-    const Print &print, const PrintingPlan &)
+    const Print &print, const ConstPrintingPlan &)
 {
     return default_gcode_thumbnail_requests(print.config());
 }
-std::string DefaultGCodeFirmwareSession::begin_print(const Print &print, const PrintingPlan &plan)
+std::string DefaultGCodeFirmwareSession::begin_print(const Print &print, const ConstPrintingPlan &plan)
 {
     setup(print.config());
     m_object_labels.clear();
@@ -467,7 +467,7 @@ std::string DefaultGCodeFirmwareSession::begin_print(const Print &print, const P
         m_preamble->begin(print, plan, blocks);
 }
 
-std::string DefaultGCodeFirmwareSession::begin_group(const PrintingGroup &group)
+std::string DefaultGCodeFirmwareSession::begin_group(const ConstPrintingGroup &group)
 {
     if (!m_is_setup)
         throw std::logic_error("The firmware session was not initialized by begin_print().");
@@ -483,7 +483,7 @@ std::string DefaultGCodeFirmwareSession::begin_group(const PrintingGroup &group)
     return move_to_group_start(group);
 }
 
-std::string DefaultGCodeFirmwareSession::begin_layer(const PrintingLayerGroup &layer)
+std::string DefaultGCodeFirmwareSession::begin_layer(const ConstPrintingLayerGroup &layer)
 {
     if (!m_is_setup)
         throw std::logic_error("The firmware session was not initialized by begin_print().");
@@ -504,7 +504,7 @@ std::string DefaultGCodeFirmwareSession::begin_layer(const PrintingLayerGroup &l
 }
 
 std::optional<float> DefaultGCodeFirmwareSession::reliable_layer_height(
-    const PrintingLayerGroup &layer) const
+    const ConstPrintingLayerGroup &layer) const
 {
     if (layer.layer_count() > 0) {
         const Layer first_layer = layer.layer(0);
@@ -522,7 +522,7 @@ std::optional<float> DefaultGCodeFirmwareSession::reliable_layer_height(
 
     FirstPrintableHeightVisitor visitor;
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-        const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+        const ConstPrintingToolGroup tool_group = layer.tool_group(tool_idx);
         for (uint32_t extrusion_idx = 0;
              extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
             const ExtrusionEntity root = tool_group.extrusion(extrusion_idx).root();
@@ -587,7 +587,7 @@ std::string DefaultGCodeFirmwareSession::write_seam_marker(const ExtrusionEntity
         format_number(serialized_start.y, precision) + "\n";
 }
 
-std::string DefaultGCodeFirmwareSession::begin_tool_group(const PrintingToolGroup &tool_group)
+std::string DefaultGCodeFirmwareSession::begin_tool_group(const ConstPrintingToolGroup &tool_group)
 {
     if (!m_is_setup)
         throw std::logic_error("The firmware session was not initialized by begin_print().");
@@ -598,7 +598,7 @@ std::string DefaultGCodeFirmwareSession::begin_tool_group(const PrintingToolGrou
     return output;
 }
 
-std::string DefaultGCodeFirmwareSession::write_extrusion(const PrintingExtrusion &extrusion)
+std::string DefaultGCodeFirmwareSession::write_extrusion(const ConstPrintingExtrusion &extrusion)
 {
     if (!m_is_setup)
         throw std::logic_error("The firmware session was not initialized by begin_print().");
@@ -820,7 +820,7 @@ std::string DefaultGCodeFirmwareSession::select_extruder(extruder_index_t tool_i
     return output;
 }
 
-std::string DefaultGCodeFirmwareSession::move_to_group_start(const PrintingGroup &group)
+std::string DefaultGCodeFirmwareSession::move_to_group_start(const ConstPrintingGroup &group)
 {
     // The caller has already established that this is a transition between
     // real object groups. A missing tool or position still makes the first
@@ -828,9 +828,9 @@ std::string DefaultGCodeFirmwareSession::move_to_group_start(const PrintingGroup
     if (!m_current_extruder_idx || !m_gantry.position())
         return {};
     for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-        const PrintingLayerGroup layer = group.layer_group(layer_idx);
+        const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
         for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-            const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+            const ConstPrintingToolGroup tool_group = layer.tool_group(tool_idx);
             for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                 const ExtrusionEntity root = tool_group.extrusion(extrusion_idx).root();
                 if (root.empty())
@@ -1744,11 +1744,11 @@ std::string DefaultGCodeFirmwareSession::encode_firmware_retraction(const bool r
 }
 
 // Default textual metadata is kept behind hooks so BIQU may start at byte zero.
-std::string DefaultGCodeFirmwareSession::write_pre_thumbnail(const Print &print, const PrintingPlan &)
+std::string DefaultGCodeFirmwareSession::write_pre_thumbnail(const Print &print, const ConstPrintingPlan &)
 {
     return "; generated by SuperSlicer\n\n";
 }
-std::string DefaultGCodeFirmwareSession::write_post_thumbnail(const Print &print, const PrintingPlan &)
+std::string DefaultGCodeFirmwareSession::write_post_thumbnail(const Print &print, const ConstPrintingPlan &)
 {
     std::string output;
     const std::string notes = print.config().string_or_default("notes", "");

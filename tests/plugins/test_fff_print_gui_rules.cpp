@@ -32,6 +32,8 @@ using EnabledMap = std::map<std::string, bool>;
 
 // Owner of the built-in activation rules: the gui_rules.core plugin.
 const char *const core_gui_rules_owner = "gui_rules.core";
+// Owner of the legacy infill selectors moved out of the core rule plugin.
+const char *const infill_gui_rules_owner = "infill.generator.default";
 
 // Independent reference model of the activation logic. It computes the enabled
 // set directly from the config, so the tests can compare the rule registry
@@ -107,7 +109,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         (has_bottom && enum_name("bottom_fill_pattern") == "smooth") ||
         (has_solid && enum_name("solid_fill_pattern") == "smooth") ||
         (have_support && enum_name("support_material_top_interface_pattern") == "smooth") ||
-        (have_support && cenum_name("support_material_bottom_interface_pattern") == "smooth");
+        (have_support && enum_name("support_material_bottom_interface_pattern") == "smooth");
     const bool default_width =
         (en("first_layer_extrusion_width") && fl("first_layer_extrusion_width") == 0) ||
         (en("first_layer_infill_extrusion_width") && fl("first_layer_infill_extrusion_width") == 0) ||
@@ -350,9 +352,12 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
 EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConfig &config)
 {
     EnabledMap out;
-    for (const Orchestrator::GuiRuleApplication &application :
-         orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, core_gui_rules_owner))
-        out[application.target_key] = application.enabled;
+    const char *const owners[] = { core_gui_rules_owner, infill_gui_rules_owner };
+    for (const char *owner : owners) {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, owner))
+            out[application.target_key] = application.enabled;
+    }
     return out;
 }
 

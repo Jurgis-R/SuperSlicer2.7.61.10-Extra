@@ -46,7 +46,7 @@ void estimate_entity(const ExtrusionEntity &entity,
                      double travel_speed,
                      std::optional<Position3d> &position,
                      double &duration);
-void estimate_extrusion(const PrintingExtrusion &extrusion,
+void estimate_extrusion(const ConstPrintingExtrusion &extrusion,
                         coord_t print_z,
                         double travel_speed,
                         std::optional<Position3d> &position,
@@ -135,7 +135,7 @@ void estimate_entity(const ExtrusionEntity &entity,
     }
 }
 
-void estimate_extrusion(const PrintingExtrusion &extrusion,
+void estimate_extrusion(const ConstPrintingExtrusion &extrusion,
                         coord_t print_z,
                         double travel_speed,
                         std::optional<Position3d> &position,
@@ -151,7 +151,7 @@ PrintingPlanTimeEstimator::PrintingPlanTimeEstimator(const Config &print_config)
 {}
 
 std::vector<PrintingLayerTimeEstimate> PrintingPlanTimeEstimator::estimate(
-    const PrintingPlan &plan) const
+    const ConstPrintingPlan &plan) const
 {
     std::vector<PrintingLayerTimeEstimate> estimates;
     std::optional<Position3d> position;
@@ -159,12 +159,12 @@ std::vector<PrintingLayerTimeEstimate> PrintingPlanTimeEstimator::estimate(
     // Traverse the final serialized order so inter-layer and inter-object
     // travels are attributed exactly where the file writer will encounter them.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             double duration = 0.0;
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                const ConstPrintingToolGroup tool = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx)
                     estimate_extrusion(tool.extrusion(extrusion_idx), layer.print_z(),
                                        m_travel_speed_mm_per_s, position, duration);

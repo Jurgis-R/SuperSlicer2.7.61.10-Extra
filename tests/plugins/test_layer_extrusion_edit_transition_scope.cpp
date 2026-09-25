@@ -644,7 +644,7 @@ TEST_CASE("Transition scope preparation is idempotent and traversal skips phases
     CHECK(scope_count(*first) == 1);
     CHECK(scope_count(*second) == 1);
 
-    const slic3r_api::PrintingLayerGroup layer_view(
+    slic3r_api::PrintingLayerGroup layer_view(
         reinterpret_cast<printing_layer_group_handle *>(&layer));
     using Traversed =
         slic3r_api::PrintingEntity<slic3r_api::PrintingExtrusionScopeProperty>;

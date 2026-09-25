@@ -490,11 +490,11 @@ TEST_CASE("Toolchange scripts use the structural Config stored at insertion",
         script_storage_handle);
     const slic3r_api::Print print_view(
         reinterpret_cast<const print_handle *>(&print));
-    const slic3r_api::PrintingPlan plan_view = printing_plan_view(print);
-    const slic3r_api::PrintingGroup group_view = plan_view.group(0);
-    const slic3r_api::PrintingLayerGroup layer_view = group_view.layer_group(0);
-    const slic3r_api::PrintingToolGroup first_tool = layer_view.tool_group(0);
-    const slic3r_api::PrintingToolGroup second_tool = layer_view.tool_group(1);
+    slic3r_api::PrintingPlan plan_view = printing_plan_view(print);
+    slic3r_api::PrintingGroup group_view = plan_view.group(0);
+    slic3r_api::PrintingLayerGroup layer_view = group_view.layer_group(0);
+    slic3r_api::PrintingToolGroup first_tool = layer_view.tool_group(0);
+    slic3r_api::PrintingToolGroup second_tool = layer_view.tool_group(1);
 
     firmware.setup(print_view.config());
     REQUIRE(firmware.begin_group(group_view).empty());

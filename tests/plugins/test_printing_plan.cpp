@@ -27,6 +27,7 @@
 #include "libslic3r/Config/ConfigOption.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
+#include "libslic3r/ExtrusionProperty.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
@@ -58,6 +59,26 @@ PluginPropertyKey<TestPrintingScopePayload> printing_scope_property_key(
 {
     return PluginPropertyKey<TestPrintingScopePayload>::register_dynamic(
         orchestrator, "tests.printing-plan.scope-properties");
+}
+
+/* Set one registered payload on a plan scope without transferring its layout. */
+void set_test_scope_value(PluginPropertyContainer &properties,
+                          const PluginPropertyKey<TestPrintingScopePayload> &key,
+                          const uint32_t value)
+{
+    void *data = properties.get_or_add_property_data_mutable(
+        key.type(), sizeof(TestPrintingScopePayload), alignof(TestPrintingScopePayload));
+    REQUIRE(data != nullptr);
+    reinterpret_cast<TestPrintingScopePayload *>(data)->value = value;
+}
+
+/* Read the fixture payload from one plan scope after a clone or restore. */
+uint32_t test_scope_value(const PluginPropertyContainer &properties,
+                          const PluginPropertyKey<TestPrintingScopePayload> &key)
+{
+    const void *data = properties.property_data(key.type());
+    REQUIRE(data != nullptr);
+    return data == nullptr ? 0 : reinterpret_cast<const TestPrintingScopePayload *>(data)->value;
 }
 
 PrintingToolGroup test_tool_group(const extruder_index_t extruder_id, const uint16_t marker)
@@ -1222,6 +1243,173 @@ TEST_CASE("PrintingPlan scopes expose fixed ordered event roots", "[printing][pl
     CHECK(printing_plan_count_group(plan_handle) == 0);
     CHECK_FALSE(printing_scope_events_has_before(printing_plan_get_events(plan_handle)));
     CHECK(extrusion_flags(printing_scope_events_get_before(printing_plan_get_events(plan_handle))) == 0);
+}
+
+TEST_CASE("PrintingPlan deep clone owns independent trees, events and properties",
+          "[plugins][printing][plan][clone]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    const PluginPropertyKey<TestPrintingScopePayload> property_key =
+        printing_scope_property_key(reinterpret_cast<orchestrator_handle *>(&orchestrator));
+
+    PrintingPlan source;
+    source.object_instances.emplace_back();
+    PrintingObjectInstance &instance = source.object_instances.back();
+    instance.object_instance_idx = size_t(-1);
+    instance.name = "snapshot fixture";
+    instance.projected_outline = Polygon({
+        Point(0, 0), Point(scale_i(10.0), 0),
+        Point(scale_i(10.0), scale_i(10.0)), Point(0, scale_i(10.0))
+    });
+    instance.projected_outline_center = instance.projected_outline.centroid();
+    set_test_scope_value(source.properties, property_key, 10);
+
+    source.groups.emplace_back();
+    PrintingGroup &group = source.groups.back();
+    group.plan_identity = source.identity_token();
+    group.printing_catalog_ids.push_back(0);
+    set_test_scope_value(group.properties, property_key, 20);
+    ExtrusionEntityUPtr group_event = test_path({Point(0, 0), Point(10, 0)});
+    group.events.append_before(*group_event);
+
+    group.layers.emplace_back();
+    PrintingLayerGroup &layer = group.layers.back();
+    layer.plan_identity = source.identity_token();
+    layer.print_z = scale_i(0.2);
+    set_test_scope_value(layer.properties, property_key, 30);
+    ExtrusionEntityUPtr layer_event = test_path({Point(0, 10), Point(10, 10)});
+    layer.events.append_after(*layer_event);
+
+    layer.tool_groups.emplace_back();
+    PrintingToolGroup &tool = layer.tool_groups.back();
+    tool.plan_identity = source.identity_token();
+    tool.extruder_id = 0;
+    set_test_scope_value(tool.properties, property_key, 40);
+    ExtrusionEntityUPtr tool_event = test_path({Point(0, 20), Point(10, 20)});
+    tool.events.append_before(*tool_event);
+
+    tool.extrusions.emplace_back();
+    PrintingExtrusion &extrusion = tool.extrusions.back();
+    extrusion.printing_catalog_id = 0;
+    extrusion.root = test_path({Point(0, 30), Point(10, 30)});
+    extrusion.root->add_property(ExtrusionPropertyCustomGcodeText(
+        ExtrusionPropertyCustomGcode::Code::SCRIPT,
+        "; cloned script data",
+        GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM));
+
+    std::unique_ptr<PrintingPlan> copy = source.clone();
+
+    REQUIRE(copy != nullptr);
+    CHECK(copy->identity_token() != source.identity_token());
+    REQUIRE(copy->groups.size() == 1);
+    CHECK(copy->groups[0].plan_identity == copy->identity_token());
+    CHECK(copy->groups[0].layers[0].plan_identity == copy->identity_token());
+    CHECK(copy->groups[0].layers[0].tool_groups[0].plan_identity == copy->identity_token());
+    CHECK(copy->object_instances[0].name == "snapshot fixture");
+    CHECK(test_scope_value(copy->properties, property_key) == 10);
+    CHECK(test_scope_value(copy->groups[0].properties, property_key) == 20);
+    CHECK(test_scope_value(copy->groups[0].layers[0].properties, property_key) == 30);
+    CHECK(test_scope_value(copy->groups[0].layers[0].tool_groups[0].properties,
+                           property_key) == 40);
+    CHECK(copy->events.before().child_count() == 0);
+    CHECK(copy->groups[0].events.before().child_count() == 1);
+    CHECK(copy->groups[0].layers[0].events.after().child_count() == 1);
+    CHECK(copy->groups[0].layers[0].tool_groups[0].events.before().child_count() == 1);
+
+    PrintingExtrusion &copied_extrusion =
+        copy->groups[0].layers[0].tool_groups[0].extrusions[0];
+    REQUIRE(copied_extrusion.root != nullptr);
+    CHECK(copied_extrusion.root.get() != extrusion.root.get());
+    const ExtrusionPropertyCustomGcode *copied_script =
+        copied_extrusion.root->get_property<ExtrusionPropertyCustomGcode>();
+    REQUIRE(copied_script != nullptr);
+    CHECK(copied_extrusion.root->custom_gcode_string(*copied_script) ==
+          "; cloned script data");
+
+    // Mutating the original after capture cannot alter the independent copy.
+    set_test_scope_value(source.properties, property_key, 99);
+    source.events.clear();
+    source.groups[0].events.clear();
+    source.groups[0].layers[0].events.clear();
+    source.groups[0].layers[0].tool_groups[0].events.clear();
+    extrusion.root->clear_content();
+    extrusion.root->remove_property<ExtrusionPropertyCustomGcode>();
+    CHECK(test_scope_value(copy->properties, property_key) == 10);
+    CHECK(copy->groups[0].events.before().child_count() == 1);
+    CHECK(copy->groups[0].layers[0].events.after().child_count() == 1);
+    CHECK(copied_extrusion.root->length() > 0);
+    CHECK(copied_extrusion.root->custom_gcode_string(*copied_script) ==
+          "; cloned script data");
+}
+
+TEST_CASE("Print ordering checkpoint survives only valid downstream edits",
+           "[plugins][printing][plan][checkpoint]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingPlan &working_plan = print.mutable_printing_plan();
+    working_plan.groups.emplace_back();
+    PrintingGroup &group = working_plan.groups.back();
+    group.plan_identity = working_plan.identity_token();
+    group.layers.emplace_back();
+    PrintingLayerGroup &layer = group.layers.back();
+    layer.plan_identity = working_plan.identity_token();
+    layer.tool_groups.emplace_back();
+    PrintingToolGroup &tool = layer.tool_groups.back();
+    tool.plan_identity = working_plan.identity_token();
+    tool.extruder_id = 0;
+    tool.extrusions.emplace_back();
+    tool.extrusions.back().root = test_path({Point(0, 0), Point(10, 0)});
+
+    const coordf_t original_length = tool.extrusions[0].root->length();
+    REQUIRE(print.save_ordering_checkpoint());
+    REQUIRE(print.has_ordering_checkpoint());
+
+    // A downstream editor mutates the active tree. The checkpoint remains the
+    // ordered source, and every restoration creates a fresh mutable work copy.
+    tool.extrusions[0].root->clear_content();
+    REQUIRE(print.restore_ordering_checkpoint());
+    REQUIRE(print.printing_plan() != nullptr);
+    CHECK(print.printing_plan()->groups[0].plan_identity ==
+          print.printing_plan()->identity_token());
+    CHECK(print.printing_plan()->groups[0].layers[0].tool_groups[0]
+              .extrusions[0].root->length() == original_length);
+
+    // G-code and plan-editor replay both preserve their ordered source.
+    print.request_replay_from(Steps::Checkpoint::Plan);
+    CHECK(print.has_ordering_checkpoint());
+    print.request_replay_from(Steps::Checkpoint::Ordering);
+    CHECK(print.has_ordering_checkpoint());
+    REQUIRE(print.restore_ordering_checkpoint());
+
+    // An upstream change makes the saved source stale and must release it.
+    print.request_replay_from(Steps::Checkpoint::Slicing);
+    CHECK_FALSE(print.has_ordering_checkpoint());
+    CHECK_FALSE(print.restore_ordering_checkpoint());
+
+    print.reset_printing_plan();
+    CHECK(print.printing_plan() == nullptr);
+}
+
+TEST_CASE("Print checkpoint preference controls ordered snapshot retention",
+           "[plugins][printing][plan][checkpoint]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    print.mutable_printing_plan().groups.emplace_back();
+
+    print.set_keep_ordering_checkpoint(false);
+    CHECK_FALSE(print.save_ordering_checkpoint());
+    CHECK_FALSE(print.has_ordering_checkpoint());
+
+    print.set_keep_ordering_checkpoint(true);
+    REQUIRE(print.save_ordering_checkpoint());
+    CHECK(print.has_ordering_checkpoint());
+    print.set_keep_ordering_checkpoint(false);
+    CHECK_FALSE(print.has_ordering_checkpoint());
 }
 
 TEST_CASE("STEP_EXTRUSION_EDIT rebuilds scope events in plugin priority order",

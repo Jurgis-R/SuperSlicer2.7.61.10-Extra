@@ -105,22 +105,22 @@ Data prepare(const PrintingPlan &plan,
     for (uint32_t group_index = 0; group_index < plan.group_count();
          ++group_index) {
         InitializationCancellation::check(run_context);
-        const PrintingGroup group = plan.group(group_index);
+        const ConstPrintingGroup group = plan.group(group_index);
         for (uint32_t layer_group_index = 0;
              layer_group_index < group.layer_group_count();
              ++layer_group_index) {
-            const PrintingLayerGroup layer_group =
+            const ConstPrintingLayerGroup layer_group =
                 group.layer_group(layer_group_index);
             for (uint32_t tool_index = 0;
                  tool_index < layer_group.tool_group_count(); ++tool_index) {
-                const PrintingToolGroup tool =
+                const ConstPrintingToolGroup tool =
                     layer_group.tool_group(tool_index);
                 for (uint32_t extrusion_index = 0;
                      extrusion_index < tool.extrusion_count();
                      ++extrusion_index) {
                     InitializationCancellation::check_periodic(
                         run_context, extrusion_index);
-                    const PrintingExtrusion extrusion =
+                    const ConstPrintingExtrusion extrusion =
                         tool.extrusion(extrusion_index);
                     const LayerRegionIsland region_island =
                         extrusion.region_island();

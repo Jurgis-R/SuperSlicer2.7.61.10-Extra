@@ -63,6 +63,13 @@ using namespace Slic3r;
 using namespace Slic3r::Printing;
 using namespace Slic3r::Test::GCode;
 
+static_assert(std::is_same_v<decltype(run_ctx_generate_gcode{}.plan),
+                             const printing_plan_handle *>);
+static_assert(std::is_constructible_v<slic3r_api::ConstPrintingPlan,
+                                      const printing_plan_handle *>);
+static_assert(!std::is_constructible_v<slic3r_api::PrintingPlan,
+                                       const printing_plan_handle *>);
+
 struct FirmwareRecorder
 {
     std::vector<std::string> calls;
@@ -81,31 +88,31 @@ public:
     ~RecordingFirmwareSession() override { ++m_recorder.destruction_count; }
 
     std::string begin_print(const slic3r_api::Print &,
-                            const slic3r_api::PrintingPlan &plan) override
+                            const slic3r_api::ConstPrintingPlan &plan) override
     {
         m_recorder.calls.emplace_back("begin_print");
         return std::string("begin_print\n") + (plan.events().has_before() ? write_event(plan.events().before()) : std::string());
     }
 
-    std::string begin_group(const slic3r_api::PrintingGroup &) override
+    std::string begin_group(const slic3r_api::ConstPrintingGroup &) override
     {
         m_recorder.calls.emplace_back("begin_group");
         return "begin_group\n";
     }
 
-    std::string begin_layer(const slic3r_api::PrintingLayerGroup &) override
+    std::string begin_layer(const slic3r_api::ConstPrintingLayerGroup &) override
     {
         m_recorder.calls.emplace_back("begin_layer");
         return "begin_layer\n";
     }
 
-    std::string begin_tool_group(const slic3r_api::PrintingToolGroup &) override
+    std::string begin_tool_group(const slic3r_api::ConstPrintingToolGroup &) override
     {
         m_recorder.calls.emplace_back("begin_tool_group");
         return "begin_tool_group\n";
     }
 
-    std::string write_extrusion(const slic3r_api::PrintingExtrusion &extrusion) override
+    std::string write_extrusion(const slic3r_api::ConstPrintingExtrusion &extrusion) override
     {
         if (m_recorder.throw_on_extrusion)
             throw std::runtime_error("test firmware extrusion failure");
@@ -813,6 +820,18 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
     Model model;
     Print print;
     Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    // Count the steps that really ran, to check which checkpoint each replay
+    // resumed from.
+    uint32_t finalize_slicing_count = 0;
+    uint32_t ordering_count = 0;
+    print.status().set_callback([&](const PrintBase::SlicingStatus &status) {
+        if ((status.flags & PrintBase::SlicingStatus::MAIN_STATE) == 0)
+            return;
+        if (status.main_text == "Finalizing slicing")
+            ++finalize_slicing_count;
+        if (status.main_text == "Ordering extrusions")
+            ++ordering_count;
+    });
 
     const boost::filesystem::path output_path = temporary_gcode_path();
     remove_output_pair(output_path);
@@ -823,18 +842,57 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         CHECK(generated_path == output_path.string());
         REQUIRE(boost::filesystem::exists(output_path));
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 1);
+        remove_output_pair(output_path);
+
+        // The read-only G-code stage reuses the final plan directly.
+        const Printing::PrintingPlan *final_plan = print.printing_plan();
+        REQUIRE(final_plan != nullptr);
+        const std::string replayed_gcode_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(replayed_gcode_path == output_path.string());
+        CHECK(print.printing_plan() == final_plan);
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        remove_output_pair(output_path);
+
+        // A plan-editor change resumes from the ordering checkpoint. Background
+        // slicing stops before plan replay, which belongs to export.
+        print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+        const Printing::PrintingPlan *plan_before_editor_replay = print.printing_plan();
+        print.process();
+        CHECK(print.printing_plan() == plan_before_editor_replay);
+        const std::string replayed_editor_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(replayed_editor_path == output_path.string());
+        CHECK(print.printing_plan() != plan_before_editor_replay);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 1);
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
         remove_output_pair(output_path);
 
         // A selector change can invalidate STEP_ORDERING after the downstream
         // layer extrusion edits were already marked done. Rebuilding the plan
         // must force those edits again so STEP_GCODE never sees speedless roots.
-        print.mark_step_for_execution(STEP_ORDERING);
-        print.mark_step_for_execution(STEP_GCODE);
+        print.request_replay_from(Steps::checkpoint_before_step(STEP_ORDERING));
         const std::string regenerated_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
         CHECK(regenerated_path == output_path.string());
         REQUIRE(boost::filesystem::exists(output_path));
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 2);
+
+        // Without the ordered checkpoint, editor replay rebuilds Ordering from
+        // the retained extrusion trees and then reruns all later steps.
+        print.set_keep_ordering_checkpoint(false);
+        print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+        const std::string replayed_ordering_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(replayed_ordering_path == output_path.string());
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 3);
     } catch (...) {
         remove_output_pair(output_path);
         orchestrator.set_plugin_active(cost_plugin, cost_was_active);

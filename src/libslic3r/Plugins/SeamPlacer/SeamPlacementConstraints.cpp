@@ -477,14 +477,14 @@ void SeamPlacementConstraints::initialize_impl(
     };
     for (uint32_t g=0;g<plan.group_count();++g) {
         InitializationCancellation::check(run_context);
-        const PrintingGroup group=plan.group(g);
+        const ConstPrintingGroup group=plan.group(g);
         for (uint32_t l=0;l<group.layer_group_count();++l) {
-            const PrintingLayerGroup layer_group=group.layer_group(l);
+            const ConstPrintingLayerGroup layer_group=group.layer_group(l);
             for (uint32_t t=0;t<layer_group.tool_group_count();++t) {
-                const PrintingToolGroup tool=layer_group.tool_group(t);
+                const ConstPrintingToolGroup tool=layer_group.tool_group(t);
                 for (uint32_t e=0;e<tool.extrusion_count();++e) {
                     InitializationCancellation::check_periodic(run_context, e);
-                    const PrintingExtrusion extrusion=tool.extrusion(e);
+                    const ConstPrintingExtrusion extrusion=tool.extrusion(e);
                     const LayerRegionIsland island=extrusion.region_island();
                     if (!island.valid() || island.region_count()==0) continue;
                     // Keep a multi-region island when any LayerRegion belongs to

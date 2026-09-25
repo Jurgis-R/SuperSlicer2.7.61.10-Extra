@@ -649,7 +649,7 @@ TEST_CASE("Cost seam projects candidates and supports parallel placement",
     slic3r_api::SeamPlacer placer = create_cost_session(prepared.print);
     REQUIRE(placer.valid());
 
-    const slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(
+    slic3r_api::PrintingPlan plan(reinterpret_cast<printing_plan_handle *>(
         &prepared.print.mutable_printing_plan()));
     const slic3r_api::PrintingExtrusion extrusion = plan.group(0).layer_group(0).tool_group(0).extrusion(0);
     slic3r_api::ExtrusionEntity loop;
@@ -815,7 +815,7 @@ TEST_CASE("Cost seam binds the atomic parent of Arachne-like perimeter paths",
         Point::new_scale(10, 10), Point::new_scale(0, 10),
         Point::new_scale(0, 0)})));
     const ExtrusionEntity composed(std::move(children), false, false, false);
-    const slic3r_api::PrintingExtrusion extrusion = fixture.add(
+    slic3r_api::PrintingExtrusion extrusion = fixture.add(
         composed, RAW_EXTRUSION_ROLE_NONE, 0, nullptr, false);
     slic3r_api::MutableExtrusionEntity root = extrusion.mutable_root();
     for (uint32_t index = 0; index < root.child_count(); ++index)
@@ -1645,7 +1645,7 @@ TEST_CASE("Aligned seam smooths six linked layers but keeps broken short chains 
             rectangle_loop(-5 + offset, -5, 5 + offset, 5), 0);
     }
     const slic3r_api::SeamPlacer linked = create_aligned_session(prepared.print);
-    const slic3r_api::PrintingPlan linked_plan(
+    slic3r_api::PrintingPlan linked_plan(
         reinterpret_cast<printing_plan_handle *>(
             &prepared.print.mutable_printing_plan()));
     for (uint32_t layer_index = 0; layer_index < 6; ++layer_index) {

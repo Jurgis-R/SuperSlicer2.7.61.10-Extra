@@ -140,7 +140,7 @@ TEST_CASE("STRING_EQUALS compares serialized option values", "[plugins][gui-rule
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
 
-    const char *const group = "test.string_equals";
+    const char *const owner = "test.string_equals";
 
     raw_gui_rule_clause clause = raw_gui_rule_clause_init();
     clause.condition = RAW_GUI_RULE_CONDITION_STRING_EQUALS;
@@ -148,16 +148,15 @@ TEST_CASE("STRING_EQUALS compares serialized option values", "[plugins][gui-rule
     clause.condition_string_value = "smooth";
 
     raw_gui_rule rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
     rule.target_key = "solid_fill_pattern";
-    rule.rule_group = group;
+    rule.scope = RAW_PRESET_TYPE_FFF_PRINT;
     rule.clauses = &clause;
     rule.clause_count = 1;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, owner) == Orchestrator::GuiRuleRegistration::Added);
 
-    const auto target_enabled = [&orchestrator, group](const DynamicPrintConfig &config) {
+    const auto target_enabled = [&orchestrator, owner](const DynamicPrintConfig &config) {
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, group))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, owner))
             if (application.target_key == "solid_fill_pattern")
                 return application.enabled;
         return false;
@@ -176,10 +175,10 @@ TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", 
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
 
-    const char *const indexed_group = "test.string_equals_vector.indexed";
-    const char *const any_group = "test.string_equals_vector.any";
-    const char *const current_group = "test.string_equals_vector.current";
-    const char *const out_of_range_group = "test.string_equals_vector.out_of_range";
+    const char *const indexed_owner = "test.string_equals_vector.indexed";
+    const char *const any_owner = "test.string_equals_vector.any";
+    const char *const current_owner = "test.string_equals_vector.current";
+    const char *const out_of_range_owner = "test.string_equals_vector.out_of_range";
 
     raw_gui_rule_clause clause = raw_gui_rule_clause_init();
     clause.condition = RAW_GUI_RULE_CONDITION_STRING_EQUALS;
@@ -187,34 +186,30 @@ TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", 
     clause.condition_string_value = "PETG";
 
     raw_gui_rule rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
+    rule.scope = RAW_PRESET_TYPE_FFF_PRINT;
     rule.clauses = &clause;
     rule.clause_count = 1;
 
     // An explicit index reads exactly that vector item.
     clause.condition_index = 1;
     rule.target_key = "fill_aligned_z";
-    rule.rule_group = indexed_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, indexed_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     // An explicit index outside the vector never matches.
     clause.condition_index = 7;
     rule.target_key = "fill_angle";
-    rule.rule_group = out_of_range_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, out_of_range_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     // INDEX_ALL without a current item is true when any item matches.
     clause.condition_index = RAW_GUI_RULE_INDEX_ALL;
     rule.target_key = "infill_every_layers";
-    rule.rule_group = any_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, any_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     // INDEX_CURRENT follows the extruder item currently processed.
     clause.condition_index = RAW_GUI_RULE_INDEX_CURRENT;
     rule.target_key = "filament_type";
     rule.target_index = RAW_GUI_RULE_INDEX_CURRENT;
-    rule.rule_group = current_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, current_owner) == Orchestrator::GuiRuleRegistration::Added);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     REQUIRE(config.option("filament_type")->is_vector());
@@ -226,9 +221,9 @@ TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", 
     const auto set_types = [&config](const char *serialized) {
         config.set_deserialize_strict("filament_type", serialized);
     };
-    const auto enabled_for = [&orchestrator, &config](const char *group, const char *target, int current_index) {
+    const auto enabled_for = [&orchestrator, &config](const char *owner, const char *target, int current_index) {
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, group))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, owner))
             if (application.target_key == target)
                 return application.enabled;
         return false;
@@ -237,25 +232,25 @@ TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", 
     // Two different items: the element read depends on the resolved index.
     set_types("PLA;PETG");
     REQUIRE(configured_types() == std::vector<std::string>{ "PLA", "PETG" });
-    CHECK(enabled_for(indexed_group, "fill_aligned_z", -1));
-    CHECK_FALSE(enabled_for(out_of_range_group, "fill_angle", -1));
+    CHECK(enabled_for(indexed_owner, "fill_aligned_z", -1));
+    CHECK_FALSE(enabled_for(out_of_range_owner, "fill_angle", -1));
 
     set_types("PETG;PLA");
-    CHECK_FALSE(enabled_for(indexed_group, "fill_aligned_z", -1));
+    CHECK_FALSE(enabled_for(indexed_owner, "fill_aligned_z", -1));
 
     set_types("PLA;PLA");
-    CHECK_FALSE(enabled_for(indexed_group, "fill_aligned_z", -1));
+    CHECK_FALSE(enabled_for(indexed_owner, "fill_aligned_z", -1));
 
     // "Any item" read, in both orders.
     set_types("PLA;PETG");
-    CHECK(enabled_for(any_group, "infill_every_layers", -1));
+    CHECK(enabled_for(any_owner, "infill_every_layers", -1));
     set_types("PETG;PLA");
-    CHECK(enabled_for(any_group, "infill_every_layers", -1));
+    CHECK(enabled_for(any_owner, "infill_every_layers", -1));
     set_types("PLA;PLA");
-    CHECK_FALSE(enabled_for(any_group, "infill_every_layers", -1));
+    CHECK_FALSE(enabled_for(any_owner, "infill_every_layers", -1));
 
     // Current-item read: index 0 is PLA, index 1 is PETG.
     set_types("PLA;PETG");
-    CHECK_FALSE(enabled_for(current_group, "filament_type", 0));
-    CHECK(enabled_for(current_group, "filament_type", 1));
+    CHECK_FALSE(enabled_for(current_owner, "filament_type", 0));
+    CHECK(enabled_for(current_owner, "filament_type", 1));
 }

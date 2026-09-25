@@ -1098,7 +1098,7 @@ TEST_CASE("Default firmware owns machine envelope initialization",
         const slic3r_api::Print print_view(
             reinterpret_cast<const print_handle *>(&print));
         MachineEnvelopeFirmwareSession session;
-        CHECK(session.begin_print(print_view, slic3r_api::PrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))).find("machine-envelope") == std::string::npos);
+        CHECK(session.begin_print(print_view, slic3r_api::ConstPrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))).find("machine-envelope") == std::string::npos);
         CHECK(session.formatter_initialized());
         CHECK(session.encode_count() == 0);
     }
@@ -1110,7 +1110,7 @@ TEST_CASE("Default firmware owns machine envelope initialization",
         const slic3r_api::Print print_view(
             reinterpret_cast<const print_handle *>(&print));
         MachineEnvelopeFirmwareSession session;
-        CHECK(session.begin_print(print_view, slic3r_api::PrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))) .find("machine-envelope\n") != std::string::npos);
+        CHECK(session.begin_print(print_view, slic3r_api::ConstPrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))) .find("machine-envelope\n") != std::string::npos);
         CHECK(session.encode_count() == 1);
         CHECK(session.initialized_during_encoding());
         REQUIRE(session.encoded_envelope());
@@ -1119,7 +1119,7 @@ TEST_CASE("Default firmware owns machine envelope initialization",
         // The neutral base remains directly usable and deliberately has no
         // firmware-specific envelope syntax.
         slic3r_api::GCodeGeneration::DefaultGCodeFirmwareSession neutral_session;
-        CHECK(neutral_session.begin_print(print_view, slic3r_api::PrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))).find("machine-envelope") == std::string::npos);
+        CHECK(neutral_session.begin_print(print_view, slic3r_api::ConstPrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))).find("machine-envelope") == std::string::npos);
     }
 
     SECTION("invalid limits fail before entering the dialect hook") {
@@ -1132,7 +1132,7 @@ TEST_CASE("Default firmware owns machine envelope initialization",
             reinterpret_cast<const print_handle *>(&print));
         MachineEnvelopeFirmwareSession session;
         CHECK_THROWS_AS(
-            session.begin_print(print_view, slic3r_api::PrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))), std::invalid_argument);
+            session.begin_print(print_view, slic3r_api::ConstPrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))), std::invalid_argument);
         CHECK(session.formatter_initialized());
         CHECK(session.encode_count() == 0);
     }
@@ -1273,15 +1273,15 @@ TEST_CASE("Firmware object boundaries keep exit work with the source instance",
     slic3r_api::GCodeGeneration::Firmware::Marlin2GCodeFirmwareSession session;
     std::string output = session.begin_print(
         slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)),
-        slic3r_api::PrintingPlan(
+        slic3r_api::ConstPrintingPlan(
             reinterpret_cast<const printing_plan_handle *>(&plan)));
-    output += session.write_extrusion(slic3r_api::PrintingExtrusion(
+    output += session.write_extrusion(slic3r_api::ConstPrintingExtrusion(
         reinterpret_cast<const printing_extrusion_handle *>(&first)));
     ExtrusionNop scope_event;
     scope_event.add_property(ExtrusionPropertyCustomGcodeText(";outside event"));
     output += session.write_event(slic3r_api::ExtrusionEntity(
         reinterpret_cast<const extrusion_entity_handle *>(&scope_event)));
-    output += session.write_extrusion(slic3r_api::PrintingExtrusion(
+    output += session.write_extrusion(slic3r_api::ConstPrintingExtrusion(
         reinterpret_cast<const printing_extrusion_handle *>(&second)));
     output += session.end_print();
 
@@ -1364,7 +1364,7 @@ TEST_CASE("Klipper object declarations use the PrintingPlan instance catalog",
     slic3r_api::GCodeGeneration::Firmware::KlipperGCodeFirmwareSession session;
     const std::string output = session.begin_print(
         slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)),
-        slic3r_api::PrintingPlan(
+        slic3r_api::ConstPrintingPlan(
             reinterpret_cast<const printing_plan_handle *>(&plan)));
     CHECK(output.find("EXCLUDE_OBJECT_DEFINE NAME='" +
                       plan.object_instances.front().name + "'") != std::string::npos);
@@ -2546,7 +2546,7 @@ TEST_CASE("Default firmware distinguishes raw G-code, comments and scripts",
     Print print;
     configure_standard_firmware(print);
     const slic3r_api::Print print_view(reinterpret_cast<const print_handle *>(&print));
-    CHECK(firmware.begin_print(print_view, slic3r_api::PrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))).size() > 0);
+    CHECK(firmware.begin_print(print_view, slic3r_api::ConstPrintingPlan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()))).size() > 0);
 
     ExtrusionNop typed_raw(ExtrusionPropertyCustomGcodeText("M117 raw"));
     ExtrusionPropertyCustomGcode *typed_raw_property = typed_raw.get_property<ExtrusionPropertyCustomGcode>();
@@ -3121,7 +3121,7 @@ TEST_CASE("Firmware owns mixed thumbnail requests and ignores camera geometry",
         uint32_t request_calls = 0;
     protected:
         std::vector<slic3r_api::GCodeThumbnailRequest> thumbnail_requests(
-            const slic3r_api::Print &, const slic3r_api::PrintingPlan &) override {
+            const slic3r_api::Print &, const slic3r_api::ConstPrintingPlan &) override {
             ++request_calls;
             raw_gcode_thumbnail_render_request render = {};
             render.struct_size = sizeof(render);
@@ -3137,7 +3137,7 @@ TEST_CASE("Firmware owns mixed thumbnail requests and ignores camera geometry",
     } firmware;
     firmware.set_thumbnail_services(reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()), renderer.c_renderer());
     const slic3r_api::Print view(reinterpret_cast<const print_handle *>(&print));
-    const slic3r_api::PrintingPlan plan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()));
+    const slic3r_api::ConstPrintingPlan plan(reinterpret_cast<const printing_plan_handle *>(&print.mutable_printing_plan()));
     const std::string begin = firmware.begin_print(view, plan);
     CHECK(begin.find("thumbnail_JPG begin") < begin.find("generated by"));
     CHECK(begin.find("thumbnail_QOI") == std::string::npos);

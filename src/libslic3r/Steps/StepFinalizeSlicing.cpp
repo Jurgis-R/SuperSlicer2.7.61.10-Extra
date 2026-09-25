@@ -1,7 +1,7 @@
 
-#include "StepPrepareGcode.hpp"
+#include "StepFinalizeSlicing.hpp"
 
-namespace Slic3r::Steps::StepPrepareGcode {
+namespace Slic3r::Steps::StepFinalizeSlicing {
 
 void clean_and_prepare(Print &) {}
 
@@ -17,4 +17,4 @@ bool validate_post(const Print &, std::string *)
 
 void run_step(Orchestrator &, Print &) {}
 
-} // namespace Slic3r::Steps::StepPrepareGcode
+} // namespace Slic3r::Steps::StepFinalizeSlicing

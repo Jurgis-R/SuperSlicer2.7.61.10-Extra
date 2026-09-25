@@ -204,7 +204,7 @@ void initialize_default_speed_settings(orchestrator_handle *orchestrator)
     def.container_type = RAW_CONTAINER_TYPE_PLATER;
     def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
     def.printer_technology = RAW_PT_FFF;
-    def.invalidates_step = STEP_PRE_GCODE;
+    def.invalidates_step = STEP_LAYER_EXTRUSION_EDIT;
     def.category = RAW_OPTION_CATEGORY_FILAMENT;
     def.label = "Max speed";
     def.tooltip = "Maximum speed allowed for this filament. Limits the maximum speed of a print to the minimum of the print speed and the filament speed. Set zero for no limit.";
@@ -224,7 +224,7 @@ void initialize_default_speed_settings(orchestrator_handle *orchestrator)
     def.container_type = RAW_CONTAINER_TYPE_PLATER;
     def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
     def.printer_technology = RAW_PT_FFF;
-    def.invalidates_step = STEP_PRE_GCODE;
+    def.invalidates_step = STEP_LAYER_EXTRUSION_EDIT;
     def.category = RAW_OPTION_CATEGORY_FILAMENT;
     def.label = "Max volumetric speed";
     def.tooltip = "Maximum volumetric speed allowed for this filament. Limits the maximum volumetric speed of a print to the minimum of print and filament volumetric speed. Set zero for no limit.";
@@ -713,7 +713,7 @@ void collect_autospeed_minimum(const MutableExtrusionEntity &entity,
 // Prepare raw/final regional partitions and group/extruder autospeed targets.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AutospeedTargets &targets,
                   SpeedPartitions &speed_partitions,
                   const plugin_run_context *run_ctx);
@@ -750,8 +750,8 @@ double autospeed_target(const AutospeedTargets &targets,
 // Resolve and compact speed on one cloned extrusion root.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     uint32_t group_idx,
                     double target,
                     const SpeedPartitions &speed_partitions,
@@ -1038,7 +1038,7 @@ void collect_autospeed_minimum(const MutableExtrusionEntity &entity,
 
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AutospeedTargets &targets,
                   SpeedPartitions &speed_partitions,
                   const plugin_run_context *run_ctx)
@@ -1058,20 +1058,20 @@ void prepare_plan(storage_handle *storage,
 
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         std::map<extruder_index_t, double> minimum_by_extruder;
 
         // Validate the entire plan before any parallel mutation. During the
         // same pass, collect the minimum flow when autospeed is enabled.
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer_group = group.layer_group(layer_idx);
+            PrintingLayerGroup layer_group = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, true);
                     const LayerRegionIsland region_island = extrusion.region_island();
@@ -1143,17 +1143,17 @@ void prepare_plan(storage_handle *storage,
     std::set<SpeedPartitionKey> prepared_keys;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer_group = group.layer_group(layer_idx);
+            PrintingLayerGroup layer_group = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 const double target = autospeed_target(targets, group_idx, tool_group.extruder_id());
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
                     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
                     if (object_instance_idx < size_t(-1) && object_instance_idx > std::numeric_limits<uint16_t>::max())
@@ -1310,8 +1310,8 @@ double autospeed_target(const AutospeedTargets &targets,
 
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     uint32_t group_idx,
                     double target,
                     const SpeedPartitions &speed_partitions,
@@ -1428,7 +1428,8 @@ void DefaultSpeed::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
         run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
         return;
 
-    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), PrintingPlan(ctx->plan),
+    PrintingPlan plan(ctx->plan);
+    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), plan,
                  m_autospeed_targets, m_speed_partitions, run_ctx);
     throw_if_cancelled(run_ctx);
     m_setup_valid = true;
@@ -1458,11 +1459,11 @@ void DefaultSpeed::run_impl(const plugin_run_context *run_ctx) const
     // Each run owns one layer group and reads immutable targets prepared before
     // the host launched parallel work.
     const Print print(ctx->print);
-    const PrintingPlan plan(ctx->plan);
-    const PrintingLayerGroup layer_group(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer_group(ctx->layer_group);
     for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+        PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
         const double target = autospeed_target(m_autospeed_targets, ctx->group_idx, tool_group.extruder_id());
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
             throw_if_cancelled(run_ctx);

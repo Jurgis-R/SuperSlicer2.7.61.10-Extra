@@ -134,7 +134,7 @@ void collect_curves(const ExtrusionEntity &entity, std::vector<Curve> &curves,
 bool touches_region(const std::vector<Curve> &curves, const LayerRegion &region,
                     c_point shift, const plugin_run_context *run_context);
 /* Reconstruct inherited tags before an atomic loop is recorded. */
-void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
+void collect_loops(const ConstPrintingExtrusion &source, const ExtrusionEntity &entity,
                    uint16_t object_instance_idx,
                    raw_extrusion_role role, uint16_t flags, const RegionFilter &filter,
                    std::vector<Loop> &loops,
@@ -484,7 +484,7 @@ bool region_is_assigned(const LayerRegion &region, const RegionFilter &filter)
     return source.valid() && filter.assigned.find(source.handle())!=filter.assigned.end();
 }
 
-void collect_loops(const PrintingExtrusion &source, const ExtrusionEntity &entity,
+void collect_loops(const ConstPrintingExtrusion &source, const ExtrusionEntity &entity,
                    const uint16_t object_instance_idx,
                    raw_extrusion_role role, uint16_t flags, const RegionFilter &filter,
                    std::vector<Loop> &loops,
@@ -602,14 +602,14 @@ void RandomSession::initialize(const PrintingPlan &plan, const std::vector<Print
     std::vector<Loop> loops;
     for (uint32_t g=0;g<plan.group_count();++g) {
         InitializationCancellation::check(m_run_context);
-        const PrintingGroup group=plan.group(g);
+        const ConstPrintingGroup group=plan.group(g);
         for (uint32_t l=0;l<group.layer_group_count();++l) {
-            const PrintingLayerGroup layer=group.layer_group(l);
+            const ConstPrintingLayerGroup layer=group.layer_group(l);
             for (uint32_t t=0;t<layer.tool_group_count();++t) {
-                const PrintingToolGroup tool=layer.tool_group(t);
+                const ConstPrintingToolGroup tool=layer.tool_group(t);
                 for (uint32_t e=0;e<tool.extrusion_count();++e) {
                     InitializationCancellation::check_periodic(m_run_context,e);
-                    const PrintingExtrusion extrusion=tool.extrusion(e);
+                    const ConstPrintingExtrusion extrusion=tool.extrusion(e);
                     // Reject foreign-provider work before consulting its
                     // object-instance metadata. Such work is outside this
                     // session and may legitimately be incomplete here.

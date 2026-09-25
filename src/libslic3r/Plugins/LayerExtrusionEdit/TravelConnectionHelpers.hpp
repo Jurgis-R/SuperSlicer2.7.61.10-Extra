@@ -89,16 +89,16 @@ public:
     void reset();
 
     /* Allocate one summary slot per final PrintingLayerGroup. */
-    void setup(const PrintingPlan &plan, uint32_t run_count);
+    void setup(const ConstPrintingPlan &plan, uint32_t run_count);
 
     /* Analyze one layer in its worker-owned slot before the host barrier. */
-    void setup_run(const PrintingLayerGroup &layer,
+    void setup_run(PrintingLayerGroup &layer,
                    uint32_t group_idx,
                    uint32_t layer_idx,
                    PluginProgress &progress);
 
     /* Connect consecutive scopes and update only properties owned by layer. */
-    void run(const PrintingLayerGroup &layer,
+    void run(PrintingLayerGroup &layer,
              uint32_t group_idx,
              uint32_t layer_idx,
              const TravelPathPlanner &planner,

@@ -3,8 +3,8 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
-#ifndef steps_steppreparegcode_hpp_
-#define steps_steppreparegcode_hpp_
+#ifndef steps_stepfinalizeslicing_hpp_
+#define steps_stepfinalizeslicing_hpp_
 
 #include <string>
 
@@ -14,14 +14,14 @@ namespace Slic3r {
 class Orchestrator;
 class Print;
 
-namespace Steps::StepPrepareGcode {
+namespace Steps::StepFinalizeSlicing {
 
 void clean_and_prepare(Print &print);
 bool validate_pre(const Print &print, std::string *error = nullptr);
 bool validate_post(const Print &print, std::string *error = nullptr);
 void run_step(Orchestrator &orchestrator, Print &print);
 
-} // namespace Steps::StepPrepareGcode
+} // namespace Steps::StepFinalizeSlicing
 } // namespace Slic3r
 
-#endif // steps_steppreparegcode_hpp_
+#endif // steps_stepfinalizeslicing_hpp_

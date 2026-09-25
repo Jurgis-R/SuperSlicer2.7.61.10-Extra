@@ -1009,7 +1009,7 @@ void CreateRetractionLift::setup_impl(
     if (ctx == nullptr || ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     size_t flat_idx = 0;
     m_flat_indices.resize(plan.group_count());
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
@@ -1067,8 +1067,8 @@ void CreateRetractionLift::setup_run_impl(
         ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer(ctx->layer_group);
     const Config print_config = Print(ctx->print).config();
     LayerLiftSummary summary;
     summary.prepared = true;
@@ -1118,8 +1118,8 @@ void CreateRetractionLift::run_impl(const plugin_run_context *run_ctx) const
     if (!m_layers[flat_idx].prepared)
         throw std::runtime_error("A lift layer has no prepared summary.");
     const SourceLiftState *preceding = previous_layer_source(flat_idx, run_ctx);
-    const PrintingLayerGroup layer(ctx->layer_group);
-    const PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
 
     // For scopes A, B and C in this layer, traversal calls (nullptr, A),

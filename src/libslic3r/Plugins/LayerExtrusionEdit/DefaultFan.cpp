@@ -577,7 +577,7 @@ void assign_fan_tree(MutableExtrusionEntity entity,
                      const LayerFanPolicy &policy,
                      EPropertySpeedFieldEditor &editor,
                      const plugin_run_context *run_ctx);
-void edit_extrusion(const PrintingExtrusion &extrusion,
+void edit_extrusion(PrintingExtrusion extrusion,
                     const Config &config,
                     extruder_index_t extruder_id,
                     const LayerFanPolicy &policy,
@@ -907,7 +907,7 @@ void assign_fan_tree(MutableExtrusionEntity entity,
     editor.set_value(entity, value);
 }
 
-void edit_extrusion(const PrintingExtrusion &extrusion,
+void edit_extrusion(PrintingExtrusion extrusion,
                     const Config &config,
                     extruder_index_t extruder_id,
                     const LayerFanPolicy &policy,
@@ -994,7 +994,7 @@ void DefaultFan::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
         return;
 
     const Print print(ctx->print);
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     m_layer_durations.resize(plan.group_count());
     bool needs_estimate = false;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
@@ -1046,7 +1046,7 @@ void DefaultFan::setup_run_impl(const plugin_run_context *run_ctx) const
         return;
 
     throw_if_cancelled(run_ctx);
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingLayerGroup layer(ctx->layer_group);
     PluginProperties properties = layer.properties();
     PrintingLayerTimeProperty *time = m_layer_time_property.get_mutable(properties);
     if (time == nullptr || !time->is_final()) {
@@ -1069,14 +1069,14 @@ void DefaultFan::run_impl(const plugin_run_context *run_ctx) const
 
     const Print print(ctx->print);
     const Config config = print.config();
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingLayerGroup layer(ctx->layer_group);
     const PrintingLayerTimeProperty *time = m_layer_time_property.get(layer.properties());
     if (time == nullptr || !std::isfinite(time->duration_seconds) || time->duration_seconds < 0.0)
         throw std::runtime_error("Printing layer fan calculation needs a valid layer duration.");
 
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingToolGroup tool = layer.tool_group(tool_idx);
+        PrintingToolGroup tool = layer.tool_group(tool_idx);
         if (tool.extruder_id() == EXTRUDER_ID_UNKNOWN)
             throw std::runtime_error("Printing layer fan calculation needs a concrete extruder id.");
         const LayerFanPolicy policy = layer_fan_policy(

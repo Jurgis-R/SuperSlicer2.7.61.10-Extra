@@ -3,6 +3,7 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -77,6 +78,30 @@ static const ExPolygon *to_expolygon(const expolygon_handle *me) { return reinte
 
 static ExPolygons *to_expolygons(expolygon_collection_handle *me) { return reinterpret_cast<ExPolygons*>(me); }
 static const ExPolygons *to_expolygons(const expolygon_collection_handle *me) { return reinterpret_cast<const ExPolygons*>(me); }
+
+/* Debug check of the checkpoint freeze contract for data-tree edits made by
+   the running pipeline step. Checkpoint::Print freezes the whole data tree
+   after STEP_FINALIZE_SLICING. An object without a Print is outside the
+   pipeline and is always editable. */
+static bool data_tree_editable(const PrintObject &object)
+{
+    return object.print() == nullptr ||
+           object.print()->running_step_may_edit(STEP_FINALIZE_SLICING);
+}
+
+/* Slice edits are frozen earlier, by Checkpoint::Slicing after
+   STEP_POST_SLICING. Auxiliary layers are created later by skirt/brim, so
+   their slices follow the data-tree freeze instead. */
+static bool slices_editable(const Layer &layer)
+{
+    const PrintObject *object = layer.object();
+    if (object == nullptr || object->print() == nullptr)
+        return true;
+    for (const Layer &auxiliary_layer : object->auxiliary_layers())
+        if (&auxiliary_layer == &layer)
+            return data_tree_editable(*object);
+    return object->print()->running_step_may_edit(STEP_POST_SLICING);
+}
 
 static c_point to_c_point(const Point &point)
 {
@@ -822,6 +847,7 @@ layer_handle *object_add_auxiliary_layer(const object_handle *me,
 {
     if (me == nullptr || height <= 0 || print_z <= 0)
         return nullptr;
+    assert(Slic3r::data_tree_editable(*Slic3r::to_object(me)));
 
     Slic3r::PrintObject *object = const_cast<Slic3r::PrintObject *>(Slic3r::to_object(me));
     Slic3r::LayerUPtrs &layers = object->mutable_auxiliary_layers();
@@ -844,6 +870,7 @@ int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *lay
 {
     if (me == nullptr || layer == nullptr)
         return 0;
+    assert(Slic3r::data_tree_editable(*Slic3r::to_object(me)));
 
     Slic3r::PrintObject *object = const_cast<Slic3r::PrintObject *>(Slic3r::to_object(me));
     Slic3r::LayerUPtrs &layers = object->mutable_auxiliary_layers();
@@ -859,6 +886,7 @@ int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *lay
 
 expolygon_collection_handle *layer_borrow_mutable_slices(layer_handle *me)
 {
+    assert(me == nullptr || Slic3r::slices_editable(*Slic3r::to_layer(me)));
     return me == nullptr ?
         nullptr :
         reinterpret_cast<expolygon_collection_handle *>(&Slic3r::ApiInternal::LayerAccess::slices_mutable(
@@ -867,6 +895,7 @@ expolygon_collection_handle *layer_borrow_mutable_slices(layer_handle *me)
 
 expolygon_collection_handle *layer_region_borrow_mutable_slices(const layer_region_handle *me)
 {
+    assert(me == nullptr || Slic3r::slices_editable(*Slic3r::to_layer_region(me)->layer()));
     return me == nullptr ?
         nullptr :
         reinterpret_cast<expolygon_collection_handle *>(&Slic3r::ApiInternal::LayerRegionAccess::slices_mutable(
@@ -973,6 +1002,7 @@ config_handle *print_records_get_or_add(const print_handle *me, const char *chan
 {
     if (me == nullptr || channel == nullptr)
         return nullptr;
+    assert(Slic3r::to_print(me)->running_step_may_edit(STEP_FINALIZE_SLICING));
     try {
         Slic3r::Print *print = const_cast<Slic3r::Print *>(Slic3r::to_print(me));
         return Slic3r::ApiHost::to_config_handle(&print->records().get_or_add(channel));
@@ -985,6 +1015,7 @@ int32_t print_records_remove(const print_handle *me, const char *channel)
 {
     if (me == nullptr || channel == nullptr)
         return 0;
+    assert(Slic3r::to_print(me)->running_step_may_edit(STEP_FINALIZE_SLICING));
     try {
         Slic3r::Print *print = const_cast<Slic3r::Print *>(Slic3r::to_print(me));
         return print->records().remove(channel) ? 1 : 0;

@@ -64,7 +64,7 @@ choices to the layer groups. It is intentionally local to this plugin so another
 tool-ordering plugin can replace the strategy without relying on host callbacks.
 */
 void order_tool_groups_in_plugin(
-    const PrintingGroup &printing_group,
+    PrintingGroup &printing_group,
     extruder_index_t first_extruder,
     const plugin_run_context *run_ctx);
 
@@ -78,7 +78,7 @@ splits a tool visit into several sections. Tool-change optimization only needs
 each extruder id once; the later reordering keeps same-extruder groups stable.
 */
 std::vector<extruder_index_t> unique_layer_extruders(
-    const PrintingLayerGroup &layer_group,
+    const ConstPrintingLayerGroup &layer_group,
     const plugin_run_context *run_ctx);
 
 /*
@@ -114,7 +114,7 @@ the front, groups for the last extruder move to the back, and everything else
 keeps its relative order in the middle.
 */
 void apply_tool_order_candidate(
-    const PrintingLayerGroup &layer_group,
+    PrintingLayerGroup &layer_group,
     const ToolOrderCandidate &candidate,
     const plugin_run_context *run_ctx);
 
@@ -124,7 +124,7 @@ extruder_index_t next_concrete_extruder(const PrintingGroup &printing_group,
                                const plugin_run_context *run_ctx);
 
 void resolve_unassigned_tool_groups(
-    const PrintingGroup &printing_group,
+    PrintingGroup &printing_group,
     const plugin_run_context *run_ctx);
 
 bool is_unassigned_extruder(const extruder_index_t extruder_id)
@@ -134,7 +134,7 @@ bool is_unassigned_extruder(const extruder_index_t extruder_id)
 }
 
 void order_tool_groups_in_plugin(
-    const PrintingGroup &printing_group,
+    PrintingGroup &printing_group,
     const extruder_index_t first_extruder,
     const plugin_run_context *run_ctx)
 {
@@ -148,13 +148,13 @@ void order_tool_groups_in_plugin(
     */
     for (uint32_t layer_idx = 0; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
         throw_if_cancelled(run_ctx);
-        apply_tool_order_candidate(
-            printing_group.layer_group(layer_idx), candidates[layer_idx], run_ctx);
+        PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
+        apply_tool_order_candidate(layer_group, candidates[layer_idx], run_ctx);
     }
 }
 
 std::vector<extruder_index_t> unique_layer_extruders(
-    const PrintingLayerGroup &layer_group,
+    const ConstPrintingLayerGroup &layer_group,
     const plugin_run_context *run_ctx)
 {
     std::vector<extruder_index_t> out;
@@ -228,7 +228,7 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
 
     for (uint32_t layer_idx = 0; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
+        const ConstPrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
         std::vector<extruder_index_t> extruders = unique_layer_extruders(layer_group, run_ctx);
         if (extruders.empty())
             continue;
@@ -323,7 +323,7 @@ std::vector<ToolOrderCandidate> select_tool_order_candidates(const PrintingGroup
 }
 
 void apply_tool_order_candidate(
-    const PrintingLayerGroup &layer_group,
+    PrintingLayerGroup &layer_group,
     const ToolOrderCandidate &candidate,
     const plugin_run_context *run_ctx)
 {
@@ -369,7 +369,7 @@ extruder_index_t next_concrete_extruder(const PrintingGroup &printing_group,
 {
     for (uint32_t layer_idx = start_layer_idx; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
+        const ConstPrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
         const uint32_t first_tool_idx = layer_idx == start_layer_idx ? start_tool_idx : 0;
         for (uint32_t tool_idx = first_tool_idx; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
             throw_if_cancelled(run_ctx);
@@ -383,16 +383,16 @@ extruder_index_t next_concrete_extruder(const PrintingGroup &printing_group,
 }
 
 void resolve_unassigned_tool_groups(
-    const PrintingGroup &printing_group,
+    PrintingGroup &printing_group,
     const plugin_run_context *run_ctx)
 {
     extruder_index_t previous_extruder = EXTRUDER_ID_UNKNOWN;
     for (uint32_t layer_idx = 0; layer_idx < printing_group.layer_group_count(); ++layer_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
+        PrintingLayerGroup layer_group = printing_group.layer_group(layer_idx);
         for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+            PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
             const extruder_index_t extruder_id = tool_group.extruder_id();
             if (!is_unassigned_extruder(extruder_id)) {
                 previous_extruder = extruder_id;
@@ -456,7 +456,7 @@ private:
         */
         for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingGroup group = plan.group(group_idx);
+            PrintingGroup group = plan.group(group_idx);
             order_tool_groups_in_plugin(group, int32_t(-1), run_ctx);
             throw_if_cancelled(run_ctx);
             resolve_unassigned_tool_groups(group, run_ctx);

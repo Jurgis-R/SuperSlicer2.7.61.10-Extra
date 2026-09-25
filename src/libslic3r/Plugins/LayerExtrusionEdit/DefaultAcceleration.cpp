@@ -596,7 +596,7 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
 // Validate all trees and prepare immutable partitions before parallel mutation.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AccelerationPartitions &partitions,
                   const plugin_run_context *run_ctx);
 
@@ -613,8 +613,8 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
 // Resolve and compact acceleration on one cloned extrusion root.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     const AccelerationPartitions &partitions,
                     const plugin_run_context *run_ctx);
 
@@ -763,7 +763,7 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
 
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AccelerationPartitions &partitions,
                   const plugin_run_context *run_ctx)
 {
@@ -776,16 +776,16 @@ void prepare_plan(storage_handle *storage,
     // collect every role that may need a regional partition in later runs.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer_group = group.layer_group(layer_idx);
+            PrintingLayerGroup layer_group = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, false);
                     const LayerRegionIsland region_island = extrusion.region_island();
@@ -891,8 +891,8 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
 
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     const AccelerationPartitions &partitions,
                     const plugin_run_context *run_ctx)
 {
@@ -1000,7 +1000,8 @@ void DefaultAcceleration::setup_impl(const plugin_run_context *run_ctx, uint32_t
         run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
         return;
 
-    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), PrintingPlan(ctx->plan),
+    PrintingPlan plan(ctx->plan);
+    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), plan,
                  m_partitions, run_ctx);
     throw_if_cancelled(run_ctx);
     m_setup_valid = true;
@@ -1028,11 +1029,11 @@ void DefaultAcceleration::run_impl(const plugin_run_context *run_ctx) const
     throw_if_cancelled(run_ctx);
 
     const Print print(ctx->print);
-    const PrintingPlan plan(ctx->plan);
-    const PrintingLayerGroup layer_group(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer_group(ctx->layer_group);
     for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+        PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
             throw_if_cancelled(run_ctx);
             edit_extrusion(

@@ -373,7 +373,7 @@ TEST_CASE("Custom G-code per print Z plugin owns its script settings",
         CHECK(def->type == coString);
         CHECK(def->container_type == ConfigOptionContainerType::Plater);
         CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
-        CHECK(def->invalidates_step == STEP_GCODE);
+        CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
         CHECK(def->multiline);
         CHECK(def->full_width);
         CHECK(PrintConfig::defaults().option<ConfigOptionString>(key)->value.empty());

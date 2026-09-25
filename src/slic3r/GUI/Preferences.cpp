@@ -594,7 +594,14 @@ void PreferencesDialog::build()
 			L("If this is enabled, Slic3r will pre-process objects as soon "
 				"as they\'re loaded in order to save time when exporting G-code."),
 			app_config->get_bool("background_processing"));
-		
+
+		append_bool_option(workflow_project_behavior, "keep_ordering_checkpoint",
+			L("Keep ordered slicing data in memory"),
+			L("Retain a copy of the PrintingPlan right after extrusion ordering. "
+				"When a plan-editing setting such as a speed changes, the plan is restored from this copy "
+				"instead of being ordered again. This uses additional memory."),
+			app_config->get_bool("keep_ordering_checkpoint"));
+
 		append_bool_option(workflow_project_behavior, "alert_when_supports_needed",
 			L("Alert when supports needed"),
 			L("If this is enabled, Slic3r will raise alerts when it detects "

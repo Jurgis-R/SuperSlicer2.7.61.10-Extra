@@ -498,14 +498,14 @@ TEST_CASE("Travel deceleration plugin owns its settings and activation rule",
     const ConfigOptionDef *def = PrintConfigDef::instance().get("travel_deceleration_use_target");
     REQUIRE(def != nullptr);
     CHECK(def->type == coBool);
-    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(def->mode == (comExpert | comSuSi));
     CHECK(def->default_value->serialize() == "1");
 
     def = PrintConfigDef::instance().get("gcode_min_length");
     REQUIRE(def != nullptr);
     CHECK(def->type == coFloatOrPercent);
-    CHECK(def->invalidates_step == STEP_GCODE);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(def->precision == 6);
     CHECK(def->can_be_disabled);
     CHECK(def->default_value->serialize() == "0.02");

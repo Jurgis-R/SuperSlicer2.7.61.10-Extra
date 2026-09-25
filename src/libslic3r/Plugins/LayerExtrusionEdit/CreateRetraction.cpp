@@ -233,13 +233,13 @@ void write_incoming_retraction(const ScopeEntity &target,
                                const plugin_run_context *run_ctx);
 
 /* Count marked roots for progress without retaining their handles. */
-uint32_t scope_count(const PrintingLayerGroup &layer,
+uint32_t scope_count(PrintingLayerGroup &layer,
                      const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
                      const plugin_run_context *run_ctx);
 
 /* Append the end-of-print Retract event to the plan after sequence. */
 void append_terminal_retraction(storage_handle *storage,
-                                const PrintingPlan &plan,
+                                PrintingPlan &plan,
                                 double target,
                                 const plugin_run_context *run_ctx);
 
@@ -674,7 +674,7 @@ void write_incoming_retraction(
 }
 
 uint32_t scope_count(
-    const PrintingLayerGroup &layer,
+    PrintingLayerGroup &layer,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
     const plugin_run_context *run_ctx)
 {
@@ -695,7 +695,7 @@ uint32_t scope_count(
 }
 
 void append_terminal_retraction(storage_handle *storage,
-                                const PrintingPlan &plan,
+                                PrintingPlan &plan,
                                 const double target,
                                 const plugin_run_context *run_ctx)
 {
@@ -814,7 +814,7 @@ void CreateRetraction::setup_impl(const plugin_run_context *run_ctx,
     if (ctx == nullptr || ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     size_t flat_idx = 0;
     m_flat_indices.resize(plan.group_count());
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
@@ -880,8 +880,8 @@ void CreateRetraction::setup_run_impl(const plugin_run_context *run_ctx) const
         ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer(ctx->layer_group);
     const Config print_config = Print(ctx->print).config();
     LayerBoundarySummary summary;
     summary.prepared = true;
@@ -930,8 +930,8 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
         throw std::runtime_error("A retraction layer has no prepared summary.");
     const LayerBoundarySummary *preceding = previous_nonempty_layer(flat_idx, run_ctx);
     const LayerBoundarySummary *following = next_nonempty_layer(flat_idx, run_ctx);
-    const PrintingLayerGroup layer(ctx->layer_group);
-    const PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
 
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
@@ -1084,15 +1084,15 @@ void CreateTerminalRetraction::run_impl(
         run_ctx->plugin_storage == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
     bool found_terminal = false;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
                 m_scope_property,
                 retraction_state_definition(),

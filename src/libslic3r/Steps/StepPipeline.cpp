@@ -19,6 +19,7 @@
 #include "libslic3r/Steps/StepExtrusionEdition.hpp"
 #include "libslic3r/Steps/StepExtrusionOrdering.hpp"
 #include "libslic3r/Steps/StepExtrusionSimplification.hpp"
+#include "libslic3r/Steps/StepFinalizeSlicing.hpp"
 #include "libslic3r/Steps/StepGenerateGcode.hpp"
 #include "libslic3r/Steps/StepReadGeneratedGcode.hpp"
 #include "libslic3r/Steps/StepGenerateInfill.hpp"
@@ -33,7 +34,6 @@
 #include "libslic3r/Steps/StepPostPerimeterGeneration.hpp"
 #include "libslic3r/Steps/StepPostSlicing.hpp"
 #include "libslic3r/Steps/StepPrepareForPeriemters.hpp"
-#include "libslic3r/Steps/StepPrepareGcode.hpp"
 #include "libslic3r/Steps/StepPrepareInfill.hpp"
 #include "libslic3r/Steps/StepSlicing.hpp"
 #include "libslic3r/Steps/StepRunner.hpp"
@@ -83,7 +83,7 @@ const std::vector<slicing_step_t> &execution_order()
         STEP_SUPPORT_DEMAND,
         STEP_SUPPORT,
         STEP_SKIRT_BRIM,
-        STEP_PRE_GCODE,
+        STEP_FINALIZE_SLICING,
         STEP_ORDERING,
         STEP_WIPETOWER,
         STEP_SUPPORT_SPOT,
@@ -94,6 +94,73 @@ const std::vector<slicing_step_t> &execution_order()
         STEP_GCODE,
     };
     return steps;
+}
+
+size_t execution_index(const slicing_step_t step)
+{
+    const std::vector<slicing_step_t> &steps = execution_order();
+    const std::vector<slicing_step_t>::const_iterator found =
+        std::find(steps.begin(), steps.end(), step);
+    return found == steps.end() ? steps.size() : size_t(std::distance(steps.begin(), found));
+}
+
+bool executes_before(const slicing_step_t lhs, const slicing_step_t rhs)
+{
+    const size_t lhs_index = execution_index(lhs);
+    const size_t rhs_index = execution_index(rhs);
+    assert(lhs_index < execution_order().size());
+    assert(rhs_index < execution_order().size());
+    return lhs_index < rhs_index;
+}
+
+slicing_step_t tightened_invalidation_step(const slicing_step_t current,
+                                           const slicing_step_t consumer_step)
+{
+    // STEP_ANY already replays every producer. STEP_NONE declares that a value
+    // change never affects slicing, for example an import-only placement
+    // setting, so a reader must not turn it into a replay.
+    if (current == STEP_ANY || current == STEP_NONE)
+        return current;
+    // Replaying a step also replays every later step through the dependency
+    // chain, so the earlier of the two covers both producers.
+    return executes_before(consumer_step, current) ? consumer_step : current;
+}
+
+Checkpoint checkpoint_before_step(const slicing_step_t step)
+{
+    if (step == STEP_ANY)
+        return Checkpoint::None;
+
+    const size_t step_index = execution_index(step);
+    assert(step_index < execution_order().size());
+    if (step_index >= execution_order().size())
+        return Checkpoint::None;
+
+    // Each checkpoint sits right before its resume step, so the latest
+    // checkpoint whose resume step is not after `step` is the one to use.
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Slicing)))
+        return Checkpoint::None;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Print)))
+        return Checkpoint::Slicing;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Ordering)))
+        return Checkpoint::Print;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Plan)))
+        return Checkpoint::Ordering;
+    return Checkpoint::Plan;
+}
+
+slicing_step_t checkpoint_resume_step(const Checkpoint checkpoint)
+{
+    switch (checkpoint) {
+    case Checkpoint::None:     return STEP_LAYER_HEIGHT;
+    case Checkpoint::Slicing:  return STEP_PRE_PERIMETER;
+    case Checkpoint::Print:    return STEP_ORDERING;
+    case Checkpoint::Ordering: return STEP_WIPETOWER;
+    case Checkpoint::Plan:     return STEP_GCODE;
+    case Checkpoint::GCode:    return STEP_NONE;
+    }
+    assert(false);
+    return STEP_LAYER_HEIGHT;
 }
 
 const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
@@ -112,8 +179,8 @@ const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
         {STEP_POST_INFILL, {STEP_SUPPORT_DEMAND}},
         {STEP_SUPPORT_DEMAND, {STEP_SUPPORT}},
         {STEP_SUPPORT, {STEP_SKIRT_BRIM}},
-        {STEP_SKIRT_BRIM, {STEP_PRE_GCODE}},
-        {STEP_PRE_GCODE, {STEP_ORDERING}},
+        {STEP_SKIRT_BRIM, {STEP_FINALIZE_SLICING}},
+        {STEP_FINALIZE_SLICING, {STEP_ORDERING}},
         {STEP_ORDERING, {STEP_WIPETOWER}},
         {STEP_WIPETOWER, {STEP_SUPPORT_SPOT}},
         {STEP_SUPPORT_SPOT, {STEP_LAYER_EXTRUSION_EDIT}},
@@ -251,7 +318,7 @@ bool is_known_builtin_step(slicing_step_t step)
     case STEP_POST_INFILL:
     case STEP_SUPPORT_DEMAND:
     case STEP_SUPPORT:
-    case STEP_PRE_GCODE:
+    case STEP_FINALIZE_SLICING:
     case STEP_CHECK_CONFLICT:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
@@ -294,7 +361,6 @@ raw_option_category option_category_for_step(slicing_step_t step)
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
     case GCODE_READER:
-    case STEP_PRE_GCODE:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
     case STEP_LAYER_STICHING:
@@ -763,7 +829,19 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
     if (!print.should_execute_step(step))
         return;
 
-    run_fn();
+    // Publish the running step to the host API freeze checks. The scope also
+    // resets it when the step throws, so later edits made outside the pipeline
+    // are never attributed to this step.
+    struct RunningStepScope
+    {
+        Print &print;
+        ~RunningStepScope() { print.set_running_step(STEP_NONE); }
+    };
+    print.set_running_step(step);
+    {
+        const RunningStepScope running_step_scope{print};
+        run_fn();
+    }
 
     // A step may observe cancellation cooperatively and return without
     // throwing. Do not publish such partial work as a completed step.
@@ -818,7 +896,7 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
                          GCodeProcessorResult *gcode_result = nullptr)
 {
     // This helper is shared by slice preparation and export. Print::process()
-    // stops it at STEP_PRE_GCODE, while Orchestrator::export_gcode() calls it
+    // stops it at STEP_FINALIZE_SLICING, while Orchestrator::export_gcode() calls it
     // again with only the export-side steps marked for execution.
     StepSupportDemand::State support_demand;
 
@@ -907,20 +985,26 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_SKIRT_BRIM, L("Generating skirt and brim"));
         StepSkirtBrim::clean_and_prepare(print);
         StepSkirtBrim::run_step(orchestrator, print);
+        mark_legacy_step_done(print, psSkirtBrim);
     });
     if (stop_after(STEP_SKIRT_BRIM, until)) return;
 
-    run_step_if_requested(print, STEP_PRE_GCODE, [&] {
-        begin_step(print, STEP_PRE_GCODE, L("Preparing G-code"));
-        StepPrepareGcode::clean_and_prepare(print);
-        StepPrepareGcode::run_step(orchestrator, print);
+    run_step_if_requested(print, STEP_FINALIZE_SLICING, [&] {
+        begin_step(print, STEP_FINALIZE_SLICING, L("Finalizing slicing"));
+        StepFinalizeSlicing::clean_and_prepare(print);
+        StepFinalizeSlicing::run_step(orchestrator, print);
     });
-    if (stop_after(STEP_PRE_GCODE, until)) return;
+    if (stop_after(STEP_FINALIZE_SLICING, until)) return;
 
     run_step_if_requested(print, STEP_ORDERING, [&] {
         begin_step(print, STEP_ORDERING, L("Ordering extrusions"));
         StepExtrusionOrdering::clean_and_prepare(print);
         StepExtrusionOrdering::run_step(orchestrator, print);
+        // Checkpoint::Ordering: keep a copy of the freshly ordered plan so a
+        // later plan-editor invalidation resumes here instead of re-ordering.
+        // A resume from this checkpoint skips STEP_ORDERING, so the retained
+        // copy is never replaced by an equivalent one.
+        print.save_ordering_checkpoint();
     });
     if (stop_after(STEP_ORDERING, until)) return;
 
@@ -1127,7 +1211,7 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
     run_layer_height_generation(orchestrator, print, path);
     run_slicing(orchestrator, print, path);
     run_post_slicing(orchestrator, print, path);
-    run_remaining_steps(orchestrator, print, path, STEP_PRE_GCODE);
+    run_remaining_steps(orchestrator, print, path, STEP_FINALIZE_SLICING);
 }
 
 std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
@@ -1143,6 +1227,9 @@ std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
     // A direct G-code invocation does not execute the three slice-prefix
     // steps. A continuation after run_slice() keeps the complete plan already
     // stored in Print and therefore preserves its original denominator.
+    // Resume from the latest valid checkpoint, restoring the ordered plan copy
+    // when plan editors are the first steps to replay.
+    print.prepare_checkpoint_resume();
     initialize_pipeline_progress(orchestrator, print, STEP_PRE_PERIMETER);
     std::string reader_plugin_id;
     run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnail_renderer,
