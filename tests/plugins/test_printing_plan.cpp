@@ -1343,6 +1343,75 @@ TEST_CASE("PrintingPlan deep clone owns independent trees, events and properties
           "; cloned script data");
 }
 
+TEST_CASE("Print ordering checkpoint survives only valid downstream edits",
+           "[plugins][printing][plan][checkpoint]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    PrintingPlan &working_plan = print.mutable_printing_plan();
+    working_plan.groups.emplace_back();
+    PrintingGroup &group = working_plan.groups.back();
+    group.plan_identity = working_plan.identity_token();
+    group.layers.emplace_back();
+    PrintingLayerGroup &layer = group.layers.back();
+    layer.plan_identity = working_plan.identity_token();
+    layer.tool_groups.emplace_back();
+    PrintingToolGroup &tool = layer.tool_groups.back();
+    tool.plan_identity = working_plan.identity_token();
+    tool.extruder_id = 0;
+    tool.extrusions.emplace_back();
+    tool.extrusions.back().root = test_path({Point(0, 0), Point(10, 0)});
+
+    const coordf_t original_length = tool.extrusions[0].root->length();
+    REQUIRE(print.save_ordering_checkpoint());
+    REQUIRE(print.has_ordering_checkpoint());
+
+    // A downstream editor mutates the active tree. The checkpoint remains the
+    // ordered source, and every restoration creates a fresh mutable work copy.
+    tool.extrusions[0].root->clear_content();
+    REQUIRE(print.restore_ordering_checkpoint());
+    REQUIRE(print.printing_plan() != nullptr);
+    CHECK(print.printing_plan()->groups[0].plan_identity ==
+          print.printing_plan()->identity_token());
+    CHECK(print.printing_plan()->groups[0].layers[0].tool_groups[0]
+              .extrusions[0].root->length() == original_length);
+
+    // G-code and plan-editor replay both preserve their ordered source.
+    print.request_replay_from(Steps::Checkpoint::Plan);
+    CHECK(print.has_ordering_checkpoint());
+    print.request_replay_from(Steps::Checkpoint::Ordering);
+    CHECK(print.has_ordering_checkpoint());
+    REQUIRE(print.restore_ordering_checkpoint());
+
+    // An upstream change makes the saved source stale and must release it.
+    print.request_replay_from(Steps::Checkpoint::Slicing);
+    CHECK_FALSE(print.has_ordering_checkpoint());
+    CHECK_FALSE(print.restore_ordering_checkpoint());
+
+    print.reset_printing_plan();
+    CHECK(print.printing_plan() == nullptr);
+}
+
+TEST_CASE("Print checkpoint preference controls ordered snapshot retention",
+           "[plugins][printing][plan][checkpoint]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    Print print;
+    print.mutable_printing_plan().groups.emplace_back();
+
+    print.set_keep_ordering_checkpoint(false);
+    CHECK_FALSE(print.save_ordering_checkpoint());
+    CHECK_FALSE(print.has_ordering_checkpoint());
+
+    print.set_keep_ordering_checkpoint(true);
+    REQUIRE(print.save_ordering_checkpoint());
+    CHECK(print.has_ordering_checkpoint());
+    print.set_keep_ordering_checkpoint(false);
+    CHECK_FALSE(print.has_ordering_checkpoint());
+}
+
 TEST_CASE("STEP_EXTRUSION_EDIT rebuilds scope events in plugin priority order",
           "[plugins][extrusion-edit][printing][plan][events]")
 {

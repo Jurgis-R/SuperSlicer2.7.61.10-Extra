@@ -396,6 +396,23 @@ construction and editing steps. `STEP_GCODE` receives a
 the way down. A G-code writer may inspect geometry and metadata, but it cannot
 cast the final-plan handle back to a mutable C++ wrapper or add properties.
 
+The host resumes an invalidated pipeline from fixed checkpoints:
+
+| Checkpoint | Kept and frozen                                   | Resumes at        |
+|------------|---------------------------------------------------|-------------------|
+| None       | nothing                                           | `STEP_LAYER_HEIGHT` |
+| Slicing    | layer heights and slices                          | `STEP_PRE_PERIMETER` |
+| Print      | the whole data tree, after `STEP_FINALIZE_SLICING` | `STEP_ORDERING`   |
+| Ordering   | optional private copy of the ordered plan         | `STEP_WIPETOWER`  |
+| Plan       | the finished plan                                 | `STEP_GCODE`      |
+| GCode      | everything                                        | nothing           |
+
+An invalidated step resumes from the last checkpoint before it. The Ordering
+copy is an implementation detail of `Print`: plugins receive only the active
+working plan, restored as a fresh clone, and cannot access the saved copy.
+Because the data tree is frozen from the Print checkpoint on, steps from
+`STEP_ORDERING` onwards, including wipe tower and support-spot detection, must
+write their results into the plan, never into objects, layers or islands.
 Every setting listed through
 `used_config_keys()` by an active plugin is constrained to invalidate no later
 than that plugin's owning plan step, so replay cannot preserve annotations

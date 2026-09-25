@@ -2349,10 +2349,10 @@ std::string Orchestrator::export_gcode(Print &print,
         return path;
     }
 
-    // Export can be requested multiple times after one slice. Force the
-    // export-side sub-pipeline to rebuild the PrintingPlan and rewrite the
-    // destination file, while leaving the expensive slicing data intact.
-    print.mark_step_and_dependents_for_execution(STEP_ORDERING);
+    // Export can be requested multiple times after one slice. Rewrite the
+    // destination without rebuilding the ordered plan unless a plan producer
+    // was independently invalidated: Checkpoint::Plan forces at least STEP_GCODE.
+    print.request_replay_from(Steps::Checkpoint::Plan);
     GCodeThumbnailRenderer thumbnail_renderer(print, std::move(thumbnail_cb));
     const std::string reader_plugin_id = Steps::StepPipeline::run_gcode(
         *this, print, path, thumbnail_renderer.c_renderer(), result);

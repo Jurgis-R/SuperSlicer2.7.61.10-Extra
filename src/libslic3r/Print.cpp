@@ -202,6 +202,50 @@ Printing::PrintingPlan &Print::mutable_printing_plan()
 void Print::reset_printing_plan()
 {
     m_printing_plan.reset();
+    clear_ordering_checkpoint();
+}
+
+void Print::set_keep_ordering_checkpoint(const bool keep)
+{
+    if (m_keep_ordering_checkpoint == keep)
+        return;
+    m_keep_ordering_checkpoint = keep;
+    if (!keep)
+        clear_ordering_checkpoint();
+}
+
+bool Print::save_ordering_checkpoint()
+{
+    if (!m_keep_ordering_checkpoint || m_printing_plan == nullptr) {
+        clear_ordering_checkpoint();
+        return false;
+    }
+
+    m_ordering_checkpoint = m_printing_plan->clone();
+    return true;
+}
+
+bool Print::has_ordering_checkpoint() const
+{
+    return m_keep_ordering_checkpoint && m_ordering_checkpoint != nullptr;
+}
+
+bool Print::restore_ordering_checkpoint()
+{
+    if (!has_ordering_checkpoint())
+        return false;
+
+    // Clone rather than consume the copy so another invalidation can restore
+    // the same checkpoint after this working copy has been edited.
+    m_printing_plan = m_ordering_checkpoint->clone();
+    return true;
+}
+
+void Print::clear_ordering_checkpoint()
+{
+    // The copy's layer and region-island pointers borrow from this Print.
+    // Release it before its source objects can be replaced.
+    m_ordering_checkpoint.reset();
 }
 
 void Print::set_gcode_reader_source_path(std::string path)
@@ -404,6 +448,93 @@ void Print::clear() {
     m_region_registry.clear();
 }
 
+void Print::request_replay_from(const Steps::Checkpoint checkpoint)
+{
+    if (checkpoint == Steps::Checkpoint::GCode)
+        return;
+    this->request_steps_after(checkpoint);
+
+    // The GUI still reads historical PrintState milestones. Keep those states
+    // aligned with the checkpoint without using numeric step ordering.
+    for (PrintObjectUPtr &object : m_objects) {
+        switch (checkpoint) {
+        case Steps::Checkpoint::None:
+            object->invalidate_all_steps_direct();
+            break;
+        case Steps::Checkpoint::Slicing:
+            object->invalidate_steps_direct({
+                posPerimeters, posPrepareInfill, posInfill, posIroning,
+                posSupportMaterial, psAlertWhenSupportsNeeded, psSkirtBrim,
+                psToolOrdering, psWipeTower, psCheckConflict,
+                posSupportSpotsSearch, posEstimateCurledExtrusions,
+                posCalculateOverhangingPerimeters, posSimplifyPath,
+                psGCodeExport });
+            break;
+        case Steps::Checkpoint::Print:
+            object->invalidate_steps_direct({
+                psToolOrdering, psWipeTower, psCheckConflict,
+                posSupportSpotsSearch, posEstimateCurledExtrusions,
+                posCalculateOverhangingPerimeters, posSimplifyPath,
+                psGCodeExport });
+            break;
+        case Steps::Checkpoint::Ordering:
+            object->invalidate_steps_direct({
+                psWipeTower, posSupportSpotsSearch, posEstimateCurledExtrusions,
+                posCalculateOverhangingPerimeters, posSimplifyPath,
+                psGCodeExport });
+            break;
+        case Steps::Checkpoint::Plan:
+            object->invalidate_step_direct(psGCodeExport);
+            break;
+        case Steps::Checkpoint::GCode:
+            break;
+        }
+    }
+}
+
+Steps::Checkpoint Print::current_checkpoint() const
+{
+    for (const slicing_step_t step : Steps::execution_order()) {
+        if (!should_execute_step(step))
+            continue;
+        const Steps::Checkpoint checkpoint = Steps::checkpoint_before_step(step);
+        // Both plan checkpoints need their plan: the retained Ordering copy, or
+        // the live plan that STEP_GCODE reads. Without it, rebuild the plan
+        // from the frozen Print data tree.
+        if (checkpoint == Steps::Checkpoint::Ordering && !has_ordering_checkpoint())
+            return Steps::Checkpoint::Print;
+        if (checkpoint == Steps::Checkpoint::Plan && m_printing_plan == nullptr)
+            return Steps::Checkpoint::Print;
+        return checkpoint;
+    }
+    return Steps::Checkpoint::GCode;
+}
+
+void Print::prepare_checkpoint_resume()
+{
+    const Steps::Checkpoint checkpoint = current_checkpoint();
+    if (checkpoint == Steps::Checkpoint::GCode)
+        return;
+    // Request every step after the checkpoint: an interrupted run or a missing
+    // plan may have left some of them marked as executed.
+    this->request_steps_after(checkpoint);
+    if (checkpoint == Steps::Checkpoint::Ordering) {
+        const bool restored = this->restore_ordering_checkpoint();
+        assert(restored);
+        (void)restored;
+    }
+}
+
+void Print::request_steps_after(const Steps::Checkpoint checkpoint)
+{
+    assert(checkpoint != Steps::Checkpoint::GCode);
+    // Steps from STEP_ORDERING rebuild the plan, and steps before it may
+    // replace the layers and islands that the plan borrows.
+    if (checkpoint <= Steps::Checkpoint::Print)
+        this->reset_printing_plan();
+    this->mark_step_and_dependents_for_execution(Steps::checkpoint_resume_step(checkpoint));
+}
+
 void Print::mark_step_for_execution(slicing_step_t step)
 {
     if (step == STEP_NONE)
@@ -438,6 +569,7 @@ void Print::mark_step_executed(slicing_step_t step)
 void Print::reset_step_execution_plan_all()
 {
     m_pipeline_progress.reset();
+    clear_ordering_checkpoint();
     m_steps_to_execute.clear();
     for (slicing_step_t step : Steps::execution_order())
         m_steps_to_execute.insert(step);
@@ -467,16 +599,13 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
     for (const t_config_option_key &opt_key : opt_keys) {
         const ConfigOptionDef *def = PrintConfigDef::instance().get(opt_key);
         if (def == nullptr) {
-            this->reset_step_execution_plan_all();
+            this->request_replay_from(Steps::Checkpoint::None);
             invalidated = true;
             continue;
         }
         if (def->invalidates_step == STEP_NONE)
             continue;
-        if (def->invalidates_step == STEP_ANY)
-            this->reset_step_execution_plan_all();
-        else
-            this->mark_step_and_dependents_for_execution(def->invalidates_step);
+        this->request_replay_from(Steps::checkpoint_before_step(def->invalidates_step));
         invalidated = true;
     }
     if (invalidated)
@@ -489,7 +618,9 @@ bool Print::invalidate_step(slicing_step_t step)
     // Deprecated legacy invalidation. Keep it wired to the new execution plan
     // while old callers still invalidate historical PrintObject/PrintState
     // milestones directly.
-    this->mark_step_and_dependents_for_execution(step);
+    if (step == STEP_ANY ||
+        Steps::execution_index(step) < Steps::execution_order().size())
+        this->request_replay_from(Steps::checkpoint_before_step(step));
 
     bool invalidated = false;
     if (is_print_object_step(step)) {
@@ -500,11 +631,16 @@ bool Print::invalidate_step(slicing_step_t step)
 
     for (PrintObjectUPtr &object : m_objects)
         invalidated |= object->invalidate_step_direct(step);
-    // Propagate print-level steps downstream in the slicing pipeline.
-    for (slicing_step_t print_step : ordered_print_steps())
-        if (print_step > step)
+    // Propagate legacy print milestones by their declared order. ABI numeric
+    // values contain gaps and do not define pipeline precedence.
+    const PrintStepArray &print_steps = ordered_print_steps();
+    const PrintStepArray::const_iterator current =
+        std::find(print_steps.begin(), print_steps.end(), step);
+    if (current != print_steps.end())
+        for (PrintStepArray::const_iterator downstream = current + 1;
+             downstream != print_steps.end(); ++downstream)
             for (PrintObjectUPtr &object : m_objects)
-                invalidated |= object->invalidate_step_direct(print_step);
+                invalidated |= object->invalidate_step_direct(*downstream);
     if (step != psGCodeExport)
         for (PrintObjectUPtr &object : m_objects)
             invalidated |= object->invalidate_step_direct(psGCodeExport);

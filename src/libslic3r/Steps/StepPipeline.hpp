@@ -7,6 +7,7 @@
 #define steps_steppipeline_hpp_
 
 #include "libslic3r/Api/plugin/c/slic3r_gcode_thumbnail.h"
+#include <cstdint>
 #include <map>
 #include <string>
 #include <utility>
@@ -26,6 +27,28 @@ class Print;
 class PrintObject;
 
 namespace Steps {
+
+// Checkpoints are the fixed, host-owned points from which the pipeline can
+// resume. Each one names the data that stays valid when every later step is
+// replayed. They are ordered: an earlier checkpoint keeps less data.
+enum class Checkpoint : uint8_t
+{
+    // Nothing is reusable: slice everything from STEP_LAYER_HEIGHT.
+    None,
+    // Layer heights and slices (STEP_LAYER_HEIGHT to STEP_POST_SLICING) are
+    // kept and frozen; the pipeline resumes at STEP_PRE_PERIMETER.
+    Slicing,
+    // The whole Print data tree (objects, layers, regions, islands) is kept
+    // and frozen after STEP_FINALIZE_SLICING; resumes at STEP_ORDERING.
+    Print,
+    // Optional deep copy of the PrintingPlan taken right after STEP_ORDERING;
+    // resumes at STEP_WIPETOWER from a fresh clone of that copy.
+    Ordering,
+    // The finished PrintingPlan, read-only for STEP_GCODE; resumes at STEP_GCODE.
+    Plan,
+    // Every step has run. Asking to resume here forces nothing.
+    GCode
+};
 
 struct StepExclusiveGroup
 {
@@ -97,6 +120,15 @@ bool executes_before(slicing_step_t lhs, slicing_step_t rhs);
 // value replays both its original producer and the consumer. Apart from
 // STEP_ANY and STEP_NONE, both steps must belong to execution_order().
 slicing_step_t tightened_invalidation_step(slicing_step_t current, slicing_step_t consumer_step);
+
+// Return the latest checkpoint that does not contain the output of step, that
+// is the checkpoint to resume from when step must run again. STEP_ANY maps to
+// Checkpoint::None. A step outside execution_order() is a caller error; it
+// asserts and conservatively maps to Checkpoint::None.
+Checkpoint checkpoint_before_step(slicing_step_t step);
+// First step executed when resuming from checkpoint, or STEP_NONE for
+// Checkpoint::GCode, which has nothing left to run.
+slicing_step_t checkpoint_resume_step(Checkpoint checkpoint);
 
 // Direct dependency graph used by Print's new invalidation plan. If A maps to
 // B, invalidating A also asks B to run on the next process().

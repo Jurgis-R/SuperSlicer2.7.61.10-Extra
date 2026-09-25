@@ -126,6 +126,43 @@ slicing_step_t tightened_invalidation_step(const slicing_step_t current,
     return executes_before(consumer_step, current) ? consumer_step : current;
 }
 
+Checkpoint checkpoint_before_step(const slicing_step_t step)
+{
+    if (step == STEP_ANY)
+        return Checkpoint::None;
+
+    const size_t step_index = execution_index(step);
+    assert(step_index < execution_order().size());
+    if (step_index >= execution_order().size())
+        return Checkpoint::None;
+
+    // Each checkpoint sits right before its resume step, so the latest
+    // checkpoint whose resume step is not after `step` is the one to use.
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Slicing)))
+        return Checkpoint::None;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Print)))
+        return Checkpoint::Slicing;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Ordering)))
+        return Checkpoint::Print;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Plan)))
+        return Checkpoint::Ordering;
+    return Checkpoint::Plan;
+}
+
+slicing_step_t checkpoint_resume_step(const Checkpoint checkpoint)
+{
+    switch (checkpoint) {
+    case Checkpoint::None:     return STEP_LAYER_HEIGHT;
+    case Checkpoint::Slicing:  return STEP_PRE_PERIMETER;
+    case Checkpoint::Print:    return STEP_ORDERING;
+    case Checkpoint::Ordering: return STEP_WIPETOWER;
+    case Checkpoint::Plan:     return STEP_GCODE;
+    case Checkpoint::GCode:    return STEP_NONE;
+    }
+    assert(false);
+    return STEP_LAYER_HEIGHT;
+}
+
 const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
 {
     static const std::map<slicing_step_t, std::vector<slicing_step_t>> dependents {
@@ -951,6 +988,11 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_ORDERING, L("Ordering extrusions"));
         StepExtrusionOrdering::clean_and_prepare(print);
         StepExtrusionOrdering::run_step(orchestrator, print);
+        // Checkpoint::Ordering: keep a copy of the freshly ordered plan so a
+        // later plan-editor invalidation resumes here instead of re-ordering.
+        // A resume from this checkpoint skips STEP_ORDERING, so the retained
+        // copy is never replaced by an equivalent one.
+        print.save_ordering_checkpoint();
     });
     if (stop_after(STEP_ORDERING, until)) return;
 
@@ -1173,6 +1215,9 @@ std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
     // A direct G-code invocation does not execute the three slice-prefix
     // steps. A continuation after run_slice() keeps the complete plan already
     // stored in Print and therefore preserves its original denominator.
+    // Resume from the latest valid checkpoint, restoring the ordered plan copy
+    // when plan editors are the first steps to replay.
+    print.prepare_checkpoint_resume();
     initialize_pipeline_progress(orchestrator, print, STEP_PRE_PERIMETER);
     std::string reader_plugin_id;
     run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnail_renderer,

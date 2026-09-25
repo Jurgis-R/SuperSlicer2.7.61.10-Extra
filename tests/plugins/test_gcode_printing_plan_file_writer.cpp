@@ -820,6 +820,18 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
     Model model;
     Print print;
     Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    // Count the steps that really ran, to check which checkpoint each replay
+    // resumed from.
+    uint32_t finalize_slicing_count = 0;
+    uint32_t ordering_count = 0;
+    print.status().set_callback([&](const PrintBase::SlicingStatus &status) {
+        if ((status.flags & PrintBase::SlicingStatus::MAIN_STATE) == 0)
+            return;
+        if (status.main_text == "Finalizing slicing")
+            ++finalize_slicing_count;
+        if (status.main_text == "Ordering extrusions")
+            ++ordering_count;
+    });
 
     const boost::filesystem::path output_path = temporary_gcode_path();
     remove_output_pair(output_path);
@@ -830,18 +842,57 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         CHECK(generated_path == output_path.string());
         REQUIRE(boost::filesystem::exists(output_path));
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 1);
+        remove_output_pair(output_path);
+
+        // The read-only G-code stage reuses the final plan directly.
+        const Printing::PrintingPlan *final_plan = print.printing_plan();
+        REQUIRE(final_plan != nullptr);
+        const std::string replayed_gcode_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(replayed_gcode_path == output_path.string());
+        CHECK(print.printing_plan() == final_plan);
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        remove_output_pair(output_path);
+
+        // A plan-editor change resumes from the ordering checkpoint. Background
+        // slicing stops before plan replay, which belongs to export.
+        print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+        const Printing::PrintingPlan *plan_before_editor_replay = print.printing_plan();
+        print.process();
+        CHECK(print.printing_plan() == plan_before_editor_replay);
+        const std::string replayed_editor_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(replayed_editor_path == output_path.string());
+        CHECK(print.printing_plan() != plan_before_editor_replay);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 1);
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
         remove_output_pair(output_path);
 
         // A selector change can invalidate STEP_ORDERING after the downstream
         // layer extrusion edits were already marked done. Rebuilding the plan
         // must force those edits again so STEP_GCODE never sees speedless roots.
-        print.mark_step_for_execution(STEP_ORDERING);
-        print.mark_step_for_execution(STEP_GCODE);
+        print.request_replay_from(Steps::checkpoint_before_step(STEP_ORDERING));
         const std::string regenerated_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
         CHECK(regenerated_path == output_path.string());
         REQUIRE(boost::filesystem::exists(output_path));
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 2);
+
+        // Without the ordered checkpoint, editor replay rebuilds Ordering from
+        // the retained extrusion trees and then reruns all later steps.
+        print.set_keep_ordering_checkpoint(false);
+        print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+        const std::string replayed_ordering_path =
+            orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        CHECK(replayed_ordering_path == output_path.string());
+        CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 3);
     } catch (...) {
         remove_output_pair(output_path);
         orchestrator.set_plugin_active(cost_plugin, cost_was_active);

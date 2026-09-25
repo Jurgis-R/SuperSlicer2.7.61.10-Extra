@@ -23,6 +23,7 @@
 #define slic3r_Print_hpp_
 
 #include <atomic>
+#include <cstdint>
 #include <ctime>
 #include <functional>
 #include <map>
@@ -59,6 +60,9 @@ struct PrintingPlan;
 }
 namespace ApiInternal {
 struct PrintAccess;
+}
+namespace Steps {
+enum class Checkpoint : uint8_t;
 }
 
 struct WipeTowerData
@@ -198,6 +202,7 @@ struct ConflictResult
 };
 
 using ConflictResultOpt = std::optional<ConflictResult>;
+
 // The complete print tray with possibly multiple objects.
 class Print : public PrintBase
 {
@@ -311,6 +316,17 @@ public:
     const Printing::PrintingPlan *printing_plan() const { return m_printing_plan.get(); }
     Printing::PrintingPlan &mutable_printing_plan();
     void reset_printing_plan();
+    // Control whether Checkpoint::Ordering is available: when enabled, a deep
+    // copy of the plan is kept after STEP_ORDERING so plan editors can replay
+    // without re-ordering. Disabling it releases the copy.
+    void set_keep_ordering_checkpoint(bool keep);
+    bool keep_ordering_checkpoint() const { return m_keep_ordering_checkpoint; }
+    // Store, query, restore or release the Checkpoint::Ordering plan copy.
+    // Restoring clones the copy so it can be restored again later.
+    bool save_ordering_checkpoint();
+    bool has_ordering_checkpoint() const;
+    bool restore_ordering_checkpoint();
+    void clear_ordering_checkpoint();
     // Path of the finished text stream used by GCodeReader and GCodeViewer.
     // The producer owns the file; Print owns only this copied UTF-8 path.
     const std::string &gcode_reader_source_path() const { return m_gcode_reader_source_path; }
@@ -342,9 +358,23 @@ public:
     //put this in public to be accessible for tests, it was in private before.
     bool                invalidate_state_by_config_options(const ConfigOptionResolver& new_config, const std::vector<t_config_option_key> &opt_keys);
 
-    // New plugin pipeline execution plan. mark_step_and_dependents_for_execution()
-    // asks the next process() call to re-run one producer step and every
-    // downstream step listed in Steps::step_dependents().
+    // Force the next run to replay every step after checkpoint, even when that
+    // checkpoint is still valid. An earlier invalid checkpoint still wins, since
+    // its steps are already requested. Used by config invalidation (through
+    // Steps::checkpoint_before_step()) and by the GUI/orchestrator, for example
+    // Checkpoint::Plan to rewrite the G-code. Checkpoint::GCode forces nothing.
+    // Also invalidates the matching historical PrintState milestones, which may
+    // call the cancel callback: never call it from inside the pipeline.
+    void                request_replay_from(Steps::Checkpoint checkpoint);
+    // Latest checkpoint whose data is valid: the checkpoint just before the
+    // first requested step, moved back to Checkpoint::Print when its plan
+    // (Ordering copy or live Plan) is missing.
+    Steps::Checkpoint   current_checkpoint() const;
+    // Pipeline-only: request every step after current_checkpoint() and put the
+    // live plan in the state that checkpoint describes (restored Ordering copy,
+    // or released plan for Checkpoint::Print and earlier).
+    void                prepare_checkpoint_resume();
+    // Low-level scheduling primitives; they do not map steps to checkpoints.
     void                mark_step_for_execution(slicing_step_t step);
     void                mark_step_and_dependents_for_execution(slicing_step_t step);
     bool                should_execute_step(slicing_step_t step) const;
@@ -397,6 +427,10 @@ private:
     //void                _make_wipe_tower();
     void                finalize_first_layer_convex_hull();
     void                alert_when_supports_needed();
+    // Request the resume step of checkpoint and all its dependents. From
+    // Checkpoint::Print and earlier, the live plan and its Ordering copy borrow
+    // data that will be rebuilt, so both are released.
+    void                request_steps_after(Steps::Checkpoint checkpoint);
 
     // Islands of objects and their supports extruded at the 1st layer.
     Polygons            first_layer_islands() const;
@@ -446,6 +480,10 @@ private:
     // Following section will be consumed by the GCodeGenerator.
     std::vector<ToolOrdering>               m_tool_orderings;
     std::unique_ptr<Printing::PrintingPlan> m_printing_plan;
+    // Checkpoint::Ordering copy. It owns its plan trees and metadata but
+    // borrows source objects, layers and region-islands from this Print.
+    std::unique_ptr<Printing::PrintingPlan> m_ordering_checkpoint;
+    bool                                    m_keep_ordering_checkpoint = true;
     std::string                             m_gcode_reader_source_path;
     mutable std::mutex                      m_wipe_tower_data_mutex;
     WipeTowerData                           m_wipe_tower_data {this};
