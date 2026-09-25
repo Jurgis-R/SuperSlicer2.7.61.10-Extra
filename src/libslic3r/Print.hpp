@@ -374,6 +374,14 @@ public:
     // live plan in the state that checkpoint describes (restored Ordering copy,
     // or released plan for Checkpoint::Print and earlier).
     void                prepare_checkpoint_resume();
+    // Pipeline step currently running, or STEP_NONE outside the pipeline.
+    slicing_step_t      running_step() const { return m_running_step; }
+    void                set_running_step(slicing_step_t step) { m_running_step = step; }
+    // Checkpoint freeze contract: data owned by the steps up to
+    // last_editor_step may be edited only by those steps, or outside the
+    // pipeline (apply, tests). Host API debug asserts use this, for example
+    // STEP_POST_SLICING for slices and STEP_FINALIZE_SLICING for the data tree.
+    bool                running_step_may_edit(slicing_step_t last_editor_step) const;
     // Low-level scheduling primitives; they do not map steps to checkpoints.
     void                mark_step_for_execution(slicing_step_t step);
     void                mark_step_and_dependents_for_execution(slicing_step_t step);
@@ -484,6 +492,9 @@ private:
     // borrows source objects, layers and region-islands from this Print.
     std::unique_ptr<Printing::PrintingPlan> m_ordering_checkpoint;
     bool                                    m_keep_ordering_checkpoint = true;
+    // Written by the pipeline thread between steps only; read by host API
+    // debug checks while the step runs.
+    slicing_step_t                          m_running_step = STEP_NONE;
     std::string                             m_gcode_reader_source_path;
     mutable std::mutex                      m_wipe_tower_data_mutex;
     WipeTowerData                           m_wipe_tower_data {this};

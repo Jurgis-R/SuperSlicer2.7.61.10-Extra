@@ -829,7 +829,19 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
     if (!print.should_execute_step(step))
         return;
 
-    run_fn();
+    // Publish the running step to the host API freeze checks. The scope also
+    // resets it when the step throws, so later edits made outside the pipeline
+    // are never attributed to this step.
+    struct RunningStepScope
+    {
+        Print &print;
+        ~RunningStepScope() { print.set_running_step(STEP_NONE); }
+    };
+    print.set_running_step(step);
+    {
+        const RunningStepScope running_step_scope{print};
+        run_fn();
+    }
 
     // A step may observe cancellation cooperatively and return without
     // throwing. Do not publish such partial work as a completed step.

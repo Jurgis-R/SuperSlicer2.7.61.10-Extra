@@ -525,6 +525,12 @@ void Print::prepare_checkpoint_resume()
     }
 }
 
+bool Print::running_step_may_edit(const slicing_step_t last_editor_step) const
+{
+    return m_running_step == STEP_NONE ||
+           !Steps::executes_before(last_editor_step, m_running_step);
+}
+
 void Print::request_steps_after(const Steps::Checkpoint checkpoint)
 {
     assert(checkpoint != Steps::Checkpoint::GCode);

@@ -408,6 +408,14 @@ Borrow the Layer's mutable plugin-property container. Metadata remains writable
 even when me is const; this does not make the Layer geometry mutable. The
 container is owned by the Layer, must not be freed and dies with that Layer.
 See the Plugin Properties section for layout and threading rules.
+
+Checkpoint freeze: the data tree, including the properties of objects, layers,
+regions, islands and region-islands, is frozen once STEP_FINALIZE_SLICING has
+run. Steps from STEP_ORDERING onwards may read these properties but must write
+their results into the PrintingPlan instead. The same contract applies to every
+*_get_properties() accessor of this header. It is not enforced yet because these
+accessors also serve reads; a later API split into const and mutable variants
+will allow the host to check it.
 */
 SLIC3R_HOST_API plugin_property_container_handle *layer_get_properties(const layer_handle *me);
 
@@ -643,7 +651,8 @@ be freed or retained after its Object dies.
 */
 SLIC3R_HOST_API config_handle *object_get_config_mutable(object_handle *me);
 SLIC3R_HOST_API const config_handle *object_get_config(const object_handle *me);
-/* Borrow the Object's mutable metadata container, even from a const Object view. */
+/* Borrow the Object's mutable metadata container, even from a const Object view.
+   Frozen after STEP_FINALIZE_SLICING, see layer_get_properties(). */
 SLIC3R_HOST_API plugin_property_container_handle *object_get_properties(const object_handle *me);
 
 /* Copy the UTF-8 ModelObject name. Print-level auxiliary Objects have no
@@ -745,7 +754,8 @@ automatically filled; callers should write raw LayerRegion slices and then call
 layer_recompute_slices_and_islands_from_layer_regions(). The returned handle is
 borrowed from the Object. Null Object, non-positive height or non-positive
 print_z returns null. Insertion keeps print-Z order and may change indices of
-existing auxiliary layers.
+existing auxiliary layers. Only steps up to STEP_FINALIZE_SLICING may add or
+remove auxiliary layers (debug builds assert it).
 */
 SLIC3R_HOST_API layer_handle *object_add_auxiliary_layer(const object_handle *me,
                                                          coord_t height,
@@ -757,6 +767,7 @@ object_add_auxiliary_layer(). Returns non-zero on success and immediately
 invalidates layer plus every descendant handle borrowed from it. Other
 auxiliary Layer objects remain alive, but indices after the removed position
 shift down by one. Null, foreign or already removed handles return zero.
+Only steps up to STEP_FINALIZE_SLICING may call it (debug builds assert it).
 */
 SLIC3R_HOST_API int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *layer);
 
@@ -784,7 +795,9 @@ SLIC3R_HOST_API expolygon_collection_handle *layer_borrow_mutable_slices(layer_h
 /*
 Borrow mutable raw slices from a LayerRegion, including through a const region
 view. Null returns null. Editing invalidates element handles and leaves the
-owning Layer's merged slices and islands stale.
+owning Layer's merged slices and islands stale. Slices of normal layers are
+frozen after STEP_POST_SLICING, those of auxiliary layers after
+STEP_FINALIZE_SLICING (debug builds assert it).
 */
 SLIC3R_HOST_API expolygon_collection_handle *layer_region_borrow_mutable_slices(const layer_region_handle *me);
 /*
@@ -862,7 +875,8 @@ longer. Do not free them. A null Print returns an empty list.
 SLIC3R_HOST_API const_strings_t print_records_channels(const print_handle *me);
 /* Borrow the channel configuration, or return null if absent. */
 SLIC3R_HOST_API const config_handle *print_records_get(const print_handle *me, const char *channel);
-/* Create or borrow the mutable channel configuration. */
+/* Create or borrow the mutable channel configuration. Records are frozen
+   after STEP_FINALIZE_SLICING (debug builds assert it). */
 SLIC3R_HOST_API config_handle *print_records_get_or_add(const print_handle *me, const char *channel);
 /* Remove the channel and invalidate its previously returned config handle. */
 SLIC3R_HOST_API int32_t print_records_remove(const print_handle *me, const char *channel);
