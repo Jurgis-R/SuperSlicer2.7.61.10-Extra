@@ -688,6 +688,10 @@ int CLI::run(int argc, char **argv)
                         fff_print.auto_assign_extruders(&mo);
                 }
                 print->apply(model, m_print_config);
+                if (printer_technology == ptFFF && m_app_config != nullptr) {
+                    fff_print.set_keep_ordering_checkpoint(
+                        m_app_config->get_bool("keep_ordering_checkpoint"));
+                }
                 std::pair<PrintBase::PrintValidationError, std::string> err = print->validate();
                 if (err.first != PrintBase::PrintValidationError::pveNone) {
                     boost::nowide::cerr << err.second << std::endl;

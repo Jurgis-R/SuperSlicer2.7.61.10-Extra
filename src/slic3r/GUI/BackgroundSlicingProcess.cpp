@@ -449,6 +449,15 @@ bool BackgroundSlicingProcess::start()
 		// The print is empty (no object in Model, or all objects are out of the print bed).
 		return false;
 
+	// Read the preference on the UI thread, then apply it only while the worker is
+	// idle under m_mutex. The core pipeline stores the policy on Print so it never
+	// accesses GUI configuration from the background thread.
+	const bool has_ordering_checkpoint_preference =
+		m_print == m_fff_print && m_fff_print != nullptr &&
+		GUI::wxGetApp().app_config != nullptr;
+	const bool keep_ordering_checkpoint = has_ordering_checkpoint_preference &&
+		GUI::wxGetApp().app_config->get_bool("keep_ordering_checkpoint");
+
 	std::unique_lock<std::mutex> lck(m_mutex);
 	if (m_state == STATE_INITIAL) {
 		// The worker thread is not running yet. Start it.
@@ -469,6 +478,8 @@ bool BackgroundSlicingProcess::start()
 		return false;
 	if (! this->idle())
 		throw Slic3r::RuntimeError("Cannot start a background task, the worker thread is not idle.");
+	if (has_ordering_checkpoint_preference)
+		m_fff_print->set_keep_ordering_checkpoint(keep_ordering_checkpoint);
 	m_state = STATE_STARTED;
 	m_print->set_cancel_callback([this](){ this->stop_internal(); });
 	lck.unlock();
