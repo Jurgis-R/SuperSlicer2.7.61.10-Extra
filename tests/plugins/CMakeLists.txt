@@ -31,6 +31,7 @@ add_executable(${_TEST_NAME}_tests
     test_printing_entity_property_traversal.cpp
     test_plugin_repository.cpp
     test_plugin_translation_catalogs.cpp
+    test_python_plugin_clear.cpp
     test_repository_updater.cpp
     test_seam_placer_cost.cpp
     test_seam_placer_fixed_direction.cpp
@@ -292,6 +293,11 @@ if (TARGET python_plugin_loader)
             "${CMAKE_CURRENT_SOURCE_DIR}/pure_python_package"
             "${_python_test_runtime_directory}/plugins/python.external.package_root"
         ${_python_plugin_copy_commands}
+        COMMAND "${CMAKE_COMMAND}" -E remove_directory
+            "${_python_test_runtime_directory}/plugins/python.test.clear.invalid_registration"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/invalid_python_clear_package"
+            "${_python_test_runtime_directory}/plugins/python.test.clear.invalid_registration"
         COMMENT "Copy Python plugin runtime to plugin tests"
         VERBATIM
     )

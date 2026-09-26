@@ -722,7 +722,7 @@ TEST_CASE("Default brim generator can publish object-owned brim", "[plugins][ski
     REQUIRE(region_island.has_extrusion(LayerRegionIsland::PERIMETERS));
     CHECK_FALSE(region_island.extrusion(LayerRegionIsland::PERIMETERS).empty());
 
-    Steps::StepSkirtBrim::clean_and_prepare(prepared.print);
+    Steps::StepSkirtBrim::clear(prepared.print);
     CHECK(object.brim().empty());
     CHECK(object_brim_auxiliary_layers(object).empty());
 }

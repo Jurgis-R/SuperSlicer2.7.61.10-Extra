@@ -2,8 +2,12 @@
 
 #include <atomic>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "plugin_test_helpers.hpp"
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
@@ -16,6 +20,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/Steps/StepRunner.hpp"
+#include "libslic3r/Utils.hpp"
 
 namespace {
 
@@ -233,6 +238,82 @@ void register_service_plugin(Orchestrator &orchestrator, ServicePluginState &sta
     instance.ctx = &state;
     instance.vt = service_vtable();
     REQUIRE(orchestrator.register_plugin(instance));
+}
+
+class ClearTrackingPlugin final : public slic3r_api::PluginBase
+{
+public:
+    explicit ClearTrackingPlugin(orchestrator_handle *orchestrator,
+                                 const char *id = "slic3r.test.clear_tracking",
+                                 slicing_step_t step = STEP_POST_SLICING)
+        : PluginBase(orchestrator), m_id(id), m_step(step) {}
+
+    void reset()
+    {
+        m_setup_count = 0;
+        m_clear_count = 0;
+        m_setup_print = nullptr;
+        m_clear_print = nullptr;
+        m_storage_was_valid = false;
+        m_fail_next_clear = false;
+        m_clear_code = PLUGIN_ERROR_OK;
+    }
+
+    void fail_next_clear() { m_fail_next_clear = true; }
+    void set_clear_code(int32_t code) { m_clear_code = code; }
+    uint32_t setup_count() const { return m_setup_count.load(); }
+    uint32_t clear_count() const { return m_clear_count.load(); }
+    const print_handle *setup_print() const { return m_setup_print.load(); }
+    const print_handle *clear_print() const { return m_clear_print.load(); }
+    bool storage_was_valid() const { return m_storage_was_valid.load(); }
+
+private:
+    const char *id_impl() const noexcept override { return m_id; }
+    const char *name_impl() const noexcept override { return "Clear tracking plugin"; }
+    slicing_step_t step_impl() const noexcept override { return m_step; }
+    const char *const *dependencies_impl() const noexcept override
+    {
+        static const char *const dependencies[] = { nullptr };
+        return dependencies;
+    }
+    int32_t priority_impl() const noexcept override { return 0; }
+    bool clear_enabled_impl() const noexcept override { return true; }
+
+    void setup_impl(const plugin_run_context *run_ctx, uint32_t) const override
+    {
+        m_setup_print = run_ctx->print;
+        ++m_setup_count;
+    }
+
+    int32_t clear_impl(const print_handle *print, storage_handle *storage) const override
+    {
+        m_clear_print = print;
+        m_storage_was_valid = storage != nullptr;
+        ++m_clear_count;
+        if (m_fail_next_clear.exchange(false))
+            throw std::runtime_error("intentional clear failure");
+        return m_clear_code;
+    }
+
+    void run_impl(const plugin_run_context *) const override {}
+
+    const char *m_id;
+    slicing_step_t m_step;
+    int32_t m_clear_code = PLUGIN_ERROR_OK;
+    mutable std::atomic<bool> m_fail_next_clear { false };
+    mutable std::atomic<uint32_t> m_setup_count { 0 };
+    mutable std::atomic<uint32_t> m_clear_count { 0 };
+    mutable std::atomic<const print_handle *> m_setup_print { nullptr };
+    mutable std::atomic<const print_handle *> m_clear_print { nullptr };
+    mutable std::atomic<bool> m_storage_was_valid { false };
+};
+
+ClearTrackingPlugin &clear_tracking_plugin(Orchestrator &orchestrator)
+{
+    static ClearTrackingPlugin plugin(reinterpret_cast<orchestrator_handle *>(&orchestrator));
+    if (orchestrator.get_plugin("slic3r.test.clear_tracking") == nullptr)
+        REQUIRE(orchestrator.register_plugin(plugin.c_instance()));
+    return plugin;
 }
 
 void ensure_service_plugins_registered()
@@ -657,6 +738,94 @@ TEST_CASE("Generic plugin execution preserves its two-phase barrier",
     CHECK(g_service_low.expected_run_count == 0);
 }
 
+TEST_CASE("Clear callbacks track Print state and checkpoint boundaries",
+          "[plugins][orchestrator][clear][checkpoint]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    ClearTrackingPlugin &probe = clear_tracking_plugin(orchestrator);
+    ActivePluginGuard active(orchestrator, {"slic3r.test.clear_tracking"});
+    Plugin *plugin = orchestrator.get_plugin("slic3r.test.clear_tracking");
+    REQUIRE(plugin != nullptr);
+    probe.reset();
+
+    Print print;
+    Print other_print;
+    CHECK(orchestrator.execute_plugin(*plugin, &print, nullptr, 0, true) ==
+          RAW_PLUGIN_EXECUTION_SUCCESS);
+    CHECK(probe.setup_count() == 1);
+    CHECK(probe.setup_print() == reinterpret_cast<const print_handle *>(&print));
+    CHECK(print.plugin_cleanup_participants().size() == 1);
+    CHECK(other_print.plugin_cleanup_participants().empty());
+
+    CHECK(orchestrator.execute_plugin(*plugin, nullptr, nullptr, 0, true) ==
+          RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT);
+    CHECK(probe.setup_count() == 1);
+
+    orchestrator.clear_plugin_participants(other_print, STEP_LAYER_HEIGHT);
+    CHECK(probe.clear_count() == 0);
+
+    // A later invalid step leaves the plugin's earlier state reusable.
+    orchestrator.clear_plugin_participants(print, STEP_PRE_PERIMETER);
+    CHECK(probe.clear_count() == 0);
+    CHECK(print.plugin_cleanup_participants().size() == 1);
+
+    orchestrator.clear_plugin_participants(print, STEP_POST_SLICING);
+    CHECK(probe.clear_count() == 1);
+    CHECK(probe.clear_print() == reinterpret_cast<const print_handle *>(&print));
+    CHECK(probe.storage_was_valid());
+    CHECK(print.plugin_cleanup_participants().empty());
+}
+
+TEST_CASE("Clear failures retain their ledger entry and do not stop remaining callbacks",
+          "[plugins][orchestrator][clear]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    ClearTrackingPlugin &failing = clear_tracking_plugin(orchestrator);
+    static ClearTrackingPlugin remaining(orchestrator.handle(), "slic3r.test.clear_remaining");
+    if (orchestrator.get_plugin("slic3r.test.clear_remaining") == nullptr)
+        REQUIRE(orchestrator.register_plugin(remaining.c_instance()));
+    ActivePluginGuard active(orchestrator, {"slic3r.test.clear_tracking", "slic3r.test.clear_remaining"});
+    orchestrator.reset_plugin_cancel();
+    failing.reset();
+    remaining.reset();
+    Plugin *failed_plugin = orchestrator.get_plugin("slic3r.test.clear_tracking");
+    Plugin *remaining_plugin = orchestrator.get_plugin("slic3r.test.clear_remaining");
+    REQUIRE(failed_plugin != nullptr);
+    REQUIRE(remaining_plugin != nullptr);
+    Print print;
+    REQUIRE(orchestrator.execute_plugin(*remaining_plugin, &print, nullptr, 0, true) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(orchestrator.execute_plugin(*failed_plugin, &print, nullptr, 0, true) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    failing.fail_next_clear();
+    orchestrator.consume_plugin_messages();
+
+    CHECK_FALSE(orchestrator.clear_plugin_participants(print, STEP_POST_SLICING));
+    CHECK(failing.clear_count() == 1);
+    CHECK(remaining.clear_count() == 1);
+    CHECK(failing.clear_print() == reinterpret_cast<const print_handle *>(&print));
+    CHECK_FALSE(orchestrator.is_plugin_cancelled());
+    CHECK_FALSE(print.canceled());
+    REQUIRE(print.plugin_cleanup_participants().size() == 1);
+    CHECK(print.plugin_cleanup_participants().front().plugin == failed_plugin);
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    REQUIRE(messages.size() == 1);
+    CHECK(messages.front().level == Orchestrator::PluginMessageLevel::Error);
+    CHECK(messages.front().plugin_id == "slic3r.test.clear_tracking");
+    CHECK(messages.front().step == STEP_POST_SLICING);
+    CHECK(messages.front().message == "intentional clear failure");
+
+    CHECK(orchestrator.clear_plugin_participants(print, STEP_POST_SLICING));
+    CHECK(failing.clear_count() == 2);
+    CHECK(remaining.clear_count() == 1);
+    CHECK(print.plugin_cleanup_participants().empty());
+    orchestrator_plugin_report_error(nullptr, "unattributed error outside clear");
+    CHECK(orchestrator.consume_plugin_messages().empty());
+    CHECK_FALSE(orchestrator.is_plugin_cancelled());
+}
+
 TEST_CASE("Error diagnostics are registered once and resolved by id",
           "[plugins][orchestrator][clear][abi]")
 {
@@ -689,6 +858,126 @@ TEST_CASE("Error diagnostics are registered once and resolved by id",
     CHECK(std::string(orchestrator.error_message(-37)) == "Plugin reported an unknown error code.");
     CHECK(std::string(orchestrator.error_message(PLUGIN_ERROR_FIRST_DYNAMIC + 100000)) ==
           "Plugin reported an unknown diagnostic id.");
+}
+
+TEST_CASE("Host cleanup resolves native clear codes and keeps failed entries",
+          "[plugins][orchestrator][clear]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    ClearTrackingPlugin &probe = clear_tracking_plugin(orchestrator);
+    ActivePluginGuard active(orchestrator, {"slic3r.test.clear_tracking"});
+    Plugin *plugin = orchestrator.get_plugin("slic3r.test.clear_tracking");
+    REQUIRE(plugin != nullptr);
+    probe.reset();
+    Print print;
+    REQUIRE(orchestrator.execute_plugin(*plugin, &print, nullptr, 0, true) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    const int32_t registered_id = orchestrator.store_error_message("returned clear failure");
+    REQUIRE(registered_id >= PLUGIN_ERROR_FIRST_DYNAMIC);
+    int32_t clear_code = registered_id;
+    std::string expected = "returned clear failure";
+    SECTION("registered diagnostic id") {}
+    SECTION("reserved generic code") {
+        clear_code = PLUGIN_ERROR_GENERAL;
+        expected = "Plugin reported an error without a diagnostic.";
+    }
+    SECTION("unknown dynamic id") {
+        clear_code = PLUGIN_ERROR_FIRST_DYNAMIC + 100000;
+        expected = "Plugin reported an unknown diagnostic id.";
+    }
+    SECTION("negative code is invalid") {
+        clear_code = -37;
+        expected = "Plugin reported an unknown error code.";
+    }
+    SECTION("success ignores the diagnostic") {
+        clear_code = PLUGIN_ERROR_OK;
+    }
+    probe.set_clear_code(clear_code);
+    orchestrator.consume_plugin_messages();
+    const bool succeeded = clear_code == PLUGIN_ERROR_OK;
+    CHECK(orchestrator.clear_plugin_participants(print, STEP_POST_SLICING) == succeeded);
+    CHECK_FALSE(orchestrator.is_plugin_cancelled());
+    CHECK_FALSE(print.canceled());
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    if (succeeded) {
+        CHECK(messages.empty());
+        CHECK(print.plugin_cleanup_participants().empty());
+    } else {
+        REQUIRE(messages.size() == 1);
+        CHECK(messages.front().plugin_id == plugin->get_id());
+        CHECK(messages.front().step == STEP_POST_SLICING);
+        CHECK(messages.front().message == expected);
+        CHECK(print.plugin_cleanup_participants().size() == 1);
+        probe.set_clear_code(PLUGIN_ERROR_OK);
+        CHECK(orchestrator.clear_plugin_participants(print, STEP_POST_SLICING));
+        CHECK(print.plugin_cleanup_participants().empty());
+    }
+}
+
+TEST_CASE("Missing clear storage retains its participant until storage is restored",
+          "[plugins][orchestrator][clear]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    ClearTrackingPlugin &probe = clear_tracking_plugin(orchestrator);
+    static ClearTrackingPlugin remaining(orchestrator.handle(), "slic3r.test.clear_missing_storage_remaining");
+    if (orchestrator.get_plugin("slic3r.test.clear_missing_storage_remaining") == nullptr)
+        REQUIRE(orchestrator.register_plugin(remaining.c_instance()));
+    ActivePluginGuard active(orchestrator, {"slic3r.test.clear_tracking", "slic3r.test.clear_missing_storage_remaining"});
+    orchestrator.reset_plugin_cancel();
+    probe.reset();
+    remaining.reset();
+    Plugin *plugin = orchestrator.get_plugin("slic3r.test.clear_tracking");
+    Plugin *remaining_plugin = orchestrator.get_plugin("slic3r.test.clear_missing_storage_remaining");
+    REQUIRE(plugin != nullptr);
+    REQUIRE(remaining_plugin != nullptr);
+    Print print;
+    REQUIRE(orchestrator.execute_plugin(*remaining_plugin, &print, nullptr, 0, true) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(orchestrator.execute_plugin(*plugin, &print, nullptr, 0, true) ==
+            RAW_PLUGIN_EXECUTION_SUCCESS);
+    REQUIRE(probe.setup_count() == 1);
+    orchestrator.consume_plugin_messages();
+
+    // Keep storage alive and restore it before Print destruction even if an assertion aborts.
+    std::map<Plugin *, PluginStorage>::node_type storage = orchestrator.plugin_storage().extract(plugin);
+    const ScopeGuard restore_storage([&]() {
+        if (!storage.empty())
+            orchestrator.plugin_storage().insert(std::move(storage));
+    });
+    REQUIRE_FALSE(storage.empty());
+    CHECK_FALSE(orchestrator.clear_plugin_participants(print, STEP_POST_SLICING));
+    CHECK(orchestrator.plugin_storage().count(plugin) == 0);
+    CHECK(probe.clear_count() == 0);
+    CHECK(remaining.clear_count() == 1);
+    REQUIRE(print.plugin_cleanup_participants().size() == 1);
+    CHECK(print.plugin_cleanup_participants().front().plugin == plugin);
+    CHECK(print.plugin_cleanup_participants().front().step == STEP_POST_SLICING);
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    REQUIRE(messages.size() == 1);
+    CHECK(messages.front().level == Orchestrator::PluginMessageLevel::Error);
+    CHECK(messages.front().plugin_id == "slic3r.test.clear_tracking");
+    CHECK(messages.front().step == STEP_POST_SLICING);
+    CHECK(messages.front().message == "Cannot clear Print state: plugin storage is missing.");
+    CHECK_FALSE(orchestrator.is_plugin_cancelled());
+    CHECK_FALSE(print.canceled());
+
+    orchestrator.plugin_storage().insert(std::move(storage));
+    CHECK(orchestrator.clear_plugin_participants(print, STEP_POST_SLICING));
+    CHECK(probe.clear_count() == 1);
+    CHECK(probe.storage_was_valid());
+    CHECK(remaining.clear_count() == 1);
+    CHECK(print.plugin_cleanup_participants().empty());
+    CHECK(orchestrator.consume_plugin_messages().empty());
+}
+
+TEST_CASE("Clear callbacks are rejected on unsupported service steps",
+          "[plugins][orchestrator][clear]")
+{
+    Orchestrator &orchestrator = Orchestrator::instance();
+    static ClearTrackingPlugin unsupported(orchestrator.handle(), "slic3r.test.clear_unsupported", BRIDGE_DETECTOR);
+    CHECK_FALSE(orchestrator.register_plugin(unsupported.c_instance()));
+    CHECK(orchestrator.get_plugin("slic3r.test.clear_unsupported") == nullptr);
 }
 
 TEST_CASE("Generic plugin execution reports inactive cancellation and plugin errors",

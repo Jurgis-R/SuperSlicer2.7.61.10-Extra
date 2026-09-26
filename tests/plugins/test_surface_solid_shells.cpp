@@ -210,9 +210,9 @@ void rebuild_island_overlap_graph(PrintObject &object)
 void run_perimeter_and_surface_steps(Print &print, const bool validate_surface_post = true)
 {
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(print);
+    Steps::StepGeneratePerimeter::clear(print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(print);
+    Steps::StepSurfaceGeneration::clear(print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, print);
 
     if (validate_surface_post) {
@@ -232,7 +232,7 @@ void run_solid_shell_surface_case(PreparedPerimeterPrint &prepared)
 void run_solid_shells_on_existing_surfaces(Print &print)
 {
     // Some tests first create typed surfaces, then edit only their tags. Running
-    // StepSurfaceGeneration without clean_and_prepare() preserves that prepared
+    // StepSurfaceGeneration without clear() preserves that prepared
     // input and exercises SolidShells as a standalone refinement pass.
     ScopedActivePlugins active({SOLID_SHELLS});
     Steps::StepSurfaceGeneration::run_step(Orchestrator::instance(), print);

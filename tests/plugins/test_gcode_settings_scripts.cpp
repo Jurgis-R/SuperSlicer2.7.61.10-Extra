@@ -75,7 +75,7 @@ TEST_CASE("Configured G-code scripts become typed global plan events",
     config.option<ConfigOptionString>("end_gcode")->value = "M117 configured end";
     PrintingPlan &plan = print.mutable_printing_plan();
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(plan.events.before().child_count() == 1);
@@ -95,7 +95,7 @@ TEST_CASE("Configured G-code scripts become typed global plan events",
 
     config.option<ConfigOptionString>("start_gcode")->value.clear();
     config.option<ConfigOptionString>("end_gcode")->value.clear();
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK_FALSE(plan.events.has_before());
     CHECK_FALSE(plan.events.has_after());
@@ -129,7 +129,7 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
     group.layers.back().tool_groups.emplace_back();
     group.layers.back().tool_groups.back().extruder_id = 0;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(group.events.before().child_count() == 1);
@@ -213,7 +213,7 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
     config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{"", ""});
     config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{"", ""});
     config.option<ConfigOptionString>("end_gcode")->value.clear();
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK_FALSE(group.events.has_before());
     CHECK_FALSE(group.layers[0].events.has_after());
@@ -258,7 +258,7 @@ TEST_CASE("Between-object scripts select the requested side of the group move",
         plan.find_or_add_object_instance(print.objects()[1], 0));
 
     config.option<ConfigOptionBool>("between_objects_gcode_before_move")->value = false;
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK_FALSE(plan.groups[0].events.has_after());
     CHECK_FALSE(plan.groups[1].events.has_before());
@@ -288,7 +288,7 @@ TEST_CASE("Between-object scripts select the requested side of the group move",
           "; between 0:First_object 1:Second_object\n");
 
     config.option<ConfigOptionBool>("between_objects_gcode_before_move")->value = true;
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     REQUIRE(plan.groups[0].events.after().child_count() == 1);
     CHECK_FALSE(plan.groups[1].events.has_before());
@@ -326,7 +326,7 @@ TEST_CASE("Single-extruder multimaterial finalizes only the active logical tool"
     plan.groups.front().layers.front().tool_groups.emplace_back();
     plan.groups.front().layers.front().tool_groups.back().extruder_id = 1;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(plan.events.after().child_count() == 1);
@@ -383,7 +383,7 @@ TEST_CASE("Configured scripts use ordered plan tools and final layer state",
     group.layers.back().tool_groups.emplace_back();
     group.layers.back().tool_groups.back().extruder_id = 0;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Slic3r::Test::TransitionPipeline::run_layer_plugins(
         print, {Slic3r::Test::TransitionPipeline::TOOLCHANGE_PLUGIN});
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
@@ -508,7 +508,7 @@ TEST_CASE("Layer scripts report consumed filament",
     group.layers.back().tool_groups.emplace_back();
     group.layers.back().tool_groups.back().extruder_id = 0;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const boost::filesystem::path output_path = temporary_gcode_path();
@@ -572,7 +572,7 @@ TEST_CASE("End script uses stable defaults when a plan has no layers",
                              "P[previous_extruder] N[next_extruder]";
     print.mutable_printing_plan();
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const boost::filesystem::path output_path = temporary_gcode_path();

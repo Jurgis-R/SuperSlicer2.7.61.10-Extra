@@ -292,9 +292,17 @@ class PluginBase:
     - setup(run_ctx_address, run_count)
     - setup_run(run_ctx_address)
     - run(run_ctx_address)
+    - clear(print_address, plugin_storage_address), when the plugin owns
+      per-Print state that must be discarded before replay; return
+      PLUGIN_ERROR_OK (or None) when the state was released, or a diagnostic id
+      obtained from store_error_message() to report why it survived.
 
-    Use run_context(), is_cancelled(), report_warning(), report_error() and
-    report_progress() to inspect or use the common plugin_run_context callbacks.
+    The clear status must be a signed 32-bit int, not bool. Omit clear entirely
+    when no per-Print cleanup is needed.
+
+    Use run_context(), is_cancelled(), report_warning(), report_error(),
+    report_progress() and store_error_message() to inspect or use the common
+    callbacks.
     ``progress`` is reset before setup() and may then be shared by concurrent
     run() calls. Raise PluginCancelled (normally through throw_if_cancelled())
     to stop cooperatively without reporting a plugin failure.

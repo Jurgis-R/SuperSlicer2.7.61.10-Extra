@@ -21,6 +21,7 @@
 ///|/
 
 #include "Plater.hpp"
+#include "libslic3r/Exception.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -3675,7 +3676,16 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
     update_print_volume_state();
     // Apply new config to the possibly running background task.
     bool               was_running = background_process.running();
-    Print::ApplyStatus invalidated = background_process.apply(q->model(), full_config, wxGetApp().preset_bundle->physical_printers.get_selected_printer_config());
+    Print::ApplyStatus invalidated;
+    try {
+        invalidated = background_process.apply(q->model(), full_config, wxGetApp().preset_bundle->physical_printers.get_selected_printer_config());
+    } catch (const PluginCleanupError &error) {
+        // Keep the project available for retry/reset, but never restart work after failed cleanup.
+        notification_manager->push_validate_error_notification(error.what());
+        notification_manager->set_slicing_progress_hidden();
+        sidebar->show_sliced_info_sizer(false);
+        return return_state | UPDATE_BACKGROUND_PROCESS_INVALID;
+    }
 
     // Just redraw the 3D canvas without reloading the scene to consume the update of the layer height profile.
     if (view3D->is_layers_editing_enabled())

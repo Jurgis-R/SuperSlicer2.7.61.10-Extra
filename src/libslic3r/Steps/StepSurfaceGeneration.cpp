@@ -193,7 +193,7 @@ void remove_empty_region_islands(Print &print)
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
     // Surface generation owns only LayerRegionIsland fill surfaces. It must
     // leave deprecated LayerRegion fill caches untouched, because island-level
@@ -204,6 +204,8 @@ void clean_and_prepare(Print &print)
                 for (LayerRegionIsland &region_island : island.regions_islands())
                     region_island.set_fill_surfaces().clear();
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string *)
 {

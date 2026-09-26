@@ -5,7 +5,7 @@
 #ifndef slic3r_plugin_run_context_h_
 #define slic3r_plugin_run_context_h_
 
-#define SLIC3R_PLUGIN_API_PLUGIN_RUN_CONTEXT_MAJOR 1u
+#define SLIC3R_PLUGIN_API_PLUGIN_RUN_CONTEXT_MAJOR 2u
 #define SLIC3R_PLUGIN_API_PLUGIN_RUN_CONTEXT_MINOR 0u
 
 #include <stddef.h>
@@ -20,6 +20,7 @@ extern "C" {
 /* ========================= RUN CONTEXT ========================= */
 
 typedef struct plugin_host_context plugin_host_context;
+typedef struct print_handle print_handle;
 
 /*
 Return non-zero if the current Print was cancelled or the host requested this
@@ -53,6 +54,11 @@ safely.
 */
 typedef struct plugin_run_context {
     slicing_step_t step;
+    /*
+    Print that owns this execution, or NULL when the host runs the step
+    outside a Print. The pointer is borrowed and valid only during the call.
+    */
+    const print_handle *print;
     storage_handle *plugin_storage;
     void *data;
 

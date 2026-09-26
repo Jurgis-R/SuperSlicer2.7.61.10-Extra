@@ -147,7 +147,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
             ArcPolyline(Points{Point(scale_i(5.0), scale_i(0.0)), Point(scale_i(6.0), scale_i(0.0))}),
             15.f, 400.f, -1.f, -1.f, -1.f, ExtrusionRole::InternalInfill));
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const ExtrusionEntity &first_root = *first_tool.extrusions[0].root;
@@ -190,7 +190,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     // A second execution removes and recreates only this plugin's annotations.
     // The custom travel remains in the preserved second child and the feature
     // event remains the first child of exactly one ordered wrapper.
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK(first_root.child_count() == 0);
     REQUIRE(travel_root.child_count() == 2);
@@ -219,7 +219,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     CHECK(infill_feature < infill_move);
 
     config.option<ConfigOptionString>("feature_gcode")->value.clear();
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK(first_root.get_property<ExtrusionPropertyCustomGcode>() == nullptr);
     CHECK(travel_root.child_count() == 0);
@@ -261,7 +261,7 @@ TEST_CASE("Feature G-code validates and normalizes rich extrusion roles",
     SECTION("Unsupported but structurally valid roles use Custom") {
         std::unique_ptr<Print> print = prepare_role(
             RAW_EXTRUSION_ROLE_PERIMETER | RAW_EXTRUSION_ROLE_SOLID);
-        Steps::StepExtrusionEdition::clean_and_prepare(*print);
+        Steps::StepExtrusionEdition::clear(*print);
         Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), *print);
         const ExtrusionEntity &root =
             *print->mutable_printing_plan().groups.front().layers.front().tool_groups.front().extrusions.front().root;
@@ -277,7 +277,7 @@ TEST_CASE("Feature G-code validates and normalizes rich extrusion roles",
         Orchestrator &orchestrator = Orchestrator::instance();
         orchestrator.reset_plugin_cancel();
         (void)orchestrator.consume_plugin_messages();
-        Steps::StepExtrusionEdition::clean_and_prepare(*print);
+        Steps::StepExtrusionEdition::clear(*print);
         CHECK_THROWS_AS(Steps::StepExtrusionEdition::run_step(orchestrator, *print), RuntimeError);
         CHECK(orchestrator.is_plugin_cancelled());
         bool found_role_error = false;
@@ -326,7 +326,7 @@ TEST_CASE("Feature G-code ignores retraction and wipe process roles",
         ArcPolyline(Points{Point(scale_i(1.0), 0), Point(scale_i(2.0), 0)}),
         15.f, 400.f));
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(tool.extrusions.front().root->get_property<ExtrusionPropertyCustomGcode>() != nullptr);

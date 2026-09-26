@@ -78,7 +78,16 @@ void recompute_layer_slices_from_raw_regions(PrintObject &object)
 
 } // namespace
 
-void clean_and_prepare(Print & print) {
+void clear(Print &print)
+{
+    parallel_for(size_t(0), print.objects().size(), [&print](const size_t object_idx) {
+        print.object(object_idx).clear_layers();
+    });
+}
+
+void prepare(Print &print)
+{
+    // Existing layers can contain stale slices or region bindings even when their count matches the profile.
     parallel_for(size_t(0), print.objects().size(), [&print](const size_t object_idx) {
         PrintObject &object = print.object(object_idx);
         recreate_object_layers(object);
@@ -172,7 +181,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
 {
     Detail::validate_or_report(validate_pre, print, "Slicing pre-step validation");
 
-    clean_and_prepare(print);
+    prepare(print);
 
     // STEP_SLICING is an exclusive step: several active slicer plugins may be
     // available, but the generated step_slicing_plugin setting selects the one

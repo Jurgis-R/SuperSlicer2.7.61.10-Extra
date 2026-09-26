@@ -52,6 +52,7 @@
 namespace Slic3r {
 
 class GCodeGenerator;
+class Plugin;
 struct GCodeProcessorResult;
 class WipeTower2;
 struct ConflictResult;
@@ -150,6 +151,8 @@ struct PrintStatistics
     std::string             finalize_output_path(const std::string &path_in) const;
 
     void clear() {
+        estimated_print_time.clear();
+        estimated_print_time_str.clear();
         total_used_filament    = 0.;
         total_extruded_volume  = 0.;
         total_cost             = 0.;
@@ -163,6 +166,9 @@ struct PrintStatistics
         printing_filament_types.clear();
         filament_stats.clear();
         printing_extruders.clear();
+        color_extruderid_to_used_filament.clear();
+        color_extruderid_to_used_weight.clear();
+        _layer_area_stats.clear();
         is_computing_gcode = false;
     }
 
@@ -358,14 +364,12 @@ public:
     //put this in public to be accessible for tests, it was in private before.
     bool                invalidate_state_by_config_options(const ConfigOptionResolver& new_config, const std::vector<t_config_option_key> &opt_keys);
 
-    // Force the next run to replay every step after checkpoint, even when that
-    // checkpoint is still valid. An earlier invalid checkpoint still wins, since
-    // its steps are already requested. Used by config invalidation (through
-    // Steps::checkpoint_before_step()) and by the GUI/orchestrator, for example
-    // Checkpoint::Plan to rewrite the G-code. Checkpoint::GCode forces nothing.
-    // Also invalidates the matching historical PrintState milestones, which may
-    // call the cancel callback: never call it from inside the pipeline.
+    // Control thread only: callers hold state_mutex, which the GUI cancel
+    // callback expects before it can stop and wait for the worker. Worker-side
+    // paths must use request_replay_from_worker() instead.
     void                request_replay_from(Steps::Checkpoint checkpoint);
+    // Worker/idle only: refresh scheduling and historical milestones without self-cancellation.
+    void                request_replay_from_worker(Steps::Checkpoint checkpoint);
     // Latest checkpoint whose data is valid: the checkpoint just before the
     // first requested step, moved back to Checkpoint::Print when its plan
     // (Ordering copy or live Plan) is missing.
@@ -374,6 +378,30 @@ public:
     // live plan in the state that checkpoint describes (restored Ordering copy,
     // or released plan for Checkpoint::Print and earlier).
     void                prepare_checkpoint_resume();
+    /*
+    One successful plugin setup() that may still hold caches for this Print. The
+    entry is kept until a clear callback succeeds, so a failed cleanup can be
+    retried before the owners it borrowed are replaced. setup_order is the host's
+    monotonic setup counter, used to unwind participants in reverse order.
+    */
+    struct PluginCleanupParticipant
+    {
+        Plugin *plugin = nullptr;
+        // Pipeline step whose setup created the state; also its cleanup boundary.
+        slicing_step_t step = STEP_NONE;
+        size_t setup_order = 0;
+    };
+    // Record one plugin setup so it can receive a clear callback later.
+    void track_plugin_setup(Plugin &plugin, slicing_step_t step);
+    // Ask every tracked plugin at or after first_invalid_step to release the
+    // state it prepared. Returns false when at least one callback failed; failed
+    // entries stay tracked for a retry.
+    bool clear_plugin_state(slicing_step_t first_invalid_step);
+    // Borrowed list used by the orchestrator to unwind plugins before their owners are replaced.
+    const std::vector<PluginCleanupParticipant> &plugin_cleanup_participants() const
+        { return m_plugin_cleanup_participants; }
+    // Drop one participant after its clear callback succeeded.
+    void erase_plugin_cleanup_participant(Plugin *plugin, slicing_step_t step);
     // Pipeline step currently running, or STEP_NONE outside the pipeline.
     slicing_step_t      running_step() const { return m_running_step; }
     void                set_running_step(slicing_step_t step) { m_running_step = step; }
@@ -382,7 +410,7 @@ public:
     // pipeline (apply, tests). Host API debug asserts use this, for example
     // STEP_POST_SLICING for slices and STEP_FINALIZE_SLICING for the data tree.
     bool                running_step_may_edit(slicing_step_t last_editor_step) const;
-    // Low-level scheduling primitives; they do not map steps to checkpoints.
+    // Worker-owned or stopped-worker primitives; UI invalidation must use request_replay_from().
     void                mark_step_for_execution(slicing_step_t step);
     void                mark_step_and_dependents_for_execution(slicing_step_t step);
     bool                should_execute_step(slicing_step_t step) const;
@@ -435,10 +463,11 @@ private:
     //void                _make_wipe_tower();
     void                finalize_first_layer_convex_hull();
     void                alert_when_supports_needed();
-    // Request the resume step of checkpoint and all its dependents. From
-    // Checkpoint::Print and earlier, the live plan and its Ordering copy borrow
-    // data that will be rebuilt, so both are released.
+    // Non-cancelling scheduling for a checkpoint resume. Only the stored Ordering
+    // copy is released here; the live plan stays until plugin cleanup completed.
     void                request_steps_after(Steps::Checkpoint checkpoint);
+    // Caller holds state_mutex and owns execution, or has already stopped the worker.
+    bool                invalidate_checkpoint_milestones(Steps::Checkpoint checkpoint);
 
     // Islands of objects and their supports extruded at the 1st layer.
     Polygons            first_layer_islands() const;
@@ -512,6 +541,10 @@ private:
     // by Print because config changes arrive here, while StepPipeline only
     // knows how to consume the plan in its fixed written order.
     std::set<slicing_step_t> m_steps_to_execute;
+    std::vector<PluginCleanupParticipant>     m_plugin_cleanup_participants;
+    // Tracked caches may belong to valid in-flight work; their presence alone must not trigger UI cleanup.
+    std::atomic_bool                         m_plugin_cleanup_pending { false };
+    size_t                                    m_next_plugin_setup_order = 0;
 
     Steps::PipelineProgress                    m_pipeline_progress;
 

@@ -404,6 +404,9 @@ def parse_callbacks(text: str) -> list[CallbackDef]:
         flags=re.S,
     )
     for match in pattern.finditer(remove_preprocessor_lines(text)):
+        # ctypes Python callbacks cannot return a struct by value; the native bridge owns clear.
+        if match.group("name") == "plugin_clear_fn":
+            continue
         args = [arg_type(arg) for arg in split_args(match.group("args"))]
         callbacks.append(CallbackDef(match.group("name"), match.group("ret").strip(), args))
     return callbacks

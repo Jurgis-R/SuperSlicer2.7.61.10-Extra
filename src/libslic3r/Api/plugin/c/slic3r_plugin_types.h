@@ -5,9 +5,10 @@
 #ifndef slic3r_plugin_types_h_
 #define slic3r_plugin_types_h_
 
-#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MAJOR 1u
-#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 5u
+#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MAJOR 3u
+#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 0u
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "slic3r_config_types.h"
@@ -48,6 +49,15 @@ typedef enum plugin_error_id {
 
 #define PLUGIN_ERROR_RESERVED_LAST 127
 #define PLUGIN_ERROR_FIRST_DYNAMIC 128
+
+/*
+Inputs remain host-owned; only PLUGIN_ERROR_OK means this Print's private state
+was released. A positive result is a diagnostic id resolved through the host
+error registry; an unknown or negative id is treated as PLUGIN_ERROR_GENERAL.
+*/
+typedef int32_t (*plugin_clear_fn)(void *plugin_ctx,
+                                   const print_handle *print,
+                                   storage_handle *plugin_storage);
 
 /*
 One configuration option read or defined by a plugin.
@@ -272,6 +282,12 @@ typedef struct plugin_vtable {
     * Called once per object to do the step this plugin is made for.
     */
     plugin_run_fn run;
+
+    /*
+    Optional notification that the host invalidated this plugin's state for one
+    Print. The callback must release only plugin-owned state for that Print.
+    */
+    plugin_clear_fn clear;
 
 } plugin_vtable;
 

@@ -629,13 +629,16 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model &model, const Dyn
 	Print::ApplyStatus invalidated = m_print->apply(model, config);
     if (physical_printer_config && 
         (m_print->physical_printer_config().diff(*physical_printer_config).size() != 0 || m_print->physical_printer_config().keys() != physical_printer_config->keys()) ) {
+        // Export may read these options; stop the worker before replacing their storage.
+        std::scoped_lock<std::mutex> lock(m_print->state_mutex());
+        if (m_print->technology() == ptFFF)
+            m_fff_print->invalidate_step(psGCodeExport);
+        else
+            m_print->call_cancel_callback();
         m_print->physical_printer_config().clear();
         m_print->physical_printer_config().apply(*physical_printer_config);
         if (!invalidated)
             invalidated = PrintBase::APPLY_STATUS_INVALIDATED;
-        if (m_print->technology() == ptFFF && this->m_fff_print->is_step_done(psGCodeExport)) {
-            this->m_fff_print->invalidate_step(psGCodeExport);
-        }
     }
 	if ((invalidated & PrintBase::APPLY_STATUS_INVALIDATED) != 0 && m_print->technology() == ptFFF &&
 		!m_fff_print->is_step_done(psGCodeExport)) {

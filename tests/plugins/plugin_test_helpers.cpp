@@ -113,6 +113,7 @@ bool g_empty_option_list_error_reported = false;
 #ifdef SLIC3R_TEST_PYTHON_PLUGINS
 
 bool g_python_plugins_loaded = false;
+Slic3r::PluginPackageLoadReport g_python_invalid_clear_package_report;
 
 boost::filesystem::path current_executable_dir()
 {
@@ -191,6 +192,11 @@ bool load_python_plugins_for_tests(orchestrator_handle *orchestrator)
 
     using RegisterPluginFn = void (*)(orchestrator_handle *);
     reinterpret_cast<RegisterPluginFn>(proc)(orchestrator);
+    const Slic3r::PluginPackageLoadReport *report = Slic3r::Orchestrator::instance().plugin_package_load_report(
+        "python.test.clear.invalid_registration");
+    if (report == nullptr)
+        throw std::runtime_error("Invalid Python clear package was not discovered.");
+    g_python_invalid_clear_package_report = *report;
     return true;
 }
 
@@ -764,5 +770,13 @@ bool plugin_test_empty_option_list_error_reported()
     ensure_plugin_test_runtime_initialized();
     return g_empty_option_list_error_reported;
 }
+
+#ifdef SLIC3R_TEST_PYTHON_PLUGINS
+const PluginPackageLoadReport &python_invalid_clear_package_report()
+{
+    ensure_plugin_test_runtime_initialized();
+    return g_python_invalid_clear_package_report;
+}
+#endif
 
 } // namespace Slic3r::Test::Plugins

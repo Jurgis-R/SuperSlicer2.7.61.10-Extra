@@ -186,7 +186,11 @@ Print::Print() : m_pipeline_progress(this->status())
 
 Print::~Print()
 {
-    this->clear();
+    try {
+        this->clear();
+    } catch (const std::exception &error) {
+        BOOST_LOG_TRIVIAL(error) << "Print cleanup failed during destruction: " << error.what();
+    }
 }
 
 Printing::PrintingPlan &Print::mutable_printing_plan()
@@ -432,8 +436,15 @@ void Print::finalize()
 }
 
 void Print::clear() {
-    std::scoped_lock<std::mutex> lock(this->state_mutex());
-    // The following call should stop background processing if it is running.
+    std::unique_lock<std::mutex> lock(this->state_mutex());
+    // The GUI stop callback needs this lock; plugin cleanup must run after the lock is released.
+    this->call_cancel_callback();
+    lock.unlock();
+    // A full reset must remain possible even when a plugin cannot release its private cache.
+    if (!this->clear_plugin_state(STEP_LAYER_HEIGHT))
+        BOOST_LOG_TRIVIAL(error) << "Discarding failed plugin cleanup participants while resetting Print.";
+    lock.lock();
+    // The worker is already stopped; reset its bookkeeping before destroying the retained owners.
     this->invalidate_all_steps();
     // Plans borrow islands and layers; release them before their owners.
     this->reset_printing_plan();
@@ -444,6 +455,9 @@ void Print::clear() {
     m_print_regions.clear();
     m_model.clear_objects();
     m_records.clear();
+    m_plugin_cleanup_participants.clear();
+    m_plugin_cleanup_pending.store(false, std::memory_order_release);
+    m_next_plugin_setup_order = 0;
     std::lock_guard<std::mutex> registry_lock(m_region_registry_mutex);
     m_region_registry.clear();
 }
@@ -452,17 +466,41 @@ void Print::request_replay_from(const Steps::Checkpoint checkpoint)
 {
     if (checkpoint == Steps::Checkpoint::GCode)
         return;
+    // The worker does not lock the step set or snapshot pointer; wait for it before touching either.
+    this->call_cancel_callback();
     this->request_steps_after(checkpoint);
+    this->invalidate_checkpoint_milestones(checkpoint);
+    if (checkpoint == Steps::Checkpoint::None)
+        for (PrintObjectUPtr &object : m_objects)
+            object->m_slicing_params->valid = false;
+}
 
-    // The GUI still reads historical PrintState milestones. Keep those states
-    // aligned with the checkpoint without using numeric step ordering.
+void Print::request_replay_from_worker(const Steps::Checkpoint checkpoint)
+{
+    if (checkpoint == Steps::Checkpoint::GCode)
+        return;
+    // Protect milestone readers without invoking the UI callback that would wait for this same worker.
+    std::scoped_lock<std::mutex> lock(this->state_mutex());
+    this->request_steps_after(checkpoint);
+    this->invalidate_checkpoint_milestones(checkpoint);
+    // The worker owns this replay; an unchanged UI apply must not interrupt its preparation.
+    m_plugin_cleanup_pending.store(false, std::memory_order_release);
+}
+
+bool Print::invalidate_checkpoint_milestones(const Steps::Checkpoint checkpoint)
+{
+    bool invalidated = false;
     for (PrintObjectUPtr &object : m_objects) {
+        // No cancellation here: the caller already owns execution or has stopped the worker.
+        const auto invalidate_steps = [&object](std::initializer_list<slicing_step_t> steps) {
+            return object->m_state.invalidate_multiple(steps.begin(), steps.end(), []() {});
+        };
         switch (checkpoint) {
         case Steps::Checkpoint::None:
-            object->invalidate_all_steps_direct();
+            invalidated |= object->m_state.invalidate_all([]() {});
             break;
         case Steps::Checkpoint::Slicing:
-            object->invalidate_steps_direct({
+            invalidated |= invalidate_steps({
                 posPerimeters, posPrepareInfill, posInfill, posIroning,
                 posSupportMaterial, psAlertWhenSupportsNeeded, psSkirtBrim,
                 psToolOrdering, psWipeTower, psCheckConflict,
@@ -471,25 +509,26 @@ void Print::request_replay_from(const Steps::Checkpoint checkpoint)
                 psGCodeExport });
             break;
         case Steps::Checkpoint::Print:
-            object->invalidate_steps_direct({
+            invalidated |= invalidate_steps({
                 psToolOrdering, psWipeTower, psCheckConflict,
                 posSupportSpotsSearch, posEstimateCurledExtrusions,
                 posCalculateOverhangingPerimeters, posSimplifyPath,
                 psGCodeExport });
             break;
         case Steps::Checkpoint::Ordering:
-            object->invalidate_steps_direct({
+            invalidated |= invalidate_steps({
                 psWipeTower, posSupportSpotsSearch, posEstimateCurledExtrusions,
                 posCalculateOverhangingPerimeters, posSimplifyPath,
                 psGCodeExport });
             break;
         case Steps::Checkpoint::Plan:
-            object->invalidate_step_direct(psGCodeExport);
+            invalidated |= object->m_state.invalidate(psGCodeExport, []() {});
             break;
         case Steps::Checkpoint::GCode:
             break;
         }
     }
+    return invalidated;
 }
 
 Steps::Checkpoint Print::current_checkpoint() const
@@ -515,14 +554,50 @@ void Print::prepare_checkpoint_resume()
     const Steps::Checkpoint checkpoint = current_checkpoint();
     if (checkpoint == Steps::Checkpoint::GCode)
         return;
-    // Request every step after the checkpoint: an interrupted run or a missing
-    // plan may have left some of them marked as executed.
-    this->request_steps_after(checkpoint);
+    // An interrupted attempt may have finished part of the suffix; all of it must become pending again.
+    this->request_replay_from_worker(checkpoint);
+    // Plugins must drop their borrowed handles before the host destroys or replaces those owners.
+    if (!this->clear_plugin_state(Steps::checkpoint_resume_step(checkpoint)))
+        throw PluginCleanupError("Plugin cleanup failed before checkpoint resume.");
+    Steps::StepPipeline::clear_checkpoint_outputs(*this, checkpoint);
     if (checkpoint == Steps::Checkpoint::Ordering) {
         const bool restored = this->restore_ordering_checkpoint();
         assert(restored);
         (void)restored;
     }
+    m_plugin_cleanup_pending.store(false, std::memory_order_release);
+}
+
+void Print::track_plugin_setup(Plugin &plugin, const slicing_step_t step)
+{
+    // A setup may serve many object/layer runs, but cleanup is once per plugin, step and Print.
+    for (const PluginCleanupParticipant &participant : m_plugin_cleanup_participants)
+        if (participant.plugin == &plugin && participant.step == step)
+            return;
+
+    m_plugin_cleanup_participants.push_back({&plugin, step, m_next_plugin_setup_order++});
+}
+
+bool Print::clear_plugin_state(const slicing_step_t first_invalid_step)
+{
+    const bool succeeded = m_plugin_cleanup_participants.empty() ||
+        Orchestrator::instance().clear_plugin_participants(*this, first_invalid_step);
+    // Keep failures pending even if apply() already consumed the changed inputs before it failed.
+    m_plugin_cleanup_pending.store(!succeeded, std::memory_order_release);
+    return succeeded;
+}
+
+// Drop the entry of a plugin whose clear callback succeeded, so the remaining
+// entries are exactly the ones that still need a retry.
+void Print::erase_plugin_cleanup_participant(Plugin *plugin, const slicing_step_t step)
+{
+    m_plugin_cleanup_participants.erase(
+        std::remove_if(m_plugin_cleanup_participants.begin(),
+                       m_plugin_cleanup_participants.end(),
+                       [plugin, step](const PluginCleanupParticipant &participant) {
+                           return participant.plugin == plugin && participant.step == step;
+                       }),
+        m_plugin_cleanup_participants.end());
 }
 
 bool Print::running_step_may_edit(const slicing_step_t last_editor_step) const
@@ -534,10 +609,10 @@ bool Print::running_step_may_edit(const slicing_step_t last_editor_step) const
 void Print::request_steps_after(const Steps::Checkpoint checkpoint)
 {
     assert(checkpoint != Steps::Checkpoint::GCode);
-    // Steps from STEP_ORDERING rebuild the plan, and steps before it may
-    // replace the layers and islands that the plan borrows.
+    // Release only the stored Ordering copy: the live plan still owns data that
+    // plugins may hold handles to, until their cleanup callbacks have run.
     if (checkpoint <= Steps::Checkpoint::Print)
-        this->reset_printing_plan();
+        this->clear_ordering_checkpoint();
     this->mark_step_and_dependents_for_execution(Steps::checkpoint_resume_step(checkpoint));
 }
 
@@ -546,6 +621,9 @@ void Print::mark_step_for_execution(slicing_step_t step)
     if (step == STEP_NONE)
         return;
     m_steps_to_execute.insert(step);
+    // The step may reuse owners that plugin caches still hold, so the next
+    // apply() or resume must offer a clear callback before running it.
+    m_plugin_cleanup_pending.store(true, std::memory_order_release);
 }
 
 void Print::mark_step_and_dependents_for_execution(slicing_step_t step)
@@ -579,6 +657,8 @@ void Print::reset_step_execution_plan_all()
     m_steps_to_execute.clear();
     for (slicing_step_t step : Steps::execution_order())
         m_steps_to_execute.insert(step);
+    // A full replay can reuse every owner, so plugin caches must be cleared first.
+    m_plugin_cleanup_pending.store(true, std::memory_order_release);
 }
 
 const PrintObject *Print::get_print_object_by_model_object_id(ObjectID object_id) const {
@@ -665,11 +745,12 @@ bool Print::invalidate_all_steps()
 {
     // Deprecated legacy invalidation. It remains the compatibility entry point
     // for old code paths, but the new pipeline consumes m_steps_to_execute.
+    // Stop the worker first: the caller may run while it is still reading data.
+    this->call_cancel_callback();
     this->reset_step_execution_plan_all();
-
-    bool invalidated = false;
+    const bool invalidated = this->invalidate_checkpoint_milestones(Steps::Checkpoint::None);
     for (PrintObjectUPtr &object : m_objects)
-        invalidated |= object->invalidate_all_steps_direct();
+        object->m_slicing_params->valid = false;
     return invalidated;
 }
 

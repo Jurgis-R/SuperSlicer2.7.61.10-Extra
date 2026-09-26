@@ -463,7 +463,7 @@ protected:
     void write_installed_plugin(const std::string &package_version);
     boost::filesystem::path write_cached_plugin(const std::string &package_version);
     std::string make_plugin_archive(const std::string &package_version,
-                                    const std::string &plugin_types_version = "1.0");
+                                    const std::string &plugin_types_version = "3.0");
     void synchronize(const std::vector<TestPluginVersion> &versions);
     Slic3r::PluginActivationConfig read_activation_config();
 
@@ -721,7 +721,7 @@ void PluginUpdaterFunctionalFixture::write_bundled_plugin(const std::string &pac
         archive,
         {{"description.ini", plugin_description_contents(plugin_id, package_version, slicer_version, false)},
          {"version.ini", "[plugin]\npackage_version=" + package_version + "\nslicer_version=" + slicer_version +
-             "\n[abi]\nslic3r_plugin_types.h=1.0\n"},
+             "\n[abi]\nslic3r_plugin_types.h=3.0\n"},
          {plugin_library_filename(), "bundled library " + package_version}}));
 }
 
@@ -732,7 +732,7 @@ void PluginUpdaterFunctionalFixture::write_installed_plugin(const std::string &p
                     plugin_description_contents(plugin_id, package_version, slicer_version, false));
     write_test_file(package_root / "version.ini",
                     "[plugin]\npackage_version = " + package_version +
-                    "\nslicer_version = " + slicer_version + "\n[abi]\nslic3r_plugin_types.h = 1.0\n");
+                     "\nslicer_version = " + slicer_version + "\n[abi]\nslic3r_plugin_types.h = 3.0\n");
     write_test_file(package_root / plugin_library_filename(), "installed library " + package_version);
 
     Slic3r::PluginActivationConfig config;
@@ -750,7 +750,7 @@ boost::filesystem::path PluginUpdaterFunctionalFixture::write_cached_plugin(cons
                     plugin_description_contents(plugin_id, package_version, slicer_version, false));
     write_test_file(package_root / "version.ini",
                     "[plugin]\npackage_version = " + package_version +
-                    "\nslicer_version = " + slicer_version + "\n[abi]\nslic3r_plugin_types.h = 1.0\n");
+                     "\nslicer_version = " + slicer_version + "\n[abi]\nslic3r_plugin_types.h = 3.0\n");
     write_test_file(package_root / plugin_library_filename(), "cached library " + package_version);
     return package_root;
 }
@@ -2599,7 +2599,7 @@ TEST_CASE_METHOD(PluginUpdaterFunctionalFixture,
     REQUIRE(write_test_zip(archive, {
         {"description.ini", plugin_description_contents(plugin_id, "2.0.0.0", slicer_version, false)},
         {"version.ini", "[plugin]\npackage_version=2.0.0.0\nslicer_version=" + slicer_version +
-            "\n[abi]\nslic3r_plugin_types.h=" + (compatible ? "1.0" : "99.0") + "\n"},
+             "\n[abi]\nslic3r_plugin_types.h=" + (compatible ? "3.0" : "99.0") + "\n"},
         {"changelog.json", R"({"format_version":1,"versions":{"2.0.0.0":["Downloaded release"]}})"},
         {plugin_library_filename(), "test library"}}));
     http.succeed_front(read_test_file(archive), 200);
@@ -3294,7 +3294,7 @@ TEST_CASE_METHOD(PluginUpdaterFunctionalFixture,
 
     REQUIRE(http.pending_count() == 1);
     CHECK(http.pending_front().url() == "https://example.invalid/plugin-3.zip");
-    http.succeed_front(make_plugin_archive("3.0.0.0", "2.0"), 200);
+    http.succeed_front(make_plugin_archive("3.0.0.0", "4.0"), 200);
     updater.wait_for_pending_operations();
 
     REQUIRE(http.pending_count() == 1);
@@ -3347,7 +3347,7 @@ TEST_CASE_METHOD(PluginUpdaterFunctionalFixture,
                             plugin_description_contents(id, version, slicer_version, false));
             write_test_file(root / "version.ini",
                             "[plugin]\npackage_version=" + version + "\nslicer_version=" + slicer_version +
-                                "\n[abi]\nslic3r_plugin_types.h=1.0\n");
+                                 "\n[abi]\nslic3r_plugin_types.h=3.0\n");
             write_test_file(root / plugin_library_filename(), "plugin library " + id + " " + version);
         };
 
@@ -3500,7 +3500,7 @@ TEST_CASE("PluginUpdater exposes exact bundled Python runtime read-only",
     write_test_file(visible_package / "description.ini",
                     "[plugin]\nid = python.visible\nname = Visible Python plugin\ninternal = 0\n");
     write_test_file(visible_package / "version.ini",
-                    "[plugin]\npackage_version = 1.0.0\nslicer_version = 2.7.0.0\n[abi]\nslic3r_plugin_types.h = 1.0\n");
+                     "[plugin]\npackage_version = 1.0.0\nslicer_version = 2.7.0.0\n[abi]\nslic3r_plugin_types.h = 3.0\n");
     write_test_file(visible_package / "plugin.py", "def register_plugin(api):\n    return None\n");
     Slic3r::RepositoryCachedVersion visible_cached;
     REQUIRE(cache.cache_simple(visible_package, visible_cached, error_message));
@@ -3509,7 +3509,7 @@ TEST_CASE("PluginUpdater exposes exact bundled Python runtime read-only",
     write_test_file(internal_package / "description.ini",
                     "[plugin]\nid = python\nname = Python runtime\ninternal = 1\nbundled_exact = 1\n");
     write_test_file(internal_package / "version.ini",
-                    "[plugin]\npackage_version = 1.0.0\nslicer_version = 2.7.0.0\n[abi]\nslic3r_plugin_types.h = 1.0\n");
+                     "[plugin]\npackage_version = 1.0.0\nslicer_version = 2.7.0.0\n[abi]\nslic3r_plugin_types.h = 3.0\n");
     write_test_file(internal_package / "plugin.py", "def register_plugin(api):\n    return None\n");
     Slic3r::RepositoryCachedVersion internal_cached;
     REQUIRE(cache.cache_simple(internal_package, internal_cached, error_message));

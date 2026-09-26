@@ -1,0 +1,834 @@
+# Plugin-accessible storage: lifetime and mutability
+
+This reference describes the native storage behind the plugin C API and its C++ views, as well as their publication boundaries. It serves to determine which data can be destroyed, kept or saved during a pipeline resume.
+
+Member names are those of the native storage, not necessarily those of the API getters. Fields with the same owner and the same lifetime may be grouped on one line, but are named explicitly. Internal caches and associations needed to interpret a view are flagged as such; a line does not mean that a public getter exists for each field.
+
+**This document distinguishes the contract from the current state of its enforcement.** Host cleanup per checkpoint and the plugins' `clear` notification exist in the first increment, but property/record snapshots and full checkpoint capture/validity remain to be implemented. The deep `Ordering` snapshot already exists. Support/wipe tower leftovers do not constitute a legacy retention obligation in the resume work.
+
+## Contents
+
+1. [Conventions and general rules](#1-conventions-and-general-rules)
+2. [Print roots and printable objects](#2-print-roots-and-printable-objects)
+3. [Model, volumes, regions and slicing associations](#3-model-volumes-regions-and-slicing-associations)
+4. [Layers, regions, islands and surfaces](#4-layers-regions-islands-and-surfaces)
+5. [Printing plan and catalog](#5-printing-plan-and-catalog)
+6. [Extrusions, geometry and extrusion properties](#6-extrusions-geometry-and-extrusion-properties)
+7. [Generic geometry and plugin allocations](#7-generic-geometry-and-plugin-allocations)
+8. [Generic properties, records and configurations](#8-generic-properties-records-and-configurations)
+9. [Step contexts and temporary outputs](#9-step-contexts-and-temporary-outputs)
+10. [Sessions, services and result buffers](#10-sessions-services-and-result-buffers)
+11. [Current limits and consequences for checkpoints](#11-current-limits-and-consequences-for-checkpoints)
+12. [API coverage](#12-api-coverage)
+
+## 1. Conventions and general rules
+
+### Boundaries
+
+| Marker | Boundary / meaning |
+|---|---|
+| `apply` | Preparation of model/configuration inputs by the host, outside concurrent plugin execution. |
+| `Slicing` | After `STEP_POST_SLICING`: profile, main layers and slicing geometry kept; resume at `STEP_PRE_PERIMETER`. |
+| `Print` | After `STEP_FINALIZE_SLICING`: source tree finalized; resume at `STEP_ORDERING`. |
+| `Ordering` | After `STEP_ORDERING`: optional save of the plan, which remains editable in its working copy. |
+| `Plan` | After `STEP_EXTRUSION_SIMPLIFICATION`: final plan read-only for `STEP_GCODE`. |
+| `GCode` | End of export and of the optional read-back; does not reopen any write right on the inputs. |
+| Call / session / storage | Lifetime independent of checkpoints, specified for the relevant owner. |
+
+The actual order is that of `Steps::execution_order()`, not the numeric order of the `slicing_step_t` values.
+
+Sources: `src/libslic3r/Steps/StepPipeline.hpp:34`, `src/libslic3r/Steps/StepPipeline.cpp:69`.
+
+### Meaning of "const"
+
+- **Contractual const**: plugins must treat the data as a read-only input. The C++ storage is not necessarily declared `const`.
+- **C++ const**: member actually declared constant, specified when relevant, for example `PrintRegion::m_config`.
+- **Const view**: forbids certain operations through this access, without freezing other aliases.
+- **Mutable cache**: may be recomputed during a read without changing the business data; does not mean that all concurrent accesses are safe.
+
+For generic extrusions, properties and geometries, the write right depends on the origin:
+
+| Storage origin | Write window | Read-only from |
+|---|---|---|
+| Main slicing geometry | Slicing and post-slicing | `Slicing` |
+| Source subtree produced later | Authorized producer/editor steps before finalization | `Print`, or earlier if the callback treats this output as an input |
+| New auxiliary geometry | Construction and authorized processing before finalization | `Print`, with local island locking that may occur earlier |
+| Working plan | Ordering then plan editing within the scope entrusted to the callback | `Plan` |
+| Ordering snapshot | Host construction only | As soon as the save is published |
+| Temporary plugin allocation | As long as its owner keeps it and no consumer requires its stability | No automatic pipeline boundary |
+
+### Handles and invalidation
+
+- Borrowed handles are generally opaque native pointers, with no generation and no lifetime extension. Copying a C++ view does not copy the data; `valid()` does not prove that a pointer is still alive.
+- `vector<unique_ptr<T>>`: adding/moving the pointers does not move the `T` objects; removing an owner destroys its object. Indices and iterators are not stable.
+- `vector<T>`: reallocation, insertion, erasure, move or replacement can invalidate handles to elements and sub-objects.
+- Moving **contents** through a callback generally does not transfer the root allocation registered in the storage; the source must still be freed normally.
+- The public contract may require reacquiring a view after any mutation, even if a particular operation currently preserves its address.
+- Any borrow from a layer, an island or a plan must be dropped before its owner is destroyed/rebuilt. No old pointer automatically becomes a pointer to the restored clone.
+
+Sources: `src/libslic3r/Api/host/slic3r_data_tree.cpp:35`, `src/libslic3r/DataTreeFwd.hpp:43`, `src/libslic3r/Api/plugin/cpp/DataTreeViews.hpp:12`.
+
+## 2. Print roots and printable objects
+
+### `Print` and its base
+
+| Member | Ownership, access and lifetime | Modifiable when | Const / end of borrow |
+|---|---|---|---|
+| `PrintBase::m_model` | Owned model; reached indirectly through source volumes and objects | `apply` / host | Pipeline input; its descendants are invalidated by their replacement or by `Print::clear()` |
+| `Print::m_objects` | Owner of the main `PrintObject`s; traversal via `print_get_object*` | Host creation/removal/reordering | Structure stable during an execution; no general API for creating a main object |
+| `Print::m_auxiliary_object` | Hidden global object, absent from `m_objects`; lazily-creating getter | Auxiliary construction before `Print` by contract | `Print`; also destroyed by some `apply()` calls, not only by `clear()` |
+| `Print::m_config` | Embedded configuration; handle to the live value | `apply` by input contract; mutable getter technically available | Must remain stable during the pipeline; the mutable accessor does not check the phase |
+| `Print::m_default_object_config` | Embedded value, used notably to build the auxiliary object | Host | No dedicated editing getter in the tree API |
+| `Print::m_default_region_config` | Embedded value, completes the registered regions | Host, outside concurrent registrations | Input of registrations; not an output to restore |
+| `Print::m_region_registry` | Owns the immutable `PrintRegion`s, configuration interning | Added during `apply` or API registration | Each published region is immutable; stays alive until the Print's clear/destructor |
+| `Print::m_print_regions` | Non-owning catalog of active regions | Host rebuild on association/auxiliary changes | Rebuilding the catalog does not invalidate the regions owned by the registry |
+| `Print::m_records` | Embedded `PrintRecordStore`; configurations per channel | See §8 | Channels destroyed individually or at the Print's clear |
+| `Print::m_printing_plan` | Owns the live plan; provided to step contexts | Plan construction/editing | Contents const at `Plan`; replacement/restoration invalidates old views |
+| `Print::m_ordering_checkpoint` | Host clone not exposed as an editable plan | Host capture/replacement | Immutable from capture; freed on invalidation or when its retention is disabled |
+| `Print::m_gcode_reader_source_path` | Copy of the path published by the G-code callback | During export/publication/reset | Export result, not a frozen Print input; does not own the file |
+
+`Print` does not have the `PluginPropertyContainer` of layers/objects; do not invent a `Print::properties`.
+
+Sources: `src/libslic3r/Print.hpp:454`, `src/libslic3r/Print.cpp:192`, `src/libslic3r/Print.cpp:263`, `src/libslic3r/Print.cpp:308`, `src/libslic3r/PrintApply.cpp:1582`.
+
+### `PrintObject` and `PrintInstance`
+
+The owner is `Print::m_objects` or `Print::m_auxiliary_object`. Destroying the object invalidates all its descendants and its properties; its embedded configuration is not a plugin allocation.
+
+| Member | Storage / exposure | Write | Const / lifetime |
+|---|---|---|---|
+| `PrintObjectBase::m_model_object` | Borrowed from the model; null for the global auxiliary object | Host | Input during pipeline; model replaced ⇒ old views invalid |
+| Base `m_print` | Borrowed from the parent Print, used by host operations | Construction | No ownership of the Print and no lifetime extension |
+| `m_size` | Value; height used notably for the object without a model | Host construction | No C setter |
+| `m_config` | Effective configuration, parented to the Print's | `apply`; mutable getter without phase check | Input to keep stable; no automatic invalidation by the getter |
+| `m_trafo` | Matrix copied by `object_get_transform` | Host | Read-only on the tree API side |
+| `m_center_offset` | Point copied by getter | Host | Read-only on the API side |
+| `m_instances` | `vector<PrintInstance>`; count and shifts copied | `apply`; temporary RAII replacement in the current brim | No general C mutator; indices not persistent |
+| `m_shared_regions` | Shared ownership of slicing associations; C handles do not retain a reference to it | `apply` | Associations stable during pipeline, but replaceable between executions |
+| `m_layer_profile` | Computed `[top_z,height]` pairs, replaced by the layer-height callback | `STEP_LAYER_HEIGHT` | Slicing input; kept at the `Slicing` checkpoint |
+| `m_layers` | Separately allocated main layers | Rebuilt by `STEP_SLICING` | Structure kept at `Slicing`; working descendants still modifiable afterwards |
+| `m_auxiliary_layers` | Separately allocated auxiliary layers; insertion by Z, API removal | Before `Print`, in the authorized context | Source freeze at `Print`; removing a layer does not destroy the others |
+| Base `PluginPropertyContainer::m_properties` | Metadata of the object, not of each instance | Before `Print` according to the existing contract; access still mutable afterwards | See §8 and §11: no effective freeze of the payload |
+| `PrintInstance::print_object` | Borrowed from the owner | Host | No public native instance handle |
+| `PrintInstance::model_instance` | Borrowed from the model; null for the synthetic auxiliary instance | Host | Same restriction |
+| `PrintInstance::shift` | XY value; getter returns a copy | Host; temporary brim copy/restore | The returned copy belongs to the caller |
+
+The input profile `ModelObject::layer_height_profile` and the computed profile `PrintObject::m_layer_profile` are two distinct storages. The temporary mutation of instances by the brim is not a checkpoint output; it must be restored even on exception.
+
+Sources: `src/libslic3r/PrintObject.hpp:80`, `src/libslic3r/PrintObject.hpp:282`, `src/libslic3r/PrintObject.cpp:130`, `src/libslic3r/Plugins/SkirtBrim/DefaultBrimGenerator.cpp:404`.
+
+## 3. Model, volumes, regions and slicing associations
+
+These storages are **inputs for plugins**. Returned transformations are copied values; configs/meshes/associations are borrows. Do not save them as outputs in order to undo a new `apply()`.
+
+### Model and volumes
+
+| Member | API access or dependency | Write / const | Lifetime |
+|---|---|---|---|
+| `Model::m_objects` | Owner of the source objects | Host only | Model replacement/clear |
+| `ModelObject::volumes` | Owner of the volumes traversed by `object_volume_at` | Host; plugin read | Removing/replacing a volume invalidates its views |
+| `ModelObject::instances` | Origin of printable instances and transformation computations | Host | No direct C handle for a model instance |
+| `ModelObject::name` | `object_get_name` copies the bytes | Host | The copied buffer no longer depends on the source string |
+| `ModelObject::config` | Source configuration, notably extruder fallback | Host; indirect read | Do not confuse with `PrintObject::m_config` |
+| `ModelObject::layer_config_ranges` | Owns the range configs | Host; layer-height/slicing read | Replacing a range/config invalidates its borrows |
+| `ModelObject::layer_height_profile` / `LayerHeightProfile::m_data` | Input converted into a context buffer | Host; plugin read of the copy | Context copy bounded to the step/call |
+| `ModelObject::{m_bounding_box_exact,m_min_max_z_valid}` | Cache used by the `object_get_max_z` query | Lazy host computation during read | Rebuildable cache, not mutable published data |
+| `ObjectBase::m_id` of the volume | Copy via `volume_get_id` | Host construction | ID does not extend the volume's lifetime |
+| `ModelVolume::object` | Borrowed from the ModelObject, used for fallback settings | Host construction | Depends on the parent |
+| `ModelVolume::m_type` | Type returned by value | Host; no C setter | Volume lifetime |
+| `ModelVolume::config` / `ModelConfig::m_data` | Borrowed source config | Host; constant getter | Lifetime/replacement of the source config |
+| `ModelVolume::m_transformation` / `Transformation::m_matrix` | Matrices returned by copy | Host; no API source write | Self-contained copies |
+| `ModelVolume::m_mesh` | `shared_ptr<const TriangleMesh>`, borrowed C handle | Host replacement; source mesh const | The handle does not retain the shared_ptr |
+| `TriangleMesh::its` | Contains the indexed mesh | Source const | Mesh lifetime |
+| `indexed_triangle_set::{vertices,indices}` | Vertices and triangles read by copy | Source const; separate working copies in §10 | No mutable source buffer provided |
+| `ModelVolume::{supported_facets,mm_segmentation_facets,m_generic_facets_annotations}` | Annotations queried/projected by key | Host; no annotation editing through this API | Lifetime of the volume's annotations |
+| `FacetsAnnotation::m_data` | Facet encoding consumed by projections | Host; no raw exposure | Projection results copied to a separate destination |
+
+`object_get_max_z` is not always a pure local height: for a model object, it uses the model's transformed max Z; for the auxiliary object without a model, it returns the object's native height.
+
+Sources: `src/libslic3r/Model.hpp:358`, `src/libslic3r/Model.hpp:844`, `src/libslic3r/Model.hpp:994`, `src/libslic3r/Api/host/slic3r_volume.cpp:307`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:781`.
+
+### Canonical regions and associations
+
+| Member | Ownership / view | Write / transition to const | Invalidation |
+|---|---|---|---|
+| `PrintRegion::m_config` | Owned complete regional config, without parent | **C++ const from construction** | Region kept by the registry until the Print's clear |
+| `PrintRegion::m_config_hash` | Internal interner identity, not a C getter | **C++ const from construction** | Same owner |
+| `PrintObjectRegions::all_regions` | Vector of borrows into the registry; local indices | `apply` then read input | Reconfiguration possible without destroying the old canonical regions |
+| `PrintObjectRegions::layer_ranges` | Owned `LayerRangeRegions` values | `apply` then read | Reallocation/rebuild invalidates range handles |
+| `LayerRangeRegions::layer_height_range_` | Z bounds copied by getters | `apply` then read | Self-contained scalar copy |
+| `LayerRangeRegions::config` | Borrow to a model range config, nullable | `apply` then read | Lifetime of the target configuration |
+| `LayerRangeRegions::volumes` | Owned `VolumeExtents` values; parent of the referenced boxes | `apply` then indirect read | Rebuild invalidates box pointers |
+| `VolumeExtents::bbox` | Box copied by the association getter | `apply` then read | Self-contained copy |
+| `LayerRangeRegions::volume_regions` | Owned `VolumeRegion` values | `apply` then read | Rebuild invalidates association handles |
+| `VolumeRegion::model_volume` | Source borrow | `apply` then read | Model volume lifetime |
+| `VolumeRegion::parent` | Local index of the parent association | `apply` then read | Is neither a volume ID nor a LayerRegion index |
+| `VolumeRegion::region` | Borrow to PrintRegion, nullable | `apply` then indirect read | Registry target, replaceable association |
+| `VolumeRegion::bbox` | Borrowed from `VolumeExtents::bbox` | `apply` then copied read | Also depends on the `volumes` vector |
+| `VolumeRegion::region_idx` | Dense index into `all_regions` | `apply` then read | Valid for these local associations only |
+
+`apply()` can rewire `LayerRegion::m_region` without replacing its geometry. Restoring an old full copy of LayerRegion could therefore undo a valid current configuration. Painted associations, `prev_same_region`, volume caches and internal counters are not exposed as editable views of this API.
+
+Sources: `src/libslic3r/PrintRegion.hpp:65`, `src/libslic3r/PrintObjectRegion.hpp:54`, `src/libslic3r/Api/host/slic3r_volume.cpp:236`, `src/libslic3r/PrintApply.cpp:1529`.
+
+## 4. Layers, regions, islands and surfaces
+
+### `Layer`
+
+Owner: `PrintObject::m_layers` or `m_auxiliary_layers`. Regions and islands are allocated separately; rebuilding their collections can destroy them without destroying the layer.
+
+| Member | Storage / access | Modifiable when | Const from / validity |
+|---|---|---|---|
+| `m_height` | Height, getter by copy | Construction | No C setter; fixed for the instance |
+| `m_print_z` | Print Z, copy | Construction | Fixed for the instance |
+| `slice_z` | Native slicing Z, double | Construction | No direct getter of this member in `layer_get_slice_z` |
+| `m_id` | Native index, used indirectly for flows | Host | No layer ID exposed by this ABI |
+| `m_object` | Borrowed parent, getter | Construction | Fixed association; the parent does not keep a deleted child alive |
+| `upper_layer` | Borrowed neighbor, const/mutable getters | Host chaining | Main topology preserved from `Slicing` |
+| `lower_layer` | Borrowed neighbor, const/mutable getters | Host chaining | Same rule; auxiliaries created by the API initially unlinked |
+| `m_regions` | Owner of LayerRegion | Host construction/reset | Main structure preserved from `Slicing` |
+| `m_lslices` | Merged ExPolygons, const/mutable borrow | Main: slicing/post-slicing; auxiliary: construction allowed | Main: `Slicing`; auxiliary: `Print` at the latest, with local locking |
+| `m_islands` | Owner of LayerSliceIsland | Rebuild/assignment before locking | Main: `Slicing`; rebuild destroys the old islands |
+| `m_islands_locked` | Internal guard, no public getter | Set by `add_regions_to_islands()` | Rebuild assertions; no transitive freeze of descendants |
+| `curled_lines` | `vector<CurledLine>`, access by copies | Host analysis producer, no C setter | Input for consumers; do not assume a migrated producer |
+| Base `m_properties` | PluginPropertyContainer | Source metadata before `Print` by contract | Mutable access not revoked afterwards; see §8 |
+| `CurledLine::a`, `CurledLine::b` inherited from `Line` | Points copied into `c_curled_line` | Host producer | Independent copies |
+| `CurledLine::curled_height` | Copied height | Host producer | Independent copy |
+
+`layer_get_slice_z()` computes `print_z - height / 2`, and does not read `Layer::slice_z`: the two values can differ for an auxiliary created with an explicit slicing plan.
+
+Sources: `src/libslic3r/Layer.hpp:126`, `src/libslic3r/Layer.cpp:45`, `src/libslic3r/Layer.cpp:259`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:364`.
+
+### `LayerRegion`
+
+| Member | Storage / access | Modifiable when | Const / lifetime |
+|---|---|---|---|
+| `m_layer` | Borrow of the parent layer | Construction | Fixed association |
+| `m_region` | Borrow of the canonical region | Construction and reattachment by `apply` | Input during the pipeline, target truly const |
+| `m_raw_slices` | Embedded ExPolygons; this is what `layer_region_get_slices` returns | Main: slicing/post-slicing; auxiliary: construction allowed | `Slicing` for the main one, `Print` at the latest for auxiliary |
+| Base `m_properties` | Layer region metadata | Before `Print` per contract | Mutable access still possible afterwards |
+| `m_cache_fill_expolygons`, `m_cache_fill_expolygons_computed` | Native cache, no direct C getter | Host computation/invalidation | Recomputable, not a domain snapshot |
+| `m_slices`, `m_fill_surfaces`, `m_fill_no_overlap_expolygons`, `m_unsupported_bridge_edges` | Legacy native storage, **not the surfaces exposed by the region-island API** | Relevant native paths | Do not attribute the C getters of the new tree to them |
+| `surfaces_filled` in Debug | Native flag | Host attachment | May be true with empty processed surface collections |
+
+The box and flows returned by the getters are computed and copied: there is no borrowed `LayerRegion::m_bbox` or `Flow` member to keep.
+
+Sources: `src/libslic3r/LayerRegion.hpp:73`, `src/libslic3r/LayerRegion.hpp:123`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:469`.
+
+### `LayerSliceIsland` — `LayerIsland` in the API
+
+Owner: `Layer::m_islands`. **Freezing `m_slice` does not freeze `m_extrusions`.**
+
+| Member | Storage / access | Modifiable when | Const / lifetime |
+|---|---|---|---|
+| `m_slice` | ExPolygon defining the island; const and mutable getter | Main: until post-slicing; auxiliary: construction allowed | Main: `Slicing`; auxiliary: `Print` at the latest; global mutator currently unguarded |
+| `m_bbox` | XY cache built from the polygon; copy getter | Island construction | Stable with the geometry; editing `m_slice` does not recompute it automatically |
+| `m_regions` | Set of borrows to LayerRegion; target getters | Region attachment | Main topology fixed from `Slicing`; a mutable target getter does not allow changing the set |
+| `m_layer` | Borrowed parent, initially null | `fill_regions()` | Fixed after attachment; may be null during construction |
+| `m_extrusions` | **Vector of owners of LayerRegionIsland**, not ExtrusionEntity | Perimeters, surfaces, groupings and post-infill allowed | Source frozen from `Print`; removing a group invalidates its descendants |
+| `m_infill_areas` | Anchoring ExPolygons, const getters | Perimeter production, post-perimeter replacement | Input of surfaces/infill; global `Print` freeze |
+| `m_infill_free_areas` | ExPolygons without overlap, const getters | Same production | Same freeze; empty may mean no restriction |
+| `m_infill_areas_bboxes` | Native cache recomputed with the areas | Host setter of the areas | Not directly exposed; the C infill bbox getter computes the first area |
+| `m_perimeter_slices` | Native derived contours, no dedicated C getter | Perimeter production | Derived source output, global `Print` freeze |
+| `overlaps_above` | Vector of links borrowing the upper islands | Final post-slicing rebuild | Main topology fixed from `Slicing` |
+| `overlaps_below` | Links to the layer below | Same phase | Same rule |
+| `Link::to` | Pointer to another island, exposed | Graph construction | Invalid if the target is rebuilt |
+| `Link::area` | Native area, no C getter | Graph construction | Same topology; the API exposes the neighbors, not this area |
+| Base `m_properties` | Island metadata | Before `Print` per contract, so still after `Slicing` | Technical mutation still possible after finalization |
+
+Adding a group does not move separately allocated groups. Perimeter preparation currently destroys all of them; the surface/post-infill passes can also remove empty groups after a callback. Do not keep a group merely because its parent island still exists.
+
+Sources: `src/libslic3r/Layer.hpp:41`, `src/libslic3r/Layer.cpp:128`, `src/libslic3r/Layer.cpp:157`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:510`, `src/libslic3r/Steps/StepSurfaceGeneration.cpp:171`.
+
+### `LayerRegionIsland`
+
+| Member | Storage / access | Write | Const / invalidation |
+|---|---|---|---|
+| `m_extruder_id` | Zero-based or unknown identity, copied | Group construction | No C setter; regrouping via another instance |
+| `m_regions` | Set of borrows to LayerRegion | Construction | Constant associations for the published group |
+| `m_fill_surfaces` | Owned SurfaceCollection, general const getter | Surface production/refinement by callbacks | Input for infill; post-infill must not modify it; global `Print` freeze |
+| `m_extrusion_regions` | Map role → owned ExtrusionEntityCollection root | Producing/editing steps; mutable getter can create the bucket | `Print`; clearing a bucket/group invalidates its handles |
+| Base `m_properties` | Group metadata | Before `Print` per contract | Mutable getter even on a const group; no phase check |
+
+Adding another `std::map` bucket does not move existing roots. `remove_empty_extrusions()` can remove an empty root; `has_extrusion()` means non-empty content, not the mere presence of a key. The generic getters are less restrictive than some step callbacks that filter editable roles.
+
+Sources: `src/libslic3r/LayerRegion.hpp:170`, `src/libslic3r/LayerRegion.cpp:61`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:674`.
+
+### `SurfaceCollection` and `Surface`
+
+A collection is either temporary in the storage, or embedded in a region-island. `SurfaceCollection::surfaces` is a `vector<Surface>` by value: append, replacement, clearing and moving can invalidate views of surfaces, geometries and properties.
+
+| Member | Exposure / write | Const / lifetime |
+|---|---|---|
+| `SurfaceCollection::surfaces` | Create/append/clear on a mutable collection; publication by moving the content | Published source collection then read by consumers; the source handle stays with its storage |
+| `Surface::m_id` | Value getter; construction/copy yields a new ID, move transfers it, copy assignment keeps the destination ID | No C setter; not a persistent identity across copies |
+| `Surface::surface_type` | Chosen at append, read-only getters/flags | No direct C setter on an existing surface |
+| `Surface::expolygon` | Owned geometry; constant C getter | Replacement by publishing new surfaces, not generic geometric editing via MutableSurface |
+| `Surface::m_thickness` | Copied indirectly by the native callback `append_surface_like` | No individual C getter/setter |
+| `Surface::thickness_layers` | Same indirect copy | Same restriction |
+| `Surface::bridge_angle` | Same indirect copy | Same restriction |
+| `Surface::extra_perimeters` | Same indirect copy | Same restriction |
+| `Surface::maxNbSolidLayersOnTop` | Same indirect copy | Same restriction |
+| `Surface::priority` | Same indirect copy | Same restriction |
+| Base `Surface::m_properties` | Metadata via mutable getter from a const surface | Source contract before `Print`; no effective freeze |
+| `c_surface::{type,id}` | Copied values | Self-contained |
+| `c_surface::expolygon` | Borrowed handle | Still depends on the source surface |
+
+`MutableSurface` currently offers neither a type setter nor mutable geometry. The C++ helper `StoredSurfaceCollection::append_like()` copies type/geometry/plugin properties, but is not equivalent to the native callback, which also copies the hidden fields. `StoredSurface::{m_expolygon,m_type}` is a temporary geometry helper, not a native Surface allocation; its synthetic view has a null ID.
+
+Sources: `src/libslic3r/Surface.hpp:89`, `src/libslic3r/SurfaceCollection.hpp:20`, `src/libslic3r/Steps/StepSurfaceGeneration.cpp:142`, `src/libslic3r/Api/plugin/cpp/SurfaceViews.hpp:298`.
+
+## 5. Printing plan and catalog
+
+### Common ownership and phases
+
+The plan owns its hierarchy, its extrusion copies, its events and its catalog values. It **borrows** the source objects, layers and region-islands. These must stay alive as long as the live plan or its snapshot references them.
+
+All the working members below are editable only before `Plan`, in an allowed phase. Parallel per-layer editing can neither restructure the plan/group vectors nor modify another layer or the shared catalog; the serialized setup can prepare global data and resolve extruders. The mutable handles of the context do not lift these restrictions.
+
+### Hierarchy members
+
+| Class and member | Ownership / editing | End of validity / const |
+|---|---|---|
+| `PrintingPlan::groups` | Vector of PrintingGroup by value; structural append/reorder/clear | Handles invalidated by vector changes; `Plan` freeze |
+| `PrintingPlan::object_instances` | Catalog owned by value; append then metadata | Reallocation/clear/replacement invalidate entries; `Plan` freeze |
+| `PrintingPlan::events` | Embedded scope events | Lifetime of the plan, with possible child clearing before `Plan` |
+| `PrintingPlan::properties` | Owned metadata, separate const/mutable getters | API freeze from `Plan` |
+| `PrintingPlan::identity` | Unique owner of an empty `PrintingPlanIdentity` token | Token not editable; new on clone, kept by `printing_plan_clear()` |
+| `PrintingGroup::plan_identity` | Borrow of the parent token, initialized by host | Not a guarantee of a handle's temporal validity |
+| `PrintingGroup::events` | Owned scope | `Plan` freeze; follows group moves |
+| `PrintingGroup::properties` | Owned metadata | `Plan` freeze |
+| `PrintingGroup::printing_catalog_ids` | Index values into the catalog | `Plan` freeze; IDs local to the plan |
+| `PrintingGroup::layers` | Vector of PrintingLayerGroup by value | Invalidating structural changes; `Plan` freeze |
+| `PrintingLayerGroup::plan_identity` | Borrow of the token | Lifetime of the plan |
+| `PrintingLayerGroup::events` | Layer-local scope | Local editing allowed, then `Plan` freeze |
+| `PrintingLayerGroup::properties` | Local metadata, notably time/input state | Same window and concurrency restrictions |
+| `PrintingLayerGroup::print_z` | Plan schedule value, getter/setter | Structural editing allowed, not arbitrary rescheduling in a parallel pass; `Plan` freeze |
+| `PrintingLayerGroup::layers` | Owned vector of borrows to the source Layers | List built before `Plan` freeze; targets frozen from `Print` |
+| `PrintingLayerGroup::tool_groups` | Vector of PrintingToolGroup by value | Invalidating structural mutations; `Plan` freeze |
+| `PrintingToolGroup::plan_identity` | Borrow of the token | Lifetime of the plan |
+| `PrintingToolGroup::events` | Tool visit scope | `Plan` freeze |
+| `PrintingToolGroup::properties` | Visit metadata | `Plan` freeze |
+| `PrintingToolGroup::extruder_id` | Scalar, notably resolved in serialized setup | `Plan` freeze |
+| `PrintingToolGroup::region_islands` | Vector of source borrows | `Plan` freeze of the list; sources frozen from `Print` |
+| `PrintingToolGroup::extrusions` | Vector of PrintingExtrusion by value | Append/reorder/transfer invalidate descriptors; `Plan` freeze |
+| `PrintingExtrusion::region_island` | Borrow of the source context, nullable | Fixed on addition; no dedicated API setter |
+| `PrintingExtrusion::sregion_island_role` | Provenance role, distinct from the clone's role attribute | Getter/setter before `Plan` |
+| `PrintingExtrusion::root` | Unique owner of a tree copy | Replacement destroys the old root/descendants; `Plan` freeze |
+| `PrintingExtrusion::printing_catalog_id` | Local ID, fixed on addition | No dedicated setter; not a model ID |
+
+`PrintingExtrusion` has no `properties` member: its extrusion metadata lives on `root` and its descendants. Moving the root unique_ptr can keep the tree address, but does not stabilize the moved PrintingExtrusion descriptor in its vector.
+
+Sources: `src/libslic3r/Printing/PrintingPlan.hpp:134`, `src/libslic3r/Printing/PrintingPlan.hpp:165`, `src/libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h:18`.
+
+### Catalog and events
+
+| Class and member | Ownership / mutation | Const / invalidation |
+|---|---|---|
+| `PrintingObjectInstance::object` | Source borrow, null if synthetic | Fixed at registration; source not owned |
+| `PrintingObjectInstance::object_instance_idx` | Copied source index | Fixed at registration, not stable across a source rebuild |
+| `PrintingObjectInstance::name` | Owned string, metadata setter | `Plan` freeze; C pointer invalidated by replacement/reallocation |
+| `PrintingObjectInstance::projected_outline` | Owned Polygon, independent of the model | Copied at publication; `Plan` freeze |
+| `PrintingObjectInstance::projected_outline_center` | Point computed/copied by getter | `Plan` freeze |
+| `c_printing_object_instance::id` | Copied catalog index, not an extra native member | Valid in this catalog only |
+| Other fields of `c_printing_object_instance` | Copied scalars; `object`, `name`, `projected_outline` remain borrowed | Copying the descriptor does not copy text/geometry |
+| `PrintingScopeEvents::m_before` | Embedded root; const root API, append of mutable children | `Plan` freeze; children destroyed by clear |
+| `PrintingScopeEvents::m_after` | Same model after the content | Same rule |
+
+The C++ catalog wrapper copies the descriptor; it is its `name()` call that copies the text. Scope roots must be non-sortable/non-reversible by contract; do not attach arbitrary data to them by bypassing const access.
+
+An explicit call to `StepExtrusionEdition::clear()` clears the children of the scope events. The pipeline no longer does this when preparing this step: replay replaces the working plan, without clearing events newly produced by previous steps.
+
+Sources: `src/libslic3r/Printing/PrintingPlan.hpp:46`, `src/libslic3r/Printing/PrintingPlan.hpp:111`, `src/libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp:80`, `src/libslic3r/Steps/StepExtrusionEdition.cpp:31`.
+
+### Snapshot and coordinates
+
+`PrintingPlan::clone()` copies the catalog, properties and owned trees, rewrites the identity tokens, but keeps the source borrows. Restoring Ordering replaces the live plan with a new clone: all old plan handles must be abandoned. The retained snapshot is not consumed.
+
+Printable extrusions are expected in bed coordinates. The builder clones then applies the instance shift; the low-level append only clones what it is given. The copy is not a promise of automatic translation of all geometry passed to the API.
+
+Sources: `src/libslic3r/Printing/PrintingPlan.cpp:472`, `src/libslic3r/Print.cpp:233`, `src/libslic3r/Plugins/Ordering/DefaultPlanBuilder.cpp:508`.
+
+## 6. Extrusions, geometry and extrusion properties
+
+### `ExtrusionEntity` and subtypes
+
+Write window: **source before `Print`**, **plan copy before `Plan`**, **temporary while owned**, always depending on the callback. Generic mutators do not know which origin the handle has.
+
+| Member | Storage and access | Invalidation / read-only |
+|---|---|---|
+| `ExtrusionEntity::m_id` | Internal native identity, copied during clones | No general C ID for the entity; clone does not mean new global ID |
+| `m_can_reverse` | Permission exposed indirectly through flags | Modifiable within the owner's window |
+| `m_can_sort` | Sort permission | Same window; some content changes also change it |
+| `m_content` | Variant: empty, `ArcPolyline`, or `Children` | Replacement destroys the previous alternative |
+| `Children` alternative | `vector<unique_ptr<ExtrusionEntity>>` | Adding/moving a pointer preserves the objects; removal destroys the subtree |
+| `ExtrusionPropertyContainer` base | Owned properties and resources | Same window as the node, detailed rules below |
+| `ExtrusionEntityCollection::m_entities_cache` | Non-owning cache of child pointers | Rebuilt by native read, not a second owner |
+| `ExtrusionNop::m_role` | Legacy native role | No specialized setter in the unified ABI |
+| `ExtrusionNop::position` | Legacy native position | Distinct from an ArcPolyline |
+
+`ExtrusionPath`, `ExtrusionMultiEntity`, `ExtrusionMultiPath` and `ExtrusionLoop` use the inherited content and properties; do not invent `m_children`, `m_polyline`, `m_attributes` or `m_loop_role` as current separate storages. Attributes and loop role are properties.
+
+Copy/move into a root keeps its address but replaces its previous contents; handles to descendants/properties must be reacquired. `clear_content()` does not remove properties: it removes geometry/children and currently resets `m_can_sort` to false. Moving a child transfers its unique_ptr; moving the content of a storage root does not transfer its allocation record.
+
+Sources: `src/libslic3r/ExtrusionEntity.hpp:63`, `src/libslic3r/ExtrusionEntityCollection.hpp:34`, `src/libslic3r/ExtrusionEntity.cpp:419`, `src/libslic3r/Api/host/slic3r_extrusion_entity.cpp:68`.
+
+### `ArcPolyline` and segments
+
+The ArcPolyline is embedded in `m_content`, not a generic Polyline to be freed separately.
+
+| Member | Write / exposure | Lifetime and const |
+|---|---|---|
+| `ArcPolyline::m_path` | Vector of segments, geometric setters | Owner node's window; disappears when content is replaced |
+| `ArcPolyline::m_z_offset` | Owned optional vector, one offset per point | Allocation/resize/reset aligned with the geometry |
+| `ArcPolyline::m_only_strait` | Native cache, actual spelling | Recomputed by operations, not a public payload |
+| `ArcPolyline::is_3D` in Debug | Internal flag | No public getter/setter |
+| `ArcWelder::Segment::point` | Endpoint of the incoming segment | Value copied in getters |
+| `ArcWelder::Segment::radius` | Signed radius, zero for a straight line | Same window as m_path |
+| `ArcWelder::Segment::orientation` | Arc direction | Same window |
+| `ArcWelder::Segment::{length,center}` in Debug | Internal caches | No additional public storage |
+| `c_extrusion_segment::{point_a,point_b,radius,orientation,z_offset_a,z_offset_b}` | Value copies of two native points/segment | Belong to the requester, no borrow of a native buffer |
+
+`set_points` replaces arcs and Z offsets; modifying a point may linearize adjacent arcs. Geometric splits into other entities do not automatically copy flags/properties. Freeze follows the owner, not the ArcPolyline type.
+
+Sources: `src/libslic3r/Polyline.hpp:234`, `src/libslic3r/Geometry/ArcWelder.hpp:442`, `src/libslic3r/Api/host/slic3r_extrusion_polyline.cpp:247`.
+
+### Extrusion properties and resources
+
+| Member | Ownership / mutation | Validity |
+|---|---|---|
+| `ExtrusionPropertyContainer::m_properties` | Direct slots, one payload per type | Removal/replacement/clear/copy-over invalidate the affected payloads |
+| `m_data_resources` | Auxiliary buffers owned by the entity | Explicit release or via owner property/field; replacement/destruction of the entity |
+| `m_next_data_resource_id` | Counter local to the container | Copied with the container; no global identity |
+| `DataResource::id` | Local ID | To be interpreted with its owner entity |
+| `DataResource::owner_type` | Owner type, or invalid for independent storage | Internal association, not an ownership pointer |
+| `DataResource::owner_field_offset` | Offset of the owner ID field, or sentinel | Used to replace a field's resources |
+| `DataResource::data` | Owned PropertyRawBuffer | Borrowed, constant data getter |
+
+A full container copy copies slots **and** resources. `clone_properties()` alone only copies the slots. Copying a `text_id` ID into another entity does not copy its text. `clear_properties()` releases resources attached to the removed properties, but not necessarily independent resources. `extrusion_free_data()` does not fix up fields still holding the released ID.
+
+Sources: `src/libslic3r/ExtrusionProperty.hpp:371`, `src/libslic3r/ExtrusionProperty.hpp:463`, `src/libslic3r/ExtrusionProperty.cpp:113`, `src/libslic3r/ExtrusionProperty.cpp:288`.
+
+### Built-in payload fields
+
+All follow the window of the node carrying them. Field lists group values having exactly the same lifetime; IDs do not own their targets.
+
+| C payload | Members |
+|---|---|
+| `c_extrusion_property_attributes` | `mm3_per_mm`, `width`, `height`, `role`, `no_seam` |
+| `c_extrusion_property_speed` | `speed_mm_per_s`, `accel_mm_per_s2`, `pressure_adv`, `fan_speed_percent`, `temperature_C` |
+| `c_extrusion_property_modifier` | `enforce_travel`, `enforce_retraction`, `enforce_unlift`, `disable_retraction`, `disable_lift`, `toolchange_retraction` |
+| `c_extrusion_property_custom_gcode` | `kind`, `script_type`, `processing_extruder_id`; `text_id`, `config_id` reference buffers local to the entity, not live Config handles |
+| `c_extrusion_property_special_command` | `code`, `extra_data` |
+| `c_extrusion_property_overhang` | `start_distance_from_prev_layer`, `end_distance_from_prev_layer`, `proximity_to_curled_lines`, `has_full_overhangs_flow`, `has_full_overhangs_speed`, `has_dynamic_overhangs_flow`, `has_dynamic_overhangs_speed` |
+| `c_extrusion_property_z_offset` | `z_offset` |
+| `c_extrusion_property_perimeter` | `perimeter_idx`, `reserved`, `perimeter_flags` |
+| `c_extrusion_property_infill` | `source_surface_id`, numeric reference without ownership of the Surface |
+| `c_extrusion_property_extrusion_axis` | `operation`, `value`, `restart_extra`, `toolchange` |
+
+Plugin-registered payloads are open: copying them preserves all bytes, not only the known built-in fields. Examples used in the plan: time (`duration_seconds`, `origin`), input (`x`, `y`, `z`, `state`, and tool payload `extruder_id`), endpoints (`entry`, `exit`), scope marker (`flags`). They follow the plan's freeze; they are not new geometry owners.
+
+Sources: `src/libslic3r/Api/plugin/c/slic3r_extrusion_property.h:237`, `src/libslic3r/Plugins/PrintingPlan/PrintingLayerTimeProperty.h:33`, `src/libslic3r/Plugins/PrintingPlan/EntryPointProperty.h:13`.
+
+## 7. Generic geometry and plugin allocations
+
+### `PluginStorage`
+
+The storage provided per context belongs to `Orchestrator::m_plugin_storage` and may survive several callbacks. A worker storage provided by `slic3r_parallel_for_storage`, by contrast, is local to the job and destroyed when it returns.
+
+Plugin instances are singletons: `plugin_ctx` and this storage designate the plugin, not a particular run or a Print. The `plugin_run_context::print` member identifies the Print for setup/setup_run/run; the optional callback `clear(plugin_ctx, print, plugin_storage)` receives the same key directly. A run-dependent cache must be partitioned by this identity, not by the temporary address of the context.
+
+Participant tracking belongs to the Print. Their presence does not mean their caches are invalid: a separate atomic flag signals cleanups caused by an invalidation or a failure. An unchanged apply does not traverse this tracking and does not cancel a valid worker; tracking reads needed for cleanup happen after the workers have stopped. An apply retry after a failed cleanup is still treated as an invalidation, even if the inputs have already been applied.
+
+### Scheduling ownership and invalidation barriers
+
+The set of steps to execute, the progress, and the snapshot pointers are not concurrent storages. The legacy milestone lock is not enough to protect the worker's reads of this data: the control thread must wait for the worker to stop before modifying them.
+
+| Entry point | Synchronization contract |
+|---|---|
+| `Print::request_replay_from()` | Control thread, `state_mutex` already held; calls the cancellation barrier before any modification of the schedule or of the Ordering copy. Do not call from the worker. |
+| `Print::invalidate_all_steps()` | Same prior stop, before resetting the schedule, the progress and the snapshot. |
+| `Print::request_replay_from_worker()` | Worker owning the run, or idle Print; briefly locks the milestones and invalidates them without a cancellation callback. Used by export and resume preparation. |
+| `request_steps_after`, `mark_step*`, `reset_step_execution_plan_all` | Primitives without cancellation: owning worker or already-stopped worker; not UI invalidation entry points. |
+
+The GUI cancellation callback may release and then reacquire `state_mutex` while it waits for the worker to finish; the UI entry point must therefore not lock this non-recursive mutex a second time. The worker must never use this callback to request its own replay. Both paths share the same checkpoint/milestone mapping, without temporarily replacing the global callback.
+
+Invalidation of slicing parameters remains a control operation: the worker path does not invalidate parameters already prepared by apply when it refreshes the milestones. This prevents an unchanged apply from subsequently trying to recompute them during execution.
+
+A request handled by the worker is not left as a pending UI cleanup request: an identical apply must not interrupt the preparation of its export. A physical printer change also respects the barrier, before replacing its configuration. An apply that is only CHANGED without a confirmed stop does not consult the schedule to decide on a cleanup.
+
+`StepExtrusionOrdering::clear()` only releases the plan and its Ordering copy; it marks no step. Replay policy belongs to the preceding entry points, not to output destructors.
+
+Invalidation keeps the plan alive until plugins are notified; object replacements by apply and full clear also notify before destroying the owners. Callbacks run outside the state lock. A failure keeps the participant for retry and blocks normal resume with `PluginCleanupError`, displayed as a validation error by the GUI. By contrast, a full clear attempts all notifications, reports failures and then drops their tracking to allow a reset; the host does not claim to release the opaque private caches of a failing plugin itself. A new setup must rebuild its state rather than reuse borrows from the previous project.
+
+A participant's missing storage is an explicit error, not a successful cleanup; the participant remains tracked for a normal resume. This is not a hot-reload mechanism: Print instances must stay within the lifetime of the orchestrator and of the registered plugins.
+
+### Error diagnostic registry
+
+Plugin callbacks return an integer diagnostic id defined by `slic3r_plugin_types.h`. `orchestrator_set_error_message(orchestrator, message)` copies a UTF-8 message of arbitrary length into a registry owned by the orchestrator and returns a unique, increasing id that is never reused. Ids are valid for the lifetime of the process: they must be neither serialized nor replayed after a restart. The call returns `PLUGIN_ERROR_GENERAL` if the orchestrator is missing or if the message is NULL or empty.
+
+| Returned value | Meaning | Host interpretation |
+|---|---|---|
+| `PLUGIN_ERROR_OK` (0) | Success | No diagnostic |
+| `PLUGIN_ERROR_GENERAL` (1) | Failure without a specific diagnostic | Generic diagnostic |
+| 2..`PLUGIN_ERROR_RESERVED_LAST` (127) | Reserved for future host codes | Generic diagnostic until a text is defined |
+| `PLUGIN_ERROR_FIRST_DYNAMIC` (128) and above | Id registered by `orchestrator_set_error_message()` | The host resolves the registered text; an unknown id gets a generic diagnostic |
+| Negative | Invalid | Treated as `PLUGIN_ERROR_GENERAL` |
+
+The Python generator exposes the `PLUGIN_ERROR_OK` / `PLUGIN_ERROR_GENERAL` constants and binds `orchestrator_set_error_message` for `store_error_message()`.
+
+### Explicit result of the clear callback
+
+The `slic3r_plugin_types.h` 3.0 contract replaces the void return with an integer diagnostic id, without a returned structure or a thread-local context:
+
+```c
+typedef int32_t (*plugin_clear_fn)(
+    void *plugin_ctx,
+    const print_handle *print,
+    storage_handle *plugin_storage);
+```
+
+`PLUGIN_ERROR_OK` removes the participant from tracking; any other positive value is a diagnostic resolved through the registry described above, and a negative code is treated as `PLUGIN_ERROR_GENERAL`.
+
+The C++ hook `clear_impl()` returns this integer; its wrapper registers the exception text (`what()`) before the exception is destroyed and returns the obtained id, or `PLUGIN_ERROR_GENERAL` if registration fails. The Python hook `clear(print, plugin_storage)` returns a signed 32-bit integer (`None` means success, bool is excluded) and calls `store_error_message()` to attach a diagnostic. Any other type, a negative or out-of-range integer, and Python exceptions produce a diagnostic registered by the bridge before references and the GIL are released.
+
+Failed participants remain tracked and the other callbacks continue. No call to `orchestrator_plugin_report_error(nullptr, ...)` implicitly marks clear as failed: without an explicit context this function only logs an unattributed error. The rules for ordinary setup/run callbacks with a context remain unchanged.
+
+This return change breaks the ABI: native plugins must be recompiled and manifests regenerated; 2.x versions of the contract are rejected.
+
+| Member / container | Owned allocations | Write / lifetime |
+|---|---|---|
+| `PluginStorage::polygons` | Root Polygons | Mutable scratch, until free/clear/destruction |
+| `PluginStorage::polylines` | Root Polylines | Same rule |
+| `PluginStorage::expolygons` | Root ExPolygons | Same rule |
+| `PluginStorage::polygon_collections` | Polygons | Stable root, by-value elements can be invalidated |
+| `PluginStorage::polyline_collections` | Polylines | Same rule |
+| `PluginStorage::expolygon_collections` | ExPolygons | Same rule |
+| `PluginStorage::surface_collections` | SurfaceCollection | Same rule |
+| `PluginStorage::extrusions` | ExtrusionEntity roots | Children owned by their roots, not separate storage allocations |
+| `PluginStorage::configs` | DynamicConfig | Options destroyed with their config |
+| `PluginStorage::clipper_shapes` | Clipper adapters/results | An owned adapter does not mean an owned geometric source |
+| `PluginStorage::generic_storage` | Registry of releasable root pointers | Not a recursive owner nor a reference counter |
+| `StableOwnedVector<T>::m_items` | Vector of unique_ptr | Adding other roots does not move existing ones |
+
+`storage_free` must only receive roots of this storage, never a child, a contour, an option or a source/plan object. `storage_clear` destroys all allocations; handle copies are not reset to zero. The `Stored*` RAII wrappers carry `m_storage` and `m_handle`: they own the responsibility for releasing the handle, not the storage, which must outlive them. Address stability does not imply thread-safe allocation in a shared storage.
+
+Sources: `src/libslic3r/Api/host/Orchestrator.hpp:564`, `src/libslic3r/Api/host/Orchestrator.cpp:2428`, `src/libslic3r/Api/host/slic3r_utils.cpp:15`.
+
+### Geometric members
+
+| Class / member | Ownership / views | Write and freeze |
+|---|---|---|
+| `MultiPoint::points`, inherited by Polygon/Polyline | Owned vector of Point; direct views of the buffer | Follows the source/auxiliary/plan/scratch owner, no intrinsic freeze |
+| `ExPolygon::contour` | Embedded Polygon | Same window as the owner ExPolygon |
+| `ExPolygon::holes` | Vector of Polygon by value | Resize/erase invalidate the affected holes |
+| `Polygons`, `Polylines`, `ExPolygons`: vector elements | Owned values | Structural change may invalidate elements, contours, holes and points |
+| `multipoint_view::array` | Mutable borrow of `points.data()` | Direct writes cannot be intercepted; reacquire after a mutable call according to the ABI contract |
+| `multipoint_const_view::array` | Constant borrow of the same buffer | Not an immutable snapshot; another alias may modify/destroy the source |
+| Multipoint views `size`, `flags` | Descriptor values | Changing them neither resizes nor reconfigures the native MultiPoint |
+| `BoundingBoxBase::{min,max}` | C getters return the bounds by copy | No mutable handle to the source bbox; recompute after editing geometry |
+| `c_point`, `c_vec2d`, `c_vec3f`, `c_vec3d`, `c_matrix4d::value` | Copied values unless an array is explicitly borrowed | Copies freely modifiable by their owner, with no effect on the source |
+
+Geometric mutators ignore the pipeline owner. A mutable handle borrowed before a boundary is not revoked afterwards. Contracts forbidding source/destination aliasing must be respected; do not assume that self-append or insertion from its own buffer is safe.
+
+Sources: `src/libslic3r/MultiPoint.hpp:417`, `src/libslic3r/ExPolygon.hpp:59`, `src/libslic3r/Api/plugin/c/slic3r_geometry.h:152`, `src/libslic3r/Api/host/slic3r_geometry.cpp:474`.
+
+### Clipper adapters
+
+| Class / member | Ownership and lifetime | Mutation / const |
+|---|---|---|
+| `PolygonShapes::m_polygon` | Borrow of a Polygon | Source stable while the adapter is in use |
+| `PolylineShapes::m_polyline` | Borrow of a Polyline | Same rule |
+| `PolygonsShapes::m_polygons` | Borrow of a collection | Same rule |
+| `ExPolygonsShapes::m_expolygons` | Borrow of a collection | Same rule |
+| `ExPolygonShapes::m_expolygon` | Borrow of an ExPolygon | Same rule |
+| `PathListShapes::m_paths` | Owned geometry of the flat result | Lifetime of the result in storage |
+| `PolyTreeShapes::m_tree` | Owned geometry of the hierarchical result | Lifetime of the result in storage |
+
+Owning an adapter does not extend the lifetime of its source. `clipper_concat_replace` may replace/release the previous accumulator: use the returned handle. Conversions to collections create independent results in the requested storage.
+
+Sources: `src/libslic3r/Api/host/ClipperShapes.cpp:123`, `src/libslic3r/Api/host/slic3r_clipper.cpp:339`.
+
+## 8. Generic properties, records and configurations
+
+### `PluginPropertyContainer` and shared backend
+
+Source object properties are contractually frozen at `Print` in the existing header, but their getters still return a mutable container even from a const node. The snapshot project may choose a more permissive contract; it is not implemented by these accessors.
+
+| Member | Ownership / mutation | End of validity / freeze |
+|---|---|---|
+| `PluginPropertyContainer::m_properties` | Sole owner of a vector of slots; base of PrintObject, Layer, LayerRegion, LayerSliceIsland, LayerRegionIsland, Surface; member of plan scopes | Source: `Print` contract, not enforced; plan scopes: `Plan` via const views |
+| `PropertyStorageSlot::m_type` | Numeric identity of the payload | Not a stable identity across orchestrators |
+| `PropertyStorageSlot::m_buffer` | Owned buffer | Slot removal/replacement |
+| `PropertyRawBuffer::m_data` | Owned aligned allocation, borrowed direct access | Removal/replacement/clear/copy of the owner |
+| `PropertyRawBuffer::m_byte_count` | Owned size | Buffer lifetime |
+| `PropertyRawBuffer::m_alignment` | Owned alignment | Buffer lifetime |
+| `Orchestrator::m_custom_property_infos` | Registry of PropertyInfo layouts | Host/plugin registrations; reallocation may invalidate borrowed names |
+| `PropertyInfo::{type,name,byte_count,alignment}` | Identity and layout; owned name | Copy a name to keep it beyond a later registration |
+| `c_layer_support_property::{interface_id,reserved}` | Layer payload | Same lifetime as its property |
+| `c_layer_brim_property::reserved` | Layer payload | Same rule |
+| `c_layer_adhesion_property::{kind,flags}` | Layer payload | Same rule |
+
+The backend copies independent bytes, not arbitrary objects pointed to by those bytes: no owning pointer, C++ string or vector may be placed in a generic payload. Reallocating the slot envelopes may preserve the payload allocations, but the contract requires reacquiring views after relevant mutations. The mutators have neither a phase guard nor an internal lock.
+
+Sources: `src/libslic3r/PluginProperty.hpp:94`, `src/libslic3r/PropertyStorage.hpp:109`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:217`, `src/libslic3r/Api/plugin/c/slic3r_data_tree.h:412`.
+
+### `PrintRecordStore`
+
+| Member / view | Ownership and mutation | Freeze / validity |
+|---|---|---|
+| `m_channels` | Map of DynamicConfig per channel; empty channel allowed | Sequential writes until `Print` per contract; addition/removal guarded only by phase assertions |
+| `m_next_id` | Atomic counter of positive IDs | No controlled freeze boundary on allocate_id; only this access is thread-safe |
+| Config of a channel | Value owned by the map, borrowed by the API | Stable when other channels are added, invalidated on its removal/clear/destruction |
+| `print_records_channels` list | Sorted array in a thread-local buffer | Until the next call to this function on the same thread |
+
+`clear()` destroys the channels and resets the counter to 1. A checkpoint restore must not use this ID reset as a simple rollback if it promises not to reuse the IDs of the previous attempt. An old mutable Config/Option handle can still bypass the store's access guard; the generic mutators do not know its owner.
+
+Source: `src/libslic3r/PrintRecords.hpp:22`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:959`.
+
+### Live and temporary configurations, and options
+
+A `config_handle` targets the `ConfigBase` subobject, with native pointer adjustment; do not treat it as any raw DynamicConfig.
+
+| Storage / member | Ownership and lifetime | Write / freeze |
+|---|---|---|
+| `DynamicConfig::options` | Map of ConfigOption owners; scratch, record or model config depending on origin | Scratch mutable; record until `Print` contractually; model input read-only |
+| Embedded values of static configs | ConfigOption members of Print/Object/Region instances | "Static" does not mean immutable value; region truly const, Print/Object technically editable through mutable getter |
+| `StaticPrintConfig::m_dynamic_options` | Plugin options owned by the static instance | Same window as its owning configuration |
+| `StaticPrintConfig::{m_keys_with_dynamic,m_keys_with_dynamic_dirty}` | Native cache of the key list | May change during a const read; not a domain snapshot |
+| `ConfigOption::flags` | Enabled, can-be-disabled, phony, extruder-array, placeholder-temp | Same lifetime/rights as the option |
+| `ConfigOptionSingle<T>::value` | Float/int/string/bool and scalar derivatives | API mutation if the option is mutable |
+| `ConfigOptionFloatOrPercent::percent` and inherited `value` | Value + unit | Same window |
+| `ConfigOptionPoint::value`, `ConfigOptionPoint3::value` | Floating-point config coordinates | Same window; not a source MultiPoint |
+| `ConfigOptionEnum<T>::value` | Enum value | Same window |
+| `ConfigOptionEnumGeneric::value`, `keys_map` | Value + borrow of a name table, possibly null in scratch | Does not own the borrowed table |
+| `ConfigOptionVector<T>::m_values` | Float/int/string/percent/points/bools/FloatOrPercent vectors | Resize/clear/replacement invalidate their borrowed descendants |
+| `ConfigOptionVectorBase::m_enabled` | Per-element enablement | Same window as the vector |
+| `FloatOrPercent::{value,percent}` | Owned element | Same owner |
+| `ConfigOptionGraph::value`, `ConfigOptionGraphs::m_values` | Owned GraphData | Const graph getter; replacement/deserialization of the option may modify/invalidate |
+| `GraphData::{graph_points,begin_idx,end_idx,type}` | Graph values | Graph/option lifetime; no independent global freeze |
+
+Adding another option does not invalidate a separately allocated option. However, `config_clear()` destroys all of them, and a successful `config_deserialize_all()` replaces the entire map after merging on a copy: **all old option handles must be reacquired**, not only those for keys present in the document.
+
+`config_get_or_add_mutable`, clear and global deserialization require DynamicConfig; mutable access to an existing option may work on a static config. The keys returned by `config_keys` are in a thread-local snapshot, valid until the next call on the same thread. The text/SCFG getters copy into the caller's buffer. `RAW_CO_VECTOR_ENUM` does not currently correspond to a supported native family.
+
+Sources: `src/libslic3r/Config/ConfigDef.hpp:871`, `src/libslic3r/Config/ConfigOption.hpp:473`, `src/libslic3r/Config/PrintConfig.hpp:395`, `src/libslic3r/Api/host/slic3r_config.cpp:74`.
+
+### Setting descriptors: schema, not user values
+
+Owner: `PrintConfigDef` / `ConfigDef::options` catalog. Construction/patching before schema finalization; no link with the `Print` checkpoint. `PrintConfigDef::instance_mutable()` refuses access after finalization. The GUI `readonly` flag does not lock the generic value setters.
+
+| Native storage | Exposed members / mapping | Lifetime |
+|---|---|---|
+| `ConfigOptionDef`: identity/classification | `opt_key`, `type`, `category`, `container_type`, `option_preset_type`, `gui_type`, `printer_technology`, `invalidates_step` | Catalog, read after finalization |
+| ABI level/flags | `plugin_api_level`, `plugin_api_flags` | Distinct from ConfigOption::flags |
+| Presentation/editing | `is_optional`, `multiline`, `full_width`, `is_code`, `is_vector_extruder`, `readonly`, `can_phony`, `can_be_disabled`, `aligned_label_left`, `contains_plugin_id` | Schema values |
+| Owned texts | `gui_flags`, `label`, `full_label`, `tooltip`, `translation_domain`, `sidetext`, `cli`, `ratio_over` | Copies at registration |
+| Dimensions/precision | `height`, `width`, `label_width`, `sidetext_width`, `precision`, `mode` | Schema values |
+| Limits | `min`, `max`, `max_literal` | ABI also exposes presence of limits and unit of the literal |
+| Dependencies | `aliases`, `shortcut`, `depends_on` | Owned collections |
+| `default_value` | Owned constant option, built from the serialized text | Not the value chosen in each Print |
+| `enum_def` | Owned ConfigOptionEnumDef | Borrowed static built-in tables or owned script table |
+| `ConfigOptionEnumDef::{m_values,m_labels}` | Values/labels copied into the ABI's `enum_def.value_label_pairs` pairs | Descriptor lifetime; ABI view in the thread-local snapshot |
+| `ConfigOptionEnumDef::{m_enum_names,m_enum_keys_map,m_enum_keys_map_storage_for_script}` | Native conversion tables, **not exposed in the ABI descriptor**; borrowed static tables or owned script table | Lifetime of the descriptor/source table |
+| `ConfigOptionEnumDef::{m_labels_translated,m_values_ordinary}` | Internal translation cache and ordering indicator, not carried as ABI descriptor members | The translation cache may change after schema finalization |
+| `graph_settings` | Owned/shared GraphSettings | Descriptor lifetime |
+| `GraphSettings` | `title`, `description`, `y_label`, `x_label`, `null_label`, `label_min_x`, `label_max_x`, `label_min_y`, `label_max_y`, `min_x`, `max_x`, `step_x`, `min_y`, `max_y`, `step_y`, `allowed_types`, `has_reset_vals`, `reset_vals`, `enforced_values` | Same schema contract; reset_vals is a GraphData |
+| `Orchestrator::m_option_def_patches` / `OptionDefPatch` | `kind`, `opt_key`, `enum_values`, `remove_values`, `default_serialized_value`, `source_option_key`, `prepend`, `plugin_id` | Copies of requests applied at finalization, not slicing data |
+
+`orchestrator_get_option_def` returns a structure containing pointers into a thread-local snapshot, invalidated at the next call on that thread. The `ConfigOptionDefinition` wrapper makes its own copies; the current wrapper does not represent `contains_plugin_id`. Registrations copy their inputs, unlike the borrowed read descriptors.
+
+Sources: `src/libslic3r/Config/ConfigDef.hpp:127`, `src/libslic3r/Api/host/slic3r_config_def.cpp:47`, `src/libslic3r/Api/plugin/cpp/ConfigDefinitionViews.hpp:75`.
+
+## 9. Step contexts and temporary outputs
+
+A `plugin_run_context` is a callback borrow. Its members `step`, `print`, `plugin_storage`, `data`, `host_context` and callbacks do not own the pointed-to objects. Copying the context does not extend any lifetime; the opaque host_context must not be inspected or retained. Step wrappers may live during setup_run/run, but the public contract may limit the borrow to the current call.
+
+### Layer-height and perimeters
+
+| Class / member | Storage and write rights | End of validity / publication |
+|---|---|---|
+| `LayerHeightRunContext::enforced_layer_profile` | Converted copy of the model profile, backing of `enforce_layer_zs` | Context lifetime, not an alias of the model input |
+| `LayerHeightRunContext::layer_config_ranges` | c_layer_config_range values, copied bounds and borrowed configs | Lifetime of the context array; config targets tied to the model |
+| `LayerHeightRunContext::context_step` | Payload/callbacks borrowing both buffers | Not an object backup |
+| `SlicingRunContext::context_step` | Sole member, no additional private geometric storage | Context lifetime |
+| `PerimeterTree::root` | Root owning the temporary processing tree | Destroyed when the group processing returns |
+| `PerimeterTree::last_span_nodes` | Pointer array backing the split span | Replaced at the next span/rebuild result |
+| `PerimeterTreeNode::node` | Embedded C descriptor | Temporary node lifetime |
+| `PerimeterTreeNode::area` | Owned ExPolygon exposed through node.area | Editable during callback, working copy independent of the source island |
+| `PerimeterTreeNode::infill_areas` | **One ExPolygon**, exposed through node.fill_area | Same window |
+| `PerimeterTreeNode::extrusions` | Exposed temporary root | Filled/consumed during generation/publication |
+| `PerimeterTreeNode::children` | Node owners | Rebuild destroys old descendants |
+| `PerimeterTreeNode::child_nodes` | Non-owning array exposed through node.children | Recreated by structural synchronization |
+| `perimeter_node::{parent,area,fill_area,extrusions,children,child_count}` | Links/handles to the storages above | Structure managed via callbacks, no free editing of links |
+| `perimeter_node::{perimeter_idx,perimeter_needed}` | Counters editable per module contract | Node lifetime |
+| Local buffers `inner_areas`, `inner_infill_areas` | Output ExPolygons of generate_node | Synchronous call; consumed to create the children |
+| `PerimeterRunContext::{infill_areas,infill_free_areas}` | Owned accumulations of domains | Moved to the island at publication; no persistent borrow of the context |
+
+The native member `PerimeterRunContext::perimeter_slices` is declared but is not the published buffer used in this implementation; the persistent output is computed differently. Do not invent a `PerimeterOutputs` owner.
+
+Sources: `src/libslic3r/Api/host/steps/LayerHeightStep.hpp:20`, `src/libslic3r/Steps/StepGeneratePerimeter.cpp:72`, `src/libslic3r/Steps/StepGeneratePerimeter.cpp:1017`.
+
+### Infill and support demands
+
+| Class / member | Write / ownership | End of editing / lifetime |
+|---|---|---|
+| `SurfaceInfillRecipe::pattern_plugin_id` | Owned selection string | Lifetime of generate_surface |
+| `SurfaceInfillRecipe::raw` | Recipe by value, modified in place by successive recipe modifiers | Const view for the pattern; destroyed with the recipe |
+| `SurfaceInfillRecipe::no_overlap_areas` | Computed local geometry, passed const | Lifetime of generate_surface |
+| `generate_surface()::output` | Local root initially empty, filled by the pattern | Content published by move; local handle not transferred |
+| `InfillStepHostContext::pattern_runtime_ids_by_plugin_id`, `pattern_plugins_by_runtime_id` | Local name ↔ ID/plugin registries | Lifetime of this step call, non-persistent IDs |
+| `InfillStepHostContext::recipe_modifier_plugins` | List of borrowed providers | Step context lifetime |
+| `InfillStepHostContext::pattern_host_contexts`, `recipe_modifier_host_contexts` | Owned contexts for the callbacks | Lifetime of the step call |
+| `StepSupportDemand::State::m_demands` | Map borrowed object → owned SupportDemandSet | Reset/destroyed in the pipeline; not a Print member |
+| `SupportDemandSet::m_entries` | Vector of Entry by value | Addition/erasure may invalidate views |
+| `SupportDemandSet::Entry::island` | Source borrow | The set does not own the island |
+| `SupportDemandSet::Entry::polygons` | Owned ExPolygons, mutable getter | Modify/set/clear during demand processing; not a persistent checkpoint |
+| `SupportDemandRunContext::context_step` | Payload borrowing the set | Wrapper lifetime; does not own the demand |
+
+By-value fields of `raw_infill_pattern_params`, all from the same recipe: `pattern_id`, `surface_type`, `extrusion_role`, `flow`, `density`, `flow_mult`, `connection`, `add_gap_fill`, `gap_fill_enabled`, `dont_adjust`, `monotonic`, `fill_exactly`, `complete`, `use_arachne`, `can_angle_cross`, `extruder`, `priority`, `spacing`, `angle`, `bridge_angle`, `bridge_type`, `layer_height`, `z`, `layer_id`, `overlap`, `bridge_offset`, `fill_resolution`, `link_max_length`, `loop_clipping`, `anchor_length`, `anchor_length_max`, `max_sparse_infill_spacing`.
+
+`c_flow` owns `width`, `spacing`, `height`, `nozzle_diameter`, `is_bridge`, `spacing_ratio`, `mm3_per_mm`. This record does not own the regions from which its values are computed.
+
+The pattern generation callback borrows the provided buffers, without allocating or clearing the output itself. The default generator provides a fresh output. Support generation remains unimplemented; the existence of the demand working set does not prove a persistent support output.
+
+Sources: `src/libslic3r/Plugins/Infill/DefaultInfillGenerator.cpp:279`, `src/libslic3r/Api/plugin/c/steps/slic3r_step_infill.h:40`, `src/libslic3r/Steps/StepSupportDemand.hpp:25`.
+
+### C++ computed views
+
+| Class / members | Owned or borrowed | Validity / mutation |
+|---|---|---|
+| `RegionSettingsValue::m_keys` | Owned names | Value lifetime |
+| `RegionSettingsValue::m_options` | Const pointers to source options | Not a snapshot of the values; configs/options must remain stable |
+| `RegionSettingsClip::m_storage` | Storage borrow | Must outlive the allocations |
+| `RegionSettingsClip::m_expolygons` | RAII ownership of a scratch geometry | Null means accept everything, not an empty collection |
+| `RegionSettings::{m_default_config,m_regions}` | Borrowed sources | Lifetime/stability of the source configurations and regions |
+| `RegionSettings::{m_option_groups,m_key_areas,m_key_regions}` | Owned results/indexes, keys depending on borrowed values | Rebuild invalidates their references; sources stable during use |
+
+Source: `src/libslic3r/Api/plugin/cpp/RegionSettingsViews.hpp:126`.
+
+## 10. Sessions, services and result buffers
+
+A service may be provided by an external plugin: the API cannot name the members of its opaque private state. The tables list the ABI fields and, where they exist, the storage of the shipped provider/host. Sessions have their own dedicated destructors; they must not be freed with `storage_free`.
+
+### Geometry services
+
+| Class / member | Ownership / write | Const / lifetime |
+|---|---|---|
+| `NativeBridgeDetector::{expolygons_owned,lower_slices_owned,detector}` | Geometry copies and owned detector | Session lifetime, destroyed via vtable |
+| `BridgeDetector::{expolygons_owned,expolygons,lower_slices}` | Geometry and references depending on the provider's constructor | Stable session inputs |
+| `BridgeDetector::{spacing,precision,angle,max_bridge_length,layer_id}` | Analysis state; setters/detection during use | Not frozen at the checkpoint; frozen according to session call/read |
+| `mesh_query_mesh::triangles` | Owned working mesh, vertices/indices copied | Append/decimate modify it; specialized destroy |
+| `mesh_query_scene::{triangles,labels,tree}` | Scene owning a transformed copy and index | **Immutable after creation**, may outlive the work meshes |
+| `mesh_query_samples::{values,area}` | Owned result | Immutable, may outlive the scene; copies to caller buffers |
+| `mesh_query_hits::rays` | Owned hit vectors | Same rule |
+| `mesh_query_sample::{position,normal,geometry_id,triangle_id}` | Result copied to the requester | Self-contained values; IDs interpreted in the originating scene |
+| `mesh_query_hit::{distance,normal,geometry_id,triangle_id}` | Same ownership by copy | No owned triangle handle |
+| `mesh_query_ray::{origin,direction,min_distance,max_distance}` | Input by value in the caller's array | Borrowed only during the query call |
+| `mesh_query_part::{mesh,transform,geometry_id}` | Borrowed mesh, transform/label by value | Copied into the scene at its construction; no persistent dependency on the work mesh |
+| `mesh_query_diagnostic::message` | Fixed buffer supplied by the requester | Overwritten by calls that publish a diagnostic |
+| `mesh_query_cancel::{context,is_cancelled}` | Borrowed context and callback | Duration of the synchronous call; no ownership transferred |
+
+The built-in bridge detector replaces the coverage/unsupported edges output collections; do not assume an append that keeps the previous elements. Mesh scenes/results can be read concurrently, but not during their destruction.
+
+Sources: `src/libslic3r/Plugins/BridgeDetector.cpp:76`, `src/libslic3r/Api/host/slic3r_mesh_queries.cpp:24`, `src/libslic3r/Api/plugin/c/slic3r_mesh_queries.h`.
+
+### Seam placement
+
+| ABI field | Ownership / write | Lifetime |
+|---|---|---|
+| `run_ctx_seam_placer::plan` | Working plan borrowed during initialization | Does not transfer ownership of the plan |
+| `run_ctx_seam_placer::{regions,region_count}` | Borrowed array of const PrintRegion | Array during run only; regions tied to the Print |
+| `run_ctx_seam_placer::instance` | Session published by the provider | Transferred to the consumer, destroyed exactly once |
+| `raw_seam_placer_instance::session` | Transferred opaque state | Session lifetime |
+| `raw_seam_placer_instance::vtable` | Borrowed static table | Must outlive the session |
+| `struct_size`, `status`, `point` or `priority` results | Requester memory, filled by callback | Self-contained values after return |
+| `error_message` results | Borrowed text | Until the next priority/place callback on the same thread or destruction |
+
+After initialization, priority/place may run concurrently. They modify neither the borrowed loop nor the borrowed region; shared state/cache must support this concurrent read. The session depends on the plan for which it was created and is not a snapshot of that plan.
+
+Source: `src/libslic3r/Api/plugin/c/steps/slic3r_step_seam_placer.h:21`.
+
+### Scripts, firmware, thumbnails and G-code reader
+
+| Storage / members | Ownership / write | Validity |
+|---|---|---|
+| `GCodeScriptProcessor::Impl::m_public_config` | Config copied/prepared, then mutable by the processor's user | Until the next prepare/destruction; **modifiable during G-code**, distinct from the frozen input configs |
+| `GCodeScriptProcessor::Impl::{m_output,m_error}` | Owned result texts | Borrows until the next prepare/process/destruction |
+| `GCodeFirmwareSessionHolder::{session,output,error}` | Provider state and C++ helper buffers | Until the next callback/destruction; a const interface does not make the firmware state immutable |
+| `GCodeThumbnailRenderer::{m_image,m_error}` | Owned image/diagnostic | Next render/destruction |
+| `ThumbnailData::{pixels,width,height}` | Owned pixels and dimensions copied into the view | Borrowed const pixels, never storage_free |
+| `GCodeThumbnailEncoderHolder::{session,bytes,error,mutex}` | Owned session and encoded output | Next encode/destruction; the callback lock does not extend the borrow |
+| `ViewerReaderInvocation::m_active_chunk` | string_view of the chunk supplied by the source | Next chunk/end of call; not the owner of the bytes |
+| `ProbeInvocation::m_prefix` | Borrowed prefix | Probe call |
+| `raw_gcode_reader_event::items`, `raw_gcode_reader_state::items` | Synchronous borrowed arrays | Recipient copies what it keeps |
+| `GCodeStateTracker::{m_state_items,m_state}` | Owned array and the view referencing it | Tracker update invalidates/rewrites previous views |
+| `run_ctx_gcode::{print,plan,firmware,output_path,reader_source_context}` | Borrows and publication context | Export call; plan/source read-only, firmware session with its own state |
+
+Streams, reader services and per-export host buffers are temporary; the published path is copied into Print. The preview result is built then moved to the caller, and is not a plugin storage allocation. Final statistics and host operational state are outputs separate from the plan: the statistics do not reopen its final properties for writing.
+
+Sources: `src/libslic3r/Api/host/GCodeScriptProcessor.cpp:181`, `src/libslic3r/Api/plugin/cpp/gcode/GCodeFirmwareViews.hpp:118`, `src/libslic3r/Api/host/GCodeThumbnailRenderer.hpp:34`, `src/libslic3r/Api/host/GCodeReaderService.cpp:74`.
+
+### Registration metadata and service values
+
+| Storage | Copy or borrow | Lifetime / editing |
+|---|---|---|
+| `Plugin::{m_id,m_name,m_description,m_exclusive_group,m_exclusive_group_label,m_exclusive_group_tooltip,m_dependencies,m_used_config_keys,m_defined_config_keys}` | Owned copies of the provider's responses | Plugin catalog, not a checkpoint output |
+| `Plugin::m_c_api::{ctx,vt}` | Retained provider pointers | Must outlive the calls; no implicit owner of provider memory |
+| ABI structures `struct_size`, enums, flags, IDs, callbacks | Copied values or function pointers depending on the field | No slicing freeze of their own; respect the lifetime of the designated table/session |
+| `c_medial_axis_extrusion_params` | Owned scalar parameters; `extension_area` is a borrow | The operation produces an extrusion in the requested storage; does not extend the lifetime of the borrowed area |
+
+Medial-axis scalar fields: `min_medial_width`, `max_medial_width`, `min_extrusion_width`, `max_extrusion_width`, `min_centerline_length`, `endpoint_extension_length`, `endpoint_taper_length`, `role`, `flow`, `variable_width_resolution`, `width_change_tolerance`, `min_extrusion_length`, `flags`. Same lifetime for these values; `extension_area` must remain valid while it is used.
+
+Sources: `src/libslic3r/Api/host/Plugin.cpp:33`, `src/libslic3r/Api/plugin/c/slic3r_extrusions.h:253`.
+
+## 11. Current limits and consequences for checkpoints
+
+### What the current checks do not guarantee
+
+1. The data tree guards are mainly assertions depending on the current step; `running_step_may_edit()` also accepts `STEP_NONE`. This is not a permanent frozen state of each object.
+2. The source property getters accept const nodes and return mutable ones. The current contract says freeze at `Print`, but it is not enforced; a future contract allowing more writes requires a separate restoration of this metadata.
+3. The generic geometry/extrusion/config/property mutators ignore their owner. A mutable alias handed out earlier is not revoked when a checkpoint is passed.
+4. The Print/Object configurations expose mutable getters without automatically triggering pipeline invalidation; this is not a transactional user editing API.
+5. The C++ const of a unique_ptr or of a container of unique_ptr does not make the pointed-to objects deeply const. The const views of the final plan are more restrictive than some native accesses.
+6. Plan handles do not all guarantee their identity/provenance: in particular, transfer between tool groups does not currently enforce all the announced same-layer/same-plan checks. This is not a permission for inter-plan transfer.
+7. Event roots have a non-sortable/non-reversible contract; the current clear/append cycle can re-enable sorting via `ensure_children()`. The announced invariant is therefore not a guarantee for all current native paths.
+
+Static findings, not runtime test results. References: `src/libslic3r/Print.cpp:528`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:510`, `src/libslic3r/Api/host/slic3r_printing_plan.cpp:830`, `src/libslic3r/Printing/PrintingPlan.cpp:464`, `src/libslic3r/ExtrusionEntity.cpp:301`.
+
+### Storage decisions that can be inferred
+
+`Print::prepare_checkpoint_resume()` coordinates notification, host destructions and restoration. From `None`, the auxiliaries are destroyed before the main layers and the profile; from `Slicing`, the region-islands and the fill caches of the retained regions are cleared. The hash of these caches no longer uses a variable shift likely to exceed the integer width; it remains address-based and requires explicit invalidation after in-place editing.
+
+A direct call to `run_gcode()` at the `None` checkpoint is rejected before any destruction: the caller must run `run_slice()` to produce the missing prefix. Cleanup must never erase the layers and then skip their reconstruction.
+
+| Situation | Consistent handling |
+|---|---|
+| Owner created after the checkpoint | Destroy this owner, without separately purging each child/property |
+| Retained node, frozen geometry, properties modified downstream | Restore its properties if these modifications are allowed; no need to copy its geometry |
+| Derived cache | Invalidate/recompute, do not save as authoritative data |
+| Plan modified after Ordering | Restore a complete clone; properties alone do not undo structural modifications |
+| Source data borrowed by a plan | Release the plans/snapshots before destroying the source owner |
+| Input updated by apply | Keep the current input; do not restore an old pointer/config by copying a complete object |
+| Temporary/service | Respect free/destroy/scope and publish the necessary contents before expiration |
+
+Step callbacks may impose a stricter boundary than the global freeze: a surface consumed by infill is already an input, even though `Print` has not yet been reached. A snapshot must not be used to legitimize a mutation forbidden by the local contract.
+
+## 12. API coverage
+
+Scope: owned or borrowed storage accessible through the shipped ABI, its step callbacks and its C++ views. Scalars returned by copy are grouped; arbitrary private states of external plugins, unexposed algorithm details and GUI internals cannot be enumerated as host members in this reference.
+
+| Header family under `src/libslic3r/Api/plugin/c/` | Documented storage |
+|---|---|
+| `slic3r_data_tree.h`, `slic3r_volume.h` | Print/objects, model and regions, layers/islands/surfaces, properties and records (§2–4, §8) |
+| `slic3r_printing_plan.h` | Hierarchy, catalog, events, identities, source borrows (§5) |
+| `slic3r_extrusion_entity.h`, `slic3r_extrusion_polyline.h`, `slic3r_extrusion_property.h`, `slic3r_extrusions.h` | Trees, geometry, payloads and resources, generation parameters (§6, §9–10) |
+| `slic3r_geometry.h`, `slic3r_geometry_types.h`, `slic3r_clipper.h`, `slic3r_utils.h` | Allocations, geometries, adapters, copies and buffers (§7) |
+| `slic3r_config*.h` | Configs, option families, schema/descriptors and thread-local views (§8) |
+| `slic3r_plugin*.h`, `slic3r_orchestrator.h` | Storage, registry/descriptors, contexts and provider pointers (§7–10) |
+| `slic3r_bridge_detector.h`, `slic3r_mesh_queries.h` | Geometry sessions/results and ownership of copies (§10) |
+| `slic3r_gcode_script.h`, `slic3r_gcode_firmware.h`, `slic3r_gcode_thumbnail.h`, `slic3r_gcode_reader.h` | Runtime config, sessions, buffers and result views (§10) |
+| `steps/slic3r_step_*.h` | Write windows of the preceding families; own layer-height/perimeter/infill/support-demand buffers; seam/firmware/reader/thumbnail services (§1, §9–10) |
+| `slic3r_def.h`, `slic3r_slicing_step.h`, ABI version | Contract types/values/tables; no additional slicing result storage |
+
+The `Stored*`, `RegionSettings*` views and service wrappers are included when their ownership or copies differ from the underlying C handle. Any newly exposed allocation/collection must add its members, its mutation boundary and its invalidations here, rather than receiving by default the lifetime of its calling context.

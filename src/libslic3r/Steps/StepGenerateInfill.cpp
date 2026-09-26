@@ -435,25 +435,6 @@ void prepare_recipe_modifier_plugins(InfillStepHostContext &host)
     }
 }
 
-void clear_infill_outputs(Print &print)
-{
-    for (PrintObject &object : print.objects()) {
-        for (Layer &layer : object.layers()) {
-            for (LayerSliceIsland &island : layer.islands()) {
-                for (LayerRegionIsland &region_island : island.regions_islands()) {
-                    if (region_island.has_extrusion(LayerRegionIsland::INFILLS))
-                        region_island.mutable_extrusion(LayerRegionIsland::INFILLS).clear();
-                    if (region_island.has_extrusion(LayerRegionIsland::GAP_FILLS))
-                        region_island.mutable_extrusion(LayerRegionIsland::GAP_FILLS).clear();
-                    if (region_island.has_extrusion(LayerRegionIsland::IRONINGS))
-                        region_island.mutable_extrusion(LayerRegionIsland::IRONINGS).clear();
-                    region_island.remove_empty_extrusions();
-                }
-            }
-        }
-    }
-}
-
 void run_generator_for_object(Orchestrator &orchestrator,
                               Plugin &plugin,
                               Print &print,
@@ -487,10 +468,13 @@ void run_generator_for_object(Orchestrator &orchestrator,
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &)
 {
-    clear_infill_outputs(print);
+    // Intentionally empty: infill lives in the region islands, which are either
+    // destroyed by a slicing restart or left untouched by ordering/plan replays.
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string *)
 {

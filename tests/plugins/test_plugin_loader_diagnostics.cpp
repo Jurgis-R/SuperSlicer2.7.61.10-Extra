@@ -18,6 +18,28 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Plugins/PluginLoader.hpp"
+#include "plugin_test_helpers.hpp"
+
+#ifdef SLIC3R_TEST_PYTHON_PLUGINS
+TEST_CASE("Python loader rejects an initially noncallable clear hook without losing valid plugins",
+          "[plugins][python][clear][loader][diagnostics]")
+{
+    REQUIRE(Slic3r::Test::Plugins::python_plugin_test_runtime_available());
+    const Slic3r::PluginPackageLoadReport &report =
+        Slic3r::Test::Plugins::python_invalid_clear_package_report();
+    CHECK(report.state == Slic3r::PluginPackageLoadState::Failed);
+    CHECK(report.registered_plugin_ids.empty());
+    REQUIRE(report.issues.size() == 1);
+    CHECK(report.issues.front().code == Slic3r::PluginPackageLoadErrorCode::PythonRegistrationFailed);
+    CHECK(report.issues.front().detail ==
+          "Python plugin 'python.test.clear.invalid_registration' clear attribute is not callable.");
+    Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
+    CHECK(orchestrator.get_plugin("python.test.clear.invalid_registration") == nullptr);
+    CHECK(orchestrator.get_plugin("python.external.package_root") != nullptr);
+    CHECK(orchestrator.get_plugin("python.test.clear.noncallable") != nullptr);
+    CHECK(orchestrator.get_plugin("python.polyholes") != nullptr);
+}
+#endif
 
 namespace {
 
@@ -44,7 +66,7 @@ void write_package_metadata(const boost::filesystem::path &package_root,
     {
         boost::nowide::ofstream stream((package_root / "version.ini").string());
         stream << "[plugin]\npackage_version = 1.0.0\nslicer_version = 2.7.63.0\n"
-                  "[abi]\nslic3r_plugin_types.h = 1.0\n";
+                   "[abi]\nslic3r_plugin_types.h = 3.0\n";
     }
 }
 

@@ -1597,7 +1597,7 @@ bool PrintObject::invalidate_step(slicing_step_t step)
 {
     // Deprecated: this linear propagation belongs to the old PrintObject step
     // graph. Keep it for legacy callers, but do not extend it for new plugin
-    // steps; use Print::mark_step_and_dependents_for_execution() instead.
+    // steps; use Print::request_replay_from() for control-thread invalidation instead.
 	bool invalidated = Inherited::invalidate_step(step);
     
     // propagate to dependent steps
@@ -1645,9 +1645,10 @@ bool PrintObject::invalidate_steps_direct(std::initializer_list<slicing_step_t> 
 
 bool PrintObject::invalidate_all_steps()
 {
-	// First call the "invalidate" functions, which may cancel background processing.
-    bool result = this->invalidate_all_steps_direct() | m_print->invalidate_all_steps();
-	// Then reset some of the depending values.
+    // The parent must stop its worker before this object's cached inputs can be invalidated.
+    bool result = m_print->invalidate_all_steps();
+    result |= this->invalidate_all_steps_direct();
+    // Mark derived slicing parameters stale so input preparation recomputes them before execution.
 	m_slicing_params->valid = false;
 	return result;
 }

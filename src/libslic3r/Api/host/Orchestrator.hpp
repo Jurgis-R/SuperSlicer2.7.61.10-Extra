@@ -481,6 +481,13 @@ public:
     plugin_run_context prepare_plugin_run_context(slicing_step_t step,
                                                   Plugin *plugin,
                                                   plugin_host_context *host_context = nullptr);
+    // Remember that this plugin prepared state for the given Print and step, so
+    // a later replay can ask it to release that state.
+    void track_plugin_setup(Plugin &plugin, Print &print, slicing_step_t step);
+    // Ask plugins that prepared state for this Print at or after
+    // first_invalid_step to release it. Returns false when a callback failed;
+    // failed entries stay registered for a retry.
+    bool clear_plugin_participants(Print &print, slicing_step_t first_invalid_step);
     // Queue a plugin diagnostic for the GUI thread. The message is copied so C,
     // C++ and Python plugins may pass temporary buffers safely.
     void add_plugin_message(PluginMessageLevel level,

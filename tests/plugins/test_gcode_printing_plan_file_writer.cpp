@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -453,7 +454,7 @@ TEST_CASE("Default firmware publishes a preamble for an empty PrintingPlan", "[p
         CHECK(print.gcode_reader_source_path() == output_path.string());
         CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
 
-        Steps::StepGenerateGcode::clean_and_prepare(print);
+        Steps::StepGenerateGcode::clear(print);
         CHECK(print.gcode_reader_source_path().empty());
     } catch (...) {
         remove_output_pair(output_path);
@@ -570,7 +571,7 @@ TEST_CASE("PrintingPlan markers survive generated file Reader integration",
     remove_output_pair(output_path);
     GCodeProcessorResult result;
     try {
-        Steps::StepGenerateGcode::clean_and_prepare(print);
+        Steps::StepGenerateGcode::clear(print);
         const std::string reader_plugin_id = Steps::StepGenerateGcode::run_step(
             orchestrator, print, output_path.string());
         REQUIRE(reader_plugin_id == "gcode.reader.marlin2");
@@ -795,7 +796,7 @@ TEST_CASE("Orchestrator export_gcode still routes through ordering and STEP_GCOD
 }
 
 TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
-          "[plugins][gcode][seam-placer][cost]")
+          "[plugins][gcode][seam-placer][cost][checkpoint][integration]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
@@ -822,16 +823,42 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
     Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
     // Count the steps that really ran, to check which checkpoint each replay
     // resumed from.
+    uint32_t slicing_count = 0;
     uint32_t finalize_slicing_count = 0;
     uint32_t ordering_count = 0;
+    uint32_t ui_cancel_count = 0;
+    bool cancel_after_ordering_restore = false;
+    const Printing::PrintingPlan *plan_at_cancellation = nullptr;
     print.status().set_callback([&](const PrintBase::SlicingStatus &status) {
         if ((status.flags & PrintBase::SlicingStatus::MAIN_STATE) == 0)
             return;
+        if (status.main_text == "StepSlicing")
+            ++slicing_count;
         if (status.main_text == "Finalizing slicing")
             ++finalize_slicing_count;
         if (status.main_text == "Ordering extrusions")
             ++ordering_count;
+        if (cancel_after_ordering_restore &&
+            print.running_step() == Steps::checkpoint_resume_step(Steps::Checkpoint::Ordering)) {
+            cancel_after_ordering_restore = false;
+            plan_at_cancellation = print.printing_plan();
+            print.cancel();
+        }
     });
+
+    // Ignore comments, not motion/extrusion values or command order.
+    const auto normalized_commands = [](const std::string &gcode) {
+        std::istringstream stream(gcode);
+        std::vector<std::string> commands;
+        std::string line;
+        while (std::getline(stream, line)) {
+            line = line.substr(0, line.find(';'));
+            const size_t first = line.find_first_not_of(" \t\r");
+            if (first != std::string::npos)
+                commands.push_back(line.substr(first, line.find_last_not_of(" \t\r") - first + 1));
+        }
+        return commands;
+    };
 
     const boost::filesystem::path output_path = temporary_gcode_path();
     remove_output_pair(output_path);
@@ -842,6 +869,15 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         CHECK(generated_path == output_path.string());
         REQUIRE(boost::filesystem::exists(output_path));
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        const std::vector<std::string> fresh_commands = normalized_commands(read_text_file(output_path));
+        bool has_extruding_motion = false;
+        for (const std::string &command : fresh_commands) {
+            if (command.find("G1 ") == 0 && command.find(" E") != std::string::npos &&
+                (command.find(" X") != std::string::npos || command.find(" Y") != std::string::npos))
+                has_extruding_motion = true;
+        }
+        REQUIRE(has_extruding_motion);
+        CHECK(slicing_count == 1);
         CHECK(finalize_slicing_count == 1);
         CHECK(ordering_count == 1);
         remove_output_pair(output_path);
@@ -849,11 +885,23 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         // The read-only G-code stage reuses the final plan directly.
         const Printing::PrintingPlan *final_plan = print.printing_plan();
         REQUIRE(final_plan != nullptr);
+        REQUIRE(print.is_step_done(psGCodeExport));
+        const size_t first_export_timestamp = print.step_state_with_timestamp(psGCodeExport).timestamp;
+        print.set_cancel_callback([&]() { ++ui_cancel_count; });
         const std::string replayed_gcode_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+        print.set_cancel_callback([]() {});
+        CHECK(ui_cancel_count == 0);
         CHECK(replayed_gcode_path == output_path.string());
         CHECK(print.printing_plan() == final_plan);
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
+        CHECK(normalized_commands(read_text_file(output_path)) == fresh_commands);
+        CHECK(print.is_step_done(psGCodeExport));
+        CHECK(print.step_state_with_timestamp(psGCodeExport).timestamp > first_export_timestamp);
+        CHECK_FALSE(print.should_execute_step(STEP_GCODE));
+        CHECK(slicing_count == 1);
+        CHECK(finalize_slicing_count == 1);
+        CHECK(ordering_count == 1);
         remove_output_pair(output_path);
 
         // A plan-editor change resumes from the ordering checkpoint. Background
@@ -870,6 +918,66 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         CHECK(ordering_count == 1);
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
         remove_output_pair(output_path);
+
+        SECTION("Cancellation after Ordering restoration leaves plan replay retryable") {
+            REQUIRE(print.has_ordering_checkpoint());
+            REQUIRE(print.is_step_done(psGCodeExport));
+            const size_t editor_export_timestamp = print.step_state_with_timestamp(psGCodeExport).timestamp;
+            const Printing::PrintingPlan *plan_before_cancelled_replay = print.printing_plan();
+            REQUIRE(plan_before_cancelled_replay != nullptr);
+            print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+            REQUIRE(print.current_checkpoint() == Steps::Checkpoint::Ordering);
+            CHECK(print.printing_plan() == plan_before_cancelled_replay);
+            cancel_after_ordering_restore = true;
+            print.set_cancel_callback([&]() { ++ui_cancel_count; });
+            CHECK_THROWS_AS(orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr),
+                            CanceledException);
+            print.set_cancel_callback([]() {});
+            CHECK(ui_cancel_count == 0);
+            CHECK_FALSE(cancel_after_ordering_restore);
+            REQUIRE(plan_at_cancellation != nullptr);
+            CHECK(plan_at_cancellation != plan_before_cancelled_replay);
+            CHECK(print.printing_plan() == plan_at_cancellation);
+            CHECK(print.canceled());
+            CHECK(print.running_step() == STEP_NONE);
+            CHECK(print.has_ordering_checkpoint());
+            CHECK(print.current_checkpoint() == Steps::Checkpoint::Ordering);
+            CHECK_FALSE(print.is_step_done(psGCodeExport));
+            for (const slicing_step_t step : Steps::execution_order()) {
+                CAPTURE(step);
+                CHECK(print.should_execute_step(step) ==
+                      !Steps::executes_before(step, Steps::checkpoint_resume_step(Steps::Checkpoint::Ordering)));
+            }
+            CHECK(slicing_count == 1);
+            CHECK(finalize_slicing_count == 1);
+            CHECK(ordering_count == 1);
+            CHECK_FALSE(boost::filesystem::exists(output_path));
+            CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
+
+            print.restart();
+            print.set_cancel_callback([&]() { ++ui_cancel_count; });
+            const std::string resumed_editor_path =
+                orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
+            print.set_cancel_callback([]() {});
+            CHECK(ui_cancel_count == 0);
+            CHECK(resumed_editor_path == output_path.string());
+            REQUIRE(boost::filesystem::exists(output_path));
+            CHECK(normalized_commands(read_text_file(output_path)) == fresh_commands);
+            CHECK(print.printing_plan() != plan_at_cancellation);
+            CHECK(print.has_ordering_checkpoint());
+            CHECK(print.current_checkpoint() == Steps::Checkpoint::GCode);
+            CHECK(print.is_step_done(psGCodeExport));
+            CHECK(print.step_state_with_timestamp(psGCodeExport).timestamp > editor_export_timestamp);
+            for (const slicing_step_t step : Steps::execution_order()) {
+                CAPTURE(step);
+                CHECK_FALSE(print.should_execute_step(step));
+            }
+            CHECK(slicing_count == 1);
+            CHECK(finalize_slicing_count == 1);
+            CHECK(ordering_count == 1);
+            CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
+            remove_output_pair(output_path);
+        }
 
         // A selector change can invalidate STEP_ORDERING after the downstream
         // layer extrusion edits were already marked done. Rebuilding the plan
@@ -893,11 +1001,34 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
         CHECK(finalize_slicing_count == 1);
         CHECK(ordering_count == 3);
+
+        // Repeated cleanup must neither retain old extrusion edits nor erase the retained slices.
+        for (uint32_t replay = 0; replay < 2; ++replay) {
+            CAPTURE(replay);
+            print.request_replay_from(Steps::Checkpoint::Slicing);
+            REQUIRE(print.current_checkpoint() == Steps::Checkpoint::Slicing);
+            if (replay == 0)
+                print.process();
+            remove_output_pair(output_path);
+            CHECK(orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr) ==
+                  output_path.string());
+            REQUIRE(boost::filesystem::exists(output_path));
+            CHECK(normalized_commands(read_text_file(output_path)) == fresh_commands);
+            CHECK(slicing_count == 1);
+            CHECK(finalize_slicing_count == 2 + replay);
+            CHECK(ordering_count == 4 + replay);
+            CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
+        }
     } catch (...) {
+        print.set_cancel_callback([]() {});
+        print.status().set_callback([](const PrintBase::SlicingStatus &) {});
+        print.restart();
+        orchestrator.reset_plugin_cancel();
         remove_output_pair(output_path);
         orchestrator.set_plugin_active(cost_plugin, cost_was_active);
         throw;
     }
+    print.status().set_callback([](const PrintBase::SlicingStatus &) {});
     remove_output_pair(output_path);
     orchestrator.set_plugin_active(cost_plugin, cost_was_active);
 }

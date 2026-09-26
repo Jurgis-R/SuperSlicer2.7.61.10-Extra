@@ -92,7 +92,8 @@ void remove_empty_region_islands(Print &print)
 
 } // namespace
 
-void clean_and_prepare(Print &) {}
+void clear(Print &) {}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string *)
 {

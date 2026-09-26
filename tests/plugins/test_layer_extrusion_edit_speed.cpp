@@ -230,7 +230,7 @@ void prepare_ordered_plan(PreparedSpeedPrint &prepared,
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx)
         append_source_layer(prepared, layers[layer_idx], 0.2 + 0.2 * double(layer_idx));
 
-    Steps::StepExtrusionOrdering::clean_and_prepare(prepared.print);
+    Steps::StepExtrusionOrdering::clear(prepared.print);
     Steps::StepExtrusionOrdering::run_step(Orchestrator::instance(), prepared.print);
     REQUIRE(prepared.print.printing_plan() != nullptr);
 }
@@ -352,7 +352,7 @@ void prepare_regional_process_plan(
     prepared.source_layers.push_back(reinterpret_cast<Layer *>(
         const_cast<layer_handle *>(result.layer.handle())));
 
-    Steps::StepExtrusionOrdering::clean_and_prepare(prepared.print);
+    Steps::StepExtrusionOrdering::clear(prepared.print);
     Steps::StepExtrusionOrdering::run_step(orchestrator, prepared.print);
     REQUIRE(prepared.print.printing_plan() != nullptr);
 }

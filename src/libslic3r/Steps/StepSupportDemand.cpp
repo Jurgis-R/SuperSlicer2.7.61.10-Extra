@@ -50,7 +50,8 @@ const ApiHost::Steps::SupportDemandSet *State::demand_for(const PrintObject &obj
     return it == m_demands.end() ? nullptr : it->second.get();
 }
 
-void clean_and_prepare(Print &) {}
+void clear(Print &) {}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string &)
 {

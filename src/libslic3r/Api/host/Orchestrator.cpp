@@ -43,6 +43,7 @@
 #include "libslic3r/SurfaceCollection.hpp"
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/UiLayoutMerger.hpp"
+#include "libslic3r/Utils.hpp"
 
 #include "ApiHostUtils.hpp"
 #include "ClipperShapes.hpp"
@@ -1361,6 +1362,8 @@ plugin_run_context Orchestrator::prepare_plugin_run_context(slicing_step_t step,
     // Plugin storage stays owned by this orchestrator; host_context is optional and borrowed.
     plugin_run_context context = {};
     context.step = step;
+    context.print = host_context != nullptr && host_context->print != nullptr ?
+        reinterpret_cast<const print_handle *>(host_context->print) : nullptr;
     context.plugin_storage = reinterpret_cast<storage_handle *>(&this->plugin_storage()[plugin]);
     context.host_context = host_context;
     context.is_cancelled = orchestrator_plugin_is_cancelled;
@@ -1368,6 +1371,74 @@ plugin_run_context Orchestrator::prepare_plugin_run_context(slicing_step_t step,
     context.report_error = orchestrator_plugin_report_error;
     context.report_progress = orchestrator_plugin_report_progress;
     return context;
+}
+
+void Orchestrator::track_plugin_setup(Plugin &plugin, Print &print, const slicing_step_t step)
+{
+    print.track_plugin_setup(plugin, step);
+}
+
+bool Orchestrator::clear_plugin_participants(Print &print, const slicing_step_t first_invalid_step)
+{
+    const size_t first_invalid_index = Steps::execution_index(first_invalid_step);
+    assert(first_invalid_index < Steps::execution_order().size());
+    if (first_invalid_index >= Steps::execution_order().size())
+        return false;
+
+    // Cleanup removes successful entries from Print, so iterate a copy rather than that changing list.
+    std::vector<Print::PluginCleanupParticipant> participants =
+        print.plugin_cleanup_participants();
+    bool all_clear_succeeded = true;
+    // Consumers may retain producer-owned handles, so unwind steps and setup order in reverse.
+    std::stable_sort(
+        participants.begin(), participants.end(), [](const Print::PluginCleanupParticipant &lhs,
+                                                      const Print::PluginCleanupParticipant &rhs) {
+            const size_t lhs_index = Steps::execution_index(lhs.step);
+            const size_t rhs_index = Steps::execution_index(rhs.step);
+            if (lhs_index != rhs_index)
+                return lhs_index > rhs_index;
+            return lhs.setup_order > rhs.setup_order;
+        });
+
+    for (const Print::PluginCleanupParticipant &participant : participants) {
+        if (participant.plugin == nullptr ||
+            Steps::execution_index(participant.step) < first_invalid_index)
+            continue;
+
+        std::map<Plugin *, PluginStorage>::iterator storage =
+            m_plugin_storage.find(participant.plugin);
+        if (storage == m_plugin_storage.end()) {
+            this->add_plugin_message(PluginMessageLevel::Error, participant.plugin, participant.step,
+                                     "Cannot clear Print state: plugin storage is missing.");
+            all_clear_succeeded = false;
+            continue;
+        }
+
+        int32_t clear_code = PLUGIN_ERROR_OK;
+        try {
+            clear_code = participant.plugin->clear(
+                reinterpret_cast<const print_handle *>(&print),
+                reinterpret_cast<storage_handle *>(&storage->second));
+        } catch (const std::exception &error) {
+            clear_code = this->store_error_message(error.what());
+        } catch (...) {
+            clear_code = this->store_error_message("Unknown exception while clearing Print state");
+        }
+        // Failed entries stay tracked for retry instead of being mistaken for released caches.
+        if (clear_code == PLUGIN_ERROR_OK) {
+            print.erase_plugin_cleanup_participant(participant.plugin, participant.step);
+        } else {
+            all_clear_succeeded = false;
+            // The registry owns the text: reserved, unknown or negative codes
+            // resolve to a generic message instead of an empty diagnostic.
+            const std::string message = this->error_message(clear_code);
+            BOOST_LOG_TRIVIAL(error) << "Plugin '" << participant.plugin->get_id()
+                                     << "' failed to clear Print state (code " << clear_code
+                                     << "): " << message;
+            this->add_plugin_message(PluginMessageLevel::Error, participant.plugin, participant.step, message.c_str());
+        }
+    }
+    return all_clear_succeeded;
 }
 
 // Run one plugin with the same two-phase barrier used by object-oriented
@@ -1381,6 +1452,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
     bool cancel_on_error)
 {
     if (!this->owns_plugin(&plugin) || (run_count != 0 && payloads == nullptr))
+        return RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT;
+    if (plugin.has_clear() && print == nullptr)
         return RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT;
     if (!this->is_plugin_active(&plugin))
         return RAW_PLUGIN_EXECUTION_INACTIVE;
@@ -2385,10 +2458,8 @@ std::string Orchestrator::export_gcode(Print &print,
         return path;
     }
 
-    // Export can be requested multiple times after one slice. Rewrite the
-    // destination without rebuilding the ordered plan unless a plan producer
-    // was independently invalidated: Checkpoint::Plan forces at least STEP_GCODE.
-    print.request_replay_from(Steps::Checkpoint::Plan);
+    // Re-export through the worker path: the UI cancellation callback would wait for this very thread.
+    print.request_replay_from_worker(Steps::Checkpoint::Plan);
     GCodeThumbnailRenderer thumbnail_renderer(print, std::move(thumbnail_cb));
     const std::string reader_plugin_id = Steps::StepPipeline::run_gcode(
         *this, print, path, thumbnail_renderer.c_renderer(), result);

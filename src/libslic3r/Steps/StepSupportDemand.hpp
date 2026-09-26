@@ -41,7 +41,8 @@ private:
     std::map<const PrintObject *, std::unique_ptr<ApiHost::Steps::SupportDemandSet>> m_demands;
 };
 
-void clean_and_prepare(Print &print);
+void clear(Print &print);
+void prepare(Print &print);
 bool validate_pre(const Print &print, std::string &error);
 bool validate_post(const Print &print, std::string &error);
 State run_step(Orchestrator &orchestrator, Print &print);

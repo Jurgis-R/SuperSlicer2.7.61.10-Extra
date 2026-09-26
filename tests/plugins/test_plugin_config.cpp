@@ -27,8 +27,13 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "test_data.hpp"
+#include "libslic3r/Layer.hpp"
+#include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
 #include "libslic3r/PrintRegion.hpp"
+#include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
@@ -1114,4 +1119,135 @@ TEST_CASE("Print registry distinguishes equal hashes and detaches parent configs
     first.parent = &parent;
     Print other_print;
     CHECK(other_print.register_print_region(first).config().parent == nullptr);
+}
+
+TEST_CASE("Print apply reuses the Slicing checkpoint for region and object option changes",
+          "[plugins][config][checkpoint][invalidation][integration]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const char *key = nullptr;
+    const char *changed_value = nullptr;
+    ConfigOptionType option_type = coNone;
+    bool region_option = false;
+    SECTION("REGION perimeters") {
+        key = "perimeters";
+        changed_value = "4";
+        option_type = coInt;
+        region_option = true;
+    }
+    SECTION("OBJECT support material spacing") {
+        key = "support_material_spacing";
+        changed_value = "3.5";
+        option_type = coFloat;
+    }
+    CAPTURE(key);
+    const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+    REQUIRE(definition != nullptr);
+    REQUIRE(definition->type == option_type);
+    REQUIRE(definition->invalidates_step != STEP_ANY);
+    REQUIRE(definition->invalidates_step != STEP_NONE);
+    REQUIRE(Steps::executes_before(STEP_POST_SLICING, definition->invalidates_step));
+    REQUIRE(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Slicing);
+
+    // Built-in scopes are defined by static config stores, not plugin container metadata.
+    const PrintRegionConfig region_scope;
+    const PrintObjectConfig object_scope;
+    REQUIRE((region_scope.optptr(key) != nullptr) == region_option);
+    REQUIRE((object_scope.optptr(key) != nullptr) == !region_option);
+
+    const std::array<const char *, 7> stage_labels {
+        "Creating the layer height", "StepSlicing", "Post-processing slices",
+        "Preparing perimeters", "Generating perimeters", "Generating support material",
+        "Finalizing slicing"
+    };
+    std::array<size_t, 7> stage_counts {};
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict("perimeters", "2");
+    config.set_deserialize_strict("support_material_spacing", "2.5");
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    print.status().set_callback([&](const PrintBase::SlicingStatus &status) {
+        if ((status.flags & PrintBase::SlicingStatus::MAIN_STATE) == 0)
+            return;
+        for (size_t idx = 0; idx < stage_labels.size(); ++idx)
+            if (status.main_text == stage_labels[idx])
+                ++stage_counts[idx];
+    });
+    print.process();
+    REQUIRE(print.current_checkpoint() == Steps::Checkpoint::Print);
+    for (size_t idx = 0; idx < stage_labels.size(); ++idx) {
+        CAPTURE(stage_labels[idx]);
+        REQUIRE(stage_counts[idx] == 1);
+    }
+    REQUIRE(print.objects().size() == 1);
+    REQUIRE(print.num_print_regions() == 1);
+    const PrintObject *source_object = &print.object(0);
+    const std::vector<coord_t> profile = source_object->layer_profile();
+    REQUIRE_FALSE(profile.empty());
+    REQUIRE(source_object->layer_count() > 0);
+
+    struct SliceSnapshot {
+        const Layer *layer;
+        ExPolygons islands;
+        ExPolygons raw_slices;
+    };
+    std::vector<SliceSnapshot> slices;
+    for (size_t layer_idx = 0; layer_idx < source_object->layer_count(); ++layer_idx) {
+        const Layer &layer = source_object->layer(layer_idx);
+        REQUIRE(layer.region_count() == 1);
+        REQUIRE_FALSE(layer.islands().empty());
+        REQUIRE_FALSE(layer.region(0).get_raw_slices().empty());
+        SliceSnapshot snapshot {&layer, {}, layer.region(0).get_raw_slices()};
+        for (const LayerSliceIsland &island : layer.islands())
+            snapshot.islands.push_back(island.get_slice());
+        slices.push_back(std::move(snapshot));
+    }
+    const auto check_retained_slices = [&]() {
+        REQUIRE(print.objects().size() == 1);
+        const PrintObject &object = print.object(0);
+        CHECK(&object == source_object);
+        CHECK(object.layer_profile() == profile);
+        REQUIRE(object.layer_count() == slices.size());
+        for (size_t layer_idx = 0; layer_idx < slices.size(); ++layer_idx) {
+            CAPTURE(layer_idx);
+            const Layer &layer = object.layer(layer_idx);
+            const SliceSnapshot &snapshot = slices[layer_idx];
+            CHECK(&layer == snapshot.layer);
+            REQUIRE(layer.region_count() == 1);
+            CHECK(layer.region(0).get_raw_slices() == snapshot.raw_slices);
+            REQUIRE(layer.islands().size() == snapshot.islands.size());
+            for (size_t island_idx = 0; island_idx < snapshot.islands.size(); ++island_idx)
+                CHECK(layer.island(island_idx).get_slice() == snapshot.islands[island_idx]);
+        }
+    };
+
+    DynamicPrintConfig changed_config = print.full_print_config();
+    changed_config.set_deserialize_strict(key, changed_value);
+    REQUIRE(print.full_print_config().diff(changed_config) == t_config_option_keys {key});
+    CHECK(print.apply(model, changed_config) == Print::APPLY_STATUS_INVALIDATED);
+    CHECK(print.current_checkpoint() == Steps::Checkpoint::Slicing);
+    CHECK(print.should_execute_step(STEP_PRE_PERIMETER));
+    CHECK(print.should_execute_step(definition->invalidates_step));
+    CHECK_FALSE(print.should_execute_step(STEP_LAYER_HEIGHT));
+    CHECK_FALSE(print.should_execute_step(STEP_SLICING));
+    CHECK_FALSE(print.should_execute_step(STEP_POST_SLICING));
+    check_retained_slices();
+    REQUIRE(print.num_print_regions() == 1);
+    const ConfigOption *applied_option = region_option ?
+        print.print_region(0).config().optptr(key) : print.object(0).config().optptr(key);
+    REQUIRE(applied_option != nullptr);
+    CHECK(applied_option->serialize() == changed_value);
+
+    print.process();
+    CHECK(print.current_checkpoint() == Steps::Checkpoint::Print);
+    CHECK_FALSE(print.should_execute_step(STEP_PRE_PERIMETER));
+    CHECK_FALSE(print.should_execute_step(STEP_SLICING));
+    for (size_t idx = 0; idx < stage_labels.size(); ++idx) {
+        CAPTURE(stage_labels[idx]);
+        CHECK(stage_counts[idx] == (idx < 3 ? 1 : 2));
+    }
+    check_retained_slices();
 }

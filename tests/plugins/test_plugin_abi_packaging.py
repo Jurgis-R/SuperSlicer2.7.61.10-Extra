@@ -74,6 +74,17 @@ class AbiPackagingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             abi_requires_headers("")
 
+    def test_clear_callback_is_not_exposed(self):
+        namespace = {}
+        exec(self.generator.generate(), namespace)
+        self.assertNotIn("PLUGIN_CLEAR", namespace)
+        self.assertIn("PLUGIN_RUN", namespace)
+        self.assertEqual(self.generator.parse_callbacks(
+            "typedef int32_t (*plugin_clear_fn)(void *plugin_ctx, "
+            "const print_handle *print, storage_handle *plugin_storage);"), [])
+        catalog = json.loads(self.generator.generate_abi_catalog())
+        self.assertNotIn("PLUGIN_CLEAR", catalog["python_symbols"])
+
     def test_error_id_contract(self):
         namespace = {}
         exec(self.generator.generate(), namespace)
@@ -82,7 +93,7 @@ class AbiPackagingTests(unittest.TestCase):
         catalog = json.loads(self.generator.generate_abi_catalog())
         for symbol in ("PLUGIN_ERROR_OK", "PLUGIN_ERROR_GENERAL"):
             self.assertEqual(catalog["python_symbols"][symbol], ["slic3r_plugin_types.h"])
-        self.assertEqual(catalog["headers"]["slic3r_plugin_types.h"]["version"], [1, 5])
+        self.assertEqual(catalog["headers"]["slic3r_plugin_types.h"]["version"], [3, 0])
 
     def test_union_and_failed_generation_never_publish_partial_output(self):
         with tempfile.TemporaryDirectory() as directory:

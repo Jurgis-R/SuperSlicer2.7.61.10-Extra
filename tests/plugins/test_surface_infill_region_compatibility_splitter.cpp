@@ -165,9 +165,9 @@ void run_surface_splitter_pipeline(Print &print)
                                 INFILL_REGION_COMPATIBILITY_SPLITTER});
     Orchestrator &orchestrator = Orchestrator::instance();
 
-    Steps::StepGeneratePerimeter::clean_and_prepare(print);
+    Steps::StepGeneratePerimeter::clear(print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(print);
+    Steps::StepSurfaceGeneration::clear(print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, print);
 
     std::string validation_error;

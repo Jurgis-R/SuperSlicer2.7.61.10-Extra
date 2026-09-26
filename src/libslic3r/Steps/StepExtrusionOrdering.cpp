@@ -182,13 +182,13 @@ const char *instance_kind(const Printing::PrintingObjectInstance *instance,
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
-    // Rebuilding the PrintingPlan discards all process properties added by
-    // downstream steps, including the speeds required by STEP_GCODE.
-    print.mark_step_and_dependents_for_execution(STEP_ORDERING);
+    // Cleanup discards output only; replay scheduling belongs to Print's checkpoint entry points.
     print.reset_printing_plan();
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string *error)
 {

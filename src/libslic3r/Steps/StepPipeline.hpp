@@ -154,6 +154,9 @@ bool validate_execution_order_against_dependencies();
 class StepPipeline
 {
 public:
+    // Release step outputs and plugin-visible owners that a checkpoint resume
+    // rebuilds, before the steps after the checkpoint run again.
+    static void clear_checkpoint_outputs(Print &print, Checkpoint checkpoint);
     // Prepare the sliced print tree up to the point where G-code ordering can
     // start. Export callers run this first through Print::process(), then call
     // run_gcode() later with the concrete output path.

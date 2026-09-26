@@ -134,6 +134,11 @@ bool LayerRegionIsland::has_extrusions() const {
 void LayerRegion::clear() {
     this->m_unsupported_bridge_edges.clear();
     this->m_fill_surfaces.clear();
+    this->m_fill_no_overlap_expolygons.clear();
+    // The fill cache is keyed by island and expoly addresses: rebuilt geometry
+    // can reuse the same addresses, so the cache must be dropped explicitly.
+    this->m_cache_fill_expolygons.clear();
+    this->m_cache_fill_expolygons_computed = 0;
 }
 
 Flow LayerRegion::flow(FlowRole role) const
@@ -199,15 +204,16 @@ Flow LayerRegion::bridging_flow(FlowRole role, BridgeType force_type) const
 
 const ExPolygons& LayerRegion::fill_expolygons() const {
     uint64_t hash_islands = 0;
-    int shift = 0;
+    // Address-based cache key: mix addresses so symmetric island layouts cannot
+    // cancel out in the XOR. Only LayerRegion::clear() invalidates it after a rebuild.
     for (const LayerSliceIsland &layer_island_ptr : this->layer()->islands()) {
         if (layer_island_ptr.regions().find(this) != layer_island_ptr.regions().end()) {
             for (const ExPolygon &expoly : layer_island_ptr.infill_areas()) {
-                hash_islands ^= (uint64_t(&expoly) << shift);
-                shift++;
+                hash_islands ^= uint64_t(reinterpret_cast<uintptr_t>(&expoly)) + uint64_t(0x9e3779b97f4a7c15ULL) +
+                                (hash_islands << 6) + (hash_islands >> 2);
             }
         }
-        shift++;
+        hash_islands ^= uint64_t(0x9e3779b97f4a7c15ULL) + (hash_islands << 6) + (hash_islands >> 2);
     }
     if (m_cache_fill_expolygons_computed == 0 || m_cache_fill_expolygons_computed != hash_islands) {
         m_cache_fill_expolygons_computed = hash_islands;

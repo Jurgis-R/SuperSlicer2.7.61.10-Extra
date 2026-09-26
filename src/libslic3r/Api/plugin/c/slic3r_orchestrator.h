@@ -9,7 +9,7 @@
 an independent activation reason and the target is enabled when any of them is
 true. */
 #define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 3u
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 2u
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 3u
 
 /*
 Property registration guide:
@@ -602,6 +602,9 @@ report_warning and report_error copy the message into the host diagnostic queue.
 The GUI later drains that queue and displays the text as Plater notifications.
 report_error also requests cancellation for the current plugin-driven slicing
 run, so the plugin should reserve it for errors that make the result unsafe.
+These calls only notify: a callback that must let the host act on a specific
+failure returns a diagnostic id instead, see orchestrator_set_error_message().
+NULL only logs an unattributed error.
 */
 SLIC3R_HOST_API int orchestrator_plugin_is_cancelled(plugin_host_context *host_context);
 SLIC3R_HOST_API void orchestrator_plugin_report_warning(plugin_host_context *host_context, const char *message);

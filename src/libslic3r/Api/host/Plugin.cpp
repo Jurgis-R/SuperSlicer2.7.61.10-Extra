@@ -4,6 +4,9 @@
 ///|/
 #include "Plugin.hpp"
 
+#include "Orchestrator.hpp"
+#include "libslic3r/Steps/StepPipeline.hpp"
+
 #include <stdexcept>
 #include <string>
 
@@ -141,6 +144,12 @@ Plugin::Plugin(plugin_instance c_api,
     this->m_exclusive_group_label = plugin_exclusive_group_label != nullptr ? plugin_exclusive_group_label : "";
     this->m_exclusive_group_tooltip = plugin_exclusive_group_tooltip != nullptr ? plugin_exclusive_group_tooltip : "";
     this->m_step = c_api.vt->get_step(c_api.ctx);
+    // Service kinds have no checkpoint-owned execution lifetime to pair with a clear callback.
+    if (c_api.vt->clear != nullptr &&
+        Steps::execution_index(this->m_step) >= Steps::execution_order().size())
+        throw std::runtime_error(
+            "Plugin '" + this->m_id +
+            "' declares a clear callback without a supported pipeline cleanup boundary.");
     this->m_priority = c_api.vt->get_priority(c_api.ctx);
     const_strings_t cstrings = c_api.vt->get_dependencies(c_api.ctx);
     if (cstrings.items) {
@@ -152,6 +161,18 @@ Plugin::Plugin(plugin_instance c_api,
     read_plugin_used_config_keys(c_api, c_api.vt->used_config_keys, m_used_config_keys);
     read_plugin_defined_config_keys(
         c_api, c_api.vt->defined_config_keys, m_used_config_keys, m_defined_config_keys);
+}
+
+void note_plugin_setup(plugin_host_context *host_context,
+                       const Plugin &plugin,
+                       slicing_step_t step)
+{
+    if (host_context == nullptr || host_context->orchestrator == nullptr ||
+        host_context->print == nullptr || !plugin.has_clear())
+        return;
+    // Only the participation record changes; the registered plugin descriptor remains unchanged.
+    host_context->orchestrator->track_plugin_setup(
+        const_cast<Plugin &>(plugin), *host_context->print, step);
 }
 
 } // namespace Slic3r

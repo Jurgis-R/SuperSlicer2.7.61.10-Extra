@@ -34,7 +34,7 @@ run_ctx_skirt_brim payload_for_print(Print &print)
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
     /*
     STEP_SKIRT_BRIM is append-oriented: each active plugin publishes the brim
@@ -44,6 +44,8 @@ void clean_and_prepare(Print &print)
     ApiInternal::PrintAccess::clear_brim(print);
     ApiInternal::PrintAccess::clear_skirt(print);
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string *)
 {

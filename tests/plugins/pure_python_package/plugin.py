@@ -1,4 +1,11 @@
-from slic3r_api import PluginBase, STEP_POST_SLICING
+from slic3r_api import (
+    PluginBase,
+    PLUGIN_ERROR_GENERAL,
+    PLUGIN_ERROR_OK,
+    STEP_POST_SLICING,
+    run_context,
+    store_error_message,
+)
 
 
 class ExternalPackageRootPlugin(PluginBase):
@@ -15,5 +22,95 @@ class ExternalPackageRootPlugin(PluginBase):
         return None
 
 
+class ClearResultPlugin(PluginBase):
+    def __init__(self, case):
+        super().__init__(
+            "python.test.clear." + case,
+            STEP_POST_SLICING,
+            exclusive_group="",
+        )
+        self.case = case
+
+    def setup(self, run_ctx_address, run_count):
+        context = run_context(run_ctx_address)
+        self.expected_handles = (context.print, context.plugin_storage)
+        self.clear_calls = 0
+
+    def clear(self, print_address, plugin_storage_address):
+        if (print_address, plugin_storage_address) != self.expected_handles:
+            raise RuntimeError("clear received different Print/storage handles from setup")
+        self.clear_calls += 1
+        if self.clear_calls > 1:
+            return PLUGIN_ERROR_OK
+        if self.case == "success":
+            return PLUGIN_ERROR_OK
+        if self.case == "none":
+            return None
+        if self.case == "error":
+            # The returned id carries the failure text back to the host.
+            return store_error_message("Python clear error: \u00e9chec")
+        if self.case == "general":
+            return PLUGIN_ERROR_GENERAL
+        if self.case == "unknown_id":
+            return 4242
+        if self.case == "long_utf8":
+            return store_error_message("\u00e9" * 300)
+        if self.case == "exception":
+            raise RuntimeError("Python clear exception: \u00e9chec")
+        if self.case == "unprintable_exception":
+            class UnprintableError(Exception):
+                def __str__(self):
+                    raise ValueError("cannot format exception")
+            raise UnprintableError()
+        if self.case == "bool":
+            return True
+        if self.case == "float":
+            return 0.0
+        if self.case == "str":
+            return "0"
+        if self.case == "bytes":
+            return b""
+        if self.case == "list":
+            return [PLUGIN_ERROR_OK]
+        if self.case == "tuple":
+            return (PLUGIN_ERROR_OK,)
+        if self.case == "negative":
+            return -1
+        if self.case == "overflow":
+            return 2**31
+        raise AssertionError("unknown clear fixture case: " + self.case)
+
+
+class NoncallableClearPlugin(ClearResultPlugin):
+    def __init__(self):
+        super().__init__("noncallable")
+        self.clear_accesses = None
+
+    def setup(self, run_ctx_address, run_count):
+        super().setup(run_ctx_address, run_count)
+        self.clear_accesses = 0
+
+    @property
+    def clear(self):
+        # Registration sees a callable; only the first access after setup fails.
+        if self.clear_accesses is not None:
+            self.clear_accesses += 1
+            if self.clear_accesses == 1:
+                return 42
+        return self.clear_restored
+
+    def clear_restored(self, print_address, plugin_storage_address):
+        if (print_address, plugin_storage_address) != self.expected_handles:
+            raise RuntimeError("clear received different Print/storage handles from setup")
+        return PLUGIN_ERROR_OK
+
+
 def register_plugin(api):
-    return ExternalPackageRootPlugin()
+    # The runtime only activates named production fixtures; these probes stay inactive.
+    cases = (
+        "success", "none", "error", "general", "unknown_id", "long_utf8",
+        "exception", "unprintable_exception", "bool", "float", "str",
+        "bytes", "list", "tuple", "negative", "overflow",
+    )
+    return [ExternalPackageRootPlugin(), *(ClearResultPlugin(case) for case in cases),
+            NoncallableClearPlugin()]

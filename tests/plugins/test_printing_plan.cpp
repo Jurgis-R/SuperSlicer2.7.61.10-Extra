@@ -1098,7 +1098,7 @@ TEST_CASE("PrintingPlan object instance ids remain stable after plan reordering"
     CHECK(printing_plan_count_group(handle) == 0);
     CHECK(printing_plan_count_object_instance(handle) == 0);
 
-    Steps::StepExtrusionOrdering::clean_and_prepare(print);
+    Steps::StepExtrusionOrdering::clear(print);
     Steps::StepExtrusionOrdering::run_step(Orchestrator::instance(), print);
     REQUIRE(print.printing_plan() != nullptr);
     REQUIRE(print.printing_plan()->object_instances.size() == 4);
@@ -1426,7 +1426,7 @@ TEST_CASE("STEP_EXTRUSION_EDIT rebuilds scope events in plugin priority order",
     plan.groups.front().layers.emplace_back();
     plan.groups.front().layers.front().tool_groups.emplace_back();
 
-    // Seed every scope with stale data. clean_and_prepare() must remove these
+    // Seed every scope with stale data. clear() must remove these
     // events without changing the surrounding ordered plan hierarchy.
     ExtrusionEntity stale_event(true);
     plan.events.append_before(stale_event);
@@ -1434,7 +1434,7 @@ TEST_CASE("STEP_EXTRUSION_EDIT rebuilds scope events in plugin priority order",
     plan.groups.front().layers.front().events.append_before(stale_event);
     plan.groups.front().layers.front().tool_groups.front().events.append_after(stale_event);
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     CHECK_FALSE(plan.events.has_before());
     CHECK_FALSE(plan.groups.front().events.has_after());
     CHECK_FALSE(plan.groups.front().layers.front().events.has_before());
@@ -1455,7 +1455,7 @@ TEST_CASE("STEP_EXTRUSION_EDIT rebuilds scope events in plugin priority order",
 
     // A repeated pipeline execution rebuilds the same ordered sequences. It
     // must not retain the two events produced by the previous execution.
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK(g_first_plan_event_editor.run_count.load() == 2);
     CHECK(g_second_plan_event_editor.run_count.load() == 2);
@@ -1468,7 +1468,7 @@ TEST_CASE("STEP_ORDERING runs default plugin chain on a shared PrintingPlan", "[
 
     Orchestrator &orchestrator = Orchestrator::instance();
     Print print;
-    Steps::StepExtrusionOrdering::clean_and_prepare(print);
+    Steps::StepExtrusionOrdering::clear(print);
     REQUIRE(print.printing_plan() == nullptr);
 
     const std::vector<Plugin *> plugins =
@@ -1535,7 +1535,7 @@ TEST_CASE("STEP_ORDERING includes print-level auxiliary layers", "[printing][pla
                                       Point(scale_i(40.), scale_i(20.))}));
 
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepExtrusionOrdering::clean_and_prepare(print);
+    Steps::StepExtrusionOrdering::clear(print);
     Steps::StepExtrusionOrdering::run_step(orchestrator, print);
 
     REQUIRE(print.printing_plan() != nullptr);

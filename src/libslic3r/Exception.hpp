@@ -31,6 +31,9 @@ SLIC3R_DERIVE_EXCEPTION(ExportError,        CriticalException);
 SLIC3R_DERIVE_EXCEPTION(PlaceholderParserError, RuntimeError);
 // Runtime exception produced by Slicer. Such exception cancels the slicing process and it shall be shown in notifications.
 SLIC3R_DERIVE_EXCEPTION(SlicingError,       Exception);
+// A plugin failed to release per-Print state before its owners could be reused.
+// The failed cleanup entry stays registered so a later retry can succeed.
+SLIC3R_DERIVE_EXCEPTION(PluginCleanupError, SlicingError);
 #undef SLIC3R_DERIVE_EXCEPTION
 
 } // namespace Slic3r

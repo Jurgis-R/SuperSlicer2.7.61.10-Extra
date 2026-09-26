@@ -858,12 +858,15 @@ void create_firmware_session(Orchestrator &orchestrator,
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
     // A failed or skipped writer must not leave the next preview phase pointing
     // at text produced by an earlier export.
     print.reset_gcode_reader_source_path();
+    print.print_statistics().clear();
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string *error)
 {
@@ -972,10 +975,6 @@ bool validate_post(const Print &, std::string *)
 std::string run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
                      const raw_gcode_thumbnail_renderer *thumbnail_renderer)
 {
-    // Direct callers do not necessarily pass through clean_and_prepare(). Clear
-    // the previous publication before the writer can fail or publish a new one.
-    print.reset_gcode_reader_source_path();
-
     if (path.empty())
         throw RuntimeError("G-code generation plugin needs a non-empty output path.");
 

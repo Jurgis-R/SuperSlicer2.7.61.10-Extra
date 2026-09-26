@@ -17,7 +17,8 @@ namespace Steps::StepSupportDemand { class State; }
 
 namespace Steps::StepGenerateSupport {
 
-void clean_and_prepare(Print &print);
+void clear(Print &print);
+void prepare(Print &print);
 bool validate_pre(const Print &print, std::string *error = nullptr);
 bool validate_post(const Print &print, std::string *error = nullptr);
 void run_step(Orchestrator &orchestrator, Print &print);

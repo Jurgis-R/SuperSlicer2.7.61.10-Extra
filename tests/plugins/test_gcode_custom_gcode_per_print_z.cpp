@@ -231,7 +231,7 @@ TEST_CASE("Custom height markers become ordered typed plan events",
         {scale_to_layer_coord(0.2), CustomGCode::Custom, 1, "", "G4 P25"}
     });
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const ExtrusionEntity &events = layer.tool_groups.front().events.before();
@@ -328,7 +328,7 @@ TEST_CASE("Custom height semantic tags precede exactly one script payload",
         {scale_to_layer_coord(0.2), CustomGCode::Custom, 1, "", "M117 custom action"}
     });
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const ExtrusionEntity &events = layer.tool_groups.front().events.before();

@@ -129,7 +129,8 @@ void run_plugin(Orchestrator &orchestrator,
 
 } // namespace
 
-void clean_and_prepare(Print &) {}
+void clear(Print &) {}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string *error)
 {

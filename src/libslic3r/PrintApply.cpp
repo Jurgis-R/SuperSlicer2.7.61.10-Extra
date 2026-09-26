@@ -12,6 +12,8 @@
 #include "Print.hpp"
 #include "PrintObject.hpp"
 #include "PrintObjectRegion.hpp"
+#include "Exception.hpp"
+#include "Steps/StepPipeline.hpp"
 
 #include <optional>
 
@@ -480,10 +482,10 @@ static PrintObjectUPtr take_print_object(PrintObjectUPtrs &objects, PrintObject 
     return out;
 }
 
-static bool print_object_lists_equal(const PrintObjectUPtrs &lhs, const PrintObjectUPtrs &rhs)
+static bool print_object_lists_equal(const PrintObjectUPtrs &lhs, const PrintObjectPtrs &rhs)
 {
     return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin(),
-        [](const PrintObjectUPtr &left, const PrintObjectUPtr &right) { return left.get() == right.get(); });
+        [](const PrintObjectUPtr &left, const PrintObject *right) { return left.get() == right; });
 }
 
 static inline bool model_volume_solid_or_modifier(const ModelVolume &mv)
@@ -1068,17 +1070,41 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
     // Do not use the ApplyStatus as we will use the max function when updating apply_status.
     unsigned int apply_status = APPLY_STATUS_UNCHANGED;
-    auto update_apply_status = [this, &apply_status](bool invalidated)
+    bool worker_stopped = false;
+    { std::unique_lock<std::mutex> lock(this->state_mutex());
+    // Failed cleanup may leave defaults or model timestamps ahead of live object configs.
+    const bool plugin_cleanup_pending_at_entry = m_plugin_cleanup_pending.load(std::memory_order_acquire);
+    const auto clear_invalidated_plugin_state = [this, &lock, &apply_status, &worker_stopped]()
+    {
+        if (!m_plugin_cleanup_pending.load(std::memory_order_acquire))
+            return;
+        // Only an invalidation or a failed cleanup may stop an otherwise valid worker.
+        this->call_cancel_callback();
+        worker_stopped = true;
+        const Steps::Checkpoint checkpoint = this->current_checkpoint();
+        if (checkpoint != Steps::Checkpoint::GCode) {
+            // Call plugin code outside the state lock and preserve owners if cleanup must be retried.
+            lock.unlock();
+            if (!this->clear_plugin_state(Steps::checkpoint_resume_step(checkpoint)))
+                throw PluginCleanupError("Plugin cleanup failed before applying Print changes.");
+            lock.lock();
+            if (checkpoint <= Steps::Checkpoint::Print)
+                this->reset_printing_plan();
+            // A successful retry must restart the GUI worker even when the input diff is now empty.
+            apply_status = APPLY_STATUS_INVALIDATED;
+        }
+        m_plugin_cleanup_pending.store(false, std::memory_order_release);
+    };
+    auto update_apply_status = [this, &apply_status, &clear_invalidated_plugin_state](bool invalidated)
     {
         apply_status = std::max<unsigned int>(apply_status, invalidated ? APPLY_STATUS_INVALIDATED : APPLY_STATUS_CHANGED);
         if (invalidated)
             this->m_timestamp_last_change = std::time(0);
+        clear_invalidated_plugin_state();
     };
+    clear_invalidated_plugin_state();
     if (! (print_diff.empty() && object_diff.empty() && region_diff.empty()))
         update_apply_status(false);
-
-    // Grab the lock for the Print / PrintObject milestones.
-    { std::scoped_lock<std::mutex> lock(this->state_mutex());
 
     const bool model_replaced = model.id() != m_model.id();
     const bool custom_gcode_record_changed =
@@ -1192,6 +1218,16 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             // First stop background processing before shuffling or deleting the PrintObjects in the object list.
             this->call_cancel_callback();
             update_apply_status(this->invalidate_step(psGCodeExport));
+            // Detect removals before moving owners: a cleanup failure must leave the old model alive.
+            const bool removes_object = std::any_of(m_model.m_objects.begin(), m_model.m_objects.end(),
+                [&model](const ModelObjectUPtr &old_object) {
+                    for (const ModelObject &new_object : model.objects())
+                        if (new_object.id() == old_object->id())
+                            return false;
+                    return true;
+                });
+            if (removes_object)
+                update_apply_status(this->invalidate_all_steps());
             // Second create a new list of objects.
             ModelObjectUPtrs model_objects_old(std::move(m_model.m_objects));
             ModelObjectPtrs model_objects_old_sorted;
@@ -1339,7 +1375,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             bool object_config_changed = ! model_object.config.timestamp_matches(model_object_new.config);
 			if (object_config_changed)
 				model_object.config.assign_config(model_object_new.config);
-            if (! object_diff.empty() || object_config_changed || num_extruders_changed) {
+            if (plugin_cleanup_pending_at_entry || ! object_diff.empty() || object_config_changed || num_extruders_changed) {
                 PrintObjectConfig new_config = PrintObject::object_config_from_model_object(m_default_object_config, model_object, num_extruders);
                 for (const PrintObjectStatus &print_object_status : print_object_status_db.get_range(model_object)) {
                     t_config_option_keys diff = print_object_status.print_object->config().diff(new_config);
@@ -1393,6 +1429,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     {
         PrintObjectUPtrs print_objects_new;
         print_objects_new.reserve(std::max(m_objects.size(), m_model.m_objects.size()));
+        // Record the new order without transferring existing ownership before cleanup succeeds.
+        PrintObjectPtrs print_object_order;
         bool new_objects = false;
         // Walk over all new model objects and check, whether there are matching PrintObjects.
         for (ModelObjectUPtr &model_object_ptr : m_model.m_objects) {
@@ -1420,6 +1458,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     PrintObject *print_object_ptr = print_object.get();
                     print_object_apply_config(print_object_ptr);
                     print_objects_new.emplace_back(std::move(print_object));
+                    print_object_order.push_back(print_object_ptr);
                     // print_object_status.emplace(PrintObjectStatus(print_object, PrintObjectStatus::New));
                     new_objects = true;
                 }
@@ -1438,6 +1477,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     PrintObject *print_object_ptr = print_object.get();
                     print_object_apply_config(print_object_ptr);
                     print_objects_new.emplace_back(std::move(print_object));
+                    print_object_order.push_back(print_object_ptr);
                     // print_object_status.emplace(PrintObjectStatus(print_object, PrintObjectStatus::New));
                     new_objects = true;
                     if (it_old != old.end())
@@ -1447,12 +1487,12 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 					PrintBase::ApplyStatus status = (*it_old)->print_object->set_instances(std::move(new_instances.instances));
                     if (status != PrintBase::APPLY_STATUS_UNCHANGED)
 						update_apply_status(status == PrintBase::APPLY_STATUS_INVALIDATED);
-					print_objects_new.emplace_back(take_print_object(m_objects, (*it_old)->print_object));
+                    print_object_order.push_back((*it_old)->print_object);
 					const_cast<PrintObjectStatus*>(*it_old)->status = PrintObjectStatus::Reused;
 				}
             }
         }
-        if (!print_object_lists_equal(m_objects, print_objects_new)) {
+        if (!print_object_lists_equal(m_objects, print_object_order)) {
             this->call_cancel_callback();
 			update_apply_status(this->invalidate_all_steps());
             // Delete the PrintObjects marked as Unknown or Deleted.
@@ -1463,7 +1503,14 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 					deleted_objects = true;
                 }
             }
-            m_objects = std::move(print_objects_new);
+            PrintObjectUPtrs reordered_objects;
+            reordered_objects.reserve(print_object_order.size());
+            for (PrintObject *object : print_object_order) {
+                const bool existing = std::any_of(m_objects.begin(), m_objects.end(),
+                    [object](const PrintObjectUPtr &candidate) { return candidate.get() == object; });
+                reordered_objects.emplace_back(take_print_object(existing ? m_objects : print_objects_new, object));
+            }
+            m_objects = std::move(reordered_objects);
 			if (new_objects || deleted_objects)
                 update_apply_status(this->invalidate_steps({ psAlertWhenSupportsNeeded, psSkirtBrim, psWipeTower, psGCodeExport }));
 			if (new_objects)
@@ -1579,7 +1626,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     for (PrintObjectUPtr &object : m_objects)
         object->update_slicing_parameters();
 
-    if (apply_status == APPLY_STATUS_CHANGED || apply_status == APPLY_STATUS_INVALIDATED) {
+    clear_invalidated_plugin_state();
+    // If the worker was stopped above, its checkpoint can now be read and invalidated data safely discarded.
+    if (worker_stopped &&
+        (apply_status == APPLY_STATUS_CHANGED || apply_status == APPLY_STATUS_INVALIDATED) &&
+        this->current_checkpoint() <= Steps::Checkpoint::Slicing) {
         this->reset_auxiliary_object();
         this->cleanup();
     }
