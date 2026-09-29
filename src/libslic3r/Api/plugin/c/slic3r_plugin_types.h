@@ -6,7 +6,7 @@
 #define slic3r_plugin_types_h_
 
 #define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MAJOR 1u
-#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 4u
+#define SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR 5u
 
 #include <stdint.h>
 
@@ -31,6 +31,23 @@ typedef void (*plugin_initialize_fn)(void *plugin_ctx, storage_handle *storage);
 typedef void (*plugin_setup_fn)(void *plugin_ctx, const plugin_run_context *run_ctx, uint32_t run_count);
 typedef void (*plugin_setup_run_fn)(void *plugin_ctx, const plugin_run_context *run_ctx);
 typedef void (*plugin_run_fn)(void *plugin_ctx, const plugin_run_context *run_ctx);
+/*
+Diagnostic identifier returned by plugin callbacks.
+
+0 means success. 1 is the host-defined generic failure without diagnostic.
+2..PLUGIN_ERROR_RESERVED_LAST are reserved for future host-defined codes.
+orchestrator_set_error_message() allocates ids from PLUGIN_ERROR_FIRST_DYNAMIC
+upward: the host keeps the registered UTF-8 text and resolves it when a callback
+returns the id. Ids are process-local, must not be serialized and stay valid for
+the lifetime of the running application.
+*/
+typedef enum plugin_error_id {
+    PLUGIN_ERROR_OK = 0,
+    PLUGIN_ERROR_GENERAL = 1
+} plugin_error_id;
+
+#define PLUGIN_ERROR_RESERVED_LAST 127
+#define PLUGIN_ERROR_FIRST_DYNAMIC 128
 
 /*
 One configuration option read or defined by a plugin.

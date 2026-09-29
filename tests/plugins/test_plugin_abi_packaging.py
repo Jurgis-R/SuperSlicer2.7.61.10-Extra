@@ -74,6 +74,16 @@ class AbiPackagingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             abi_requires_headers("")
 
+    def test_error_id_contract(self):
+        namespace = {}
+        exec(self.generator.generate(), namespace)
+        self.assertEqual(namespace["PLUGIN_ERROR_OK"], 0)
+        self.assertEqual(namespace["PLUGIN_ERROR_GENERAL"], 1)
+        catalog = json.loads(self.generator.generate_abi_catalog())
+        for symbol in ("PLUGIN_ERROR_OK", "PLUGIN_ERROR_GENERAL"):
+            self.assertEqual(catalog["python_symbols"][symbol], ["slic3r_plugin_types.h"])
+        self.assertEqual(catalog["headers"]["slic3r_plugin_types.h"]["version"], [1, 5])
+
     def test_union_and_failed_generation_never_publish_partial_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

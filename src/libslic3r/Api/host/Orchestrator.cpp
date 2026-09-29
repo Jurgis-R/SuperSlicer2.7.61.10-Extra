@@ -13,6 +13,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -1471,6 +1472,41 @@ std::vector<Orchestrator::PluginMessage> Orchestrator::consume_plugin_messages()
     std::vector<PluginMessage> messages;
     messages.swap(m_plugin_messages);
     return messages;
+}
+
+int32_t Orchestrator::store_error_message(const char *message)
+{
+    if (message == nullptr || message[0] == '\0')
+        return PLUGIN_ERROR_GENERAL;
+
+    try {
+        std::lock_guard<std::mutex> lock(m_error_messages_mutex);
+        // Ids are append-only and never reused, so two concurrent callbacks keep
+        // distinct messages. Saturation falls back to the generic failure code.
+        if (m_next_error_message_id <= 0 ||
+            m_next_error_message_id == (std::numeric_limits<int32_t>::max)())
+            return PLUGIN_ERROR_GENERAL;
+        m_error_messages.emplace_back(message);
+        return m_next_error_message_id++;
+    } catch (...) {
+        // Diagnostic storage must not throw across the C ABI.
+        return PLUGIN_ERROR_GENERAL;
+    }
+}
+
+std::string Orchestrator::error_message(int32_t id) const
+{
+    if (id == PLUGIN_ERROR_GENERAL)
+        return "Plugin reported an error without a diagnostic.";
+    if (id < PLUGIN_ERROR_FIRST_DYNAMIC)
+        // Reserved but unused ids, and anything below zero, use the generic text.
+        return "Plugin reported an unknown error code.";
+
+    std::lock_guard<std::mutex> lock(m_error_messages_mutex);
+    const size_t index = size_t(id) - size_t(PLUGIN_ERROR_FIRST_DYNAMIC);
+    if (index >= m_error_messages.size())
+        return "Plugin reported an unknown diagnostic id.";
+    return m_error_messages[index];
 }
 
 // Read the host cancellation flag without changing it.

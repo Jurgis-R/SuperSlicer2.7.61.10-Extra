@@ -9,7 +9,7 @@
 an independent activation reason and the target is enabled when any of them is
 true. */
 #define SLIC3R_PLUGIN_API_ORCHESTRATOR_MAJOR 3u
-#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 1u
+#define SLIC3R_PLUGIN_API_ORCHESTRATOR_MINOR 2u
 
 /*
 Property registration guide:
@@ -607,6 +607,22 @@ SLIC3R_HOST_API int orchestrator_plugin_is_cancelled(plugin_host_context *host_c
 SLIC3R_HOST_API void orchestrator_plugin_report_warning(plugin_host_context *host_context, const char *message);
 SLIC3R_HOST_API void orchestrator_plugin_report_error(plugin_host_context *host_context, const char *message);
 SLIC3R_HOST_API void orchestrator_plugin_report_progress(plugin_host_context *host_context, double progress, const char *message);
+
+/*
+Register one UTF-8 diagnostic message for the lifetime of the running
+application and return its id. A plugin callback reports a failure by returning
+that id (plugin_clear_fn and future status-returning callbacks); the host then
+resolves the id, logs the text and queues it as a Plater notification.
+
+Returns PLUGIN_ERROR_GENERAL (1) when orchestrator is NULL, when message is NULL
+or empty, or when the message cannot be stored. Otherwise the result is an id in
+[PLUGIN_ERROR_FIRST_DYNAMIC, INT32_MAX], unique and never reused. Ids are
+process-local: do not persist them and do not reuse one across runs.
+*/
+SLIC3R_HOST_API int32_t orchestrator_set_error_message(
+    orchestrator_handle *orchestrator,
+    const char *message
+);
 
 #ifdef __cplusplus
 }

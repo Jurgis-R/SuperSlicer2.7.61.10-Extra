@@ -490,6 +490,13 @@ public:
     // Drain queued plugin diagnostics. The Plater uses this to turn plugin
     // warnings and errors into ImGui notifications without opening modal dialogs.
     std::vector<PluginMessage> consume_plugin_messages();
+    // Copy one UTF-8 diagnostic into the process-lifetime error registry and
+    // return its id, or PLUGIN_ERROR_GENERAL when the message cannot be stored.
+    int32_t store_error_message(const char *message);
+    // Resolve a diagnostic id: static text for the reserved ids, registered text
+    // for dynamic ids, generic text for anything unknown. Never fails and never
+    // borrows registry storage.
+    std::string error_message(int32_t id) const;
     // Return whether cancellation was requested by the host.
     bool is_plugin_cancelled() const;
     // Request cancellation; plugin code must observe it at a cancellation point.
@@ -579,6 +586,12 @@ private:
     std::atomic_bool m_plugin_cancel_requested { false };
     std::mutex m_plugin_messages_mutex;
     std::vector<PluginMessage> m_plugin_messages;
+    // Process-lifetime diagnostics registered through store_error_message().
+    // Entries are append-only and an id is never reused, so concurrent callbacks
+    // cannot overwrite each other's message.
+    mutable std::mutex m_error_messages_mutex;
+    std::vector<std::string> m_error_messages;
+    int32_t m_next_error_message_id { PLUGIN_ERROR_FIRST_DYNAMIC };
     Plugin *m_initializing_plugin { nullptr };
     bool m_initializing_plugin_failed { false };
     std::string m_initializing_plugin_failure;

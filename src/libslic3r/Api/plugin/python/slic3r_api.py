@@ -237,6 +237,21 @@ def report_progress(run_ctx_address: int, progress: float, message: Optional[str
         PLUGIN_REPORT_PROGRESS(ctx.report_progress)(ctx.host_context, progress, _as_bytes(message))
 
 
+@abi_requires_headers("slic3r_orchestrator.h")
+def store_error_message(message: str) -> int:
+    """Register one failure message and return its diagnostic id.
+
+    Use it from PluginBase.clear() (and future status-returning callbacks)
+    before returning the id to the host. The registered text stays valid for
+    the lifetime of the application. Returns PLUGIN_ERROR_GENERAL when no API
+    is registered or the host cannot store the message.
+    """
+    if not _registered_apis:
+        return PLUGIN_ERROR_GENERAL
+    api = _registered_apis[-1]
+    return int(api.host.orchestrator_set_error_message(api.orchestrator, _as_bytes(message)))
+
+
 def used_config_key(
     key: str,
     type: int,

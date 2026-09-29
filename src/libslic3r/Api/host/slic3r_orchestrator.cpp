@@ -537,4 +537,15 @@ void orchestrator_plugin_report_progress(plugin_host_context *host_context, doub
                                     Slic3r::PrintBase::SlicingStatus::SECONDARY_STATE);
 }
 
+int32_t orchestrator_set_error_message(orchestrator_handle *orchestrator, const char *message)
+{
+    if (orchestrator == nullptr)
+        return PLUGIN_ERROR_GENERAL;
+    try {
+        return to_orchestrator(orchestrator)->store_error_message(message);
+    } catch (...) {
+        return PLUGIN_ERROR_GENERAL;
+    }
+}
+
 }

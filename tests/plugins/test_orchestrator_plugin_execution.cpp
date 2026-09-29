@@ -657,6 +657,40 @@ TEST_CASE("Generic plugin execution preserves its two-phase barrier",
     CHECK(g_service_low.expected_run_count == 0);
 }
 
+TEST_CASE("Error diagnostics are registered once and resolved by id",
+          "[plugins][orchestrator][clear][abi]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    // A null orchestrator or an absent/empty message cannot be stored.
+    CHECK(orchestrator.store_error_message(nullptr) == PLUGIN_ERROR_GENERAL);
+    CHECK(orchestrator.store_error_message("") == PLUGIN_ERROR_GENERAL);
+
+    const int32_t first = orchestrator.store_error_message("first clear failure");
+    REQUIRE(first >= PLUGIN_ERROR_FIRST_DYNAMIC);
+    CHECK(std::string(orchestrator.error_message(first)) == "first clear failure");
+    const int32_t second = orchestrator.store_error_message("second clear failure");
+    CHECK(second > first);
+    CHECK(std::string(orchestrator.error_message(second)) == "second clear failure");
+    // Resolving an id does not consume it: another callback can return it again.
+    CHECK(std::string(orchestrator.error_message(first)) == "first clear failure");
+
+    // Long UTF-8 text is kept whole: no fixed buffer and no truncation.
+    const std::string long_message = std::string(600, 'x') + "\xc3\xa9" + "tail";
+    const int32_t long_id = orchestrator.store_error_message(long_message.c_str());
+    CHECK(long_id > second);
+    CHECK(std::string(orchestrator.error_message(long_id)) == long_message);
+
+    // Reserved, unknown and negative codes resolve to a generic diagnostic.
+    CHECK(std::string(orchestrator.error_message(PLUGIN_ERROR_GENERAL)) ==
+          "Plugin reported an error without a diagnostic.");
+    CHECK(std::string(orchestrator.error_message(2)) == "Plugin reported an unknown error code.");
+    CHECK(std::string(orchestrator.error_message(-37)) == "Plugin reported an unknown error code.");
+    CHECK(std::string(orchestrator.error_message(PLUGIN_ERROR_FIRST_DYNAMIC + 100000)) ==
+          "Plugin reported an unknown diagnostic id.");
+}
+
 TEST_CASE("Generic plugin execution reports inactive cancellation and plugin errors",
           "[plugins][orchestrator][service-plugin]")
 {
