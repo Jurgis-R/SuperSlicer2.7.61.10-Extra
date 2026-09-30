@@ -43,6 +43,7 @@
 #include "GCode/WipeTower.hpp"
 #include "libslic3r.h"
 #include "Point.hpp"
+#include "PluginProperty.hpp"
 #include "PrintBase.hpp"
 #include "Config/FFFPrintConfig.hpp"
 #include "PrintRecords.hpp"
@@ -333,6 +334,10 @@ public:
     bool has_ordering_checkpoint() const;
     bool restore_ordering_checkpoint();
     void clear_ordering_checkpoint();
+    // Records and main-object properties, not geometry: None before LayerHeight prepare/plugins; Slicing after successful, noncancelled PostSlicing.
+    void save_metadata_checkpoint(Steps::Checkpoint checkpoint);
+    // Both operations require caller-owned execution or stopped workers; neither acquires a lock.
+    bool has_metadata_checkpoint(Steps::Checkpoint checkpoint) const;
     // Path of the finished text stream used by GCodeReader and GCodeViewer.
     // The producer owns the file; Print owns only this copied UTF-8 path.
     const std::string &gcode_reader_source_path() const { return m_gcode_reader_source_path; }
@@ -463,11 +468,13 @@ private:
     //void                _make_wipe_tower();
     void                finalize_first_layer_convex_hull();
     void                alert_when_supports_needed();
-    // Non-cancelling scheduling for a checkpoint resume. Only the stored Ordering
-    // copy is released here; the live plan stays until plugin cleanup completed.
+    // Non-cancelling scheduling invalidates downstream snapshots but retains the
+    // live plan until plugins have released their borrowed handles.
     void                request_steps_after(Steps::Checkpoint checkpoint);
     // Caller holds state_mutex and owns execution, or has already stopped the worker.
     bool                invalidate_checkpoint_milestones(Steps::Checkpoint checkpoint);
+    void                restore_metadata_checkpoint(Steps::Checkpoint checkpoint);
+    void                forget_metadata_checkpoint_object(const PrintObject *object);
 
     // Islands of objects and their supports extruded at the 1st layer.
     Polygons            first_layer_islands() const;
@@ -483,6 +490,12 @@ private:
     PrintConfig                             m_config;
     // Variable metadata shared by plugins and host producers for this Print.
     PrintRecordStore                        m_records;
+    struct CheckpointMetadataSnapshot {
+        PrintRecordStore::Snapshot records;
+        std::map<const PrintObject *, PluginPropertyContainer> object_properties;
+    };
+    std::unique_ptr<CheckpointMetadataSnapshot> m_none_metadata_checkpoint;
+    std::unique_ptr<CheckpointMetadataSnapshot> m_slicing_metadata_checkpoint;
     PrintObjectConfig                       m_default_object_config;
     PrintRegionConfig                       m_default_region_config;
     PrintObjectUPtrs                        m_objects;

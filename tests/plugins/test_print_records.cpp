@@ -22,8 +22,11 @@ operation promised by the public contract.
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "gcode_test_helpers.hpp"
+#include "perimeter_test_helpers.hpp"
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_config.h"
 #include "libslic3r/Api/plugin/c/slic3r_data_tree.h"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
@@ -33,6 +36,9 @@ operation promised by the public contract.
 #include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintRecords.hpp"
+#include "libslic3r/PrintObject.hpp"
+#include "libslic3r/Steps/StepExtrusionOrdering.hpp"
+#include "libslic3r/Steps/StepPipeline.hpp"
 
 #include "test_data.hpp"
 
@@ -90,6 +96,39 @@ TEST_CASE("Print record Config addresses survive channel-map growth", "[plugins]
 
     CHECK(records.find_mutable("example.stable") == stable);
     CHECK(stable->option<Slic3r::ConfigOptionInt>("value")->value == 42);
+}
+
+TEST_CASE("Print record snapshots restore channels without rewinding identifiers",
+          "[plugins][print-records][checkpoint]")
+{
+    using namespace Slic3r;
+    PrintRecordStore records;
+    DynamicConfig *stable = &records.get_or_add("stable");
+    stable->set_key_value("value", new ConfigOptionInt(17));
+    records.get_or_add("deleted").set_key_value("value", new ConfigOptionString("saved"));
+    records.get_or_add("");
+    REQUIRE(records.allocate_id() == 1);
+    const PrintRecordStore::Snapshot snapshot = records.capture();
+    const config_handle *handle = ApiHost::to_config_handle(stable);
+    stable->set_key_value("value", new ConfigOptionInt(99));
+    REQUIRE(records.remove("deleted"));
+    REQUIRE(records.remove(""));
+    records.get_or_add("added");
+    REQUIRE(records.allocate_id() == 2);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        records.restore(snapshot);
+        REQUIRE(records.find("stable") == stable);
+        CHECK(ApiHost::to_config_handle(records.find("stable")) == handle);
+        CHECK(stable->option<ConfigOptionInt>("value")->value == 17);
+        REQUIRE(records.find("deleted") != nullptr);
+        CHECK(records.find("deleted")->option<ConfigOptionString>("value")->value == "saved");
+        CHECK(records.channels() == std::vector<std::string>{"", "deleted", "stable"});
+        CHECK(records.allocate_id() == PrintRecordId(3 + attempt));
+        stable->set_key_value("value", new ConfigOptionInt(100));
+        records.get_or_add("added");
+    }
+    CHECK(snapshot.at("stable").option<ConfigOptionInt>("value")->value == 17);
 }
 
 TEST_CASE("Print record identifiers are globally unique under concurrency",
@@ -205,7 +244,8 @@ TEST_CASE("Print publishes custom G-code markers as a stable record table",
     Slic3r::DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
     Slic3r::Test::init_print({Slic3r::Test::TestMesh::cube_20x20x20}, print, model, config);
 
-    // A first apply always publishes the complete zero-row schema for plugin readers.
+    CHECK(print.records().find(Slic3r::CustomGCode::PrintRecordChannel) == nullptr);
+    Slic3r::Steps::StepExtrusionOrdering::prepare(print);
     const Slic3r::DynamicConfig *record = print.records().find(Slic3r::CustomGCode::PrintRecordChannel);
     REQUIRE(record != nullptr);
     REQUIRE(record->option<Slic3r::ConfigOptionInt>(Slic3r::CustomGCode::PrintRecordSizeKey) != nullptr);
@@ -232,6 +272,8 @@ TEST_CASE("Print publishes custom G-code markers as a stable record table",
 
     const Slic3r::Print::ApplyStatus changed = print.apply(model, config);
     CHECK(changed != Slic3r::Print::APPLY_STATUS_UNCHANGED);
+    CHECK(record->option<Slic3r::ConfigOptionInt>(Slic3r::CustomGCode::PrintRecordSizeKey)->value == 0);
+    Slic3r::Steps::StepExtrusionOrdering::prepare(print);
 
     // Updating the table swaps its contents without invalidating an already borrowed Config handle.
     const Slic3r::DynamicConfig *updated = print.records().find(Slic3r::CustomGCode::PrintRecordChannel);
@@ -276,6 +318,7 @@ TEST_CASE("Print publishes custom G-code markers as a stable record table",
     model.custom_gcode_per_print_z.gcodes.clear();
     model.custom_gcode_per_print_z.mode = Slic3r::CustomGCode::SingleExtruder;
     print.apply(model, config);
+    Slic3r::Steps::StepExtrusionOrdering::prepare(print);
     const Slic3r::DynamicConfig *empty_updated =
         print.records().find(Slic3r::CustomGCode::PrintRecordChannel);
     REQUIRE(empty_updated == record);
@@ -286,4 +329,62 @@ TEST_CASE("Print publishes custom G-code markers as a stable record table",
 
     // Publishing host data does not consume the ID sequence reserved for record producers.
     CHECK(print.records().allocate_id() == 1);
+}
+
+TEST_CASE("Custom G-code model updates replay Ordering without reslicing and preserve Plan export",
+          "[plugins][print-records][checkpoint][custom-gcode]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    DynamicPrintConfig config = Test::PerimeterPluginTests::perimeter_config({
+        {"step_gcode_plugin", "gcode.printing_plan_file_writer"},
+        {"gcode_firmware_plugin", "gcode.firmware.marlin2"}
+    });
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Steps::StepPipeline::run_slice(orchestrator, print);
+    REQUIRE(print.current_checkpoint() == Checkpoint::Print);
+    REQUIRE(print.records().find(CustomGCode::PrintRecordChannel) == nullptr);
+    const Layer *layer = &print.object(0).layer(0);
+    const std::vector<coord_t> profile = print.object(0).layer_profile();
+    const boost::filesystem::path path = Test::GCode::temporary_gcode_path();
+    struct OutputCleanup {
+        boost::filesystem::path path;
+        ~OutputCleanup() { Test::GCode::remove_output_pair(path); }
+    } cleanup{path};
+    Steps::StepPipeline::run_gcode(orchestrator, print, path.string());
+    const DynamicConfig *record = print.records().find(CustomGCode::PrintRecordChannel);
+    REQUIRE(record != nullptr);
+
+    model.custom_gcode_per_print_z.mode = CustomGCode::SingleExtruder;
+    model.custom_gcode_per_print_z.gcodes = {
+        {scale_to_layer_coord(0.2), CustomGCode::Custom, 1, "", "G4 P54321"}
+    };
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_INVALIDATED);
+    CHECK(print.current_checkpoint() == Checkpoint::Print);
+    CHECK_FALSE(print.should_execute_step(STEP_POST_SLICING));
+    CHECK(record->option<ConfigOptionInt>(CustomGCode::PrintRecordSizeKey)->value == 0);
+    Steps::StepPipeline::run_gcode(orchestrator, print, path.string());
+    CHECK(print.records().find(CustomGCode::PrintRecordChannel) == record);
+    CHECK(&print.object(0).layer(0) == layer);
+    CHECK(print.object(0).layer_profile() == profile);
+    const std::string output = Test::GCode::read_text_file(path);
+    CHECK(output.find("G4 P54321") != std::string::npos);
+
+    print.request_replay_from_worker(Checkpoint::Plan);
+    REQUIRE(print.current_checkpoint() == Checkpoint::Plan);
+    Steps::StepPipeline::run_gcode(orchestrator, print, path.string());
+    CHECK(Test::GCode::read_text_file(path).find("G4 P54321") != std::string::npos);
+    CHECK(print.records().find(CustomGCode::PrintRecordChannel) == record);
+    CHECK(&print.object(0).layer(0) == layer);
+
+    print.request_replay_from_worker(Checkpoint::Slicing);
+    print.prepare_checkpoint_resume();
+    CHECK(print.records().find(CustomGCode::PrintRecordChannel) == nullptr);
+    CHECK(print.model().custom_gcode_per_print_z == model.custom_gcode_per_print_z);
+    Steps::StepPipeline::run_gcode(orchestrator, print, path.string());
+    CHECK(Test::GCode::read_text_file(path).find("G4 P54321") != std::string::npos);
 }

@@ -35,6 +35,12 @@ reserve stable references while preparing data outside this store.
 class PrintRecordStore
 {
 public:
+    using Snapshot = std::unordered_map<std::string, DynamicConfig>;
+
+    // Deep-copy channel values into a reusable baseline.
+    Snapshot capture() const;
+    // Preserve surviving channel objects/Config handles without rewinding IDs; option handles must be reacquired.
+    void restore(const Snapshot &snapshot);
     const DynamicConfig *find(const std::string &channel) const;
     DynamicConfig *find_mutable(const std::string &channel);
     DynamicConfig &get_or_add(const std::string &channel);

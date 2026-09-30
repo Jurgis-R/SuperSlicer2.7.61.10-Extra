@@ -838,6 +838,9 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
         Print &print;
         ~RunningStepScope() { print.set_running_step(STEP_NONE); }
     };
+    // Metadata checkpoints bracket the slicing prefix: None before its first step, Slicing after its last.
+    if (step == STEP_LAYER_HEIGHT)
+        print.save_metadata_checkpoint(Checkpoint::None);
     print.set_running_step(step);
     {
         const RunningStepScope running_step_scope{print};
@@ -849,6 +852,10 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
     print.throw_if_canceled();
     print.pipeline_progress().complete_step(step);
     print.pipeline_progress().verify_step_complete(step);
+    if (step == STEP_POST_SLICING) {
+        print.throw_if_canceled();
+        print.save_metadata_checkpoint(Checkpoint::Slicing);
+    }
     print.mark_step_executed(step);
 }
 

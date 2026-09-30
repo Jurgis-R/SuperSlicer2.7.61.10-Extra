@@ -21,6 +21,24 @@ uniqueness, not cross-thread ordering, is required.
 
 namespace Slic3r {
 
+PrintRecordStore::Snapshot PrintRecordStore::capture() const
+{
+    return m_channels;
+}
+
+void PrintRecordStore::restore(const Snapshot &snapshot)
+{
+    for (Snapshot::iterator it = m_channels.begin(); it != m_channels.end();) {
+        if (snapshot.find(it->first) == snapshot.end())
+            it = m_channels.erase(it);
+        else
+            ++it;
+    }
+    // Assign values in place: borrowed Config handles name channel objects, not their options.
+    for (const std::pair<const std::string, DynamicConfig> &entry : snapshot)
+        get_or_add(entry.first) = entry.second;
+}
+
 const DynamicConfig *PrintRecordStore::find(const std::string &channel) const
 {
     std::unordered_map<std::string, DynamicConfig>::const_iterator it = m_channels.find(channel);

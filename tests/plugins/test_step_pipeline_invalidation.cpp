@@ -1,3 +1,4 @@
+// Checkpoint tests exercise rollback and cleanup barriers before source owners are reused.
 #include <catch2/catch.hpp>
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/internal/LayerIslandAccess.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginPropertyKey.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/Layer.hpp"
@@ -120,7 +122,243 @@ bool contains_step(const std::vector<slicing_step_t> &steps, slicing_step_t step
     return std::find(steps.begin(), steps.end(), step) != steps.end();
 }
 
+struct MetadataPayload { int value; };
+
+slic3r_property_type metadata_property_type()
+{
+    static const slic3r_api::PluginPropertyKey<MetadataPayload> key =
+        slic3r_api::PluginPropertyKey<MetadataPayload>::register_dynamic(
+            reinterpret_cast<orchestrator_handle *>(&Slic3r::Orchestrator::instance()), "tests.checkpoint.metadata");
+    return key.type();
+}
+
+void set_metadata_property(Slic3r::PrintObject &object, const int value)
+{
+    MetadataPayload *payload = static_cast<MetadataPayload *>(object.get_or_add_property_data_mutable(
+        metadata_property_type(), sizeof(MetadataPayload), alignof(MetadataPayload)));
+    REQUIRE(payload != nullptr);
+    payload->value = value;
+}
+
+int metadata_property(const Slic3r::PrintObject &object)
+{
+    const MetadataPayload *payload = static_cast<const MetadataPayload *>(object.property_data(metadata_property_type()));
+    return payload == nullptr ? -1 : payload->value;
+}
+
+class MetadataPlugin final : public slic3r_api::PluginBase
+{
+public:
+    MetadataPlugin(orchestrator_handle *orchestrator, const char *id, slicing_step_t step, int value)
+        : PluginBase(orchestrator), m_id(id), m_step(step), m_value(value)
+    {
+        phase_property_type = slic3r_api::PluginPropertyKey<MetadataPayload>::register_dynamic(orchestrator, id).type();
+    }
+    const char *id() const { return m_id; }
+    slic3r_property_type phase_property_type;
+    mutable int observed_record = -1;
+    mutable int observed_property = -1;
+    bool cancel_setup = false;
+    bool fail_setup = false;
+
+private:
+    const char *id_impl() const noexcept override { return m_id; }
+    const char *name_impl() const noexcept override { return m_id; }
+    slicing_step_t step_impl() const noexcept override { return m_step; }
+    int32_t priority_impl() const noexcept override { return 10000; }
+    const char *const *dependencies_impl() const noexcept override { return nullptr; }
+    void run_impl(const plugin_run_context *) const override {}
+    void setup_impl(const plugin_run_context *context, uint32_t) const override
+    {
+        Slic3r::Print &print = *const_cast<Slic3r::Print *>(reinterpret_cast<const Slic3r::Print *>(context->print));
+        Slic3r::DynamicConfig &record = print.records().get_or_add("test.metadata");
+        const Slic3r::ConfigOptionInt *previous = record.option<Slic3r::ConfigOptionInt>("value");
+        observed_record = previous == nullptr ? -1 : previous->value;
+        observed_property = metadata_property(print.object(0));
+        // setup is sequential; record-channel writes must not occur in parallel object callbacks.
+        record.set_key_value("value", new Slic3r::ConfigOptionInt(m_value));
+        print.records().get_or_add(m_id).set_key_value("value", new Slic3r::ConfigOptionInt(m_value));
+        for (Slic3r::PrintObject &object : print.objects()) {
+            set_metadata_property(object, m_value);
+            MetadataPayload *phase = static_cast<MetadataPayload *>(object.get_or_add_property_data_mutable(
+                phase_property_type, sizeof(MetadataPayload), alignof(MetadataPayload)));
+            phase->value = m_value;
+        }
+        if (cancel_setup)
+            print.cancel_internal();
+        if (fail_setup)
+            throw std::runtime_error("Intentional metadata setup failure");
+    }
+    const char *m_id;
+    slicing_step_t m_step;
+    int m_value;
+};
+
+class ScopedMetadataPlugins
+{
+public:
+    ScopedMetadataPlugins()
+    {
+        Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
+        for (MetadataPlugin *plugin : {&post(), &skirt()}) {
+            if (orchestrator.get_plugin(plugin->id()) == nullptr) {
+                REQUIRE(orchestrator.register_plugin(plugin->c_instance()));
+                REQUIRE(orchestrator.set_plugin_active(plugin->id(), false));
+            }
+            REQUIRE(orchestrator.set_plugin_active(plugin->id(), true));
+        }
+    }
+    ~ScopedMetadataPlugins()
+    {
+        for (MetadataPlugin *plugin : {&post(), &skirt()}) {
+            Slic3r::Orchestrator::instance().set_plugin_active(plugin->id(), false);
+            plugin->cancel_setup = false;
+            plugin->fail_setup = false;
+        }
+        Slic3r::Orchestrator::instance().reset_plugin_cancel();
+    }
+    static MetadataPlugin &post()
+    {
+        static MetadataPlugin plugin(reinterpret_cast<orchestrator_handle *>(&Slic3r::Orchestrator::instance()),
+                                     "test.metadata.post", STEP_POST_SLICING, 20);
+        return plugin;
+    }
+    static MetadataPlugin &skirt()
+    {
+        static MetadataPlugin plugin(reinterpret_cast<orchestrator_handle *>(&Slic3r::Orchestrator::instance()),
+                                     "test.metadata.skirt", STEP_SKIRT_BRIM, 30);
+        return plugin;
+    }
+};
+
 } // namespace
+
+TEST_CASE("Metadata checkpoints retain PostSlicing and roll back SkirtBrim across retries",
+          "[plugins][checkpoint][metadata]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ScopedMetadataPlugins plugins;
+    LifecyclePrint print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     Test::PerimeterPluginTests::perimeter_config({}));
+    print.records().get_or_add("test.metadata").set_key_value("value", new ConfigOptionInt(10));
+    set_metadata_property(print.object(0), 10);
+    Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+    REQUIRE(print.has_metadata_checkpoint(Checkpoint::None));
+    REQUIRE(print.has_metadata_checkpoint(Checkpoint::Slicing));
+    CHECK(ScopedMetadataPlugins::post().observed_record == 10);
+    CHECK(ScopedMetadataPlugins::post().observed_property == 10);
+    CHECK(ScopedMetadataPlugins::skirt().observed_record == 20);
+    CHECK(ScopedMetadataPlugins::skirt().observed_property == 20);
+    CHECK(metadata_property(print.object(0)) == 30);
+    const DynamicConfig *record = print.records().find("test.metadata");
+    REQUIRE(record != nullptr);
+
+    print.request_replay_from_worker(Checkpoint::Slicing);
+    LifecycleClearPlugin &probe = prepare_lifecycle_probe(print);
+    probe.fail_clear = true;
+    CHECK_THROWS_AS(print.prepare_checkpoint_resume(), PluginCleanupError);
+    CHECK(print.has_metadata_checkpoint(Checkpoint::None));
+    CHECK(print.has_metadata_checkpoint(Checkpoint::Slicing));
+    CHECK(metadata_property(print.object(0)) == 30);
+    CHECK(record->option<ConfigOptionInt>("value")->value == 30);
+    probe.fail_clear = false;
+    for (int retry = 0; retry < 2; ++retry) {
+        print.prepare_checkpoint_resume();
+        CHECK(print.records().find("test.metadata") == record);
+        CHECK(record->option<ConfigOptionInt>("value")->value == 20);
+        CHECK(metadata_property(print.object(0)) == 20);
+        REQUIRE(print.records().find("test.metadata.post") != nullptr);
+        CHECK(print.records().find("test.metadata.post")->option<ConfigOptionInt>("value")->value == 20);
+        CHECK(print.records().find("test.metadata.skirt") == nullptr);
+        CHECK(print.object(0).has_property(ScopedMetadataPlugins::post().phase_property_type));
+        CHECK_FALSE(print.object(0).has_property(ScopedMetadataPlugins::skirt().phase_property_type));
+        set_metadata_property(print.object(0), 99);
+        print.records().get_or_add("test.metadata").set_key_value("value", new ConfigOptionInt(99));
+    }
+    Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+    CHECK(ScopedMetadataPlugins::skirt().observed_record == 20);
+    CHECK(metadata_property(print.object(0)) == 30);
+
+    print.request_replay_from_worker(Checkpoint::None);
+    CHECK_FALSE(print.has_metadata_checkpoint(Checkpoint::Slicing));
+    print.prepare_checkpoint_resume();
+    CHECK(record->option<ConfigOptionInt>("value")->value == 10);
+    CHECK(metadata_property(print.object(0)) == 10);
+    CHECK(print.records().find("test.metadata.post") == nullptr);
+    CHECK(print.records().find("test.metadata.skirt") == nullptr);
+    CHECK_FALSE(print.object(0).has_property(ScopedMetadataPlugins::post().phase_property_type));
+    CHECK_FALSE(print.object(0).has_property(ScopedMetadataPlugins::skirt().phase_property_type));
+    Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+    CHECK(ScopedMetadataPlugins::post().observed_record == 10);
+    CHECK(ScopedMetadataPlugins::post().observed_property == 10);
+    print.clear();
+    CHECK_FALSE(print.has_metadata_checkpoint(Checkpoint::None));
+    CHECK_FALSE(print.has_metadata_checkpoint(Checkpoint::Slicing));
+}
+
+TEST_CASE("PostSlicing failures never publish a metadata checkpoint",
+          "[plugins][checkpoint][metadata][cancellation]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ScopedMetadataPlugins plugins;
+    Print print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     Test::PerimeterPluginTests::perimeter_config({}));
+    SECTION("cancellation") { ScopedMetadataPlugins::post().cancel_setup = true; }
+    SECTION("plugin error") { ScopedMetadataPlugins::post().fail_setup = true; }
+    CHECK_THROWS(Steps::StepPipeline::run_slice(Orchestrator::instance(), print));
+    CHECK(print.has_metadata_checkpoint(Checkpoint::None));
+    CHECK_FALSE(print.has_metadata_checkpoint(Checkpoint::Slicing));
+    CHECK(print.should_execute_step(STEP_POST_SLICING));
+    ScopedMetadataPlugins::post().cancel_setup = false;
+    ScopedMetadataPlugins::post().fail_setup = false;
+    print.restart();
+    Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+    CHECK(print.has_metadata_checkpoint(Checkpoint::Slicing));
+}
+
+TEST_CASE("Metadata restoration clears newly added objects and forgets removed owners",
+          "[plugins][checkpoint][metadata][lifetime]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    LifecyclePrint print;
+    Model model;
+    const DynamicPrintConfig config = Test::PerimeterPluginTests::perimeter_config({});
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    set_metadata_property(print.object(0), 10);
+    print.save_metadata_checkpoint(Checkpoint::None);
+    print.save_metadata_checkpoint(Checkpoint::Slicing);
+    model.add_object(model.objects()[0]);
+    print.apply(model, config);
+    REQUIRE(print.objects().size() == 2);
+    set_metadata_property(print.object(0), 90);
+    set_metadata_property(print.object(1), 99);
+    print.prepare_checkpoint_resume();
+    CHECK(metadata_property(print.object(0)) == 10);
+    CHECK_FALSE(print.object(1).has_properties());
+
+    LifecycleClearPlugin &probe = prepare_lifecycle_probe(print);
+    model.delete_object(size_t(0));
+    probe.fail_clear = true;
+    CHECK_THROWS_AS(print.apply(model, config), PluginCleanupError);
+    CHECK(print.has_metadata_checkpoint(Checkpoint::None));
+    REQUIRE(print.objects().size() == 2);
+    probe.fail_clear = false;
+    print.apply(model, config);
+    REQUIRE(print.objects().size() == 1);
+    set_metadata_property(print.object(0), 77);
+    print.prepare_checkpoint_resume();
+    CHECK_FALSE(print.object(0).has_properties());
+}
 
 TEST_CASE("Print releases plugin state before destroying its owners", "[plugins][clear][checkpoint][lifetime]")
 {

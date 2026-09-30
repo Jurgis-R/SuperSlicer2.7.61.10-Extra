@@ -17,6 +17,7 @@ source trees before any plugin can consume or reorder the clones.
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
+#include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionProperty.hpp"
@@ -188,7 +189,12 @@ void clear(Print &print)
     print.reset_printing_plan();
 }
 
-void prepare(Print &) {}
+void prepare(Print &print)
+{
+    DynamicConfig record = CustomGCode::make_print_record(print.model().custom_gcode_per_print_z);
+    // Keep the channel object alive for consumers retaining borrowed Config handles.
+    print.records().get_or_add(CustomGCode::PrintRecordChannel).swap(record);
+}
 
 bool validate_pre(const Print &print, std::string *error)
 {

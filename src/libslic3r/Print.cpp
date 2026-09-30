@@ -257,6 +257,51 @@ void Print::set_gcode_reader_source_path(std::string path)
     m_gcode_reader_source_path = std::move(path);
 }
 
+void Print::save_metadata_checkpoint(const Steps::Checkpoint checkpoint)
+{
+    assert(checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing);
+    std::unique_ptr<CheckpointMetadataSnapshot> snapshot = std::make_unique<CheckpointMetadataSnapshot>();
+    snapshot->records = m_records.capture();
+    for (const PrintObject &object : this->objects())
+        snapshot->object_properties.emplace(&object, static_cast<const PluginPropertyContainer &>(object));
+    // Publish only a complete copy; a failed capture must not replace the retry baseline.
+    (checkpoint == Steps::Checkpoint::None ? m_none_metadata_checkpoint : m_slicing_metadata_checkpoint) = std::move(snapshot);
+}
+
+bool Print::has_metadata_checkpoint(const Steps::Checkpoint checkpoint) const
+{
+    assert(checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing);
+    return (checkpoint == Steps::Checkpoint::None ? m_none_metadata_checkpoint : m_slicing_metadata_checkpoint) != nullptr;
+}
+
+void Print::restore_metadata_checkpoint(const Steps::Checkpoint checkpoint)
+{
+    assert(checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing);
+    const CheckpointMetadataSnapshot *snapshot =
+        (checkpoint == Steps::Checkpoint::None ? m_none_metadata_checkpoint : m_slicing_metadata_checkpoint).get();
+    // Without a checkpoint baseline, leave current metadata untouched.
+    if (snapshot == nullptr)
+        return;
+    m_records.restore(snapshot->records);
+    for (PrintObject &object : this->objects()) {
+        const std::map<const PrintObject *, PluginPropertyContainer>::const_iterator it = snapshot->object_properties.find(&object);
+        // Objects absent from this baseline have no properties to preserve.
+        if (it == snapshot->object_properties.end())
+            object.clear_properties();
+        else
+            object.copy_properties_from(it->second);
+    }
+}
+
+void Print::forget_metadata_checkpoint_object(const PrintObject *object)
+{
+    // Erase before deletion so a new object at the same address cannot inherit an old baseline.
+    if (m_none_metadata_checkpoint != nullptr)
+        m_none_metadata_checkpoint->object_properties.erase(object);
+    if (m_slicing_metadata_checkpoint != nullptr)
+        m_slicing_metadata_checkpoint->object_properties.erase(object);
+}
+
 void Print::reset_gcode_reader_source_path()
 {
     m_gcode_reader_source_path.clear();
@@ -450,6 +495,8 @@ void Print::clear() {
     this->reset_printing_plan();
     this->reset_gcode_reader_source_path();
     this->reset_step_execution_plan_all();
+    m_none_metadata_checkpoint.reset();
+    m_slicing_metadata_checkpoint.reset();
     m_objects.clear();
     this->reset_auxiliary_object();
     m_print_regions.clear();
@@ -560,6 +607,8 @@ void Print::prepare_checkpoint_resume()
     if (!this->clear_plugin_state(Steps::checkpoint_resume_step(checkpoint)))
         throw PluginCleanupError("Plugin cleanup failed before checkpoint resume.");
     Steps::StepPipeline::clear_checkpoint_outputs(*this, checkpoint);
+    if (checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing)
+        this->restore_metadata_checkpoint(checkpoint);
     if (checkpoint == Steps::Checkpoint::Ordering) {
         const bool restored = this->restore_ordering_checkpoint();
         assert(restored);
@@ -613,6 +662,8 @@ void Print::request_steps_after(const Steps::Checkpoint checkpoint)
     // plugins may hold handles to, until their cleanup callbacks have run.
     if (checkpoint <= Steps::Checkpoint::Print)
         this->clear_ordering_checkpoint();
+    if (checkpoint == Steps::Checkpoint::None)
+        m_slicing_metadata_checkpoint.reset();
     this->mark_step_and_dependents_for_execution(Steps::checkpoint_resume_step(checkpoint));
 }
 
@@ -654,6 +705,7 @@ void Print::reset_step_execution_plan_all()
 {
     m_pipeline_progress.reset();
     clear_ordering_checkpoint();
+    m_slicing_metadata_checkpoint.reset();
     m_steps_to_execute.clear();
     for (slicing_step_t step : Steps::execution_order())
         m_steps_to_execute.insert(step);

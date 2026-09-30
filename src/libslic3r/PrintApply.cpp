@@ -180,40 +180,6 @@ static bool layer_height_ranges_equal(const t_layer_config_ranges &lr1, const t_
     return true;
 }
 
-// Returns true if va == vb when all CustomGCode items that are not the specified type (not_ignore_type) are ignored.
-static bool custom_per_printz_gcodes_tool_changes_differ(
-    const std::vector<CustomGCode::Item> &va,
-    const std::vector<CustomGCode::Item> &vb,
-    CustomGCode::Type                     not_ignore_type
-) {
-	auto it_a = va.begin();
-	auto it_b = vb.begin();
-	while (it_a != va.end() || it_b != vb.end()) {
-		if (it_a != va.end() && it_a->type != not_ignore_type) {
-			// Skip any CustomGCode items, which are not equal to not_ignore_type.
-			++ it_a;
-			continue;
-		}
-		if (it_b != vb.end() && it_b->type != not_ignore_type) {
-			// Skip any CustomGCode items, which are not equal to not_ignore_type.
-			++ it_b;
-			continue;
-		}
-		if (it_a == va.end() || it_b == vb.end())
-			// va or vb contains more items of not_ignore_type than the other.
-			return true;
-		assert(it_a->type == not_ignore_type);
-		assert(it_b->type == not_ignore_type);
-		if (*it_a != *it_b)
-			// The two items of not_ignore_type differ.
-			return true;
-		++ it_a;
-		++ it_b;
-	}
-	// There is no change in specified not_ignore_type items.
-	return false;
-}
-
 // Collect changes to print config, account for overrides of extruder retract values by filament presets.
 static t_config_option_keys print_config_diffs(
     const PrintConfig        &current_config,
@@ -1110,16 +1076,6 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     const bool custom_gcode_record_changed =
         m_model.custom_gcode_per_print_z.mode != model.custom_gcode_per_print_z.mode ||
         m_model.custom_gcode_per_print_z.gcodes != model.custom_gcode_per_print_z.gcodes;
-    std::optional<DynamicConfig> pending_custom_gcode_record;
-
-    /*
-    Build the replacement before changing the Print-owned Model. If validation
-    or allocation fails, the existing borrowed record handle and its contents
-    remain untouched.
-    */
-    if (m_records.find(CustomGCode::PrintRecordChannel) == nullptr ||
-        model_replaced || custom_gcode_record_changed)
-        pending_custom_gcode_record.emplace(CustomGCode::make_print_record(model.custom_gcode_per_print_z));
 
     // The following call may stop the background processing.
     if (! print_diff.empty())
@@ -1169,6 +1125,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         for (PrintObjectUPtr &object : m_objects) {
             model_object_status_db.add(*object->model_object(), ModelObjectStatus::Deleted);
 			update_apply_status(object->invalidate_all_steps());
+            this->forget_metadata_checkpoint_object(object.get());
         }
         m_objects.clear();
 
@@ -1176,29 +1133,12 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 		for (const ModelObject &model_object : m_model.objects())
 			model_object_status_db.add(model_object, ModelObjectStatus::New);
     } else {
-        if (m_model.custom_gcode_per_print_z != model.custom_gcode_per_print_z) {
-            const CustomGCode::Mode current_mode = m_model.custom_gcode_per_print_z.mode;
-            const CustomGCode::Mode next_mode    = model.custom_gcode_per_print_z.mode;
-
-            const bool multi_extruder_differ = (current_mode == next_mode) && (current_mode == CustomGCode::MultiExtruder || next_mode == CustomGCode::MultiExtruder);
-            // Tool change G-codes are applied as color changes for a single extruder printer, no need to invalidate tool ordering.
-            // FIXME The tool ordering may be invalidated unnecessarily if the custom_gcode_per_print_z.mode is not applicable
-            // to the active print / model state, and then it is reset, so it is being applicable, but empty, thus the effect is the same.
-            const bool tool_change_differ    = num_extruders > 1 && custom_per_printz_gcodes_tool_changes_differ(m_model.custom_gcode_per_print_z.gcodes, model.custom_gcode_per_print_z.gcodes, CustomGCode::ToolChange);
-            // For multi-extruder printers, we perform a tool change before a color change.
-            // So, in that case, we must invalidate tool ordering and wipe tower even if custom color change g-codes differ.
-            const bool color_change_differ   = num_extruders > 1 && (next_mode == CustomGCode::MultiExtruder) && custom_per_printz_gcodes_tool_changes_differ(m_model.custom_gcode_per_print_z.gcodes, model.custom_gcode_per_print_z.gcodes, CustomGCode::ColorChange);
-
-            update_apply_status(
-                (num_extruders_changed || tool_change_differ || multi_extruder_differ || color_change_differ) ?
-            	// The Tool Ordering and the Wipe Tower are no more valid.
-            	this->invalidate_steps({ psWipeTower, psGCodeExport }) :
-            	// There is no change in Tool Changes stored in custom_gcode_per_print_z, therefore there is no need to update Tool Ordering.
-            	this->invalidate_step(psGCodeExport));
-        }
-        // Keep the Print-owned Model exact even when the legacy equality deliberately ignores an empty table's mode.
-        if (custom_gcode_record_changed)
+        if (custom_gcode_record_changed) {
+            // Ordering is the first consumer, including changes to an empty table's mode.
+            this->request_replay_from(Steps::Checkpoint::Print);
             m_model.custom_gcode_per_print_z = model.custom_gcode_per_print_z;
+            update_apply_status(true);
+        }
         if (model_object_list_equal(m_model, model)) {
             // The object list did not change.
 			for (const ModelObject &model_object : m_model.objects())
@@ -1271,6 +1211,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     const ModelObjectStatus &status = model_object_status_db.get(*print_object->model_object());
                     if (status.status == ModelObjectStatus::Deleted) {
                         update_apply_status(print_object->invalidate_all_steps());
+                        this->forget_metadata_checkpoint_object(print_object.get());
                     } else
                         m_objects.emplace_back(std::move(print_object));
                 }
@@ -1500,6 +1441,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             for (const PrintObjectStatus &pos : print_object_status_db) {
                 if (pos.status == PrintObjectStatus::Unknown || pos.status == PrintObjectStatus::Deleted) {
                     update_apply_status(pos.print_object->invalidate_all_steps());
+                    this->forget_metadata_checkpoint_object(pos.print_object);
 					deleted_objects = true;
                 }
             }
@@ -1633,16 +1575,6 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         this->current_checkpoint() <= Steps::Checkpoint::Slicing) {
         this->reset_auxiliary_object();
         this->cleanup();
-    }
-
-    /*
-    Replace only the DynamicConfig contents after every Model operation has
-    succeeded. The channel object itself stays in place, preserving borrowed
-    config_handle values held by plugin consumers.
-    */
-    if (pending_custom_gcode_record.has_value()) {
-        DynamicConfig &published = m_records.get_or_add(CustomGCode::PrintRecordChannel);
-        published.swap(*pending_custom_gcode_record);
     }
 
 #ifdef _DEBUG

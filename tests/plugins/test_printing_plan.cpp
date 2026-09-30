@@ -1099,6 +1099,7 @@ TEST_CASE("PrintingPlan object instance ids remain stable after plan reordering"
     CHECK(printing_plan_count_object_instance(handle) == 0);
 
     Steps::StepExtrusionOrdering::clear(print);
+    Steps::StepExtrusionOrdering::prepare(print);
     Steps::StepExtrusionOrdering::run_step(Orchestrator::instance(), print);
     REQUIRE(print.printing_plan() != nullptr);
     REQUIRE(print.printing_plan()->object_instances.size() == 4);
@@ -1483,6 +1484,7 @@ TEST_CASE("STEP_ORDERING runs default plugin chain on a shared PrintingPlan", "[
     CHECK(plugins[6]->get_id() == "ordering.extrusion_tree.default");
     CHECK(Steps::get_exclusive_steps().find(STEP_ORDERING) == Steps::get_exclusive_steps().end());
 
+    Steps::StepExtrusionOrdering::prepare(print);
     Steps::StepExtrusionOrdering::run_step(orchestrator, print);
 
     REQUIRE(print.printing_plan() != nullptr);
@@ -1536,6 +1538,7 @@ TEST_CASE("STEP_ORDERING includes print-level auxiliary layers", "[printing][pla
 
     Orchestrator &orchestrator = Orchestrator::instance();
     Steps::StepExtrusionOrdering::clear(print);
+    Steps::StepExtrusionOrdering::prepare(print);
     Steps::StepExtrusionOrdering::run_step(orchestrator, print);
 
     REQUIRE(print.printing_plan() != nullptr);
