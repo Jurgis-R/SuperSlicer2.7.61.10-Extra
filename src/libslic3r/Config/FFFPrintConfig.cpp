@@ -3493,7 +3493,7 @@ void init_fff_params(PrintConfigDef &definition)
     def->label = L("First layer");
     def->full_label = L("First layer nozzle temperature");
     def->category = OptionCategory::filament;
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("Extruder nozzle temperature for first layer. If you want to control temperature manually "
                    "during print, set zero to disable temperature control commands in the output file.");
     def->sidetext = L("°C");
@@ -3595,7 +3595,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("gcode_flavor", coEnum, ptFFF);
     def->label = L("G-code flavor");
     def->category = OptionCategory::general;
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_ORDERING;
     def->tooltip = L("Some G/M-code commands, including temperature control and others, are not universal. "
                    "Set this option to your printer's firmware to get a compatible output. "
                    "The \"No extrusion\" flavor prevents Slic3r from exporting any extrusion value at all.");
@@ -3689,7 +3689,7 @@ void init_fff_params(PrintConfigDef &definition)
                      "\nThis is only used when 'Ooze prevention' is active in Print Settings.");
     def->sidetext = L("°C");
     def->category = OptionCategory::filament;
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_GCODE;
     def->min = 0;
     def->max = max_temp;
     def->can_be_disabled = true;
@@ -4566,7 +4566,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("ooze_prevention", coBool, ptFFF);
     def->label = L("Enable");
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_GCODE;
     // TRN PrintSettings: Enable ooze prevention
     def->tooltip = L("This option will drop the temperature of the inactive extruders to prevent oozing.");
     def->mode = comExpert | comPrusa;
@@ -6772,7 +6772,7 @@ void init_fff_params(PrintConfigDef &definition)
     def->label = L("Other layers");
     def->full_label = L("Nozzle temperature");
     def->category = OptionCategory::filament;
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("Extruder nozzle temperature for layers after the first one. Set zero to disable "
                    "temperature control commands in the output G-code.");
     def->sidetext = L("°C");
@@ -6924,7 +6924,7 @@ void init_fff_params(PrintConfigDef &definition)
     def->label = L("Travel");
     def->full_label = L("Travel speed");
     def->category = OptionCategory::speed;
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_LAYER_EXTRUSION_EDIT;
     def->tooltip = L("Speed for travel moves (jumps between distant extrusion points).");
     def->sidetext = L("mm/s");
     def->aliases = { "travel_feed_rate" };
@@ -6936,7 +6936,7 @@ void init_fff_params(PrintConfigDef &definition)
     def->label = L("Z Travel");
     def->full_label = L("Z travel speed");
     def->category = OptionCategory::speed;
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("Speed for movements along the Z axis.\nWhen set to zero, the value "
                      "is ignored and regular travel speed is used instead.");
     def->sidetext = L("mm/s");
@@ -7371,7 +7371,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("z_offset", coFloat, ptFFF);
     def->label = L("Z offset");
     def->category = OptionCategory::general;
-    def->invalidates_step = psSkirtBrim;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("This value will be added (or subtracted) from all the Z coordinates "
                    "in the output G-code. It is used to compensate for bad Z endstop position: "
                    "for example, if your endstop zero actually leaves the nozzle 0.3mm far "

@@ -4,7 +4,7 @@ This reference describes the native storage behind the plugin C API and its C++ 
 
 Member names are those of the native storage, not necessarily those of the API getters. Fields with the same owner and the same lifetime may be grouped on one line, but are named explicitly. Internal caches and associations needed to interpret a view are flagged as such; a line does not mean that a public getter exists for each field.
 
-**This document separates the target contract from the current state of its implementation.** Host cleanup per checkpoint, the plugin `clear` notification, the optional deep `Ordering` clone and the snapshots of records and main-object properties at `None`/`Slicing` exist. `custom_gcode_per_print_z` is published by `STEP_ORDERING`. The `DATA_TREE` 4 API enforces the edit gates of properties, slices, configurations and source extrusions according to the freeze mode; surfaces use scratch capabilities. No general snapshot of properties or source geometry is planned. Support/wipe tower leftovers do not create an obligation to preserve legacy behavior in the resume work. The option reclassification of 5.6 is still pending.
+**This document separates the target contract from the current state of its implementation.** Host cleanup per checkpoint, the plugin `clear` notification, the optional deep `Ordering` clone and the snapshots of records and main-object properties at `None`/`Slicing` exist. `custom_gcode_per_print_z` is published by `STEP_ORDERING`. The `DATA_TREE` 4 API enforces the edit gates of properties, slices, configurations and source extrusions according to the freeze mode; surfaces use scratch capabilities. No general snapshot of properties or source geometry is planned. The required steps 5.1–5.6 are implemented, with the conservative routing and the limits below; only the surface amendment of 5.7 is included.
 
 ## Contents
 
@@ -39,6 +39,36 @@ Member names are those of the native storage, not necessarily those of the API g
 The actual order is that of `Steps::execution_order()`, not the numeric order of the `slicing_step_t` values.
 
 Sources: `src/libslic3r/Steps/StepPipeline.hpp:34`, `src/libslic3r/Steps/StepPipeline.cpp:69`.
+
+### Routing audit of `psSkirtBrim` options
+
+The **67 initial definitions** of `src/libslic3r/Config/FFFPrintConfig.cpp` give **8 reclassifications and 59 kept routes**. This inventory is the tracked reference; it does not mean that the 67 options were optimized. No key name, persisted alias, algorithm or ABI contract is changed.
+
+| Reclassified batch | Keys | Resume step / checkpoint | Verified first consumer |
+|---|---|---|---|
+| Ordered catalog (1) | `gcode_flavor` | `STEP_ORDERING` / `Print` | Name sanitization, [ObjectInstanceCatalog.cpp:54–60](../../src/libslic3r/Plugins/Ordering/ObjectInstanceCatalog.cpp#L54), `used_config_keys` declaration at `:154–166` |
+| Plan editing (1) | `travel_speed` | `STEP_LAYER_EXTRUSION_EDIT` / `Ordering` | [DefaultSpeed.cpp:958–962](../../src/libslic3r/Plugins/LayerExtrusionEdit/DefaultSpeed.cpp#L958), declaration at `:76`; [DefaultFan.cpp:1027](../../src/libslic3r/Plugins/LayerExtrusionEdit/DefaultFan.cpp#L1027) calls the time estimator, `Api/plugin/cpp/PrintingPlanTimeEstimator.cpp:150` |
+| Export (6) | `first_layer_temperature`, `temperature`, `idle_temperature`, `ooze_prevention`, `travel_speed_z`, `z_offset` | `STEP_GCODE` / `Plan` | [GCode.cpp:304–353](../../src/libslic3r/GCode.cpp#L304), `:1878–1992,8028–8031`; [GCodeWriter.cpp:717–723](../../src/libslic3r/GCode/GCodeWriter.cpp#L717), `:799–807`; [GCodePreamble.cpp:342](../../src/libslic3r/Api/plugin/cpp/gcode/GCodePreamble.cpp#L342), `Gantry.cpp:22`, `Api/host/GCodeReaderResultBuilder.cpp:277` |
+
+The temperature and travel readers of the old `GCode/WipeTower.cpp` are not treated as an active prefix: [Print.cpp:1733–1815](../../src/libslic3r/Print.cpp#L1733) uses `WipeTower2`, where these reads are absent/commented out (`GCode/WipeTower2.cpp:1207–1213,1340`). The events produced by [SettingsGCodeScripts.cpp:220–255](../../src/libslic3r/Plugins/GCode/SettingsGCodeScripts.cpp#L220) copy their structural arguments, not these Print values.
+
+**9 adhesion options kept at SkirtBrim / Slicing:** `complete_objects`, `draft_shield`, `min_skirt_length`, `skirt_brim`, `skirt_distance`, `skirt_distance_from_brim`, `skirt_height`, `skirt_extrusion_width`, `skirts`. Readers and declarations are in [DefaultSkirtGenerator.cpp:71–106](../../src/libslic3r/Plugins/SkirtBrim/DefaultSkirtGenerator.cpp#L71), `:209–254,426,560–642,771` and `Plugins/SkirtBrim/DefaultBrimGenerator.cpp:672`. The `complete_objects` reader in Ordering does not replace its earlier adhesion need.
+
+**40 native MMU/wipe controls kept at SkirtBrim / Slicing:**
+
+- `cooling_tube_retraction`, `cooling_tube_length`, `filament_max_wipe_tower_speed`, `filament_loading_speed`, `filament_loading_speed_start`, `filament_enable_toolchange_temp`, `filament_use_fast_skinnydip`, `filament_enable_toolchange_part_fan`;
+- `filament_toolchange_part_fan_speed`, `filament_use_skinnydip`, `filament_melt_zone_pause`, `filament_cooling_zone_pause`, `filament_dip_insertion_speed`, `filament_dip_extraction_speed`, `filament_skinnydip_distance`, `filament_toolchange_delay`;
+- `filament_cooling_moves`, `filament_cooling_initial_speed`, `filament_cooling_final_speed`, `filament_minimal_purge_on_wipe_tower`, `filament_multitool_ramming`, `filament_multitool_ramming_volume`, `filament_multitool_ramming_flow`, `high_current_on_filament_swap`;
+- `parking_pos_retraction`, `extra_loading_move`, `priming_position`, `single_extruder_multi_material`, `wipe_tower`, `wipe_tower_speed`, `wipe_tower_extrusion_width`, `wiping_volumes_matrix`;
+- `wipe_tower_brim_width`, `wipe_tower_rest_in_middle`, `wipe_tower_x`, `wipe_tower_y`, `wipe_tower_width`, `wipe_tower_rotation_angle`, `wipe_tower_cone_angle`, `wipe_tower_extra_spacing`.
+
+The native suffix after run_slice is real: [Print.cpp:1748–1815](../../src/libslic3r/Print.cpp#L1748), `GCode/ToolOrdering.cpp:247`, [WipeTower2.cpp:65–77](../../src/libslic3r/GCode/WipeTower2.cpp#L65), `:131,209–224,479–538,793–845,939,1036–1067,1113–1301,1717`. The canonical runner [StepGenerateWipeTower.cpp:19](../../src/libslic3r/Steps/StepGenerateWipeTower.cpp#L19) is still empty: assigning these parameters to it as first consumer could keep invalid native outputs.
+
+**10 keys kept because no active/canonical first reader is proven:** `filament_unloading_speed`, `filament_unloading_speed_start`, `filament_ramming_parameters`, `filament_toolchange_temp`, `wipe_tower_wipe_starting_speed`, `wiping_volumes_extruders`, `wipe_tower_no_sparse_layers`, `wipe_tower_bridging`, `wipe_tower_extruder`, `filament_type`. Old/preview readers are in [WipeTower.cpp:747–811](../../src/libslic3r/GCode/WipeTower.cpp#L747) and following; some WipeTower2 references are commented out. `filament_type` is also used in support analyses (`PrintObject.cpp:1085,1241`), without an established canonical first caller. UI/normalization readers alone do not prove a replay step.
+
+`used_config_keys` still tightens the definitions ([Orchestrator.cpp:626–636](../../src/libslic3r/Api/host/Orchestrator.cpp#L626)); services are attached to their calling step by `plan_owner_step` (`:533–551`, seam → Ordering, firmware/reader → GCode), never compared as execution enums. None of the 67 selected keys is a seam definition.
+
+The [routing and re-export tests](../../tests/plugins/test_plugin_config.cpp#L1257) cover each reclassified key and `skirt_distance`, the checkpoint, the whole requested suffix and the absence of a new slicing of the kept prefix. The [conservative routes test](../../tests/plugins/test_plugin_config.cpp#L1350) checks the 59 final definitions after plugin initialization and their Slicing checkpoint.
 
 ### Meaning of "const"
 

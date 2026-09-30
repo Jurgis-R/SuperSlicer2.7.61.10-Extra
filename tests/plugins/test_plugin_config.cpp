@@ -27,12 +27,14 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "gcode_test_helpers.hpp"
 #include "test_data.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/PrintRegion.hpp"
+#include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 
@@ -1250,4 +1252,131 @@ TEST_CASE("Print apply reuses the Slicing checkpoint for region and object optio
         CHECK(stage_counts[idx] == (idx < 3 ? 1 : 2));
     }
     check_retained_slices();
+}
+
+TEST_CASE("Former skirt catch-all options resume at their verified first consumers",
+          "[plugins][config][checkpoint][invalidation][replay-options]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    struct Routing {
+        const char *key;
+        const char *value;
+        slicing_step_t consumer;
+        Checkpoint checkpoint;
+    };
+    const Routing routing = GENERATE(
+        Routing{"gcode_flavor", "klipper", STEP_ORDERING, Checkpoint::Print},
+        Routing{"travel_speed", "187", STEP_LAYER_EXTRUSION_EDIT, Checkpoint::Ordering},
+        Routing{"travel_speed_z", "13", STEP_GCODE, Checkpoint::Plan},
+        Routing{"first_layer_temperature", "205", STEP_GCODE, Checkpoint::Plan},
+        Routing{"temperature", "215", STEP_GCODE, Checkpoint::Plan},
+        Routing{"idle_temperature", "160", STEP_GCODE, Checkpoint::Plan},
+        Routing{"ooze_prevention", "1", STEP_GCODE, Checkpoint::Plan},
+        Routing{"z_offset", "0.05", STEP_GCODE, Checkpoint::Plan},
+        Routing{"skirt_distance", "9", STEP_SKIRT_BRIM, Checkpoint::Slicing});
+    CAPTURE(routing.key);
+    const ConfigOptionDef *definition = PrintConfigDef::instance().get(routing.key);
+    REQUIRE(definition != nullptr);
+    CHECK(definition->invalidates_step == routing.consumer);
+    CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == routing.checkpoint);
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict("gcode_flavor", "marlin");
+    config.set_deserialize_strict("step_gcode_plugin", "gcode.printing_plan_file_writer");
+    config.set_deserialize_strict("gcode_firmware_plugin", "gcode.firmware.marlin2");
+    Model model;
+    Print print;
+    Test::init_print({make_cube(5., 5., 1.)}, print, model, config);
+    const std::array<const char *, 5> labels {
+        "Creating the layer height", "StepSlicing", "Post-processing slices",
+        "Preparing perimeters", "Ordering extrusions"
+    };
+    std::array<size_t, 5> calls{};
+    print.status().set_callback([&](const PrintBase::SlicingStatus &status) {
+        if ((status.flags & PrintBase::SlicingStatus::MAIN_STATE) == 0)
+            return;
+        for (size_t idx = 0; idx < labels.size(); ++idx)
+            if (status.main_text == labels[idx])
+                ++calls[idx];
+    });
+    const boost::filesystem::path path = Test::GCode::temporary_gcode_path();
+    struct OutputCleanup {
+        boost::filesystem::path path;
+        ~OutputCleanup() { Test::GCode::remove_output_pair(path); }
+    } output_cleanup{path};
+    Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+    Steps::StepPipeline::run_gcode(Orchestrator::instance(), print, path.string());
+    REQUIRE(print.current_checkpoint() == Checkpoint::GCode);
+    REQUIRE(print.has_ordering_checkpoint());
+    const Layer *source_layer = &print.object(0).layer(0);
+    const std::vector<coord_t> profile = print.object(0).layer_profile();
+    const ExPolygons raw_slices = source_layer->region(0).get_raw_slices();
+    for (const size_t count : calls)
+        REQUIRE(count == 1);
+
+    DynamicPrintConfig changed = print.full_print_config();
+    changed.set_deserialize_strict(routing.key, routing.value);
+    REQUIRE(print.full_print_config().diff(changed) == t_config_option_keys{routing.key});
+    CHECK(print.apply(model, changed) == Print::APPLY_STATUS_INVALIDATED);
+    REQUIRE(print.current_checkpoint() == routing.checkpoint);
+    const slicing_step_t resume = Steps::checkpoint_resume_step(routing.checkpoint);
+    for (const slicing_step_t step : Steps::execution_order()) {
+        CAPTURE(step);
+        CHECK(print.should_execute_step(step) == !Steps::executes_before(step, resume));
+    }
+    CHECK_FALSE(print.should_execute_step(STEP_LAYER_HEIGHT));
+    CHECK_FALSE(print.should_execute_step(STEP_SLICING));
+    CHECK_FALSE(print.should_execute_step(STEP_POST_SLICING));
+    CHECK(&print.object(0).layer(0) == source_layer);
+    CHECK(print.object(0).layer_profile() == profile);
+    CHECK(source_layer->region(0).get_raw_slices() == raw_slices);
+    Steps::StepPipeline::run_gcode(Orchestrator::instance(), print, path.string());
+    CHECK(print.current_checkpoint() == Checkpoint::GCode);
+    for (size_t idx = 0; idx < calls.size(); ++idx) {
+        CAPTURE(labels[idx]);
+        const size_t expected = idx < 3 ? 1 :
+            idx == 3 ? (routing.checkpoint == Checkpoint::Slicing ? 2 : 1) :
+                       (routing.checkpoint <= Checkpoint::Print ? 2 : 1);
+        CHECK(calls[idx] == expected);
+    }
+    CHECK(&print.object(0).layer(0) == source_layer);
+    CHECK(print.object(0).layer_profile() == profile);
+    CHECK(source_layer->region(0).get_raw_slices() == raw_slices);
+    CHECK_FALSE(Test::GCode::read_text_file(path).empty());
+}
+
+TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers conservative",
+          "[plugins][config][checkpoint][invalidation][replay-options]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const std::array<const char *, 59> kept {
+        "complete_objects", "draft_shield", "min_skirt_length", "skirt_brim", "skirt_distance",
+        "skirt_distance_from_brim", "skirt_height", "skirt_extrusion_width", "skirts",
+        "cooling_tube_retraction", "cooling_tube_length", "filament_max_wipe_tower_speed",
+        "filament_loading_speed", "filament_enable_toolchange_temp", "filament_use_fast_skinnydip",
+        "filament_enable_toolchange_part_fan", "filament_toolchange_part_fan_speed", "filament_use_skinnydip",
+        "filament_melt_zone_pause", "filament_cooling_zone_pause", "filament_dip_insertion_speed",
+        "filament_dip_extraction_speed", "filament_toolchange_temp", "filament_skinnydip_distance",
+        "filament_loading_speed_start", "filament_unloading_speed", "filament_unloading_speed_start",
+        "filament_toolchange_delay", "filament_cooling_moves", "filament_cooling_initial_speed",
+        "filament_minimal_purge_on_wipe_tower", "filament_cooling_final_speed", "filament_ramming_parameters",
+        "filament_multitool_ramming", "filament_multitool_ramming_volume", "filament_multitool_ramming_flow",
+        "filament_type", "high_current_on_filament_swap", "parking_pos_retraction", "extra_loading_move",
+        "priming_position", "single_extruder_multi_material", "wipe_tower", "wipe_tower_speed",
+        "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width", "wiping_volumes_extruders",
+        "wiping_volumes_matrix", "wipe_tower_brim_width", "wipe_tower_no_sparse_layers",
+        "wipe_tower_rest_in_middle", "wipe_tower_x", "wipe_tower_y", "wipe_tower_width",
+        "wipe_tower_rotation_angle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
+        "wipe_tower_bridging", "wipe_tower_extruder"
+    };
+    for (const char *key : kept) {
+        CAPTURE(key);
+        const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+        REQUIRE(definition != nullptr);
+        CHECK(definition->invalidates_step == STEP_SKIRT_BRIM);
+        CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Slicing);
+    }
 }
