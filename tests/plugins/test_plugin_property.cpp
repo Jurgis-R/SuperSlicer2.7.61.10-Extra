@@ -1,10 +1,13 @@
+// Guard metadata ownership, read-only capabilities and checkpoint editing windows against regressions.
 #include <catch2/catch.hpp>
 
 #include "plugin_test_helpers.hpp"
+#include "perimeter_test_helpers.hpp"
 #include "test_data.hpp"
 
 #include "libslic3r/Api/plugin/c/slic3r_data_tree.h"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
+#include "libslic3r/Api/plugin/cpp/SurfaceViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionTreeVisitors.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
@@ -12,11 +15,14 @@
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PluginProperty.hpp"
+#include "libslic3r/Plugins/PluginApiCompatibility.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Surface.hpp"
 
 #include <utility>
+#include <functional>
+#include <type_traits>
 #include <stdexcept>
 #include <vector>
 
@@ -93,6 +99,124 @@ ExPolygon rectangle_expolygon(double min_x, double min_y, double max_x, double m
 }
 
 } // namespace
+
+TEST_CASE("Data-tree property getters preserve exact inclusive editing windows",
+          "[plugins][properties][freeze]")
+{
+    static_assert(std::is_same<decltype(object_get_properties(nullptr)), const plugin_property_container_handle *>::value);
+    static_assert(std::is_same<decltype(layer_get_properties(nullptr)), const plugin_property_container_handle *>::value);
+    static_assert(std::is_same<decltype(layer_region_get_properties(nullptr)), const plugin_property_container_handle *>::value);
+    static_assert(std::is_same<decltype(layer_island_get_properties(nullptr)), const plugin_property_container_handle *>::value);
+    static_assert(std::is_same<decltype(layer_region_island_get_properties(nullptr)), const plugin_property_container_handle *>::value);
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
+    Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
+    Print &print = prepared.print;
+    PrintObject &object = print.object(0);
+    Layer &main = object.layer(0);
+    PrintObject &global = print.mutable_auxiliary_object();
+    Layer *auxiliary[2];
+    PrintObject *owners[2] = {&object, &global};
+    for (size_t idx = 0; idx < 2; ++idx) {
+        layer_handle *handle = object_add_auxiliary_layer(reinterpret_cast<const object_handle *>(owners[idx]),
+                                                        scale_i(0.2), scale_i(0.2), scale_i(0.1));
+        REQUIRE(handle != nullptr);
+        auxiliary[idx] = reinterpret_cast<Layer *>(handle);
+        *reinterpret_cast<ExPolygons *>(layer_region_borrow_mutable_slices(
+            reinterpret_cast<layer_region_handle *>(&auxiliary[idx]->region(0)))) =
+            ExPolygons{rectangle_expolygon(0., 0., 10., 10.)};
+        layer_recompute_slices_and_islands_from_layer_regions(handle);
+        layer_add_regions_to_islands(handle);
+        REQUIRE(auxiliary[idx]->islands().size() == 1);
+    }
+    struct Node {
+        slicing_step_t last;
+        std::function<plugin_property_container_handle *()> write;
+        std::function<const plugin_property_container_handle *()> read;
+    };
+    std::vector<Node> nodes;
+    for (PrintObject *owner : owners) {
+        object_handle *handle = reinterpret_cast<object_handle *>(owner);
+        nodes.push_back({STEP_FINALIZE_SLICING, [handle]() { return object_get_properties_mutable(handle); },
+                        [handle]() { return object_get_properties(handle); }});
+    }
+    for (Layer *layer : {&main, auxiliary[0], auxiliary[1]}) {
+        const slicing_step_t last = layer == &main ? STEP_POST_SLICING : STEP_FINALIZE_SLICING;
+        layer_handle *handle = reinterpret_cast<layer_handle *>(layer);
+        layer_region_handle *region = reinterpret_cast<layer_region_handle *>(&layer->region(0));
+        layer_island_handle *island = reinterpret_cast<layer_island_handle *>(&layer->island(0));
+        LayerRegionIsland &bucket = layer->island(0).get_or_add_region_island(layer->island(0).regions(), 0);
+        layer_region_island_handle *group = reinterpret_cast<layer_region_island_handle *>(&bucket);
+        nodes.push_back({last, [handle]() { return layer_get_properties_mutable(handle); },
+                        [handle]() { return layer_get_properties(handle); }});
+        nodes.push_back({last, [region]() { return layer_region_get_properties_mutable(region); },
+                        [region]() { return layer_region_get_properties(region); }});
+        nodes.push_back({last, [island]() { return layer_island_get_properties_mutable(island); },
+                        [island]() { return layer_island_get_properties(island); }});
+        nodes.push_back({STEP_FINALIZE_SLICING, [group]() { return layer_region_island_get_properties_mutable(group); },
+                        [group]() { return layer_region_island_get_properties(group); }});
+    }
+    for (const Node &node : nodes) {
+        print.set_running_step(node.last);
+        REQUIRE(print.running_step_may_edit(node.last));
+        plugin_property_container_handle *properties = node.write();
+        REQUIRE(properties != nullptr);
+        c_layer_support_property *payload = static_cast<c_layer_support_property *>(
+            plugin_property_get_or_add_data_mutable(test_orchestrator_handle(), properties, PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT));
+        REQUIRE(payload != nullptr);
+        payload->interface_id = 73;
+        CHECK(node.read() == properties);
+        print.set_running_step(node.last == STEP_POST_SLICING ? STEP_PRE_PERIMETER : STEP_ORDERING);
+        CHECK_FALSE(print.running_step_may_edit(node.last));
+        REQUIRE(plugin_property_data(node.read(), PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT) != nullptr);
+        CHECK(static_cast<const c_layer_support_property *>(
+            plugin_property_data(node.read(), PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT))->interface_id == 73);
+    }
+    print.set_running_step(STEP_NONE);
+    CHECK(object_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_region_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_island_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_region_island_get_properties_mutable(nullptr) == nullptr);
+}
+
+TEST_CASE("Surface properties require a scratch editing capability regardless of pipeline phase",
+          "[plugins][properties][surface][freeze]")
+{
+    static_assert(std::is_same<decltype(surface_get_properties(nullptr)), const plugin_property_container_handle *>::value);
+    static_assert(std::is_same<decltype(layer_region_island_get_fill_surfaces(nullptr)), const surface_collection_handle *>::value);
+    static_assert(std::is_same<decltype(layer_region_island_get_fill_surface(nullptr, 0)), const surface_handle *>::value);
+    static_assert(!std::is_constructible<slic3r_api::MutableSurface, surface_handle *>::value);
+    static_assert(std::is_same<decltype(std::declval<slic3r_api::Surface>().properties()), slic3r_api::ConstPluginProperties>::value);
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    PluginStorage storage;
+    slic3r_api::StoredSurfaceCollection scratch(reinterpret_cast<storage_handle *>(&storage));
+    ExPolygon geometry = rectangle_expolygon(0., 0., 10., 10.);
+    scratch.append(slic3r_api::ExPolygon(reinterpret_cast<const expolygon_handle *>(&geometry)), RAW_SURFACE_TYPE_NONE);
+    for (const slicing_step_t step : {STEP_FINALIZE_SLICING, STEP_ORDERING, STEP_GCODE}) {
+        print.set_running_step(step);
+        scratch.mutable_at(0).mutable_properties().get_or_add(slic3r_api::LayerSupportProperty::key).interface_id = uint32_t(step);
+        REQUIRE(scratch.readonly().at(0).properties().get(slic3r_api::LayerSupportProperty::key) != nullptr);
+        CHECK(scratch.readonly().at(0).properties().get(slic3r_api::LayerSupportProperty::key)->interface_id == uint32_t(step));
+    }
+    CHECK(surface_collection_get_properties_mutable(nullptr, 0) == nullptr);
+    CHECK(surface_collection_get_properties_mutable(scratch.mutable_handle(), 1) == nullptr);
+    print.set_running_step(STEP_NONE);
+}
+
+TEST_CASE("Property freeze rejects the previous data-tree ABI major",
+          "[plugins][properties][abi]")
+{
+    static_assert(SLIC3R_PLUGIN_API_DATA_TREE_MAJOR == 4u);
+    std::vector<PluginApiRequirement> requirements = {
+        {"slic3r_plugin_types.h", {SLIC3R_PLUGIN_API_PLUGIN_TYPES_MAJOR, SLIC3R_PLUGIN_API_PLUGIN_TYPES_MINOR}},
+        {"slic3r_data_tree.h", {3, 0}}
+    };
+    CHECK_FALSE(validate_plugin_api_requirements(requirements).compatible());
+    requirements.back().version = {SLIC3R_PLUGIN_API_DATA_TREE_MAJOR, SLIC3R_PLUGIN_API_DATA_TREE_MINOR};
+    CHECK(validate_plugin_api_requirements(requirements).compatible());
+}
 
 TEST_CASE("PluginPropertyKey gives built-in and dynamic properties one access model",
           "[plugins][properties][property-key]")
@@ -357,7 +481,7 @@ TEST_CASE("Support auxiliary layers are recognized through the plugin data tree 
     REQUIRE(object_count_auxiliary_layer(object_api_handle) == 1);
     const layer_handle *plain_handle = object_get_auxiliary_layer(object_api_handle, 0);
     REQUIRE(plain_handle != nullptr);
-    plugin_property_container_handle *plain_properties = layer_get_properties(plain_handle);
+    const plugin_property_container_handle *plain_properties = layer_get_properties(plain_handle);
     REQUIRE(plain_properties != nullptr);
     CHECK(plugin_property_has(plain_properties, PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT) == 0);
     CHECK(plugin_property_data_size(plain_properties, PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT) == 0);

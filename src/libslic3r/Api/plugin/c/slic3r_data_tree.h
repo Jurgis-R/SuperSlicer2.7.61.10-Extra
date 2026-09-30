@@ -5,7 +5,7 @@
 #ifndef slic3r_data_tree_h_
 #define slic3r_data_tree_h_
 
-#define SLIC3R_PLUGIN_API_DATA_TREE_MAJOR 3u
+#define SLIC3R_PLUGIN_API_DATA_TREE_MAJOR 4u
 #define SLIC3R_PLUGIN_API_DATA_TREE_MINOR 0u
 
 /*
@@ -206,17 +206,16 @@ Normal creation flow:
         orch, "my_plugin.surface_info", sizeof(my_surface_info), alignof(my_surface_info));
 
     my_surface_info *info = (my_surface_info *)plugin_property_get_or_add_data_mutable(
-        orch, surface_get_properties(surface), type);
+        orch, surface_collection_get_properties_mutable(scratch_surfaces, index), type);
 
 The host looks up the registered size and alignment from orch. A plugin should
 not invent its own size/alignment at the point of use, because that would make
 two plugins with the same property name disagree silently.
 
-Property access is intentionally mutable even when the object handle itself is
-const. The const handle still protects the real slicer object: geometry,
-children, regions, extrusions and config are not made mutable by this API. Only
-the side-channel metadata container is mutable. This lets a plugin annotate a
-const LayerIsland while preserving the rule that the slice itself is read-only.
+Const property getters expose reads only. Explicit mutable getters check the
+node's pipeline window in Debug. Source surfaces expose only const reads;
+authorized step payloads publish replacements assembled in mutable scratch
+collections. Scratch metadata does not depend on the current pipeline phase.
 
 Threading rule: the host does not lock individual property containers. Parallel
 steps usually assign one layer or island to one worker, which is safe. If a
@@ -299,12 +298,13 @@ SLIC3R_HOST_API int32_t surface_get_flag(const surface_handle *me, raw_surface_t
 /*
 Surface properties.
 
-Surfaces from the host may be read-only as geometry, but their plugin-property
-container remains writable for metadata. A plugin that is building a new
-SurfaceCollection can append a Surface, then set or copy properties before
-publishing the collection.
+Source surfaces and their metadata are read-only through the global API.
+Plugins annotate owned scratch collections before an authorized step payload
+publishes a replacement. A const surface handle alone grants no editing rights.
 */
-SLIC3R_HOST_API plugin_property_container_handle *surface_get_properties(const surface_handle *me);
+SLIC3R_HOST_API const plugin_property_container_handle *surface_get_properties(const surface_handle *me);
+// A mutable collection is an owned scratch capability; source collections are exposed const.
+SLIC3R_HOST_API plugin_property_container_handle *surface_collection_get_properties_mutable(surface_collection_handle *me, uint32_t idx);
 
 /*
 Surface collection storage.
@@ -404,20 +404,15 @@ SLIC3R_HOST_API layer_handle *layer_get_lower_layer_mutable(layer_handle *me);
 SLIC3R_HOST_API const layer_handle *layer_get_lower_layer(const layer_handle *me);
 
 /*
-Borrow the Layer's mutable plugin-property container. Metadata remains writable
-even when me is const; this does not make the Layer geometry mutable. The
-container is owned by the Layer, must not be freed and dies with that Layer.
-See the Plugin Properties section for layout and threading rules.
-
-Checkpoint freeze: the data tree, including the properties of objects, layers,
-regions, islands and region-islands, is frozen once STEP_FINALIZE_SLICING has
-run. Steps from STEP_ORDERING onwards may read these properties but must write
-their results into the PrintingPlan instead. The same contract applies to every
-*_get_properties() accessor of this header. It is not enforced yet because these
-accessors also serve reads; a later API split into const and mutable variants
-will allow the host to check it.
+Borrow the Layer's property container; it dies with its owner and must not be freed.
+Main layer/region/island properties are writable through STEP_POST_SLICING;
+object, auxiliary and region-island properties through STEP_FINALIZE_SLICING.
+Boundaries are inclusive and checked by mutable getters in Debug; reads remain
+available afterwards. Steps from Ordering onwards write their results into the plan.
 */
-SLIC3R_HOST_API plugin_property_container_handle *layer_get_properties(const layer_handle *me);
+SLIC3R_HOST_API const plugin_property_container_handle *layer_get_properties(const layer_handle *me);
+// Main layers are writable through PostSlicing; auxiliary layers through FinalizeSlicing, inclusive.
+SLIC3R_HOST_API plugin_property_container_handle *layer_get_properties_mutable(layer_handle *me);
 
 /*
 Enumerate LayerRegions owned by this Layer. A null Layer has count zero;
@@ -440,8 +435,9 @@ SLIC3R_HOST_API const layer_island_handle *layer_get_island(const layer_handle *
 
 /* ========================= LAYER REGION ========================= */
 
-/* Borrow this LayerRegion's mutable metadata container; null returns null. */
-SLIC3R_HOST_API plugin_property_container_handle *layer_region_get_properties(const layer_region_handle *me);
+/* Borrow this LayerRegion's metadata container; null returns null. */
+SLIC3R_HOST_API const plugin_property_container_handle *layer_region_get_properties(const layer_region_handle *me);
+SLIC3R_HOST_API plugin_property_container_handle *layer_region_get_properties_mutable(layer_region_handle *me);
 
 /*
 Compute the normal extrusion flow for flow_role using this LayerRegion's region,
@@ -519,8 +515,9 @@ Never free or retain element handles across perimeter/infill reprocessing.
 */
 SLIC3R_HOST_API const expolygon_collection_handle *layer_island_get_infill_no_overlap_areas(const layer_island_handle *me);
 
-/* Borrow this island's mutable metadata container; null returns null. */
-SLIC3R_HOST_API plugin_property_container_handle *layer_island_get_properties(const layer_island_handle *me);
+/* Borrow this island's metadata container; null returns null. */
+SLIC3R_HOST_API const plugin_property_container_handle *layer_island_get_properties(const layer_island_handle *me);
+SLIC3R_HOST_API plugin_property_container_handle *layer_island_get_properties_mutable(layer_island_handle *me);
 
 /*
 Enumerate the borrowed LayerRegions intersecting this island. Null has count
@@ -610,8 +607,9 @@ SLIC3R_HOST_API uint32_t layer_region_island_count_fill_surface(const layer_regi
 /* Borrow one fill Surface; return null for null or out-of-range input. */
 SLIC3R_HOST_API const surface_handle *layer_region_island_get_fill_surface(const layer_region_island_handle *me, uint32_t idx);
 
-/* Borrow this work bucket's mutable metadata container; null returns null. */
-SLIC3R_HOST_API plugin_property_container_handle *layer_region_island_get_properties(const layer_region_island_handle *me);
+/* Borrow this work bucket's metadata container; null returns null. */
+SLIC3R_HOST_API const plugin_property_container_handle *layer_region_island_get_properties(const layer_region_island_handle *me);
+SLIC3R_HOST_API plugin_property_container_handle *layer_region_island_get_properties_mutable(layer_region_island_handle *me);
 
 /*
 Return the number of LayerRegion objects grouped by this LayerRegionIsland.
@@ -651,9 +649,10 @@ be freed or retained after its Object dies.
 */
 SLIC3R_HOST_API config_handle *object_get_config_mutable(object_handle *me);
 SLIC3R_HOST_API const config_handle *object_get_config(const object_handle *me);
-/* Borrow the Object's mutable metadata container, even from a const Object view.
-   Frozen after STEP_FINALIZE_SLICING, see layer_get_properties(). */
-SLIC3R_HOST_API plugin_property_container_handle *object_get_properties(const object_handle *me);
+/* Borrow read-only metadata; the container remains owned by the Object. */
+SLIC3R_HOST_API const plugin_property_container_handle *object_get_properties(const object_handle *me);
+/* Explicit editing through STEP_FINALIZE_SLICING inclusive, checked in Debug. */
+SLIC3R_HOST_API plugin_property_container_handle *object_get_properties_mutable(object_handle *me);
 
 /* Copy the UTF-8 ModelObject name. Print-level auxiliary Objects have no
    ModelObject and therefore report an empty name. The return value excludes

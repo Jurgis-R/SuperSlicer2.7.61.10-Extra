@@ -114,6 +114,9 @@ class ReallocatingSurfaceHost:
     def surface_get_properties(self, surface):
         return self._surface(surface)["property_handle"]
 
+    def surface_collection_get_properties_mutable(self, collection, idx):
+        return self.surface_get_properties(self.surface_collection_at_mutable(collection, idx))
+
     def expolygon_contour_const(self, expolygon):
         return self._int(expolygon)
 
@@ -154,6 +157,7 @@ class PythonSurfaceViewTests(unittest.TestCase):
         sys.path.insert(0, cls.generated_directory.name)
         cls.geometry = importlib.import_module("slic3r_geometry_views")
         cls.surfaces = importlib.import_module("slic3r_surface_views")
+        cls.datatree = importlib.import_module("slic3r_datatree_views")
 
     @classmethod
     def tearDownClass(cls):
@@ -214,6 +218,49 @@ class PythonSurfaceViewTests(unittest.TestCase):
         self.assertTrue(collection.free_from_storage())
         self.assertTrue(surface.free_from_storage())
         self.assertEqual(len(host.freed), 2)
+
+    def test_source_properties_are_read_only_and_scratch_requires_a_capability(self):
+        class Payload(ctypes.Structure):
+            _fields_ = [("value", ctypes.c_uint32)]
+            property_type = 700
+
+        payload = Payload(42)
+        host = ReallocatingSurfaceHost()
+        api = type("Api", (), {"host": host, "orchestrator": ctypes.c_void_p(1)})()
+        host.plugin_property_data_size = lambda *_args: ctypes.sizeof(Payload)
+        host.plugin_property_data = lambda *_args: ctypes.addressof(payload)
+        host.plugin_property_data_mutable = lambda *_args: ctypes.addressof(payload)
+        host.plugin_property_get_or_add_data_mutable = lambda *_args: ctypes.addressof(payload)
+        scratch = self.surfaces.StoredSurfaceCollection(api, 1)
+        scratch.append(self.geometry.ExPolygon(api, 900), 17)
+        source = scratch.front()
+        for forbidden in ("get_or_add", "get_mutable", "clear", "remove", "copy_from", "data_mutable_address"):
+            self.assertFalse(hasattr(source.properties(), forbidden), forbidden)
+        self.assertFalse(hasattr(source, "mutable_properties"))
+        self.assertEqual(source.properties().get(Payload).value, 42)
+        source.properties().get(Payload).value = 99
+        self.assertEqual(payload.value, 42)
+        with self.assertRaises(TypeError):
+            self.surfaces.MutableSurface(api, source.c_handle())
+        scratch.mutable_at(0).mutable_properties().get_or_add(Payload).value = 73
+        self.assertEqual(source.properties().get(Payload).value, 73)
+        scratch.free_from_storage()
+
+    def test_node_properties_separate_read_and_mutable_getters(self):
+        host = ReallocatingSurfaceHost()
+        api = type("Api", (), {"host": host})()
+        for name, prefix in (("Object", "object"), ("Layer", "layer"),
+                             ("LayerRegion", "layer_region"), ("LayerIsland", "layer_island"),
+                             ("LayerRegionIsland", "layer_region_island")):
+            with self.subTest(node=name):
+                setattr(host, prefix + "_get_properties", lambda *_args: 100)
+                setattr(host, prefix + "_get_properties_mutable", lambda *_args: 200)
+                node = getattr(self.datatree, name)(api, 1)
+                self.assertIsInstance(node.properties(), self.datatree.ConstPluginProperties)
+                self.assertNotIsInstance(node.properties(), self.datatree.PluginProperties)
+                self.assertEqual(node.properties().address, 100)
+                self.assertIsInstance(node.mutable_properties(), self.datatree.PluginProperties)
+                self.assertEqual(node.mutable_properties().address, 200)
 
 
 if __name__ == "__main__":

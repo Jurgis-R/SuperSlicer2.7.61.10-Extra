@@ -208,9 +208,10 @@ Surface &append_post_infill_test_surface(LayerRegionIsland &region_island,
     if (dense_priority != 0) {
         const slic3r_api::PluginPropertyKey<slic3r_api::DenseInfillPlugin::SurfaceDenseInfillHint>
             hint_property = dense_hint_property_key();
-        slic3r_api::MutableSurface surface_view(reinterpret_cast<surface_handle *>(&surface));
+        slic3r_api::PluginProperties properties(reinterpret_cast<plugin_property_container_handle *>(
+            static_cast<PluginPropertyContainer *>(&surface)));
         slic3r_api::DenseInfillPlugin::SurfaceDenseInfillHint &hint =
-            hint_property.get_or_add(surface_view.mutable_properties());
+            hint_property.get_or_add(properties);
         hint.max_solid_layers_on_top = 1;
         hint.priority = dense_priority;
     }
@@ -436,10 +437,10 @@ TEST_CASE("Dense infill recipe modifier changes only marked surfaces",
     Surface dense_surface(stPosInternal | stDensSparse, rectangle_expolygon(-5., -5., 5., 5.));
     const slic3r_api::PluginPropertyKey<slic3r_api::DenseInfillPlugin::SurfaceDenseInfillHint>
         hint_property = dense_hint_property_key();
-    slic3r_api::MutableSurface dense_surface_view(
-        reinterpret_cast<surface_handle *>(&dense_surface));
+    slic3r_api::PluginProperties properties(reinterpret_cast<plugin_property_container_handle *>(
+        static_cast<PluginPropertyContainer *>(&dense_surface)));
     slic3r_api::DenseInfillPlugin::SurfaceDenseInfillHint &hint =
-        hint_property.get_or_add(dense_surface_view.mutable_properties());
+        hint_property.get_or_add(properties);
     hint.priority = 4;
 
     raw_infill_pattern_params dense_params = {};

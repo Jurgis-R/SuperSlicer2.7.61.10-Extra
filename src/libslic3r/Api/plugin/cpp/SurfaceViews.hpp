@@ -278,8 +278,8 @@ public:
         return m_handle != nullptr ? surface_c_view(m_handle) : surface;
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(m_handle != nullptr ? surface_get_properties(m_handle) : nullptr);
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(m_handle != nullptr ? surface_get_properties(m_handle) : nullptr);
     }
 
     template<class PropertyType>
@@ -292,13 +292,12 @@ private:
     c_surface surface = {};
 };
 
-// Mutable borrowed view over one host-owned surface. It can change the surface
-// geometry or plugin properties only through the operations exposed below; it
-// never takes ownership of the native surface handle.
+// Borrowed metadata editing requires an explicit capability, never a const surface handle alone.
 class MutableSurface
 {
 public:
-    explicit MutableSurface(surface_handle *handle) : m_handle(handle) { assert(handle != nullptr); }
+    MutableSurface(surface_handle *handle, plugin_property_container_handle *properties) :
+        m_handle(handle), m_properties(properties) { assert(handle != nullptr); }
 
     surface_handle *mutable_handle() const {
         assert(m_handle != nullptr);
@@ -312,9 +311,9 @@ public:
     ExPolygon expolygon() const { return readonly().expolygon(); }
     raw_surface_type type() const { return readonly().type(); }
     bool has_flag(raw_surface_type flag) const { return readonly().has_flag(flag); }
-    PluginProperties properties() const { return readonly().properties(); }
+    ConstPluginProperties properties() const { return readonly().properties(); }
     PluginProperties mutable_properties() const {
-        return PluginProperties(surface_get_properties(mutable_handle()));
+        return PluginProperties(m_properties);
     }
 
     void copy_properties_from(const Surface &other) {
@@ -343,6 +342,7 @@ public:
 
 private:
     surface_handle *m_handle = nullptr;
+    plugin_property_container_handle *m_properties = nullptr;
 };
 
 class SurfaceCollection : public ConstDataTreeHandleView<surface_collection_handle>
@@ -455,7 +455,8 @@ public:
     void clear() { surface_collection_clear(mutable_handle()); }
     MutableSurface mutable_at(uint32_t idx) const {
         assert(idx < size());
-        return MutableSurface(surface_collection_at_mutable(mutable_handle(), idx));
+        return MutableSurface(surface_collection_at_mutable(mutable_handle(), idx),
+                              surface_collection_get_properties_mutable(mutable_handle(), idx));
     }
     MutableSurface back_mutable() const {
         assert(!empty());

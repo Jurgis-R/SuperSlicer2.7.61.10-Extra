@@ -123,9 +123,9 @@ get_mutable(), get_or_add() and remove() operations. The payload is copied as
 raw bytes by the host. Keep it a plain C-style struct: no std::string, no
 std::vector, no owning pointers.
 
-The view is mutable even when it comes from a const Layer, Island or Surface
-handle. This mutates only plugin metadata; it does not make the object geometry
-or native slicer fields writable.
+The writable view requires an explicit metadata editing capability. Data-tree
+properties() returns ConstPluginProperties; mutable_properties() requests a
+phase-checked capability. Source surfaces expose only reads globally.
 */
 class PluginProperties
 {
@@ -159,7 +159,7 @@ public:
     }
 
     void clear() { plugin_property_clear(mutable_handle()); }
-    void copy_from(const PluginProperties &other) {
+    template<class Properties> void copy_from(const Properties &other) {
         plugin_property_copy_all(mutable_handle(), other.handle());
     }
     bool remove(plugin_property_type type) { return plugin_property_remove(mutable_handle(), type) != 0; }
@@ -221,7 +221,7 @@ private:
     plugin_property_container_handle *m_handle = nullptr;
 };
 
-/* Read-only metadata borrowed from a finalized plan scope. */
+/* Read-only metadata borrowed from a data-tree node or plan scope. */
 class ConstPluginProperties
 {
 public:
@@ -287,8 +287,11 @@ class LayerRegion : public ConstDataTreeHandleView<layer_region_handle>
 public:
     using ConstDataTreeHandleView<layer_region_handle>::ConstDataTreeHandleView;
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_region_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_region_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_region_get_properties_mutable(const_cast<layer_region_handle *>(handle())));
     }
 
     c_flow flow(raw_extrusion_role role) const { return layer_region_get_flow(handle(), role); }
@@ -331,8 +334,11 @@ public:
         return layer_region_island_get_extrusion(handle(), role);
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_region_island_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_region_island_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_region_island_get_properties_mutable(const_cast<layer_region_island_handle *>(handle())));
     }
     uint32_t region_count() const { return layer_region_island_count_region(handle()); }
 
@@ -382,8 +388,11 @@ public:
         return ExPolygonCollection(layer_island_get_infill_no_overlap_areas(handle()));
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_island_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_island_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_island_get_properties_mutable(const_cast<layer_island_handle *>(handle())));
     }
     uint32_t region_count() const { return layer_island_count_region(handle()); }
 
@@ -494,8 +503,11 @@ public:
         return Layer(layer_get_lower_layer(handle()));
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_get_properties_mutable(const_cast<layer_handle *>(handle())));
     }
 
     uint32_t region_count() const { return layer_count_region(handle()); }
@@ -544,8 +556,11 @@ public:
         return Config(object_get_config(handle()));
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(object_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(object_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(object_get_properties_mutable(const_cast<object_handle *>(handle())));
     }
 
     coord_t max_z() const { return object_get_max_z(handle()); }

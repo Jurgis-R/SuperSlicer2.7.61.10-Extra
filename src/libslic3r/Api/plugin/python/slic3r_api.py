@@ -803,9 +803,9 @@ class Slic3rAPI:
         return Surface(self, handle)
 
     @abi_requires_headers("slic3r_data_tree.h")
-    def mutable_surface(self, handle: int) -> MutableSurface:
+    def mutable_surface(self, handle: int, properties: int) -> MutableSurface:
         """Borrow a mutable Surface view explicitly supplied by the host."""
-        return MutableSurface(self, handle)
+        return MutableSurface(self, handle, properties)
 
     @abi_requires_headers("slic3r_data_tree.h")
     def surface_collection(self, handle: int) -> SurfaceCollection:
