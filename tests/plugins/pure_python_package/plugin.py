@@ -1,8 +1,12 @@
+import ctypes
+
+from slic3r_datatree_views import LayerSupportProperty
 from slic3r_api import (
     PluginBase,
     PLUGIN_ERROR_GENERAL,
     PLUGIN_ERROR_OK,
     STEP_POST_SLICING,
+    STEP_ORDERING,
     run_context,
     store_error_message,
 )
@@ -105,6 +109,27 @@ class NoncallableClearPlugin(ClearResultPlugin):
         return PLUGIN_ERROR_OK
 
 
+class FreezeCapabilityPlugin(PluginBase):
+    def __init__(self, api):
+        super().__init__("python.test.freeze.capability", STEP_ORDERING, exclusive_group="")
+        self.api = api
+
+    def setup_run(self, run_ctx_address):
+        context = run_context(run_ctx_address)
+        # The native caller keeps this counter buffer alive throughout execute, including run().
+        self.counter = ctypes.cast(context.data, ctypes.POINTER(ctypes.c_uint32))
+        properties = self.api.print(context.print).object(0).mutable_properties()
+        try:
+            properties.get_or_add(LayerSupportProperty)
+        except RuntimeError:
+            if properties.valid():
+                raise
+            self.counter[1] += 1
+
+    def run(self, run_ctx_address):
+        self.counter[0] += 1
+
+
 def register_plugin(api):
     # The runtime only activates named production fixtures; these probes stay inactive.
     cases = (
@@ -113,4 +138,4 @@ def register_plugin(api):
         "bytes", "list", "tuple", "negative", "overflow",
     )
     return [ExternalPackageRootPlugin(), *(ClearResultPlugin(case) for case in cases),
-            NoncallableClearPlugin()]
+            NoncallableClearPlugin(), FreezeCapabilityPlugin(api)]

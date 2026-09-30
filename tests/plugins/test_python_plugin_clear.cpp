@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "plugin_test_helpers.hpp"
+#include "perimeter_test_helpers.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Utils.hpp"
@@ -90,4 +91,47 @@ TEST_CASE("Python clear results cross the native bridge and retain failed partic
     }
 }
 
+#endif
+
+#if defined(SLIC3R_TEST_PYTHON_PLUGINS) && defined(SLIC3R_TEST_STRICT_FREEZE)
+TEST_CASE("Python strict freeze refuses a native capability and stops before run",
+          "[plugins][python][properties][freeze][strict-freeze][native-python-freeze]")
+{
+    using namespace Slic3r;
+    REQUIRE(Test::Plugins::python_plugin_test_runtime_available());
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Plugin *plugin = orchestrator.get_plugin("python.test.freeze.capability");
+    REQUIRE(plugin != nullptr);
+    REQUIRE_FALSE(orchestrator.is_plugin_active(plugin));
+    const ScopeGuard cleanup([&]() {
+        orchestrator.set_plugin_active(plugin, false);
+        orchestrator.reset_plugin_cancel();
+        orchestrator.consume_plugin_messages();
+    });
+    Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
+    Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
+    REQUIRE(orchestrator.set_plugin_active(plugin, true));
+    orchestrator.reset_plugin_cancel();
+    orchestrator.consume_plugin_messages();
+    uint32_t counters[2] = {0, 0};
+    const raw_plugin_run_payload payload{counters};
+    prepared.print.set_running_step(STEP_ORDERING);
+    CHECK(orchestrator.execute_plugin(*plugin, &prepared.print, &payload, 1) == RAW_PLUGIN_EXECUTION_CANCELLED);
+    CHECK(counters[0] == 0);
+    CHECK(counters[1] == 1);
+    CHECK(orchestrator.is_plugin_cancelled());
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    REQUIRE(messages.size() == 1);
+    CHECK(messages[0].plugin_id == "<unknown>");
+    CHECK(messages[0].step == STEP_ORDERING);
+    CHECK(messages[0].diagnostic_id >= PLUGIN_ERROR_FIRST_DYNAMIC);
+    CHECK(messages[0].message.find("object_get_properties_mutable") != std::string::npos);
+    prepared.print.set_running_step(STEP_NONE);
+    orchestrator.reset_plugin_cancel();
+    CHECK(orchestrator.execute_plugin(*plugin, &prepared.print, &payload, 1) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    CHECK(counters[0] == 1);
+    CHECK(counters[1] == 1);
+    CHECK_FALSE(orchestrator.is_plugin_cancelled());
+    CHECK(orchestrator.consume_plugin_messages().empty());
+}
 #endif

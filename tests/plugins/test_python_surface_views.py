@@ -262,6 +262,27 @@ class PythonSurfaceViewTests(unittest.TestCase):
                 self.assertIsInstance(node.mutable_properties(), self.datatree.PluginProperties)
                 self.assertEqual(node.mutable_properties().address, 200)
 
+    def test_refused_capabilities_propagate_without_native_null_dereferences(self):
+        host = ReallocatingSurfaceHost()
+        api = type("Api", (), {"host": host, "orchestrator": ctypes.c_void_p(1)})()
+        host.object_get_properties_mutable = lambda *_args: None
+        host.object_add_auxiliary_layer = lambda *_args: None
+        host.plugin_property_data_size = lambda *_args: 0
+        host.plugin_property_get_or_add_data_mutable = lambda *_args: None
+        obj = self.datatree.Object(api, 1)
+        properties = obj.mutable_properties()
+        self.assertFalse(properties.valid())
+        self.assertIsNone(properties.get_mutable(self.datatree.LayerSupportProperty))
+        with self.assertRaises(RuntimeError):
+            self.datatree.LayerSupportProperty.key.get_or_add(properties)
+        with self.assertRaises(RuntimeError):
+            properties.get_or_add(self.datatree.LayerSupportProperty)
+        writable = self.datatree.PluginProperties(api, 200)
+        with self.assertRaisesRegex(RuntimeError, "native property creation"):
+            writable.get_or_add(self.datatree.LayerSupportProperty)
+        with self.assertRaises(ValueError):
+            obj.add_auxiliary_layer(1, 1, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

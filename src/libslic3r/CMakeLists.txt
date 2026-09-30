@@ -1060,6 +1060,12 @@ set(SLIC3R_SOURCES
 
 add_library(libslic3r STATIC ${SLIC3R_SOURCES})
 
+# Only the data-tree host reads this switch; scope it so toggling rebuilds one file.
+if (SLIC3R_STRICT_FREEZE)
+    set_source_files_properties(Api/host/slic3r_data_tree.cpp
+        PROPERTIES COMPILE_DEFINITIONS SLIC3R_STRICT_FREEZE=1)
+endif()
+
 if (SLIC3R_BUILD_TESTS)
     target_compile_definitions(libslic3r PUBLIC SLIC3R_PLUGIN_REPOSITORY_TESTING)
     target_compile_definitions(libslic3r PRIVATE SLIC3R_FILESYSTEM_TRANSACTION_TESTING)

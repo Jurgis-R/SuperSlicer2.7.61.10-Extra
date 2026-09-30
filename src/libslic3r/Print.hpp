@@ -409,7 +409,14 @@ public:
     void erase_plugin_cleanup_participant(Plugin *plugin, slicing_step_t step);
     // Pipeline step currently running, or STEP_NONE outside the pipeline.
     slicing_step_t      running_step() const { return m_running_step; }
-    void                set_running_step(slicing_step_t step) { m_running_step = step; }
+    // Publishing a non-idle step starts a fresh execution attempt, including a retry of the same step.
+    void                set_running_step(slicing_step_t step) {
+        if (step != STEP_NONE)
+            m_freeze_diagnostic_claimed.store(false, std::memory_order_relaxed);
+        m_running_step = step;
+    }
+    // Atomically elect one reporter per attempt; only a non-idle step begin resets the claim, never cleanup.
+    bool                claim_freeze_diagnostic() const { return !m_freeze_diagnostic_claimed.exchange(true, std::memory_order_relaxed); }
     // Checkpoint freeze contract: data owned by the steps up to
     // last_editor_step may be edited only by those steps, or outside the
     // pipeline (apply, tests). Host API debug asserts use this, for example
@@ -537,6 +544,7 @@ private:
     // Written by the pipeline thread between steps only; read by host API
     // debug checks while the step runs.
     slicing_step_t                          m_running_step = STEP_NONE;
+    mutable std::atomic_bool                m_freeze_diagnostic_claimed{false};
     std::string                             m_gcode_reader_source_path;
     mutable std::mutex                      m_wipe_tower_data_mutex;
     WipeTowerData                           m_wipe_tower_data {this};

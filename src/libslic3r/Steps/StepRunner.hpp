@@ -37,6 +37,7 @@ namespace Slic3r::Steps::Detail {
 inline const char *builtin_step_name(slicing_step_t step)
 {
     switch (step) {
+    case STEP_NONE:                  return "STEP_NONE";
     case STEP_LAYER_HEIGHT:          return "STEP_LAYER_HEIGHT";
     case STEP_SLICING:               return "STEP_SLICING";
     case STEP_POST_SLICING:          return "STEP_POST_SLICING";

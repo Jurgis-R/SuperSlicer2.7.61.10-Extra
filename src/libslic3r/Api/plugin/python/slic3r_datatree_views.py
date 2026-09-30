@@ -380,9 +380,13 @@ class PluginProperties(ConstPluginProperties):
         _validate_property_key(self, payload_cls_or_key)
         payload_cls = _payload_class(payload_cls_or_key)
         orch = _property_orchestrator(self.api, payload_cls_or_key, orchestrator)
+        if not self.valid():
+            raise RuntimeError("property creation requires a writable capability")
         ptr = self.api.host.plugin_property_get_or_add_data_mutable(
             orch, self.c_handle(), _payload_type(payload_cls_or_key)
         )
+        if not _address(ptr):
+            raise RuntimeError("native property creation was refused")
         return _payload_mutable(payload_cls, _address(ptr))
 
     def remove(self, payload_cls_or_type) -> bool:

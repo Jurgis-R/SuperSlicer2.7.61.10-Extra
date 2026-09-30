@@ -275,6 +275,8 @@ public:
         std::string plugin_id;
         slicing_step_t step = STEP_NONE;
         std::string message;
+        // Zero denotes text-only diagnostics; registered ids remain resolvable after the callback.
+        int32_t diagnostic_id = PLUGIN_ERROR_OK;
     };
 
     // Return the process-wide orchestrator that owns registered plugins and host services.
@@ -493,7 +495,8 @@ public:
     void add_plugin_message(PluginMessageLevel level,
                             const Plugin *plugin,
                             slicing_step_t step,
-                            const char *message);
+                            const char *message,
+                            int32_t diagnostic_id = PLUGIN_ERROR_OK);
     // Drain queued plugin diagnostics. The Plater uses this to turn plugin
     // warnings and errors into ImGui notifications without opening modal dialogs.
     std::vector<PluginMessage> consume_plugin_messages();

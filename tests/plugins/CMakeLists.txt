@@ -196,6 +196,11 @@ foreach(_variant IN ITEMS legacy_abi unknown_api zero_api_table missing_vtable i
 endforeach()
 
 target_link_libraries(${_TEST_NAME}_tests test_common test_common_data libslic3r)
+# Scoped to the strict-freeze tests so toggling the option rebuilds only them.
+if (SLIC3R_STRICT_FREEZE)
+    set_source_files_properties(test_plugin_property.cpp test_python_plugin_clear.cpp
+        PROPERTIES COMPILE_DEFINITIONS SLIC3R_TEST_STRICT_FREEZE=1)
+endif()
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 if (WIN32)

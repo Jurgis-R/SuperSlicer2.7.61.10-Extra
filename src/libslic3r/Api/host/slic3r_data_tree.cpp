@@ -29,6 +29,7 @@
 #include "libslic3r/PluginProperty.hpp"
 #include "libslic3r/Surface.hpp"
 #include "libslic3r/SurfaceCollection.hpp"
+#include "libslic3r/Steps/StepRunner.hpp"
 
 namespace Slic3r {
 
@@ -84,28 +85,50 @@ static const ExPolygon *to_expolygon(const expolygon_handle *me) { return reinte
 static ExPolygons *to_expolygons(expolygon_collection_handle *me) { return reinterpret_cast<ExPolygons*>(me); }
 static const ExPolygons *to_expolygons(const expolygon_collection_handle *me) { return reinterpret_cast<const ExPolygons*>(me); }
 
-/* Debug check of the checkpoint freeze contract for data-tree edits made by
-   the running pipeline step. Checkpoint::Print freezes the whole data tree
-   after STEP_FINALIZE_SLICING. An object without a Print is outside the
-   pipeline and is always editable. */
-static bool data_tree_editable(const PrintObject &object)
+static bool check_freeze(const Print *print, slicing_step_t last_editor_step, const char *what)
 {
-    return object.print() == nullptr ||
-           object.print()->running_step_may_edit(STEP_FINALIZE_SLICING);
+    const bool allowed = print == nullptr || print->running_step_may_edit(last_editor_step);
+#if defined(SLIC3R_STRICT_FREEZE)
+    if (!allowed) {
+        Orchestrator &orchestrator = Orchestrator::instance();
+        orchestrator.request_plugin_cancel();
+        if (!print->claim_freeze_diagnostic())
+            return false;
+        try {
+            const std::string message = std::string("Frozen data-tree edit refused: ") + what +
+                " (running step " + Steps::Detail::step_name_for_diagnostic(orchestrator, print->running_step()) +
+                ", last editor " + Steps::Detail::step_name_for_diagnostic(orchestrator, last_editor_step) + ").";
+            const int32_t id = orchestrator.store_error_message(message.c_str());
+            // No plugin context reaches these getters; only the owning Print's step is attributable.
+            orchestrator.add_plugin_message(Orchestrator::PluginMessageLevel::Error,
+                                            nullptr, print->running_step(), message.c_str(), id);
+        } catch (...) {
+            // Cancellation survives diagnostic allocation failures at the C boundary.
+        }
+        return false;
+    }
+#else
+    (void)what;
+    assert(allowed);
+#endif
+    return true;
 }
 
-/* Slice edits are frozen earlier, by Checkpoint::Slicing after
-   STEP_POST_SLICING. Auxiliary layers are created later by skirt/brim, so
-   their slices follow the data-tree freeze instead. */
-static bool slices_editable(const Layer &layer)
+static bool data_tree_editable(const PrintObject &object, const char *what)
+{
+    return check_freeze(object.print(), STEP_FINALIZE_SLICING, what);
+}
+
+// Auxiliary geometry is produced after PostSlicing and follows the later data-tree boundary.
+static bool slices_editable(const Layer &layer, const char *what)
 {
     const PrintObject *object = layer.object();
     if (object == nullptr || object->print() == nullptr)
         return true;
     for (const Layer &auxiliary_layer : object->auxiliary_layers())
         if (&auxiliary_layer == &layer)
-            return data_tree_editable(*object);
-    return object->print()->running_step_may_edit(STEP_POST_SLICING);
+            return data_tree_editable(*object, what);
+    return check_freeze(object->print(), STEP_POST_SLICING, what);
 }
 
 static c_point to_c_point(const Point &point)
@@ -442,7 +465,8 @@ const plugin_property_container_handle *layer_get_properties(const layer_handle 
 
 plugin_property_container_handle *layer_get_properties_mutable(layer_handle *me)
 {
-    assert(me == nullptr || Slic3r::slices_editable(*Slic3r::to_layer(me)));
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_get_properties_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_layer(me));
 }
 
@@ -492,7 +516,8 @@ const plugin_property_container_handle *layer_region_get_properties(const layer_
 plugin_property_container_handle *layer_region_get_properties_mutable(layer_region_handle *me)
 {
     const Slic3r::Layer *layer = me == nullptr ? nullptr : Slic3r::to_layer_region(me)->layer();
-    assert(layer == nullptr || Slic3r::slices_editable(*layer));
+    if (layer != nullptr && !Slic3r::slices_editable(*layer, "layer_region_get_properties_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_layer_region(me));
 }
 
@@ -592,7 +617,8 @@ const plugin_property_container_handle *layer_island_get_properties(const layer_
 plugin_property_container_handle *layer_island_get_properties_mutable(layer_island_handle *me)
 {
     const Slic3r::Layer *layer = me == nullptr ? nullptr : Slic3r::to_layer_island(me)->layer();
-    assert(layer == nullptr || Slic3r::slices_editable(*layer));
+    if (layer != nullptr && !Slic3r::slices_editable(*layer, "layer_island_get_properties_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_layer_island(me));
 }
 
@@ -763,7 +789,8 @@ plugin_property_container_handle *layer_region_island_get_properties_mutable(lay
     // Region-islands borrow their Print ownership through their associated regions.
     for (const Slic3r::LayerRegion *region : Slic3r::to_layer_region_island(me)->regions()) {
         const Slic3r::PrintObject *object = region->layer() == nullptr ? nullptr : region->layer()->object();
-        assert(object == nullptr || Slic3r::data_tree_editable(*object));
+        if (object != nullptr && !Slic3r::data_tree_editable(*object, "layer_region_island_get_properties_mutable"))
+            return nullptr;
     }
     return Slic3r::to_mutable_property_handle(Slic3r::to_layer_region_island(me));
 }
@@ -806,7 +833,8 @@ const plugin_property_container_handle *object_get_properties(const object_handl
 
 plugin_property_container_handle *object_get_properties_mutable(object_handle *me)
 {
-    assert(me == nullptr || Slic3r::data_tree_editable(*Slic3r::to_object(me)));
+    if (me != nullptr && !Slic3r::data_tree_editable(*Slic3r::to_object(me), "object_get_properties_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_object(me));
 }
 
@@ -897,7 +925,8 @@ layer_handle *object_add_auxiliary_layer(const object_handle *me,
 {
     if (me == nullptr || height <= 0 || print_z <= 0)
         return nullptr;
-    assert(Slic3r::data_tree_editable(*Slic3r::to_object(me)));
+    if (!Slic3r::data_tree_editable(*Slic3r::to_object(me), "object_add_auxiliary_layer"))
+        return nullptr;
 
     Slic3r::PrintObject *object = const_cast<Slic3r::PrintObject *>(Slic3r::to_object(me));
     Slic3r::LayerUPtrs &layers = object->mutable_auxiliary_layers();
@@ -920,7 +949,8 @@ int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *lay
 {
     if (me == nullptr || layer == nullptr)
         return 0;
-    assert(Slic3r::data_tree_editable(*Slic3r::to_object(me)));
+    if (!Slic3r::data_tree_editable(*Slic3r::to_object(me), "object_remove_auxiliary_layer"))
+        return 0;
 
     Slic3r::PrintObject *object = const_cast<Slic3r::PrintObject *>(Slic3r::to_object(me));
     Slic3r::LayerUPtrs &layers = object->mutable_auxiliary_layers();
@@ -936,7 +966,8 @@ int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *lay
 
 expolygon_collection_handle *layer_borrow_mutable_slices(layer_handle *me)
 {
-    assert(me == nullptr || Slic3r::slices_editable(*Slic3r::to_layer(me)));
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_borrow_mutable_slices"))
+        return nullptr;
     return me == nullptr ?
         nullptr :
         reinterpret_cast<expolygon_collection_handle *>(&Slic3r::ApiInternal::LayerAccess::slices_mutable(
@@ -945,7 +976,8 @@ expolygon_collection_handle *layer_borrow_mutable_slices(layer_handle *me)
 
 expolygon_collection_handle *layer_region_borrow_mutable_slices(const layer_region_handle *me)
 {
-    assert(me == nullptr || Slic3r::slices_editable(*Slic3r::to_layer_region(me)->layer()));
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer_region(me)->layer(), "layer_region_borrow_mutable_slices"))
+        return nullptr;
     return me == nullptr ?
         nullptr :
         reinterpret_cast<expolygon_collection_handle *>(&Slic3r::ApiInternal::LayerRegionAccess::slices_mutable(
@@ -1052,7 +1084,8 @@ config_handle *print_records_get_or_add(const print_handle *me, const char *chan
 {
     if (me == nullptr || channel == nullptr)
         return nullptr;
-    assert(Slic3r::to_print(me)->running_step_may_edit(STEP_FINALIZE_SLICING));
+    if (!Slic3r::check_freeze(Slic3r::to_print(me), STEP_FINALIZE_SLICING, "print_records_get_or_add"))
+        return nullptr;
     try {
         Slic3r::Print *print = const_cast<Slic3r::Print *>(Slic3r::to_print(me));
         return Slic3r::ApiHost::to_config_handle(&print->records().get_or_add(channel));
@@ -1065,7 +1098,8 @@ int32_t print_records_remove(const print_handle *me, const char *channel)
 {
     if (me == nullptr || channel == nullptr)
         return 0;
-    assert(Slic3r::to_print(me)->running_step_may_edit(STEP_FINALIZE_SLICING));
+    if (!Slic3r::check_freeze(Slic3r::to_print(me), STEP_FINALIZE_SLICING, "print_records_remove"))
+        return 0;
     try {
         Slic3r::Print *print = const_cast<Slic3r::Print *>(Slic3r::to_print(me));
         return print->records().remove(channel) ? 1 : 0;

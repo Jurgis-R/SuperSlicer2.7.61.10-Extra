@@ -1518,7 +1518,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
 void Orchestrator::add_plugin_message(PluginMessageLevel level,
                                       const Plugin *plugin,
                                       slicing_step_t step,
-                                      const char *message)
+                                      const char *message,
+                                      int32_t diagnostic_id)
 {
     // Plugins can report messages while slicing runs on a worker thread, while
     // the Plater consumes them later from the UI thread. The queue keeps only
@@ -1528,6 +1529,7 @@ void Orchestrator::add_plugin_message(PluginMessageLevel level,
     plugin_message.level = level;
     plugin_message.plugin_id = plugin != nullptr ? plugin->get_id() : "<unknown>";
     plugin_message.step = step;
+    plugin_message.diagnostic_id = diagnostic_id;
     plugin_message.message = message != nullptr && message[0] != '\0' ?
         message :
         "(empty plugin message)";

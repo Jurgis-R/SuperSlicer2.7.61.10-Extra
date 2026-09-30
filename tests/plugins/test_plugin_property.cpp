@@ -12,12 +12,15 @@
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PluginProperty.hpp"
 #include "libslic3r/Plugins/PluginApiCompatibility.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
+#include "libslic3r/PrintObjectRegion.hpp"
 #include "libslic3r/Surface.hpp"
 
 #include <utility>
@@ -25,6 +28,7 @@
 #include <type_traits>
 #include <stdexcept>
 #include <vector>
+#include <thread>
 
 namespace {
 using namespace Slic3r;
@@ -98,6 +102,70 @@ ExPolygon rectangle_expolygon(double min_x, double min_y, double max_x, double m
     }));
 }
 
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+class StrictFreezeState
+{
+public:
+    StrictFreezeState()
+    {
+        Orchestrator::instance().consume_plugin_messages();
+        Orchestrator::instance().reset_plugin_cancel();
+    }
+    ~StrictFreezeState()
+    {
+        Orchestrator::instance().consume_plugin_messages();
+        Orchestrator::instance().reset_plugin_cancel();
+    }
+};
+
+void require_freeze_diagnostic(slicing_step_t step, const char *operation)
+{
+    Orchestrator &orchestrator = Orchestrator::instance();
+    CHECK(orchestrator.is_plugin_cancelled());
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    REQUIRE(messages.size() == 1);
+    CHECK(messages.front().level == Orchestrator::PluginMessageLevel::Error);
+    CHECK(messages.front().plugin_id == "<unknown>");
+    CHECK(messages.front().step == step);
+    CHECK(messages.front().diagnostic_id >= PLUGIN_ERROR_FIRST_DYNAMIC);
+    CHECK(orchestrator.error_message(messages.front().diagnostic_id) == messages.front().message);
+    CHECK(messages.front().message.find(operation) != std::string::npos);
+    orchestrator.reset_plugin_cancel();
+}
+
+class DetachedPrintObject : public PrintObject
+{
+public:
+    DetachedPrintObject(Print &print, std::shared_ptr<PrintObjectRegions> regions) :
+        PrintObject(&print, Vec3crd(scale_i(1.), scale_i(1.), scale_i(1.)),
+                    std::move(regions))
+    {
+        m_print = nullptr;
+    }
+};
+
+class FreezeBarrierProbe : public slic3r_api::PluginBase
+{
+public:
+    explicit FreezeBarrierProbe(orchestrator_handle *orchestrator) : PluginBase(orchestrator) {}
+    mutable bool refused = false;
+    mutable size_t runs = 0;
+
+private:
+    const char *id_impl() const noexcept override { return "test.freeze.barrier"; }
+    const char *name_impl() const noexcept override { return "Freeze barrier probe"; }
+    slicing_step_t step_impl() const noexcept override { return STEP_ORDERING; }
+    const char *const *dependencies_impl() const noexcept override { return nullptr; }
+    int32_t priority_impl() const noexcept override { return 0; }
+    void setup_impl(const plugin_run_context *context, uint32_t) const override
+    {
+        Print &print = *const_cast<Print *>(reinterpret_cast<const Print *>(context->print));
+        refused = object_get_properties_mutable(reinterpret_cast<object_handle *>(&print.object(0))) == nullptr;
+    }
+    void run_impl(const plugin_run_context *) const override { ++runs; }
+};
+#endif
+
 } // namespace
 
 TEST_CASE("Data-tree property getters preserve exact inclusive editing windows",
@@ -109,6 +177,9 @@ TEST_CASE("Data-tree property getters preserve exact inclusive editing windows",
     static_assert(std::is_same<decltype(layer_island_get_properties(nullptr)), const plugin_property_container_handle *>::value);
     static_assert(std::is_same<decltype(layer_region_island_get_properties(nullptr)), const plugin_property_container_handle *>::value);
     Test::Plugins::ensure_plugin_test_runtime_initialized();
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+    const StrictFreezeState strict_state;
+#endif
     Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
     Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
     Print &print = prepared.print;
@@ -168,6 +239,10 @@ TEST_CASE("Data-tree property getters preserve exact inclusive editing windows",
         CHECK(node.read() == properties);
         print.set_running_step(node.last == STEP_POST_SLICING ? STEP_PRE_PERIMETER : STEP_ORDERING);
         CHECK_FALSE(print.running_step_may_edit(node.last));
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+        CHECK(node.write() == nullptr);
+        require_freeze_diagnostic(print.running_step(), "properties_mutable");
+#endif
         REQUIRE(plugin_property_data(node.read(), PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT) != nullptr);
         CHECK(static_cast<const c_layer_support_property *>(
             plugin_property_data(node.read(), PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT))->interface_id == 73);
@@ -179,6 +254,254 @@ TEST_CASE("Data-tree property getters preserve exact inclusive editing windows",
     CHECK(layer_island_get_properties_mutable(nullptr) == nullptr);
     CHECK(layer_region_island_get_properties_mutable(nullptr) == nullptr);
 }
+
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+TEST_CASE("Strict freeze refuses slices records and auxiliary edits before mutation",
+          "[plugins][properties][freeze][strict-freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const StrictFreezeState strict_state;
+    Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
+    Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
+    Print &print = prepared.print;
+    PrintObject &object = print.object(0);
+    PrintObject &global = print.mutable_auxiliary_object();
+    Layer *layers[3] = {&object.layer(0), nullptr, nullptr};
+    PrintObject *owners[2] = {&object, &global};
+    for (size_t idx = 0; idx < 2; ++idx) {
+        const object_handle *handle = reinterpret_cast<const object_handle *>(owners[idx]);
+        print.set_running_step(STEP_FINALIZE_SLICING);
+        layer_handle *aux = object_add_auxiliary_layer(handle, scale_i(0.2), scale_i(0.2), scale_i(0.1));
+        REQUIRE(aux != nullptr);
+        CHECK(object_remove_auxiliary_layer(handle, aux) == 1);
+        aux = object_add_auxiliary_layer(handle, scale_i(0.2), scale_i(0.2), scale_i(0.1));
+        REQUIRE(aux != nullptr);
+        layers[idx + 1] = reinterpret_cast<Layer *>(aux);
+        const size_t count = owners[idx]->auxiliary_layer_count();
+        print.set_running_step(STEP_ORDERING);
+        CHECK(object_add_auxiliary_layer(handle, scale_i(0.4), scale_i(0.4), scale_i(0.2)) == nullptr);
+        require_freeze_diagnostic(STEP_ORDERING, "object_add_auxiliary_layer");
+        print.set_running_step(STEP_ORDERING);
+        CHECK(object_remove_auxiliary_layer(handle, aux) == 0);
+        require_freeze_diagnostic(STEP_ORDERING, "object_remove_auxiliary_layer");
+        CHECK(owners[idx]->auxiliary_layer_count() == count);
+        CHECK(&owners[idx]->auxiliary_layer(0) == layers[idx + 1]);
+    }
+    for (Layer *layer : layers) {
+        const slicing_step_t last = layer == layers[0] ? STEP_POST_SLICING : STEP_FINALIZE_SLICING;
+        const slicing_step_t next = layer == layers[0] ? STEP_PRE_PERIMETER : STEP_ORDERING;
+        layer_handle *handle = reinterpret_cast<layer_handle *>(layer);
+        const layer_region_handle *region = reinterpret_cast<const layer_region_handle *>(&layer->region(0));
+        print.set_running_step(last);
+        REQUIRE(layer_borrow_mutable_slices(handle) != nullptr);
+        REQUIRE(layer_region_borrow_mutable_slices(region) != nullptr);
+        const ExPolygons slices = layer->lslices();
+        const ExPolygons raw_slices = layer->region(0).get_raw_slices();
+        print.set_running_step(next);
+        CHECK(layer_borrow_mutable_slices(handle) == nullptr);
+        require_freeze_diagnostic(next, "layer_borrow_mutable_slices");
+        print.set_running_step(next);
+        CHECK(layer_region_borrow_mutable_slices(region) == nullptr);
+        require_freeze_diagnostic(next, "layer_region_borrow_mutable_slices");
+        CHECK(layer->lslices() == slices);
+        CHECK(layer->region(0).get_raw_slices() == raw_slices);
+        CHECK(layer_get_slices(handle) != nullptr);
+        CHECK(layer_region_get_slices(region) != nullptr);
+    }
+    const print_handle *handle = reinterpret_cast<const print_handle *>(&print);
+    print.set_running_step(STEP_FINALIZE_SLICING);
+    REQUIRE(print_records_get_or_add(handle, "test.strict.removable") != nullptr);
+    CHECK(print_records_remove(handle, "test.strict.removable") == 1);
+    config_handle *record = print_records_get_or_add(handle, "test.strict.stable");
+    REQUIRE(record != nullptr);
+    print.records().get_or_add("test.strict.stable").set_key_value("value", new ConfigOptionInt(73));
+    const std::vector<std::string> channels = print.records().channels();
+    print.set_running_step(STEP_ORDERING);
+    CHECK(print_records_get_or_add(handle, "test.strict.new") == nullptr);
+    require_freeze_diagnostic(STEP_ORDERING, "print_records_get_or_add");
+    print.set_running_step(STEP_ORDERING);
+    CHECK(print_records_get_or_add(handle, "test.strict.stable") == nullptr);
+    require_freeze_diagnostic(STEP_ORDERING, "print_records_get_or_add");
+    print.set_running_step(STEP_ORDERING);
+    CHECK(print_records_remove(handle, "test.strict.stable") == 0);
+    require_freeze_diagnostic(STEP_ORDERING, "print_records_remove");
+    CHECK(print.records().channels() == channels);
+    CHECK(print_records_get(handle, "test.strict.stable") == record);
+    CHECK(print.records().find("test.strict.stable")->option<ConfigOptionInt>("value")->value == 73);
+    print.set_running_step(STEP_NONE);
+}
+
+TEST_CASE("Strict freeze leaves null detached and idle accesses free of diagnostics",
+          "[plugins][properties][freeze][strict-freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const StrictFreezeState strict_state;
+    Print print;
+    std::shared_ptr<PrintObjectRegions> regions = std::make_shared<PrintObjectRegions>();
+    regions->all_regions = print.mutable_auxiliary_object().shared_regions()->all_regions;
+    DetachedPrintObject detached(print, regions);
+    print.set_running_step(STEP_GCODE);
+    object_handle *object = reinterpret_cast<object_handle *>(&detached);
+    REQUIRE(object_get_properties_mutable(object) != nullptr);
+    layer_handle *layer = object_add_auxiliary_layer(object, scale_i(0.2), scale_i(0.2), scale_i(0.1));
+    REQUIRE(layer != nullptr);
+    REQUIRE(layer_get_properties_mutable(layer) != nullptr);
+    layer_region_handle *region = layer_get_region_mutable(layer, 0);
+    REQUIRE(region != nullptr);
+    REQUIRE(layer_region_get_properties_mutable(region) != nullptr);
+    REQUIRE(layer_borrow_mutable_slices(layer) != nullptr);
+    REQUIRE(layer_region_borrow_mutable_slices(region) != nullptr);
+    LayerSliceIsland island(rectangle_expolygon(0., 0., 10., 10.));
+    REQUIRE(layer_island_get_properties_mutable(reinterpret_cast<layer_island_handle *>(&island)) != nullptr);
+    LayerRegionIsland group({}, EXTRUDER_ID_UNKNOWN);
+    REQUIRE(layer_region_island_get_properties_mutable(reinterpret_cast<layer_region_island_handle *>(&group)) != nullptr);
+    CHECK(object_remove_auxiliary_layer(object, layer) == 1);
+
+    CHECK(object_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_region_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_island_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_region_island_get_properties_mutable(nullptr) == nullptr);
+    CHECK(layer_borrow_mutable_slices(nullptr) == nullptr);
+    CHECK(layer_region_borrow_mutable_slices(nullptr) == nullptr);
+    CHECK(object_add_auxiliary_layer(nullptr, 1, 1, 1) == nullptr);
+    CHECK(object_remove_auxiliary_layer(nullptr, nullptr) == 0);
+    CHECK(print_records_get_or_add(nullptr, "test") == nullptr);
+    CHECK(print_records_remove(nullptr, "test") == 0);
+    const print_handle *handle = reinterpret_cast<const print_handle *>(&print);
+    CHECK(print_records_get_or_add(handle, nullptr) == nullptr);
+    CHECK(print_records_remove(handle, nullptr) == 0);
+
+    print.set_running_step(STEP_NONE);
+    object_handle *global = reinterpret_cast<object_handle *>(&print.mutable_auxiliary_object());
+    REQUIRE(object_get_properties_mutable(global) != nullptr);
+    layer = object_add_auxiliary_layer(global, scale_i(0.2), scale_i(0.2), scale_i(0.1));
+    REQUIRE(layer != nullptr);
+    REQUIRE(layer_get_properties_mutable(layer) != nullptr);
+    REQUIRE(layer_region_get_properties_mutable(layer_get_region_mutable(layer, 0)) != nullptr);
+    REQUIRE(layer_borrow_mutable_slices(layer) != nullptr);
+    REQUIRE(layer_region_borrow_mutable_slices(layer_get_region(layer, 0)) != nullptr);
+    CHECK(object_remove_auxiliary_layer(global, layer) == 1);
+    REQUIRE(print_records_get_or_add(handle, "test.idle") != nullptr);
+    CHECK(print_records_remove(handle, "test.idle") == 1);
+    CHECK_FALSE(Orchestrator::instance().is_plugin_cancelled());
+    CHECK(Orchestrator::instance().consume_plugin_messages().empty());
+}
+
+TEST_CASE("Strict freeze C++ views propagate refused capabilities without assertions",
+          "[plugins][properties][freeze][strict-freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const StrictFreezeState strict_state;
+    Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
+    Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
+    Print &print = prepared.print;
+    const slic3r_api::Object object(reinterpret_cast<const object_handle *>(&print.object(0)));
+    print.set_running_step(STEP_ORDERING);
+    slic3r_api::PluginProperties properties = object.mutable_properties();
+    CHECK_FALSE(properties.valid());
+    CHECK_THROWS_AS(properties.get_or_add<slic3r_api::LayerSupportProperty>(
+        test_orchestrator_handle(), PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT), std::runtime_error);
+    CHECK_THROWS_AS(properties.get_or_add(slic3r_api::LayerSupportProperty::key), std::runtime_error);
+    CHECK(properties.get_mutable(slic3r_api::LayerSupportProperty::key) == nullptr);
+    CHECK_FALSE(properties.remove(PLUGIN_PROPERTY_TYPE_LAYER_SUPPORT));
+    properties.clear();
+    properties.copy_from(object.properties());
+    require_freeze_diagnostic(STEP_ORDERING, "object_get_properties_mutable");
+    const size_t count = print.object(0).auxiliary_layer_count();
+    print.set_running_step(STEP_ORDERING);
+    CHECK_THROWS_AS(object.add_auxiliary_layer(scale_i(0.2), scale_i(0.2), scale_i(0.1)), std::runtime_error);
+    require_freeze_diagnostic(STEP_ORDERING, "object_add_auxiliary_layer");
+    CHECK(print.object(0).auxiliary_layer_count() == count);
+    const slic3r_api::Print view(reinterpret_cast<const print_handle *>(&print));
+    print.set_running_step(STEP_ORDERING);
+    CHECK_THROWS_AS(view.records().get_or_add("test.strict.cpp"), std::runtime_error);
+    require_freeze_diagnostic(STEP_ORDERING, "print_records_get_or_add");
+    CHECK(print.records().find("test.strict.cpp") == nullptr);
+    print.set_running_step(STEP_NONE);
+}
+
+TEST_CASE("Strict freeze deduplicates concurrent refusals per Print and execution attempt",
+          "[plugins][properties][freeze][strict-freeze][concurrency]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const StrictFreezeState strict_state;
+    Print first;
+    Print second;
+    object_handle *owners[2] = {
+        reinterpret_cast<object_handle *>(&first.mutable_auxiliary_object()),
+        reinterpret_cast<object_handle *>(&second.mutable_auxiliary_object())};
+    first.set_running_step(STEP_ORDERING);
+    second.set_running_step(STEP_ORDERING);
+    std::atomic_uint refusals{0};
+    std::vector<std::thread> workers;
+    for (size_t index = 0; index < 16; ++index)
+        workers.emplace_back([&, index] {
+            if (object_get_properties_mutable(owners[index % 2]) == nullptr)
+                refusals.fetch_add(1);
+        });
+    for (std::thread &worker : workers)
+        worker.join();
+    CHECK(refusals.load() == 16);
+    Orchestrator &orchestrator = Orchestrator::instance();
+    CHECK(orchestrator.is_plugin_cancelled());
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    REQUIRE(messages.size() == 2);
+    CHECK(messages[0].diagnostic_id != messages[1].diagnostic_id);
+    for (const Orchestrator::PluginMessage &message : messages) {
+        CHECK(message.message.find("STEP_ORDERING") != std::string::npos);
+        CHECK(message.message.find("STEP_FINALIZE_SLICING") != std::string::npos);
+        CHECK(orchestrator.error_message(message.diagnostic_id) == message.message);
+    }
+    for (size_t attempt = 0; attempt < 2; ++attempt) {
+        orchestrator.reset_plugin_cancel();
+        first.prepare_checkpoint_resume();
+        owners[0] = reinterpret_cast<object_handle *>(&first.mutable_auxiliary_object());
+        CHECK(object_get_properties_mutable(owners[0]) == nullptr);
+        CHECK(orchestrator.is_plugin_cancelled());
+        CHECK(orchestrator.consume_plugin_messages().empty());
+    }
+    for (const slicing_step_t step : {STEP_ORDERING, STEP_GCODE, STEP_GCODE}) {
+        first.set_running_step(step);
+        CHECK(object_get_properties_mutable(owners[0]) == nullptr);
+        require_freeze_diagnostic(step, "object_get_properties_mutable");
+    }
+    first.set_running_step(STEP_NONE);
+    second.set_running_step(STEP_NONE);
+}
+
+TEST_CASE("Strict freeze cancellation stops the plugin lifecycle at the setup barrier",
+          "[plugins][properties][freeze][strict-freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const StrictFreezeState strict_state;
+    Orchestrator &orchestrator = Orchestrator::instance();
+    static FreezeBarrierProbe probe(test_orchestrator_handle());
+    if (orchestrator.get_plugin("test.freeze.barrier") == nullptr) {
+        REQUIRE(orchestrator.register_plugin(probe.c_instance()));
+        REQUIRE(orchestrator.set_plugin_active("test.freeze.barrier", false));
+    }
+    struct DeactivateProbe {
+        ~DeactivateProbe() { Orchestrator::instance().set_plugin_active("test.freeze.barrier", false); }
+    } deactivate;
+    Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
+    Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
+    REQUIRE(orchestrator.set_plugin_active("test.freeze.barrier", true));
+    Plugin *plugin = orchestrator.get_plugin("test.freeze.barrier");
+    REQUIRE(plugin != nullptr);
+    const raw_plugin_run_payload payload{};
+    probe.runs = 0;
+    prepared.print.set_running_step(STEP_ORDERING);
+    CHECK(orchestrator.execute_plugin(*plugin, &prepared.print, &payload, 1) == RAW_PLUGIN_EXECUTION_CANCELLED);
+    CHECK(probe.refused);
+    CHECK(probe.runs == 0);
+    require_freeze_diagnostic(STEP_ORDERING, "object_get_properties_mutable");
+    prepared.print.set_running_step(STEP_NONE);
+    CHECK(orchestrator.execute_plugin(*plugin, &prepared.print, &payload, 1) == RAW_PLUGIN_EXECUTION_SUCCESS);
+    CHECK_FALSE(probe.refused);
+    CHECK(probe.runs == 1);
+}
+#endif
 
 TEST_CASE("Surface properties require a scratch editing capability regardless of pipeline phase",
           "[plugins][properties][surface][freeze]")

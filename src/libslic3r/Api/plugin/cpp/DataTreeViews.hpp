@@ -190,6 +190,8 @@ public:
     template<class PropertyType> PropertyType &get_or_add(orchestrator_handle *orchestrator,
                                                            plugin_property_type type)
     {
+        if (!valid())
+            throw std::runtime_error("The plugin property editing capability is null.");
         static_assert(std::is_trivially_copyable<PropertyType>::value,
                       "Plugin property payloads are copied as bytes and must be trivially copyable.");
         /*
@@ -585,7 +587,10 @@ public:
         return Layer(object_get_auxiliary_layer(handle(), idx));
     }
     Layer add_auxiliary_layer(coord_t height, coord_t print_z, coord_t slice_z) const {
-        return Layer(object_add_auxiliary_layer(handle(), height, print_z, slice_z));
+        layer_handle *layer = object_add_auxiliary_layer(handle(), height, print_z, slice_z);
+        if (layer == nullptr)
+            throw std::runtime_error("The auxiliary layer could not be created.");
+        return Layer(layer);
     }
     bool remove_auxiliary_layer(const Layer &layer) const {
         return object_remove_auxiliary_layer(handle(), const_cast<layer_handle *>(layer.handle())) != 0;
