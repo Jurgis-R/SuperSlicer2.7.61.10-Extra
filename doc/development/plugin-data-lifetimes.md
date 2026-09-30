@@ -4,7 +4,7 @@ This reference describes the native storage behind the plugin C API and its C++ 
 
 Member names are those of the native storage, not necessarily those of the API getters. Fields with the same owner and the same lifetime may be grouped on one line, but are named explicitly. Internal caches and associations needed to interpret a view are flagged as such; a line does not mean that a public getter exists for each field.
 
-**This document distinguishes the contract from the current state of its enforcement.** Host cleanup per checkpoint and the plugins' `clear` notification exist in the first increment, but property/record snapshots and full checkpoint capture/validity remain to be implemented. The deep `Ordering` snapshot already exists. Support/wipe tower leftovers do not constitute a legacy retention obligation in the resume work.
+**This document separates the target contract from the current state of its implementation.** Host cleanup per checkpoint, the plugin `clear` notification and the optional deep `Ordering` clone exist. Snapshots of records and of main-object properties at the `None` and `Slicing` checkpoints, the freeze of properties and source extrusions, the strict mode and the move of input-record publication are still to be implemented. No general snapshot of properties or source geometry is planned. Support/wipe tower leftovers do not create an obligation to preserve legacy behavior in the resume work.
 
 ## Contents
 
@@ -28,6 +28,7 @@ Member names are those of the native storage, not necessarily those of the API g
 | Marker | Boundary / meaning |
 |---|---|
 | `apply` | Preparation of model/configuration inputs by the host, outside concurrent plugin execution. |
+| `None` | Before `STEP_LAYER_HEIGHT`: current model and configuration; resumes at `STEP_LAYER_HEIGHT`. |
 | `Slicing` | After `STEP_POST_SLICING`: profile, main layers and slicing geometry kept; resume at `STEP_PRE_PERIMETER`. |
 | `Print` | After `STEP_FINALIZE_SLICING`: source tree finalized; resume at `STEP_ORDERING`. |
 | `Ordering` | After `STEP_ORDERING`: optional save of the plan, which remains editable in its working copy. |
@@ -56,6 +57,22 @@ For generic extrusions, properties and geometries, the write right depends on th
 | Working plan | Ordering then plan editing within the scope entrusted to the callback | `Plan` |
 | Ordering snapshot | Host construction only | As soon as the save is published |
 | Temporary plugin allocation | As long as its owner keeps it and no consumer requires its stability | No automatic pipeline boundary |
+
+### Target write windows for source metadata
+
+The last allowed steps below are inclusive. The freeze of their mutable getters is still to be implemented; the current property getters do not check these windows.
+
+| Storage | Last allowed step | Handling on replay |
+|---|---|---|
+| Properties of main layers, regions and islands | `STEP_POST_SLICING` | Frozen after `Slicing`, no snapshot |
+| Properties of main objects | `STEP_FINALIZE_SLICING` | Snapshot at `None` and `Slicing` only |
+| Properties of auxiliary layers and their regions/islands, of the global auxiliary object, of region-islands and of source surfaces | `STEP_FINALIZE_SLICING` | Destroyed with the downstream nodes on a `None`/`Slicing` replay, no snapshot |
+| Records written by plugins | `STEP_FINALIZE_SLICING` | Snapshot at `None` and `Slicing`, always kept, no preference |
+| Geometry and properties of source extrusions | `STEP_FINALIZE_SLICING` | Frozen at `Print`, no snapshot; downstream steps edit the plan clones |
+
+Target API: `*_get_properties(const ...*)` returns a const container; `*_get_properties_mutable(...*)` provides writing within its window (`DATA_TREE` 4 contract). The C++ and Python views split `properties()` for read-only access and `mutable_properties()` for writing. Reads remain possible after the freeze.
+
+Target mode `SLIC3R_STRICT_FREEZE` (CMake option, default `OFF`, private define of `libslic3r`, no plugin ABI change): `OFF` keeps the existing Debug assertions; `ON` must, in Debug **and** Release, diagnose a violation, request cancellation and return `nullptr`, without assertion or crash. The diagnostic uses the error registry and is attributed to `Print::running_step()`, not to a plugin, since there is no current execution context. Views must accept the null result. This mode is not implemented yet.
 
 ### Handles and invalidation
 
@@ -108,7 +125,7 @@ The owner is `Print::m_objects` or `Print::m_auxiliary_object`. Destroying the o
 | `m_layer_profile` | Computed `[top_z,height]` pairs, replaced by the layer-height callback | `STEP_LAYER_HEIGHT` | Slicing input; kept at the `Slicing` checkpoint |
 | `m_layers` | Separately allocated main layers | Rebuilt by `STEP_SLICING` | Structure kept at `Slicing`; working descendants still modifiable afterwards |
 | `m_auxiliary_layers` | Separately allocated auxiliary layers; insertion by Z, API removal | Before `Print`, in the authorized context | Source freeze at `Print`; removing a layer does not destroy the others |
-| Base `PluginPropertyContainer::m_properties` | Metadata of the object, not of each instance | Before `Print` according to the existing contract; access still mutable afterwards | See §8 and §11: no effective freeze of the payload |
+| Base `PluginPropertyContainer::m_properties` | Object metadata, not per instance | Target: up to and including `STEP_FINALIZE_SLICING` | Freeze not enforced currently; target snapshot of the main object at `None`/`Slicing` (§8) |
 | `PrintInstance::print_object` | Borrowed from the owner | Host | No public native instance handle |
 | `PrintInstance::model_instance` | Borrowed from the model; null for the synthetic auxiliary instance | Host | Same restriction |
 | `PrintInstance::shift` | XY value; getter returns a copy | Host; temporary brim copy/restore | The returned copy belongs to the caller |
@@ -191,7 +208,7 @@ Owner: `PrintObject::m_layers` or `m_auxiliary_layers`. Regions and islands are 
 | `m_islands` | Owner of LayerSliceIsland | Rebuild/assignment before locking | Main: `Slicing`; rebuild destroys the old islands |
 | `m_islands_locked` | Internal guard, no public getter | Set by `add_regions_to_islands()` | Rebuild assertions; no transitive freeze of descendants |
 | `curled_lines` | `vector<CurledLine>`, access by copies | Host analysis producer, no C setter | Input for consumers; do not assume a migrated producer |
-| Base `m_properties` | PluginPropertyContainer | Source metadata before `Print` by contract | Mutable access not revoked afterwards; see §8 |
+| Base `m_properties` | PluginPropertyContainer | Target: main up to `STEP_POST_SLICING`, auxiliary up to `STEP_FINALIZE_SLICING`, inclusive | Target freeze without snapshot; not enforced currently (§8) |
 | `CurledLine::a`, `CurledLine::b` inherited from `Line` | Points copied into `c_curled_line` | Host producer | Independent copies |
 | `CurledLine::curled_height` | Copied height | Host producer | Independent copy |
 
@@ -206,7 +223,7 @@ Sources: `src/libslic3r/Layer.hpp:126`, `src/libslic3r/Layer.cpp:45`, `src/libsl
 | `m_layer` | Borrow of the parent layer | Construction | Fixed association |
 | `m_region` | Borrow of the canonical region | Construction and reattachment by `apply` | Input during the pipeline, target truly const |
 | `m_raw_slices` | Embedded ExPolygons; this is what `layer_region_get_slices` returns | Main: slicing/post-slicing; auxiliary: construction allowed | `Slicing` for the main one, `Print` at the latest for auxiliary |
-| Base `m_properties` | Layer region metadata | Before `Print` per contract | Mutable access still possible afterwards |
+| Base `m_properties` | Layer region metadata | Target: main up to `STEP_POST_SLICING`, auxiliary up to `STEP_FINALIZE_SLICING`, inclusive | Target freeze without snapshot; mutable access still possible afterwards |
 | `m_cache_fill_expolygons`, `m_cache_fill_expolygons_computed` | Native cache, no direct C getter | Host computation/invalidation | Recomputable, not a domain snapshot |
 | `m_slices`, `m_fill_surfaces`, `m_fill_no_overlap_expolygons`, `m_unsupported_bridge_edges` | Legacy native storage, **not the surfaces exposed by the region-island API** | Relevant native paths | Do not attribute the C getters of the new tree to them |
 | `surfaces_filled` in Debug | Native flag | Host attachment | May be true with empty processed surface collections |
@@ -234,7 +251,7 @@ Owner: `Layer::m_islands`. **Freezing `m_slice` does not freeze `m_extrusions`.*
 | `overlaps_below` | Links to the layer below | Same phase | Same rule |
 | `Link::to` | Pointer to another island, exposed | Graph construction | Invalid if the target is rebuilt |
 | `Link::area` | Native area, no C getter | Graph construction | Same topology; the API exposes the neighbors, not this area |
-| Base `m_properties` | Island metadata | Before `Print` per contract, so still after `Slicing` | Technical mutation still possible after finalization |
+| Base `m_properties` | Island metadata | Target: main up to `STEP_POST_SLICING`, auxiliary up to `STEP_FINALIZE_SLICING`, inclusive | Target freeze without snapshot; technical mutation still possible afterwards |
 
 Adding a group does not move separately allocated groups. Perimeter preparation currently destroys all of them; the surface/post-infill passes can also remove empty groups after a callback. Do not keep a group merely because its parent island still exists.
 
@@ -248,7 +265,7 @@ Sources: `src/libslic3r/Layer.hpp:41`, `src/libslic3r/Layer.cpp:128`, `src/libsl
 | `m_regions` | Set of borrows to LayerRegion | Construction | Constant associations for the published group |
 | `m_fill_surfaces` | Owned SurfaceCollection, general const getter | Surface production/refinement by callbacks | Input for infill; post-infill must not modify it; global `Print` freeze |
 | `m_extrusion_regions` | Map role → owned ExtrusionEntityCollection root | Producing/editing steps; mutable getter can create the bucket | `Print`; clearing a bucket/group invalidates its handles |
-| Base `m_properties` | Group metadata | Before `Print` per contract | Mutable getter even on a const group; no phase check |
+| Base `m_properties` | Group metadata | Target: up to and including `STEP_FINALIZE_SLICING` | No snapshot; current getter is mutable even on a const group, without phase check |
 
 Adding another `std::map` bucket does not move existing roots. `remove_empty_extrusions()` can remove an empty root; `has_extrusion()` means non-empty content, not the mere presence of a key. The generic getters are less restrictive than some step callbacks that filter editable roles.
 
@@ -270,7 +287,7 @@ A collection is either temporary in the storage, or embedded in a region-island.
 | `Surface::extra_perimeters` | Same indirect copy | Same restriction |
 | `Surface::maxNbSolidLayersOnTop` | Same indirect copy | Same restriction |
 | `Surface::priority` | Same indirect copy | Same restriction |
-| Base `Surface::m_properties` | Metadata via mutable getter from a const surface | Source contract before `Print`; no effective freeze |
+| Base `Surface::m_properties` | Metadata through a getter currently mutable from a const surface | Source target: up to and including `STEP_FINALIZE_SLICING`, no snapshot; freeze not enforced |
 | `c_surface::{type,id}` | Copied values | Self-contained |
 | `c_surface::expolygon` | Borrowed handle | Still depends on the source surface |
 
@@ -553,11 +570,13 @@ Sources: `src/libslic3r/Api/host/ClipperShapes.cpp:123`, `src/libslic3r/Api/host
 
 ### `PluginPropertyContainer` and shared backend
 
-Source object properties are contractually frozen at `Print` in the existing header, but their getters still return a mutable container even from a const node. The snapshot project may choose a more permissive contract; it is not implemented by these accessors.
+The existing header announces a source freeze at `Print`, but the getters still return a mutable container even from a const node. The target contract of §1 replaces general snapshots with distinct freeze windows; only records and main-object properties will be saved at `None` and `Slicing`.
+
+Write inventory (September 2026) justifying this choice: no step writes a plugin property on a main object, layer, region or island. Existing writes target nodes created after `Slicing`: `LayerAdhesionProperty` on auxiliary layers in `SKIRT_BRIM` (`src/libslic3r/Plugins/SkirtBrim/AdhesionLayerHelpers.cpp:63`) and `SurfaceDenseInfillHint` on surfaces in `SURFACE_GENERATION` (`src/plugins_cpp/DenseInfill/DenseInfill.cpp:558–581`). From `STEP_ORDERING` onwards, steps write neither into the source tree nor into records: they edit the plan. No plugin currently writes a record; only the host publishes `custom_gcode_per_print_z` in `apply()` and empties the store in `clear()`.
 
 | Member | Ownership / mutation | End of validity / freeze |
 |---|---|---|
-| `PluginPropertyContainer::m_properties` | Sole owner of a vector of slots; base of PrintObject, Layer, LayerRegion, LayerSliceIsland, LayerRegionIsland, Surface; member of plan scopes | Source: `Print` contract, not enforced; plan scopes: `Plan` via const views |
+| `PluginPropertyContainer::m_properties` | Sole owner of a vector of slots; base of PrintObject, Layer, LayerRegion, LayerSliceIsland, LayerRegionIsland, Surface; member of plan scopes | Source: target windows of §1, not enforced; plan scopes: `Plan` through const views |
 | `PropertyStorageSlot::m_type` | Numeric identity of the payload | Not a stable identity across orchestrators |
 | `PropertyStorageSlot::m_buffer` | Owned buffer | Slot removal/replacement |
 | `PropertyRawBuffer::m_data` | Owned aligned allocation, borrowed direct access | Removal/replacement/clear/copy of the owner |
@@ -585,6 +604,10 @@ Sources: `src/libslic3r/PluginProperty.hpp:94`, `src/libslic3r/PropertyStorage.h
 `clear()` destroys the channels and resets the counter to 1. A checkpoint restore must not use this ID reset as a simple rollback if it promises not to reuse the IDs of the previous attempt. An old mutable Config/Option handle can still bypass the store's access guard; the generic mutators do not know its owner.
 
 Source: `src/libslic3r/PrintRecords.hpp:22`, `src/libslic3r/Api/host/slic3r_data_tree.cpp:959`.
+
+Snapshot contract to implement: a `CheckpointMetadataSnapshot` owned by `Print` for each of `None` and `Slicing` holds a copy of the `DynamicConfig` of every channel and a copy of the `PluginPropertyContainer` of each main object, indexed by object. `None` is captured on entry to `STEP_LAYER_HEIGHT`, before `prepare()` and the plugins; `Slicing` is captured at the successful, non-cancelled end of `STEP_POST_SLICING`. Restoration happens in `prepare_checkpoint_resume()` after the `clear` notification and host cleanup, without consuming the copy; missing snapshot: nothing to restore; object without a copy: properties cleared. For a channel that still exists, restore the value in the same object to preserve its `config_handle`; recreate removed channels and remove added channels, without rewinding `m_next_id`. Option/payload handles must be reacquired. A `None` replay releases the `Slicing` snapshot; replacing/removing an object releases its copy before the object; `Print::clear()` releases both snapshots.
+
+Target host publication, not implemented yet: each input record is published by the first step that consumes it, without any special channel marking. `custom_gcode_per_print_z` will be published from the model by `StepExtrusionOrdering::prepare()` (`STEP_ORDERING`), restoring the channel value in place if it exists. It will no longer be published by `Print::apply()`; a change of this table will request a `Print` replay. Its current readers are in `ORDERING` and `EXTRUSION_EDIT`, none before `STEP_ORDERING`. Created after `Slicing`, the channel will disappear on `Slicing` restoration and be republished by Ordering; direct export from `Plan` must remain valid.
 
 ### Live and temporary configurations, and options
 
@@ -787,7 +810,7 @@ Sources: `src/libslic3r/Api/host/Plugin.cpp:33`, `src/libslic3r/Api/plugin/c/sli
 ### What the current checks do not guarantee
 
 1. The data tree guards are mainly assertions depending on the current step; `running_step_may_edit()` also accepts `STEP_NONE`. This is not a permanent frozen state of each object.
-2. The source property getters accept const nodes and return mutable ones. The current contract says freeze at `Print`, but it is not enforced; a future contract allowing more writes requires a separate restoration of this metadata.
+2. Source property getters accept const nodes and return mutable containers. The target windows of §1 are not enforced yet; the planned snapshots remain limited to records and main-object properties at `None`/`Slicing`.
 3. The generic geometry/extrusion/config/property mutators ignore their owner. A mutable alias handed out earlier is not revoked when a checkpoint is passed.
 4. The Print/Object configurations expose mutable getters without automatically triggering pipeline invalidation; this is not a transactional user editing API.
 5. The C++ const of a unique_ptr or of a container of unique_ptr does not make the pointed-to objects deeply const. The const views of the final plan are more restrictive than some native accesses.
@@ -805,7 +828,9 @@ A direct call to `run_gcode()` at the `None` checkpoint is rejected before any d
 | Situation | Consistent handling |
 |---|---|
 | Owner created after the checkpoint | Destroy this owner, without separately purging each child/property |
-| Retained node, frozen geometry, properties modified downstream | Restore its properties if these modifications are allowed; no need to copy its geometry |
+| Main layer/region/island kept at `Slicing` | Freeze its properties after `STEP_POST_SLICING`, no snapshot |
+| Main object and records kept at `None`/`Slicing` | Restore only this metadata from its target snapshot |
+| Full source tree kept at `Print` and later | Target freeze; no additional snapshot of source metadata |
 | Derived cache | Invalidate/recompute, do not save as authoritative data |
 | Plan modified after Ordering | Restore a complete clone; properties alone do not undo structural modifications |
 | Source data borrowed by a plan | Release the plans/snapshots before destroying the source owner |
