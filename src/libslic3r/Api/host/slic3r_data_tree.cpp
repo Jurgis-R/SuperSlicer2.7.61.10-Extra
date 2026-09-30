@@ -87,7 +87,9 @@ static const ExPolygons *to_expolygons(const expolygon_collection_handle *me) { 
 
 static bool check_freeze(const Print *print, slicing_step_t last_editor_step, const char *what)
 {
-    const bool allowed = print == nullptr || print->running_step_may_edit(last_editor_step);
+    // STEP_NONE means idle-only access; it is not a boundary in execution_order().
+    const bool allowed = print == nullptr ||
+        (last_editor_step == STEP_NONE ? print->running_step() == STEP_NONE : print->running_step_may_edit(last_editor_step));
 #if defined(SLIC3R_STRICT_FREEZE)
     if (!allowed) {
         Orchestrator &orchestrator = Orchestrator::instance();
@@ -117,6 +119,24 @@ static bool check_freeze(const Print *print, slicing_step_t last_editor_step, co
 static bool data_tree_editable(const PrintObject &object, const char *what)
 {
     return check_freeze(object.print(), STEP_FINALIZE_SLICING, what);
+}
+
+static bool island_outputs_editable(const LayerSliceIsland &island, const char *what)
+{
+    const Layer *layer = island.layer();
+    const PrintObject *object = layer == nullptr ? nullptr : layer->object();
+    return object == nullptr || data_tree_editable(*object, what);
+}
+
+static bool region_island_editable(const LayerRegionIsland &island, const char *what)
+{
+    // Region-islands borrow their Print ownership through their associated regions.
+    for (const LayerRegion *region : island.regions()) {
+        const PrintObject *object = region->layer() == nullptr ? nullptr : region->layer()->object();
+        if (object != nullptr && !data_tree_editable(*object, what))
+            return false;
+    }
+    return true;
 }
 
 // Auxiliary geometry is produced after PostSlicing and follows the later data-tree boundary.
@@ -559,6 +579,9 @@ const print_region_handle *layer_region_get_print_region(const layer_region_hand
 
 expolygon_handle *layer_island_get_slice_mutable(layer_island_handle *me)
 {
+    const Slic3r::Layer *layer = me == nullptr ? nullptr : Slic3r::to_layer_island(me)->layer();
+    if (layer != nullptr && !Slic3r::slices_editable(*layer, "layer_island_get_slice_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr :
                            reinterpret_cast<expolygon_handle *>(
                                &Slic3r::ApiInternal::LayerIslandAccess::slice_mutable(*Slic3r::to_layer_island(me)));
@@ -654,6 +677,8 @@ layer_region_island_handle *layer_island_get_region_island_mutable(layer_island_
 {
     if (me == nullptr || idx >= Slic3r::to_layer_island(me)->regions_islands().size())
         return nullptr;
+    if (!Slic3r::island_outputs_editable(*Slic3r::to_layer_island(me), "layer_island_get_region_island_mutable"))
+        return nullptr;
     return reinterpret_cast<layer_region_island_handle*>(&Slic3r::to_layer_island(me)->regions_island(idx));
 }
 
@@ -672,6 +697,8 @@ layer_region_island_handle *layer_island_get_or_create_region_island(
 {
     Slic3r::LayerSliceIsland *island = Slic3r::to_layer_island(island_handle);
     if (island == nullptr)
+        return nullptr;
+    if (!Slic3r::island_outputs_editable(*island, "layer_island_get_or_create_region_island"))
         return nullptr;
 
     Slic3r::LayerRegionSetCPtrs regions;
@@ -749,6 +776,8 @@ extrusion_entity_handle *layer_region_island_get_mutable_extrusion(layer_region_
 {
     if (me == nullptr)
         return nullptr;
+    if (!Slic3r::region_island_editable(*Slic3r::to_layer_region_island(me), "layer_region_island_get_mutable_extrusion"))
+        return nullptr;
     Slic3r::ExtrusionEntityCollection &collection = Slic3r::to_layer_region_island(me)->mutable_extrusion(Slic3r::to_extrusion_role(role));
     return reinterpret_cast<extrusion_entity_handle*>(&collection);
 }
@@ -786,12 +815,8 @@ plugin_property_container_handle *layer_region_island_get_properties_mutable(lay
 {
     if (me == nullptr)
         return nullptr;
-    // Region-islands borrow their Print ownership through their associated regions.
-    for (const Slic3r::LayerRegion *region : Slic3r::to_layer_region_island(me)->regions()) {
-        const Slic3r::PrintObject *object = region->layer() == nullptr ? nullptr : region->layer()->object();
-        if (object != nullptr && !Slic3r::data_tree_editable(*object, "layer_region_island_get_properties_mutable"))
-            return nullptr;
-    }
+    if (!Slic3r::region_island_editable(*Slic3r::to_layer_region_island(me), "layer_region_island_get_properties_mutable"))
+        return nullptr;
     return Slic3r::to_mutable_property_handle(Slic3r::to_layer_region_island(me));
 }
 
@@ -818,6 +843,8 @@ const config_handle *print_region_get_config(const print_region_handle *me)
 
 config_handle *object_get_config_mutable(object_handle *me)
 {
+    if (me != nullptr && !Slic3r::check_freeze(Slic3r::to_object(me)->print(), STEP_NONE, "object_get_config_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::ApiHost::to_config_handle(Slic3r::mutable_config(*Slic3r::to_object(me)));
 }
 
@@ -986,18 +1013,24 @@ expolygon_collection_handle *layer_region_borrow_mutable_slices(const layer_regi
 
 void layer_recompute_slices_from_islands(layer_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_recompute_slices_from_islands"))
+        return;
     if (me != nullptr)
         Slic3r::ApiInternal::LayerAccess::recompute_slices_from_islands(*reinterpret_cast<Slic3r::Layer *>(me));
 }
 
 void layer_recompute_slices_and_islands_from_layer_regions(layer_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_recompute_slices_and_islands_from_layer_regions"))
+        return;
     if (me != nullptr)
         Slic3r::ApiInternal::LayerAccess::recompute_slices_from_layer_regions(*reinterpret_cast<Slic3r::Layer *>(me));
 }
 
 void layer_add_regions_to_islands(layer_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_add_regions_to_islands"))
+        return;
     if (me != nullptr && !Slic3r::to_layer(me)->islands().empty())
         Slic3r::to_layer(me)->add_regions_to_islands();
 }
@@ -1030,6 +1063,8 @@ const print_region_handle *print_register_print_region_config(print_handle *me, 
 
 config_handle *print_get_config_mutable(print_handle *me)
 {
+    if (me != nullptr && !Slic3r::check_freeze(Slic3r::to_print(me), STEP_NONE, "print_get_config_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::ApiHost::to_config_handle(Slic3r::mutable_config(*Slic3r::to_print(me)));
 }
 

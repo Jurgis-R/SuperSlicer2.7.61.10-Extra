@@ -8,6 +8,7 @@
 #include "libslic3r/Api/plugin/c/slic3r_data_tree.h"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/SurfaceViews.hpp"
+#include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionTreeVisitors.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
@@ -21,6 +22,10 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/PrintObjectRegion.hpp"
+#include "libslic3r/Printing/PrintingPlan.hpp"
+#include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepLayerHeightGeneration.hpp"
+#include "libslic3r/Steps/StepSlicing.hpp"
 #include "libslic3r/Surface.hpp"
 
 #include <utility>
@@ -136,12 +141,14 @@ void require_freeze_diagnostic(slicing_step_t step, const char *operation)
 class DetachedPrintObject : public PrintObject
 {
 public:
-    DetachedPrintObject(Print &print, std::shared_ptr<PrintObjectRegions> regions) :
+    DetachedPrintObject(Print &print, std::shared_ptr<PrintObjectRegions> regions, bool detach_immediately = true) :
         PrintObject(&print, Vec3crd(scale_i(1.), scale_i(1.), scale_i(1.)),
                     std::move(regions))
     {
-        m_print = nullptr;
+        if (detach_immediately)
+            detach();
     }
+    void detach() { m_print = nullptr; }
 };
 
 class FreezeBarrierProbe : public slic3r_api::PluginBase
@@ -540,6 +547,286 @@ TEST_CASE("Property freeze rejects the previous data-tree ABI major",
     requirements.back().version = {SLIC3R_PLUGIN_API_DATA_TREE_MAJOR, SLIC3R_PLUGIN_API_DATA_TREE_MINOR};
     CHECK(validate_plugin_api_requirements(requirements).compatible());
 }
+
+TEST_CASE("Remaining source editing gates preserve their exact boundaries",
+          "[plugins][properties][freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+    const StrictFreezeState strict_state;
+#endif
+    Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
+    Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
+    Print &print = prepared.print;
+    PrintObject &object = print.object(0);
+    PrintObject &global = print.mutable_auxiliary_object();
+    Layer *layers[3] = {&object.layer(0), nullptr, nullptr};
+    PrintObject *owners[2] = {&object, &global};
+    for (size_t idx = 0; idx < 2; ++idx) {
+        layer_handle *layer = object_add_auxiliary_layer(reinterpret_cast<const object_handle *>(owners[idx]),
+                                                       scale_i(0.2), scale_i(0.2), scale_i(0.1));
+        REQUIRE(layer != nullptr);
+        layers[idx + 1] = reinterpret_cast<Layer *>(layer);
+        *reinterpret_cast<ExPolygons *>(layer_region_borrow_mutable_slices(layer_get_region(layer, 0))) =
+            ExPolygons{rectangle_expolygon(0., 0., 10., 10.)};
+        layer_recompute_slices_and_islands_from_layer_regions(layer);
+        layer_add_regions_to_islands(layer);
+    }
+    PluginStorage storage;
+    slic3r_api::StoredExtrusionEntity scratch(reinterpret_cast<storage_handle *>(&storage),
+                                             std::vector<c_point>{{0, 0}, {scale_i(1.), 0}});
+    for (Layer *layer : layers) {
+        layer_island_handle *island = reinterpret_cast<layer_island_handle *>(&layer->island(0));
+        const slicing_step_t last_slice = layer == layers[0] ? STEP_POST_SLICING : STEP_FINALIZE_SLICING;
+        print.set_running_step(last_slice);
+        const expolygon_handle *slice = layer_island_get_slice_mutable(island);
+        REQUIRE(slice != nullptr);
+        CHECK(layer_island_get_slice(island) == slice);
+        const ExPolygon baseline_slice = layer->island(0).get_slice();
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+        print.set_running_step(last_slice == STEP_POST_SLICING ? STEP_PRE_PERIMETER : STEP_ORDERING);
+        CHECK(layer_island_get_slice_mutable(island) == nullptr);
+        require_freeze_diagnostic(print.running_step(), "layer_island_get_slice_mutable");
+        CHECK(layer->island(0).get_slice() == baseline_slice);
+        CHECK(layer_island_get_slice(island) == slice);
+#endif
+        print.set_running_step(STEP_FINALIZE_SLICING);
+        layer_region_island_handle *group = layer_island_get_or_create_region_island(island, nullptr, 0, 0);
+        REQUIRE(group != nullptr);
+        REQUIRE(layer_island_get_or_create_region_island(island, nullptr, 0, EXTRUDER_ID_UNKNOWN) != nullptr);
+        REQUIRE(layer_island_get_region_island_mutable(island, 0) == group);
+        extrusion_entity_handle *root = layer_region_island_get_mutable_extrusion(group, RAW_EXTRUSION_ROLE_PERIMETER);
+        REQUIRE(root != nullptr);
+        slic3r_api::MutableExtrusionEntity editable(root);
+        CHECK(editable.append_child_copy(scratch.readonly()) == 0);
+        editable.get_or_add(slic3r_api::EPropertySpeed::key).speed(33.f);
+        REQUIRE(layer_region_island_get_extrusion(group, RAW_EXTRUSION_ROLE_PERIMETER) == root);
+        const size_t group_count = layer->island(0).regions_islands().size();
+        const uint32_t flags = editable.flags();
+        const c_point endpoint = editable.child(0).point(1);
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+        print.set_running_step(STEP_ORDERING);
+        CHECK(layer_island_get_region_island_mutable(island, 0) == nullptr);
+        require_freeze_diagnostic(STEP_ORDERING, "layer_island_get_region_island_mutable");
+        print.set_running_step(STEP_ORDERING);
+        CHECK(layer_island_get_or_create_region_island(island, nullptr, 0, 0) == nullptr);
+        require_freeze_diagnostic(STEP_ORDERING, "layer_island_get_or_create_region_island");
+        print.set_running_step(STEP_ORDERING);
+        CHECK(layer_island_get_or_create_region_island(island, nullptr, 0, 1) == nullptr);
+        require_freeze_diagnostic(STEP_ORDERING, "layer_island_get_or_create_region_island");
+        print.set_running_step(STEP_ORDERING);
+        CHECK(layer_region_island_get_mutable_extrusion(group, RAW_EXTRUSION_ROLE_PERIMETER) == nullptr);
+        require_freeze_diagnostic(STEP_ORDERING, "layer_region_island_get_mutable_extrusion");
+        print.set_running_step(STEP_ORDERING);
+        layer_recompute_slices_and_islands_from_layer_regions(reinterpret_cast<layer_handle *>(layer));
+        require_freeze_diagnostic(STEP_ORDERING, "layer_recompute_slices_and_islands_from_layer_regions");
+        // Even creating an empty role bucket consumes an extrusion identity.
+        const ExtrusionEntity before(false);
+        print.set_running_step(STEP_ORDERING);
+        CHECK(layer_region_island_get_mutable_extrusion(group, RAW_EXTRUSION_ROLE_GAP_FILL) == nullptr);
+        require_freeze_diagnostic(STEP_ORDERING, "layer_region_island_get_mutable_extrusion");
+        const ExtrusionEntity after(false);
+        CHECK(after.get_id() == before.get_id() + 1);
+        const slic3r_api::LayerIsland view(island);
+        print.set_running_step(STEP_ORDERING);
+        CHECK_THROWS_AS(view.get_or_create_region_island({view.region(0)}), std::runtime_error);
+        require_freeze_diagnostic(STEP_ORDERING, "layer_island_get_or_create_region_island");
+        print.set_running_step(STEP_ORDERING);
+        CHECK_THROWS_AS(view.get_or_create_full_region_island(), std::runtime_error);
+        require_freeze_diagnostic(STEP_ORDERING, "layer_island_get_or_create_region_island");
+#endif
+        const slic3r_api::ExtrusionEntity read(layer_region_island_get_extrusion(group, RAW_EXTRUSION_ROLE_PERIMETER));
+        CHECK(layer->island(0).get_slice() == baseline_slice);
+        CHECK(layer->island(0).regions_islands().size() == group_count);
+        CHECK(layer_island_get_region_island(island, 0) == group);
+        CHECK(read.child_count() == 1);
+        CHECK(read.flags() == flags);
+        CHECK(read.child(0).point(1).x == endpoint.x);
+        CHECK(read.child(0).point(1).y == endpoint.y);
+        REQUIRE(read.get(slic3r_api::EPropertySpeed::key) != nullptr);
+        CHECK(read.get(slic3r_api::EPropertySpeed::key)->speed_mm_per_s == Approx(33.f));
+
+        Printing::PrintingExtrusion clone;
+        clone.root.reset(reinterpret_cast<const ExtrusionEntity *>(root)->clone());
+        clone.region_island = reinterpret_cast<const LayerRegionIsland *>(group);
+        for (const slicing_step_t step : {STEP_ORDERING, STEP_EXTRUSION_EDIT}) {
+            print.set_running_step(step);
+            extrusion_entity_handle *clone_handle = printing_extrusion_get_root_mutable(
+                reinterpret_cast<printing_extrusion_handle *>(&clone));
+            REQUIRE(clone_handle != nullptr);
+            slic3r_api::MutableExtrusionEntity plan_root(clone_handle);
+            plan_root.get_or_add(slic3r_api::EPropertySpeed::key).speed(99.f);
+            CHECK(plan_root.child_mutable(0).set_points(std::vector<c_point>{{0, 0}, {scale_i(2.), 0}}));
+            CHECK(scratch.set_points(std::vector<c_point>{{0, 0}, {scale_i(3.), 0}}));
+            scratch.get_or_add(slic3r_api::EPropertySpeed::key).speed(55.f);
+            CHECK(read.get(slic3r_api::EPropertySpeed::key)->speed_mm_per_s == Approx(33.f));
+            CHECK(read.child(0).point(1).x == endpoint.x);
+        }
+        print.set_running_step(STEP_GCODE);
+        CHECK(scratch.set_points(std::vector<c_point>{{0, 0}, {scale_i(4.), 0}}));
+        print.set_running_step(STEP_NONE);
+    }
+    CHECK(layer_island_get_slice_mutable(nullptr) == nullptr);
+    CHECK(layer_island_get_region_island_mutable(nullptr, 0) == nullptr);
+    CHECK(layer_island_get_or_create_region_island(nullptr, nullptr, 0, 0) == nullptr);
+    CHECK(layer_region_island_get_mutable_extrusion(nullptr, RAW_EXTRUSION_ROLE_PERIMETER) == nullptr);
+}
+
+TEST_CASE("Configuration editing capabilities are idle-only and reads remain available",
+          "[plugins][properties][freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+    const StrictFreezeState strict_state;
+#endif
+    Test::PerimeterPluginTests::PreparedPerimeterPrint prepared;
+    Test::PerimeterPluginTests::prepare_cube_print(prepared, Test::PerimeterPluginTests::perimeter_config({}));
+    Print &print = prepared.print;
+    print_handle *handle = reinterpret_cast<print_handle *>(&print);
+    PrintObject *owners[2] = {&print.object(0), &print.mutable_auxiliary_object()};
+    REQUIRE(print_get_config_mutable(handle) != nullptr);
+    const PrintConfig print_config = print.config();
+    for (PrintObject *object : owners) {
+        object_handle *object_handle_value = reinterpret_cast<object_handle *>(object);
+        REQUIRE(object_get_config_mutable(object_handle_value) != nullptr);
+        const PrintObjectConfig object_config = object->config();
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+        for (const slicing_step_t step : Steps::execution_order()) {
+            print.set_running_step(step);
+            CHECK(object_get_config_mutable(object_handle_value) == nullptr);
+            require_freeze_diagnostic(step, "object_get_config_mutable");
+            print.set_running_step(step);
+            CHECK(print_get_config_mutable(handle) == nullptr);
+            require_freeze_diagnostic(step, "print_get_config_mutable");
+            CHECK(object_get_config(object_handle_value) != nullptr);
+            CHECK(print_get_config(handle) != nullptr);
+            CHECK(object->config() == object_config);
+            CHECK(print.config() == print_config);
+        }
+#endif
+        print.set_running_step(STEP_NONE);
+        CHECK(object_get_config_mutable(object_handle_value) == object_get_config(object_handle_value));
+    }
+    CHECK(print_get_config_mutable(handle) == print_get_config(handle));
+    CHECK(object_get_config_mutable(nullptr) == nullptr);
+    CHECK(print_get_config_mutable(nullptr) == nullptr);
+}
+
+TEST_CASE("Island reconstruction retains source extrusion owners after its slice boundary",
+          "[plugins][properties][freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+    const StrictFreezeState strict_state;
+#endif
+    Print print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     Test::PerimeterPluginTests::perimeter_config({}));
+    Steps::StepLayerHeightGeneration::run_step(Orchestrator::instance(), print);
+    Steps::StepSlicing::run_step(Orchestrator::instance(), print);
+    PrintObject *owners[2] = {&print.object(0), &print.mutable_auxiliary_object()};
+    Layer *layers[3] = {&print.object(0).layer(0), nullptr, nullptr};
+    for (size_t idx = 0; idx < 2; ++idx) {
+        layer_handle *layer = object_add_auxiliary_layer(reinterpret_cast<object_handle *>(owners[idx]),
+                                                       scale_i(0.2), scale_i(0.2), scale_i(0.1));
+        REQUIRE(layer != nullptr);
+        layers[idx + 1] = reinterpret_cast<Layer *>(layer);
+        *reinterpret_cast<ExPolygons *>(layer_region_borrow_mutable_slices(layer_get_region(layer, 0))) =
+            ExPolygons{rectangle_expolygon(0., 0., 10., 10.)};
+    }
+    for (Layer *layer : layers) {
+        const slicing_step_t last = layer == layers[0] ? STEP_POST_SLICING : STEP_FINALIZE_SLICING;
+        layer_handle *handle = reinterpret_cast<layer_handle *>(layer);
+        print.set_running_step(last);
+        layer_recompute_slices_and_islands_from_layer_regions(handle);
+        REQUIRE(layer->islands().size() == 1);
+        layer_recompute_slices_from_islands(handle);
+        CHECK(layer->lslices() == ExPolygons{layer->island(0).get_slice()});
+        layer_add_regions_to_islands(handle);
+        const LayerSliceIsland *island = &layer->island(0);
+        const ExPolygon slice = island->get_slice();
+        const ExPolygons merged = layer->lslices();
+        LayerRegionIsland &group = layer->island(0).get_or_add_region_island(layer->island(0).regions(), 0);
+        const size_t group_count = layer->island(0).regions_islands().size();
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+        print.set_running_step(last == STEP_POST_SLICING ? STEP_PRE_PERIMETER : STEP_ORDERING);
+        layer_recompute_slices_and_islands_from_layer_regions(handle);
+        require_freeze_diagnostic(print.running_step(), "layer_recompute_slices_and_islands_from_layer_regions");
+        print.set_running_step(last == STEP_POST_SLICING ? STEP_PRE_PERIMETER : STEP_ORDERING);
+        layer_recompute_slices_from_islands(handle);
+        require_freeze_diagnostic(print.running_step(), "layer_recompute_slices_from_islands");
+        print.set_running_step(last == STEP_POST_SLICING ? STEP_PRE_PERIMETER : STEP_ORDERING);
+        layer_add_regions_to_islands(handle);
+        require_freeze_diagnostic(print.running_step(), "layer_add_regions_to_islands");
+        CHECK(&layer->island(0) == island);
+        CHECK(layer->island(0).get_slice() == slice);
+        CHECK(layer->lslices() == merged);
+        CHECK(layer->island(0).regions_islands().size() == group_count);
+        CHECK(&layer->island(0).regions_islands().front() == &group);
+#endif
+        print.set_running_step(STEP_NONE);
+    }
+    layer_recompute_slices_and_islands_from_layer_regions(nullptr);
+    layer_recompute_slices_from_islands(nullptr);
+    layer_add_regions_to_islands(nullptr);
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+    CHECK_FALSE(Orchestrator::instance().is_plugin_cancelled());
+    CHECK(Orchestrator::instance().consume_plugin_messages().empty());
+#endif
+}
+
+#if defined(SLIC3R_TEST_STRICT_FREEZE)
+TEST_CASE("Remaining source gates allow no-owner and idle capabilities without diagnostics",
+          "[plugins][properties][freeze][strict-freeze]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const StrictFreezeState strict_state;
+    Print print;
+    std::shared_ptr<PrintObjectRegions> regions = std::make_shared<PrintObjectRegions>();
+    regions->all_regions = print.mutable_auxiliary_object().shared_regions()->all_regions;
+    DetachedPrintObject detached(print, regions, false);
+    object_handle *object = reinterpret_cast<object_handle *>(&detached);
+    layer_handle *layer = object_add_auxiliary_layer(object, scale_i(0.2), scale_i(0.2), scale_i(0.1));
+    REQUIRE(layer != nullptr);
+    *reinterpret_cast<ExPolygons *>(layer_region_borrow_mutable_slices(layer_get_region(layer, 0))) =
+        ExPolygons{rectangle_expolygon(0., 0., 10., 10.)};
+    // Reconstruction reads the live Print's resolution before this fixture is detached.
+    layer_recompute_slices_and_islands_from_layer_regions(layer);
+    layer_add_regions_to_islands(layer);
+    detached.detach();
+    print.set_running_step(STEP_GCODE);
+    REQUIRE(object_get_config_mutable(object) != nullptr);
+    layer_island_handle *island = layer_get_island_mutable(layer, 0);
+    REQUIRE(island != nullptr);
+    REQUIRE(layer_island_get_slice_mutable(island) != nullptr);
+    layer_region_island_handle *group = layer_island_get_or_create_region_island(island, nullptr, 0, 0);
+    REQUIRE(group != nullptr);
+    CHECK(layer_island_get_region_island_mutable(island, 0) == group);
+    REQUIRE(layer_region_island_get_mutable_extrusion(group, RAW_EXTRUSION_ROLE_PERIMETER) != nullptr);
+    LayerSliceIsland standalone(rectangle_expolygon(0., 0., 10., 10.));
+    REQUIRE(layer_island_get_slice_mutable(reinterpret_cast<layer_island_handle *>(&standalone)) != nullptr);
+    LayerRegionIsland standalone_group({}, EXTRUDER_ID_UNKNOWN);
+    REQUIRE(layer_region_island_get_mutable_extrusion(
+        reinterpret_cast<layer_region_island_handle *>(&standalone_group), RAW_EXTRUSION_ROLE_GAP_FILL) != nullptr);
+    print.set_running_step(STEP_NONE);
+    PrintObject &owned = print.mutable_auxiliary_object();
+    layer = object_add_auxiliary_layer(reinterpret_cast<object_handle *>(&owned), scale_i(0.2), scale_i(0.2), scale_i(0.1));
+    REQUIRE(layer != nullptr);
+    *reinterpret_cast<ExPolygons *>(layer_region_borrow_mutable_slices(layer_get_region(layer, 0))) =
+        ExPolygons{rectangle_expolygon(0., 0., 10., 10.)};
+    layer_recompute_slices_and_islands_from_layer_regions(layer);
+    layer_add_regions_to_islands(layer);
+    island = layer_get_island_mutable(layer, 0);
+    REQUIRE(layer_island_get_slice_mutable(island) != nullptr);
+    group = layer_island_get_or_create_region_island(island, nullptr, 0, 0);
+    REQUIRE(group != nullptr);
+    CHECK(layer_island_get_region_island_mutable(island, 0) == group);
+    REQUIRE(layer_region_island_get_mutable_extrusion(group, RAW_EXTRUSION_ROLE_PERIMETER) != nullptr);
+    CHECK_FALSE(Orchestrator::instance().is_plugin_cancelled());
+    CHECK(Orchestrator::instance().consume_plugin_messages().empty());
+}
+#endif
 
 TEST_CASE("PluginPropertyKey gives built-in and dynamic properties one access model",
           "[plugins][properties][property-key]")

@@ -480,7 +480,9 @@ to rebuild Layer slices; after mutation, call layer_recompute_slices_from_island
 to synchronize that Layer collection. This call does not refresh the island's
 cached bounding box, infill areas or other derived perimeter data. Code that
 needs those caches must arrange for the owning pipeline step to rebuild the
-island. Neither form transfers ownership. Null input returns null.
+island. Main slices are editable through STEP_POST_SLICING, auxiliary slices
+through STEP_FINALIZE_SLICING, inclusive. Neither form transfers ownership.
+Null input returns null.
 */
 SLIC3R_HOST_API expolygon_handle *layer_island_get_slice_mutable(layer_island_handle *me);
 SLIC3R_HOST_API const expolygon_handle *layer_island_get_slice(const layer_island_handle *me);
@@ -533,6 +535,7 @@ Enumerate LayerRegionIsland work buckets owned by this island. Returned handles
 are borrowed; adding or rebuilding buckets may invalidate earlier handles.
 */
 SLIC3R_HOST_API uint32_t layer_island_count_region_island(const layer_island_handle *me);
+/* Source editing capabilities are available through STEP_FINALIZE_SLICING inclusive. */
 SLIC3R_HOST_API layer_region_island_handle *layer_island_get_region_island_mutable(layer_island_handle *me, uint32_t idx);
 SLIC3R_HOST_API const layer_region_island_handle *layer_island_get_region_island(const layer_island_handle *me, uint32_t idx);
 
@@ -550,6 +553,7 @@ regions == NULL or region_count == 0 means "all regions of the island".
 extruder_id is a zero-based extruder index. EXTRUDER_ID_UNKNOWN stores the
 generic "no single extruder" value. Any other negative value is rejected.
 
+Editing is allowed through STEP_FINALIZE_SLICING inclusive, before any bucket creation.
 Returns NULL when island is invalid, when any region is invalid or belongs to a
 different island, or when the final region set is empty.
 */
@@ -582,7 +586,8 @@ SLIC3R_HOST_API int32_t layer_region_island_has_extrusions(const layer_region_is
 SLIC3R_HOST_API int32_t layer_region_island_has_extrusion(const layer_region_island_handle *me, raw_extrusion_role role);
 /*
 Borrow the mutable extrusion collection for role, creating the role bucket when
-needed. Null returns null. Mutating its tree may invalidate descendant extrusion
+needed, through STEP_FINALIZE_SLICING inclusive. The same root capability grants
+geometry and extrusion-property editing. Null returns null. Mutating its tree may invalidate descendant extrusion
 handles; do not free the returned root.
 */
 SLIC3R_HOST_API extrusion_entity_handle *layer_region_island_get_mutable_extrusion(layer_region_island_handle *me, raw_extrusion_role role);
@@ -645,7 +650,8 @@ SLIC3R_HOST_API const config_handle *print_region_get_config(const print_region_
 /*
 Borrow the Object configuration. Mutable access edits the live configuration,
 without making a copy or persisting it. Null returns null; neither handle may
-be freed or retained after its Object dies.
+be freed or retained after its Object dies. Mutable access requires STEP_NONE
+on the owning Print; objects without a Print remain editable.
 */
 SLIC3R_HOST_API config_handle *object_get_config_mutable(object_handle *me);
 SLIC3R_HOST_API const config_handle *object_get_config(const object_handle *me);
@@ -850,6 +856,7 @@ SLIC3R_HOST_API const print_region_handle *print_register_print_region_config(
 /*
 Borrow the Print configuration; null returns null and ownership stays with Print.
 Mutable access edits the live configuration without cloning or persisting it.
+It is available only outside pipeline steps (STEP_NONE).
 */
 SLIC3R_HOST_API config_handle *print_get_config_mutable(print_handle *me);
 SLIC3R_HOST_API const config_handle *print_get_config(const print_handle *me);

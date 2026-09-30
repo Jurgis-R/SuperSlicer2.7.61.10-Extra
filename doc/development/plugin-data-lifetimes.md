@@ -4,7 +4,7 @@ This reference describes the native storage behind the plugin C API and its C++ 
 
 Member names are those of the native storage, not necessarily those of the API getters. Fields with the same owner and the same lifetime may be grouped on one line, but are named explicitly. Internal caches and associations needed to interpret a view are flagged as such; a line does not mean that a public getter exists for each field.
 
-**This document separates the target contract from the current state of its implementation.** Host cleanup per checkpoint, the plugin `clear` notification, the optional deep `Ordering` clone and the snapshots of records and main-object properties at `None`/`Slicing` exist. `custom_gcode_per_print_z` is published by `STEP_ORDERING`. Properties use the `DATA_TREE` 4 API: const reads, write getters of owner nodes guarded according to the freeze mode, and scratch capabilities for surfaces. The strict mode is implemented; the freeze of source extrusions is still to be implemented. No general snapshot of properties or source geometry is planned. Support/wipe tower leftovers do not create an obligation to preserve legacy behavior in the resume work.
+**This document separates the target contract from the current state of its implementation.** Host cleanup per checkpoint, the plugin `clear` notification, the optional deep `Ordering` clone and the snapshots of records and main-object properties at `None`/`Slicing` exist. `custom_gcode_per_print_z` is published by `STEP_ORDERING`. The `DATA_TREE` 4 API enforces the edit gates of properties, slices, configurations and source extrusions according to the freeze mode; surfaces use scratch capabilities. No general snapshot of properties or source geometry is planned. Support/wipe tower leftovers do not create an obligation to preserve legacy behavior in the resume work. The option reclassification of 5.6 is still pending.
 
 ## Contents
 
@@ -60,7 +60,7 @@ For generic extrusions, properties and geometries, the write right depends on th
 
 ### Target write windows for source metadata
 
-The last allowed steps below are inclusive. The mutable getters of objects/layers/regions/islands/region-islands, main/aux slice borrows, auxiliary additions/removals and record channel writes use the single `check_freeze` helper. Surfaces follow the structural rule described after the table; extrusion guards are still to be implemented.
+The last allowed steps below are inclusive. Owner edit gates use the single `check_freeze` helper, including extrusion roots, their buckets and idle-only configurations. Surfaces follow the structural rule described after the table.
 
 | Storage | Last allowed step | Handling on replay |
 |---|---|---|
@@ -70,6 +70,22 @@ The last allowed steps below are inclusive. The mutable getters of objects/layer
 | Properties of source surfaces | Editing payloads allowed before `Print`, no global write | Replacement from scratch collections; destroyed with the downstream nodes, no snapshot |
 | Records written by plugins | `STEP_FINALIZE_SLICING` | Snapshot at `None` and `Slicing`, always kept, no preference |
 | Geometry and properties of source extrusions | `STEP_FINALIZE_SLICING` | Frozen at `Print`, no snapshot; downstream steps edit the plan clones |
+
+### Inventory of source edit gates (5.5)
+
+| Data-tree entry | Window / protected effect |
+|---|---|
+| `layer_island_get_slice_mutable` | Main: PostSlicing; auxiliary: FinalizeSlicing; geometry borrow |
+| `object_get_config_mutable`, `print_get_config_mutable` | `STEP_NONE` only, or object without a Print; no configuration change before refusal |
+| `layer_region_island_get_mutable_extrusion` | FinalizeSlicing inclusive; the only mutable root getter of the data tree, which may create the role bucket; the root gives access to the geometry **and** the extrusion properties/resources |
+| `layer_island_get_region_island_mutable` | FinalizeSlicing inclusive; borrow of a mutable source bucket |
+| `layer_island_get_or_create_region_island` | FinalizeSlicing inclusive; lookup/creation of the owner of extrusion buckets, refused before creation |
+| `layer_recompute_slices_and_islands_from_layer_regions` | Main/aux slice window; enclosing rebuild that destroys the islands and their buckets/extrusions; refused before destruction |
+| `layer_recompute_slices_from_islands`, `layer_add_regions_to_islands` | Main/aux slice window; refused before updating merged slices or entering native island-lock assertions; allowed calls still obey the native locking invariant |
+
+There is no separate global getter for extrusion properties and no dedicated global function to remove/clear a role bucket in `slic3r_data_tree`. Auxiliary removal is already guarded by 5.4. Native publications and removals of the perimeter, surface, infill and post-infill producers/payloads remain in their allowed steps; keeping a callback beyond that scope is not supported. Other intermediate node borrows and cache/attachment helpers remain available, with their structural invariants; no general removal of mutators from 5.7 is done.
+
+The generic `extrusion_*` APIs (children, flags, points/arcs/Z, copy/move, remove/clear), `extrusion_property_*` (payloads and resources) and `config_*` have no Print context. They remain editable for scratch data and plan clones through their mutable capabilities; no owner registry is added and previously distributed aliases are not revoked. Source reads remain const. The audit of production consumers finds no call to `config_mutable()` or to the two mutable getters to read a configuration: `config()`/const getters are already used. C layouts and signatures are unchanged, with no additional bump beyond the 4.0 contract.
 
 Implemented API: `*_get_properties(const ...*)` returns a const container; `*_get_properties_mutable(...*)` provides writing within its window for object, layer, layer_region, layer_island and layer_region_island (`DATA_TREE` 4 contract). The C++ and Python views split `properties()` for read-only access and `mutable_properties()` for writing. Reads remain possible after the freeze.
 
@@ -99,7 +115,7 @@ Sources: `src/libslic3r/Api/host/slic3r_data_tree.cpp:35`, `src/libslic3r/DataTr
 | `PrintBase::m_model` | Owned model; reached indirectly through source volumes and objects | `apply` / host | Pipeline input; its descendants are invalidated by their replacement or by `Print::clear()` |
 | `Print::m_objects` | Owner of the main `PrintObject`s; traversal via `print_get_object*` | Host creation/removal/reordering | Structure stable during an execution; no general API for creating a main object |
 | `Print::m_auxiliary_object` | Hidden global object, absent from `m_objects`; lazily-creating getter | Auxiliary construction before `Print` by contract | `Print`; also destroyed by some `apply()` calls, not only by `clear()` |
-| `Print::m_config` | Embedded configuration; handle to the live value | `apply` by input contract; mutable getter technically available | Must remain stable during the pipeline; the mutable accessor does not check the phase |
+| `Print::m_config` | Embedded configuration; handle to the live value | `apply` / mutable getter outside a step (`STEP_NONE`) | Must stay stable during the pipeline; mutable getter guarded according to the freeze mode |
 | `Print::m_default_object_config` | Embedded value, used notably to build the auxiliary object | Host | No dedicated editing getter in the tree API |
 | `Print::m_default_region_config` | Embedded value, completes the registered regions | Host, outside concurrent registrations | Input of registrations; not an output to restore |
 | `Print::m_region_registry` | Owns the immutable `PrintRegion`s, configuration interning | Added during `apply` or API registration | Each published region is immutable; stays alive until the Print's clear/destructor |
@@ -122,7 +138,7 @@ The owner is `Print::m_objects` or `Print::m_auxiliary_object`. Destroying the o
 | `PrintObjectBase::m_model_object` | Borrowed from the model; null for the global auxiliary object | Host | Input during pipeline; model replaced ⇒ old views invalid |
 | Base `m_print` | Borrowed from the parent Print, used by host operations | Construction | No ownership of the Print and no lifetime extension |
 | `m_size` | Value; height used notably for the object without a model | Host construction | No C setter |
-| `m_config` | Effective configuration, parented to the Print's | `apply`; mutable getter without phase check | Input to keep stable; no automatic invalidation by the getter |
+| `m_config` | Effective configuration, parented to the Print one | `apply` / mutable getter outside a step, or object without a Print | Input to keep stable; no automatic invalidation by the getter |
 | `m_trafo` | Matrix copied by `object_get_transform` | Host | Read-only on the tree API side |
 | `m_center_offset` | Point copied by getter | Host | Read-only on the API side |
 | `m_instances` | `vector<PrintInstance>`; count and shifts copied | `apply`; temporary RAII replacement in the current brim | No general C mutator; indices not persistent |
@@ -243,7 +259,7 @@ Owner: `Layer::m_islands`. **Freezing `m_slice` does not freeze `m_extrusions`.*
 
 | Member | Storage / access | Modifiable when | Const / lifetime |
 |---|---|---|---|
-| `m_slice` | ExPolygon defining the island; const and mutable getter | Main: until post-slicing; auxiliary: construction allowed | Main: `Slicing`; auxiliary: `Print` at the latest; global mutator currently unguarded |
+| `m_slice` | ExPolygon defining the island; const and mutable getter | Main: up to post-slicing; auxiliary: construction allowed | Main: `Slicing`; auxiliary: `Print`; mutable getter guarded according to the freeze mode |
 | `m_bbox` | XY cache built from the polygon; copy getter | Island construction | Stable with the geometry; editing `m_slice` does not recompute it automatically |
 | `m_regions` | Set of borrows to LayerRegion; target getters | Region attachment | Main topology fixed from `Slicing`; a mutable target getter does not allow changing the set |
 | `m_layer` | Borrowed parent, initially null | `fill_regions()` | Fixed after attachment; may be null during construction |
@@ -819,7 +835,7 @@ Sources: `src/libslic3r/Api/host/Plugin.cpp:33`, `src/libslic3r/Api/plugin/c/sli
 1. The data tree guards are mainly assertions depending on the current step; `running_step_may_edit()` also accepts `STEP_NONE`. This is not a permanent frozen state of each object.
 2. OFF guards the property windows only in Debug; ON refuses without a freeze assertion in every configuration. Source surfaces expose no global mutable getter; scratch editing does not depend on a Print. Snapshots remain limited to records and main-object properties at `None`/`Slicing`.
 3. The generic geometry/extrusion/config/property mutators ignore their owner. A mutable alias handed out earlier is not revoked when a checkpoint is passed.
-4. The Print/Object configurations expose mutable getters without automatically triggering pipeline invalidation; this is not a transactional user editing API.
+4. Print/Object configurations are editable through their getters only outside a step, according to the freeze mode, without automatic invalidation; this is not a transactional user-editing API. Older Config/Option aliases stay outside this entry check.
 5. The C++ const of a unique_ptr or of a container of unique_ptr does not make the pointed-to objects deeply const. The const views of the final plan are more restrictive than some native accesses.
 6. Plan handles do not all guarantee their identity/provenance: in particular, transfer between tool groups does not currently enforce all the announced same-layer/same-plan checks. This is not a permission for inter-plan transfer.
 7. Event roots have a non-sortable/non-reversible contract; the current clear/append cycle can re-enable sorting via `ensure_children()`. The announced invariant is therefore not a guarantee for all current native paths.

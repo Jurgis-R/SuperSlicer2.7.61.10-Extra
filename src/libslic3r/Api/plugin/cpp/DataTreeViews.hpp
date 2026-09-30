@@ -427,6 +427,8 @@ public:
                 handles.empty() ? nullptr : handles.data(),
                 uint32_t(handles.size()),
                 static_cast<extruder_index_t>(extruder_id));
+        if (region_island == nullptr)
+            throw std::runtime_error("The region-island editing capability could not be obtained.");
         return LayerRegionIsland(region_island);
     }
 
@@ -441,6 +443,8 @@ public:
                 nullptr,
                 0,
                 static_cast<extruder_index_t>(extruder_id));
+        if (region_island == nullptr)
+            throw std::runtime_error("The region-island editing capability could not be obtained.");
         return LayerRegionIsland(region_island);
     }
 

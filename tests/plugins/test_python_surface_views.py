@@ -283,6 +283,25 @@ class PythonSurfaceViewTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             obj.add_auxiliary_layer(1, 1, 1)
 
+    def test_refused_source_geometry_and_config_views_do_not_wrap_null_handles(self):
+        host = ReallocatingSurfaceHost()
+        api = type("Api", (), {"host": host})()
+        host.layer_island_get_slice_mutable = lambda *_args: None
+        host.layer_island_get_region_island_mutable = lambda *_args: None
+        host.layer_region_island_get_mutable_extrusion = lambda *_args: None
+        host.object_get_config_mutable = lambda *_args: None
+        host.print_get_config_mutable = lambda *_args: None
+        island = self.datatree.MutableLayerIsland(api, 1)
+        with self.assertRaises(ValueError):
+            island.slice_mutable()
+        with self.assertRaises(ValueError):
+            island.region_island_mutable(0)
+        self.assertIsNone(self.datatree.MutableLayerRegionIsland(api, 1).extrusion_mutable(0))
+        with self.assertRaises(ValueError):
+            self.datatree.MutableObject(api, 1).config_mutable()
+        with self.assertRaises(ValueError):
+            self.datatree.MutablePrint(api, 1).config_mutable()
+
 
 if __name__ == "__main__":
     unittest.main()
