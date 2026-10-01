@@ -1210,6 +1210,9 @@ void StepPipeline::clear_checkpoint_outputs(Print &print, const Checkpoint check
     StepGenerateGcode::clear(print);
     if (checkpoint <= Checkpoint::Print)
         StepExtrusionOrdering::clear(print);
+    // The edited plan is stale; the resume clones a new one from the kept Ordering copy.
+    if (checkpoint == Checkpoint::Ordering)
+        print.release_live_printing_plan();
     // At None the layers themselves will be deleted, so visiting their region-islands would duplicate work.
     if (checkpoint == Checkpoint::Slicing)
         StepGeneratePerimeter::clear(print);

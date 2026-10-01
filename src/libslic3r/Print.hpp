@@ -323,6 +323,9 @@ public:
     const Printing::PrintingPlan *printing_plan() const { return m_printing_plan.get(); }
     Printing::PrintingPlan &mutable_printing_plan();
     void reset_printing_plan();
+    // Release only the live plan and keep the Checkpoint::Ordering copy, which
+    // restores a fresh working plan when the pipeline resumes.
+    void release_live_printing_plan();
     // Control whether Checkpoint::Ordering is available: when enabled, a deep
     // copy of the plan is kept after STEP_ORDERING so plan editors can replay
     // without re-ordering. Disabling it releases the copy.
@@ -487,12 +490,6 @@ private:
     Polygons            first_layer_islands() const;
     // Return 4 wipe tower corners in the world coordinates (shifted and rotated), including the wipe tower brim.
     Points              first_layer_wipe_tower_corners() const;
-
-    // Returns true if any of the print_objects has print_object_step valid.
-    // That means data shared by all print objects of the print_objects span may still use the shared data.
-    // Otherwise the shared data shall be released.
-    // Unguarded variant, thus it shall only be called from main thread with background processing stopped.
-    static bool         is_shared_print_object_step_valid_unguarded(SpanOfConstPtrs<PrintObject> print_objects, PrintObjectStep print_object_step);
 
     PrintConfig                             m_config;
     // Variable metadata shared by plugins and host producers for this Print.

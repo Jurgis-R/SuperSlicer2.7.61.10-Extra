@@ -910,10 +910,15 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         const Printing::PrintingPlan *plan_before_editor_replay = print.printing_plan();
         print.process();
         CHECK(print.printing_plan() == plan_before_editor_replay);
+        // Mark the stale plan: its address may be reused by the restored clone.
+        const size_t ordered_group_count = print.printing_plan()->groups.size();
+        print.mutable_printing_plan().groups.emplace_back();
         const std::string replayed_editor_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
         CHECK(replayed_editor_path == output_path.string());
-        CHECK(print.printing_plan() != plan_before_editor_replay);
+        REQUIRE(print.printing_plan() != nullptr);
+        CHECK(print.printing_plan()->groups.size() == ordered_group_count);
+        CHECK(normalized_commands(read_text_file(output_path)) == fresh_commands);
         CHECK(finalize_slicing_count == 1);
         CHECK(ordering_count == 1);
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
@@ -925,6 +930,8 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
             const size_t editor_export_timestamp = print.step_state_with_timestamp(psGCodeExport).timestamp;
             const Printing::PrintingPlan *plan_before_cancelled_replay = print.printing_plan();
             REQUIRE(plan_before_cancelled_replay != nullptr);
+            const size_t checkpoint_group_count = print.printing_plan()->groups.size();
+            print.mutable_printing_plan().groups.emplace_back();
             print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
             REQUIRE(print.current_checkpoint() == Steps::Checkpoint::Ordering);
             CHECK(print.printing_plan() == plan_before_cancelled_replay);
@@ -936,7 +943,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
             CHECK(ui_cancel_count == 0);
             CHECK_FALSE(cancel_after_ordering_restore);
             REQUIRE(plan_at_cancellation != nullptr);
-            CHECK(plan_at_cancellation != plan_before_cancelled_replay);
+            CHECK(plan_at_cancellation->groups.size() == checkpoint_group_count);
             CHECK(print.printing_plan() == plan_at_cancellation);
             CHECK(print.canceled());
             CHECK(print.running_step() == STEP_NONE);
@@ -954,6 +961,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
             CHECK_FALSE(boost::filesystem::exists(output_path));
             CHECK_FALSE(boost::filesystem::exists(output_path.string() + ".tmp"));
 
+            print.mutable_printing_plan().groups.emplace_back();
             print.restart();
             print.set_cancel_callback([&]() { ++ui_cancel_count; });
             const std::string resumed_editor_path =
@@ -963,7 +971,8 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
             CHECK(resumed_editor_path == output_path.string());
             REQUIRE(boost::filesystem::exists(output_path));
             CHECK(normalized_commands(read_text_file(output_path)) == fresh_commands);
-            CHECK(print.printing_plan() != plan_at_cancellation);
+            REQUIRE(print.printing_plan() != nullptr);
+            CHECK(print.printing_plan()->groups.size() == checkpoint_group_count);
             CHECK(print.has_ordering_checkpoint());
             CHECK(print.current_checkpoint() == Steps::Checkpoint::GCode);
             CHECK(print.is_step_done(psGCodeExport));

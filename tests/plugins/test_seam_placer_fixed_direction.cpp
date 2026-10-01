@@ -1896,6 +1896,10 @@ TEST_CASE("Regional registry survives apply and rebinds retained layers", "[plug
     DynamicPrintConfig config = perimeter_config({{k_direction_key, "rear"}});
     prepare_cube_print(prepared, config);
     Print &print = prepared.print;
+    // The fixture ran the slicing prefix directly; record it so apply() keeps
+    // those layers as the Slicing checkpoint instead of destroying them.
+    for (const slicing_step_t step : {STEP_LAYER_HEIGHT, STEP_SLICING, STEP_POST_SLICING})
+        print.mark_step_executed(step);
     const PrintRegion *original = &print.object(0).printing_region(0);
     const PrintRegionConfig saved = original->config();
     Layer *retained = &print.object(0).layer(0);

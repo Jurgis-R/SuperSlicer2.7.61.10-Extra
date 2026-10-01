@@ -1036,17 +1036,17 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
     // Do not use the ApplyStatus as we will use the max function when updating apply_status.
     unsigned int apply_status = APPLY_STATUS_UNCHANGED;
-    bool worker_stopped = false;
     { std::unique_lock<std::mutex> lock(this->state_mutex());
     // Failed cleanup may leave defaults or model timestamps ahead of live object configs.
     const bool plugin_cleanup_pending_at_entry = m_plugin_cleanup_pending.load(std::memory_order_acquire);
-    const auto clear_invalidated_plugin_state = [this, &lock, &apply_status, &worker_stopped]()
+    // Set once plugins released the invalidated outputs; the host destroys them at the end of apply().
+    bool destroy_invalidated_outputs = false;
+    const auto clear_invalidated_plugin_state = [this, &lock, &apply_status, &destroy_invalidated_outputs]()
     {
         if (!m_plugin_cleanup_pending.load(std::memory_order_acquire))
             return;
         // Only an invalidation or a failed cleanup may stop an otherwise valid worker.
         this->call_cancel_callback();
-        worker_stopped = true;
         const Steps::Checkpoint checkpoint = this->current_checkpoint();
         if (checkpoint != Steps::Checkpoint::GCode) {
             // Call plugin code outside the state lock and preserve owners if cleanup must be retried.
@@ -1054,8 +1054,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             if (!this->clear_plugin_state(Steps::checkpoint_resume_step(checkpoint)))
                 throw PluginCleanupError("Plugin cleanup failed before applying Print changes.");
             lock.lock();
+            // The plan borrows layers and islands that apply() may replace below: drop it now.
             if (checkpoint <= Steps::Checkpoint::Print)
                 this->reset_printing_plan();
+            // Other outputs wait for the end of apply(): objects may lack their regions until then.
+            destroy_invalidated_outputs = true;
             // A successful retry must restart the GUI worker even when the input diff is now empty.
             apply_status = APPLY_STATUS_INVALIDATED;
         }
@@ -1568,14 +1571,12 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     for (PrintObjectUPtr &object : m_objects)
         object->update_slicing_parameters();
 
+    // Invalidations made after the last update_apply_status() still notify plugins here.
     clear_invalidated_plugin_state();
-    // If the worker was stopped above, its checkpoint can now be read and invalidated data safely discarded.
-    if (worker_stopped &&
-        (apply_status == APPLY_STATUS_CHANGED || apply_status == APPLY_STATUS_INVALIDATED) &&
-        this->current_checkpoint() <= Steps::Checkpoint::Slicing) {
-        this->reset_auxiliary_object();
-        this->cleanup();
-    }
+    // Invalidation destroys every host output after the final checkpoint while the worker is stopped.
+    // Saved checkpoint data is restored later, when run_slice()/run_gcode() resumes from that checkpoint.
+    if (destroy_invalidated_outputs)
+        Steps::StepPipeline::clear_checkpoint_outputs(*this, this->current_checkpoint());
 
 #ifdef _DEBUG
     check_model_ids_equal(m_model, model);
@@ -1595,28 +1596,9 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
 void Print::cleanup()
 {
-    // Invalidate data of a single ModelObject shared by multiple PrintObjects.
-    // Find spans of PrintObjects sharing the same PrintObjectRegions.
-    std::vector<PrintObject*> all_objects;
-    all_objects.reserve(m_objects.size());
-    for (PrintObjectUPtr &object : m_objects)
-        all_objects.emplace_back(object.get());
-    std::sort(all_objects.begin(), all_objects.end(), [](const PrintObject *l, const PrintObject *r){ return l->shared_regions() < r->shared_regions(); } );
-    for (auto it = all_objects.begin(); it != all_objects.end();) {
-        std::shared_ptr<PrintObjectRegions> &shared_regions = (*it)->m_shared_regions;
-        auto it_begin = it;
-        for (; it != all_objects.end() && shared_regions.get() == (*it)->shared_regions(); ++ it)
-            // Let the PrintObject clean up its data with invalidated milestones.
-            (*it)->cleanup();
-        auto this_objects = SpanOfConstPtrs<PrintObject>(const_cast<const PrintObject* const* const>(&(*it_begin)), it - it_begin);
-        if (! Print::is_shared_print_object_step_valid_unguarded(this_objects, posSupportSpotsSearch))
-            shared_regions->generated_support_points.reset();
-    }
-}
-
-bool Print::is_shared_print_object_step_valid_unguarded(SpanOfConstPtrs<PrintObject> print_objects, PrintObjectStep print_object_step)
-{
-    return std::any_of(print_objects.begin(), print_objects.end(), [print_object_step](auto po){ return po->is_step_done_unguarded(print_object_step); });
+    // Nothing to do: apply() destroys invalidated outputs at invalidation time,
+    // and prepare_checkpoint_resume() removes the partial outputs of a canceled
+    // run before the next one. PrintBase still calls this after a user cancel.
 }
 
 } // namespace Slic3r

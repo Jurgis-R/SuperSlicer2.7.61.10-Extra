@@ -874,7 +874,9 @@ Static findings, not runtime test results. References: `src/libslic3r/Print.cpp:
 
 ### Storage decisions that can be inferred
 
-`Print::prepare_checkpoint_resume()` coordinates notification, host destructions and restoration. From `None`, the auxiliaries are destroyed before the main layers and the profile; from `Slicing`, the region-islands and the fill caches of the retained regions are cleared. The hash of these caches no longer uses a variable shift likely to exceed the integer width; it remains address-based and requires explicit invalidation after in-place editing.
+Destruction happens at invalidation, restoration at the next run. `Print::apply()` stops the worker, calls the plugin `clear` callbacks and drops the live plan as soon as a step is invalidated; at the end of `apply()`, once every object has its regions again, `StepPipeline::clear_checkpoint_outputs()` destroys the host outputs after the final checkpoint (from `Ordering`, only the live plan; the copy is kept). Saved data (records and main-object properties at `None`/`Slicing`, the `Ordering` clone) is restored only by `run_slice()`/`run_gcode()`, because several invalidations may accumulate and only the run knows the final checkpoint. A failed plugin `clear` destroys nothing. `Print::cleanup()` no longer releases anything for FFF.
+
+`Print::prepare_checkpoint_resume()` repeats notification and host destruction as a safety net (no-op after `apply()`; needed after a canceled run or an invalidation made outside `apply()`), then restores. From `None`, the auxiliaries are destroyed before the main layers and the profile; from `Slicing`, the region-islands and the fill caches of the retained regions are cleared. The hash of these caches no longer uses a variable shift likely to exceed the integer width; it remains address-based and requires explicit invalidation after in-place editing.
 
 A direct call to `run_gcode()` at the `None` checkpoint is rejected before any destruction: the caller must run `run_slice()` to produce the missing prefix. Cleanup must never erase the layers and then skip their reconstruction.
 

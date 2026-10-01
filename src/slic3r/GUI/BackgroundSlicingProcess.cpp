@@ -265,8 +265,8 @@ void BackgroundSlicingProcess::thread_proc()
 				(m_state == STATE_CANCELED) ? SlicingProcessCompletedEvent::Cancelled :
 				exception ? SlicingProcessCompletedEvent::Error : SlicingProcessCompletedEvent::Finished, exception);
         	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
-        	// Cancelled by the user, not internally, thus cleanup() was not called yet.
-        	// Otherwise cleanup() is called from Print::apply()
+        	// Cancelled by the user, not internally. The FFF Print keeps the partial
+        	// outputs until the next run removes them before resuming.
         	m_print->cleanup();
         }
 	    m_print->restart();

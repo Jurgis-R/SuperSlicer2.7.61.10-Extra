@@ -1660,15 +1660,6 @@ bool PrintObject::invalidate_all_steps_direct()
     return result;
 }
 
-// Called on main thread with stopped or paused background processing to let PrintObject release data for its milestones that were invalidated or canceled.
-void PrintObject::cleanup()
-{
-    if (this->query_reset_dirty_step_unguarded(posInfill))
-        this->clear_fills();
-    if (this->query_reset_dirty_step_unguarded(posSupportMaterial))
-        this->clear_auxiliary_layers();
-}
-
 //Fit to size helper
 bool has_boundary_point(const MultiPoint& contour, const Point &point)
 {

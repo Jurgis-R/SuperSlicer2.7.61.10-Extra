@@ -6,6 +6,7 @@
 #include <thread>
 #include <tbb/global_control.h>
 
+#include "gcode_test_helpers.hpp"
 #include "perimeter_test_helpers.hpp"
 #include "plugin_test_helpers.hpp"
 #include "test_data.hpp"
@@ -58,6 +59,8 @@ public:
     mutable bool owners_alive = false;
     mutable bool mutex_unlocked = false;
     mutable bool fail_clear = false;
+    // Number of successful clears before fail_clear takes effect.
+    mutable size_t fail_after = 0;
     std::mutex *mutex = nullptr;
 
 private:
@@ -78,6 +81,7 @@ private:
         owners_alive = false;
         mutex_unlocked = false;
         fail_clear = false;
+        fail_after = 0;
     }
 
     int32_t clear_impl(const print_handle *handle, storage_handle *) const override
@@ -91,7 +95,7 @@ private:
                 mutex->unlock();
         });
         lock_probe.join();
-        if (fail_clear)
+        if (fail_clear && clears > fail_after)
             throw std::runtime_error("Intentional lifecycle cleanup failure");
         return PLUGIN_ERROR_OK;
     }
@@ -100,7 +104,7 @@ private:
     mutable size_t expected_objects = 0;
 };
 
-LifecycleClearPlugin &prepare_lifecycle_probe(LifecyclePrint &print)
+LifecycleClearPlugin &prepare_lifecycle_probe(LifecyclePrint &print, const slicing_step_t step = STEP_EXTRUSION_EDIT)
 {
     Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
     static LifecycleClearPlugin probe(reinterpret_cast<orchestrator_handle *>(&orchestrator));
@@ -111,8 +115,8 @@ LifecycleClearPlugin &prepare_lifecycle_probe(LifecyclePrint &print)
     }
     Slic3r::Plugin *plugin = orchestrator.get_plugin("test.lifecycle.clear");
     REQUIRE(plugin != nullptr);
-    plugin_host_context host = orchestrator.prepare_plugin_host_context(STEP_EXTRUSION_EDIT, plugin, &print);
-    const plugin_run_context context = orchestrator.prepare_plugin_run_context(STEP_EXTRUSION_EDIT, plugin, &host);
+    plugin_host_context host = orchestrator.prepare_plugin_host_context(step, plugin, &print);
+    const plugin_run_context context = orchestrator.prepare_plugin_run_context(step, plugin, &host);
     plugin->setup(context, 0);
     return probe;
 }
@@ -1101,6 +1105,8 @@ TEST_CASE("Ordering checkpoint survives downstream invalidation only",
     REQUIRE(print.save_ordering_checkpoint());
 
     // Plan editors restart from the ordered copy. Ordering itself stays done.
+    const size_t ordered_group_count = print.printing_plan()->groups.size();
+    print.mutable_printing_plan().groups.emplace_back();
     print.request_replay_from(Slic3r::Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
     CHECK(print.current_checkpoint() == Checkpoint::Ordering);
     CHECK(print.has_ordering_checkpoint());
@@ -1109,10 +1115,13 @@ TEST_CASE("Ordering checkpoint survives downstream invalidation only",
     CHECK(print.should_execute_step(STEP_GCODE));
 
     // A resume restores a fresh clone of the ordered copy.
-    const Slic3r::Printing::PrintingPlan *edited_plan = print.printing_plan();
     print.prepare_checkpoint_resume();
-    CHECK(print.printing_plan() != edited_plan);
+    REQUIRE(print.printing_plan() != nullptr);
+    CHECK(print.printing_plan()->groups.size() == ordered_group_count);
     CHECK(print.has_ordering_checkpoint());
+    CHECK_FALSE(print.should_execute_step(STEP_ORDERING));
+    CHECK(print.should_execute_step(STEP_WIPETOWER));
+    CHECK(print.should_execute_step(STEP_GCODE));
 
     // Invalidating ordering's own inputs makes the copy stale.
     print.request_replay_from(Slic3r::Steps::checkpoint_before_step(STEP_SLICING));
@@ -1157,4 +1166,151 @@ TEST_CASE("G-code clear resets every published statistic",
     CHECK(statistics._layer_area_stats.empty());
     CHECK_FALSE(statistics.is_computing_gcode.load());
     CHECK(print.gcode_reader_source_path().empty());
+}
+
+namespace {
+
+size_t count_main_region_islands(const Slic3r::Print &print)
+{
+    size_t count = 0;
+    for (const Slic3r::PrintObject &object : print.objects())
+        for (const Slic3r::Layer &layer : object.layers())
+            for (const Slic3r::LayerSliceIsland &island : layer.islands())
+                count += island.regions_islands().size();
+    return count;
+}
+
+} // namespace
+
+TEST_CASE("Apply destroys invalidated outputs and the next run restores saved checkpoint data",
+          "[plugins][checkpoint][invalidation][cleanup]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict("gcode_flavor", "marlin");
+    config.set_deserialize_strict("step_gcode_plugin", "gcode.printing_plan_file_writer");
+    config.set_deserialize_strict("gcode_firmware_plugin", "gcode.firmware.marlin2");
+    LifecyclePrint print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    const boost::filesystem::path path = Test::GCode::temporary_gcode_path();
+    struct OutputCleanup {
+        boost::filesystem::path path;
+        ~OutputCleanup() { Test::GCode::remove_output_pair(path); }
+    } output_cleanup{path};
+
+    // A complete run publishes every checkpoint, including the Ordering copy.
+    Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+    Steps::StepPipeline::run_gcode(Orchestrator::instance(), print, path.string());
+    REQUIRE(print.current_checkpoint() == Checkpoint::GCode);
+    REQUIRE(print.has_ordering_checkpoint());
+    REQUIRE(print.printing_plan() != nullptr);
+    REQUIRE(count_main_region_islands(print) > 0);
+    const Layer *source_layer = &print.object(0).layer(0);
+    const ExPolygons raw_slices = source_layer->region(0).get_raw_slices();
+    // A record created after PostSlicing is absent from the Slicing snapshot.
+    print.records().get_or_add("test.downstream");
+
+    const auto apply_option = [&](const char *key, const char *value) {
+        DynamicPrintConfig changed = print.full_print_config();
+        changed.set_deserialize_strict(key, value);
+        return print.apply(model, changed);
+    };
+
+    SECTION("Slicing destroys downstream outputs at apply and restores records at run") {
+        CHECK(apply_option("perimeters", "4") == Print::APPLY_STATUS_INVALIDATED);
+        REQUIRE(print.current_checkpoint() == Checkpoint::Slicing);
+        CHECK(&print.object(0).layer(0) == source_layer);
+        CHECK(source_layer->region(0).get_raw_slices() == raw_slices);
+        CHECK(count_main_region_islands(print) == 0);
+        CHECK(print.object(0).auxiliary_layers().empty());
+        CHECK(print.auxiliary_object() == nullptr);
+        CHECK(print.printing_plan() == nullptr);
+        CHECK_FALSE(print.has_ordering_checkpoint());
+        CHECK(print.gcode_reader_source_path().empty());
+        // Restoration waits for the run, which knows the final checkpoint.
+        CHECK(print.records().find("test.downstream") != nullptr);
+
+        Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+        CHECK(print.records().find("test.downstream") == nullptr);
+        CHECK(&print.object(0).layer(0) == source_layer);
+        CHECK(count_main_region_islands(print) > 0);
+    }
+    SECTION("None destroys the layers and the profile at apply") {
+        CHECK(apply_option("layer_height", "0.3") == Print::APPLY_STATUS_INVALIDATED);
+        REQUIRE(print.current_checkpoint() == Checkpoint::None);
+        CHECK(print.object(0).layer_count() == 0);
+        CHECK(print.object(0).layer_profile().empty());
+        CHECK(print.printing_plan() == nullptr);
+
+        Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+        CHECK(print.object(0).layer_count() > 0);
+        CHECK(count_main_region_islands(print) > 0);
+    }
+    SECTION("Ordering releases the live plan at apply and restores the copy at run") {
+        CHECK(apply_option("travel_speed", "187") == Print::APPLY_STATUS_INVALIDATED);
+        REQUIRE(print.current_checkpoint() == Checkpoint::Ordering);
+        CHECK(print.printing_plan() == nullptr);
+        CHECK(print.has_ordering_checkpoint());
+        CHECK(count_main_region_islands(print) > 0);
+
+        Steps::StepPipeline::run_gcode(Orchestrator::instance(), print, path.string());
+        CHECK(print.printing_plan() != nullptr);
+        CHECK(print.current_checkpoint() == Checkpoint::GCode);
+    }
+    SECTION("A deeper second invalidation destroys only the remaining outputs") {
+        apply_option("travel_speed", "187");
+        REQUIRE(print.current_checkpoint() == Checkpoint::Ordering);
+        CHECK(count_main_region_islands(print) > 0);
+        apply_option("perimeters", "4");
+        REQUIRE(print.current_checkpoint() == Checkpoint::Slicing);
+        CHECK(count_main_region_islands(print) == 0);
+        CHECK_FALSE(print.has_ordering_checkpoint());
+        CHECK(&print.object(0).layer(0) == source_layer);
+    }
+    SECTION("A failed plugin clear destroys nothing until the retry succeeds") {
+        LifecycleClearPlugin &probe = prepare_lifecycle_probe(print);
+        const Printing::PrintingPlan *plan = print.printing_plan();
+        probe.fail_clear = true;
+        CHECK_THROWS_AS(apply_option("perimeters", "4"), PluginCleanupError);
+        CHECK(print.printing_plan() == plan);
+        CHECK(count_main_region_islands(print) > 0);
+        CHECK(print.plugin_cleanup_participants().size() == 1);
+
+        probe.fail_clear = false;
+        CHECK(print.apply(model, print.full_print_config()) == Print::APPLY_STATUS_INVALIDATED);
+        CHECK(print.printing_plan() == nullptr);
+        CHECK(count_main_region_islands(print) == 0);
+        CHECK(print.plugin_cleanup_participants().empty());
+    }
+    SECTION("A clear failing after an earlier successful clear defers destruction to the retry") {
+        // One participant per invalidation: travel_speed clears the editor, perimeters the perimeter step.
+        prepare_lifecycle_probe(print, STEP_PERIMETER);
+        LifecycleClearPlugin &probe = prepare_lifecycle_probe(print);
+        const Printing::PrintingPlan *plan = print.printing_plan();
+        probe.fail_clear = true;
+        probe.fail_after = 1;
+        DynamicPrintConfig changed = print.full_print_config();
+        changed.set_deserialize_strict("travel_speed", "187");
+        changed.set_deserialize_strict("perimeters", "4");
+        CHECK_THROWS_AS(print.apply(model, changed), PluginCleanupError);
+        CHECK(probe.clears == 2);
+        REQUIRE(print.current_checkpoint() == Checkpoint::Slicing);
+        CHECK(print.printing_plan() == plan);
+        CHECK(count_main_region_islands(print) > 0);
+        CHECK(print.plugin_cleanup_participants().size() == 1);
+
+        probe.fail_clear = false;
+        CHECK(print.apply(model, changed) == Print::APPLY_STATUS_INVALIDATED);
+        CHECK(print.printing_plan() == nullptr);
+        CHECK(count_main_region_islands(print) == 0);
+        CHECK_FALSE(print.has_ordering_checkpoint());
+        CHECK(print.plugin_cleanup_participants().empty());
+
+        Steps::StepPipeline::run_slice(Orchestrator::instance(), print);
+        CHECK(count_main_region_islands(print) > 0);
+        CHECK(print.records().find("test.downstream") == nullptr);
+    }
 }

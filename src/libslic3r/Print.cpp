@@ -209,6 +209,11 @@ void Print::reset_printing_plan()
     clear_ordering_checkpoint();
 }
 
+void Print::release_live_printing_plan()
+{
+    m_printing_plan.reset();
+}
+
 void Print::set_keep_ordering_checkpoint(const bool keep)
 {
     if (m_keep_ordering_checkpoint == keep)
@@ -603,6 +608,9 @@ void Print::prepare_checkpoint_resume()
         return;
     // An interrupted attempt may have finished part of the suffix; all of it must become pending again.
     this->request_replay_from_worker(checkpoint);
+    // apply() already notified plugins and destroyed invalidated outputs. Doing it again here
+    // is a no-op in that case, but it also covers a canceled run that produced part of the
+    // suffix and invalidations made outside apply().
     // Plugins must drop their borrowed handles before the host destroys or replaces those owners.
     if (!this->clear_plugin_state(Steps::checkpoint_resume_step(checkpoint)))
         throw PluginCleanupError("Plugin cleanup failed before checkpoint resume.");
