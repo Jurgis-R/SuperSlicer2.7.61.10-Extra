@@ -49,6 +49,8 @@
 #include <cstdint>
 #include <unordered_map>
 
+// The generated hash() members call boost::hash_combine.
+#include <boost/container_hash/hash.hpp>
 #include <boost/preprocessor/facilities/empty.hpp>
 #include <boost/preprocessor/punctuation/comma_if.hpp>
 #include <boost/preprocessor/seq/for_each.hpp>
