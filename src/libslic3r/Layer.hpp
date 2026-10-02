@@ -26,7 +26,6 @@ using ExPolygons = std::vector<ExPolygon>;
 namespace ApiInternal { struct LayerAccess; }
 namespace ApiInternal { struct LayerIslandAccess; }
 namespace ApiInternal { struct LayerRegionAccess; }
-namespace Steps { class StepPipeline; }
 
 
 namespace FillAdaptive {
@@ -229,7 +228,6 @@ public:
     virtual ~Layer();
 protected:
     friend class PrintObject;
-    friend class Steps::StepPipeline;
     friend LayerUPtrs new_layers(PrintObject*, const std::vector<coordf_t>&);
     friend struct ApiInternal::LayerAccess;
 

@@ -436,8 +436,6 @@ set(SLIC3R_SOURCES
 	Plugins/Support/SupportDemandPainting.hpp
 	Printing/PrintingPlan.cpp
 	Printing/PrintingPlan.hpp
-	Steps/DebugPrintProcessComparator.cpp
-	Steps/DebugPrintProcessComparator.hpp
 	Steps/StepDetectSupportSpots.cpp
 	Steps/StepDetectSupportSpots.hpp
 	Steps/StepSkirtBrim.cpp
@@ -874,8 +872,6 @@ set(SLIC3R_SOURCES
     PrintObjectSlice.cpp
     PrintRegion.cpp
     PrintRegion.hpp
-    PrintSteps.cpp
-    PrintSteps.hpp
     PointGrid.hpp
     PNGReadWrite.hpp
     PNGReadWrite.cpp
@@ -890,6 +886,7 @@ set(SLIC3R_SOURCES
     ShortestPath.cpp
     ShortestPath.hpp
     SLAPrint.cpp
+    PrintSteps.hpp
     SLAPrintSteps.cpp
     SLAPrintSteps.hpp
     SLAPrint.hpp

@@ -239,6 +239,13 @@ void PreferencesDialog::show(const std::string& highlight_opt_key /*= std::strin
             field->set_any_value(val, false);
         }
     }
+    // No plugin emits support alerts yet: keep the stored value but grey out the checkbox.
+    // set_any_value() keeps a disabled field disabled, so later value refreshes do not re-enable it.
+    if (m_optkey_to_optgroup.find("alert_when_supports_needed") != m_optkey_to_optgroup.end()) {
+        if (Field *field = m_optkey_to_optgroup["alert_when_supports_needed"]->get_field(
+                OptionKeyIdx::scalar("alert_when_supports_needed")))
+            field->toggle_widget_enable(false);
+    }
 
     if (wxGetApp().is_editor()) {
         auto app_config = get_app_config();
@@ -606,7 +613,8 @@ void PreferencesDialog::build()
 			L("Alert when supports needed"),
 			L("If this is enabled, Slic3r will raise alerts when it detects "
 				"issues in the sliced object, that can be resolved with supports (and brim). "
-				"Examples of such issues are floating object parts, unsupported extrusions and low bed adhesion."),
+				"Examples of such issues are floating object parts, unsupported extrusions and low bed adhesion.\n"
+				"Currently inactive: no support-alert plugin is available yet."),
 			app_config->get_bool("alert_when_supports_needed"));
 
         // auto_switch_preview

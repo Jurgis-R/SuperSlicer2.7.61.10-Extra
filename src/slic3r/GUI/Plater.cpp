@@ -4633,9 +4633,10 @@ void Plater::priv::process_slicing_status(const PrintStatus::SlicingStatus &stat
     }
 
     if ((status.flags & PrintStatus::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) &&
-        static_cast<PrintStep>(status.warning_step) == psAlertWhenSupportsNeeded &&
+        static_cast<slicing_step_t>(status.warning_step) == STEP_ALERT_SUPPORTS_NEEDED &&
         !get_app_config()->get_bool("alert_when_supports_needed")) {
-        // This alerts are from psAlertWhenSupportsNeeded and the respective app settings is not Enabled, so discard the alerts.
+        // Ignore support alerts when their notification setting is disabled.
+        // No host emitter until the support-alert plugin exists; keep the filter for that plugin.
     } else if (status.flags &
                (PrintStatus::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS | PrintStatus::SlicingStatus::UPDATE_PRINT_OBJECT_STEP_WARNINGS)) {
         // Update notification center with warnings of object_id and its warning_step.
@@ -4644,7 +4645,7 @@ void Plater::priv::process_slicing_status(const PrintStatus::SlicingStatus &stat
         PrintStateBase::StateWithWarnings state;
         if (status.flags & PrintStatus::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
             if (this->printer_technology == ptFFF)
-                state = this->fff_print.step_state_with_warnings(static_cast<PrintStep>(warning_step));
+                state = this->fff_print.step_state_with_warnings(static_cast<slicing_step_t>(warning_step));
             else if (this->printer_technology == ptSLA)
                 state = this->sla_print.step_state_with_warnings(static_cast<SLAPrintStep>(warning_step));
         } else if (this->printer_technology == ptSLA) {
@@ -8141,9 +8142,9 @@ void Plater::reslice_until_step_inner(int step, const ModelObject &object, bool 
     this->p->restart_background_process(state | priv::UPDATE_BACKGROUND_PROCESS_FORCE_RESTART);
 }
 
-void Plater::reslice_FFF_until_step(PrintObjectStep step, const ModelObject &object, bool postpone_error_messages)
+void Plater::reslice_FFF_until_step(slicing_step_t step, const ModelObject &object, bool postpone_error_messages)
 {
-    this->reslice_until_step_inner(PrintObjectStep(step), object, postpone_error_messages);
+    this->reslice_until_step_inner(step, object, postpone_error_messages);
 }
 
 void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &object, bool postpone_error_messages)

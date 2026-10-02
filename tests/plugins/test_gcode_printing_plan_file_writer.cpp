@@ -879,7 +879,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         const std::vector<std::string> fresh_commands = normalized_commands(read_text_file(output_path));
         PrintStateBase::TimeStamp previous_pipeline_timestamp = 0;
         for (const slicing_step_t step : Steps::execution_order()) {
-            const PrintStateBase::StateWithWarnings state = print.pipeline_step_state(step);
+            const PrintStateBase::StateWithWarnings state = print.step_state_with_warnings(step);
             CAPTURE(step);
             CHECK(state.is_done());
             CHECK(state.enabled);
@@ -901,8 +901,8 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         // The read-only G-code stage reuses the final plan directly.
         const Printing::PrintingPlan *final_plan = print.printing_plan();
         REQUIRE(final_plan != nullptr);
-        REQUIRE(print.is_step_done(psGCodeExport));
-        const size_t first_export_timestamp = print.step_state_with_timestamp(psGCodeExport).timestamp;
+        REQUIRE(print.is_step_done(STEP_GCODE));
+        const size_t first_export_timestamp = print.step_state_with_timestamp(STEP_GCODE).timestamp;
         print.set_cancel_callback([&]() { ++ui_cancel_count; });
         const std::string replayed_gcode_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
@@ -912,8 +912,8 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         CHECK(print.printing_plan() == final_plan);
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
         CHECK(normalized_commands(read_text_file(output_path)) == fresh_commands);
-        CHECK(print.is_step_done(psGCodeExport));
-        CHECK(print.step_state_with_timestamp(psGCodeExport).timestamp > first_export_timestamp);
+        CHECK(print.is_step_done(STEP_GCODE));
+        CHECK(print.step_state_with_timestamp(STEP_GCODE).timestamp > first_export_timestamp);
         CHECK_FALSE(print.should_execute_step(STEP_GCODE));
         CHECK(slicing_count == 1);
         CHECK(finalize_slicing_count == 1);
@@ -942,8 +942,8 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
 
         SECTION("Cancellation after Ordering restoration leaves plan replay retryable") {
             REQUIRE(print.has_ordering_checkpoint());
-            REQUIRE(print.is_step_done(psGCodeExport));
-            const size_t editor_export_timestamp = print.step_state_with_timestamp(psGCodeExport).timestamp;
+            REQUIRE(print.is_step_done(STEP_GCODE));
+            const size_t editor_export_timestamp = print.step_state_with_timestamp(STEP_GCODE).timestamp;
             const Printing::PrintingPlan *plan_before_cancelled_replay = print.printing_plan();
             REQUIRE(plan_before_cancelled_replay != nullptr);
             const size_t checkpoint_group_count = print.printing_plan()->groups.size();
@@ -965,7 +965,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
             CHECK(print.running_step() == STEP_NONE);
             CHECK(print.has_ordering_checkpoint());
             CHECK(print.current_checkpoint() == Steps::Checkpoint::Ordering);
-            CHECK_FALSE(print.is_step_done(psGCodeExport));
+            CHECK_FALSE(print.is_step_done(STEP_GCODE));
             for (const slicing_step_t step : Steps::execution_order()) {
                 CAPTURE(step);
                 CHECK(print.should_execute_step(step) ==
@@ -991,8 +991,8 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
             CHECK(print.printing_plan()->groups.size() == checkpoint_group_count);
             CHECK(print.has_ordering_checkpoint());
             CHECK(print.current_checkpoint() == Steps::Checkpoint::GCode);
-            CHECK(print.is_step_done(psGCodeExport));
-            CHECK(print.step_state_with_timestamp(psGCodeExport).timestamp > editor_export_timestamp);
+            CHECK(print.is_step_done(STEP_GCODE));
+            CHECK(print.step_state_with_timestamp(STEP_GCODE).timestamp > editor_export_timestamp);
             for (const slicing_step_t step : Steps::execution_order()) {
                 CAPTURE(step);
                 CHECK_FALSE(print.should_execute_step(step));

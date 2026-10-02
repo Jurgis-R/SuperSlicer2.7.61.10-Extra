@@ -2320,7 +2320,7 @@ TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
     CHECK(step.warnings.front().message.find("line 1") != std::string::npos);
     CHECK(step.timestamp > started);
     CHECK(warning_events == 1);
-    CHECK(print.object(0).step_state_with_warnings(psGCodeExport).warnings.empty());
+    CHECK(step.state == PrintStateBase::State::Started);
     print.set_running_step(STEP_NONE);
     print.mark_step_executed(STEP_GCODE);
     CHECK(print.is_step_done(STEP_GCODE));

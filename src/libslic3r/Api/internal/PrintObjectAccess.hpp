@@ -28,9 +28,6 @@ struct PrintObjectAccess
     static PrintInstances &mutable_instances(PrintObject &object);
     static void clear_brim_auxiliary_layers(PrintObject &object);
     static void clear_skirt_auxiliary_layers(PrintObject &object);
-#ifdef _DEBUG
-    static void make_perimeters(PrintObject &object);
-#endif
 };
 
 } // namespace ApiInternal

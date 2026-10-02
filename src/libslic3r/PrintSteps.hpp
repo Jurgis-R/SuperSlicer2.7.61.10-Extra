@@ -36,11 +36,6 @@ static constexpr PrintObjectStep posCalculateOverhangingPerimeters = STEP_EXTRUS
 static constexpr PrintObjectStep posSimplifyPath                   = STEP_EXTRUSION_SIMPLIFICATION;
 static constexpr PrintObjectStep posCount                          = static_cast<PrintObjectStep>(STEP_EXTRUSION_SIMPLIFICATION + 1);
 
-int printstep_percent(slicing_step_t step);
-int objectstep_percent(slicing_step_t step);
-bool is_print_step(slicing_step_t step);
-bool is_print_object_step(slicing_step_t step);
-
 } // namespace Slic3r
 
 #endif // slic3r_PrintSteps_hpp_

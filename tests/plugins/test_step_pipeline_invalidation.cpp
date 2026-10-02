@@ -257,7 +257,7 @@ TEST_CASE("Pipeline state invalidation preserves checkpoint prefixes and is idem
         std::map<slicing_step_t, PrintStateBase::StateWithWarnings> before;
         for (const slicing_step_t step : Steps::execution_order()) {
             print.mark_step_executed(step);
-            before.emplace(step, print.pipeline_step_state(step));
+            before.emplace(step, print.step_state_with_warnings(step));
         }
         if (worker_owned) {
             CHECK(print.request_replay_from_worker(checkpoint) == (checkpoint != Checkpoint::GCode));
@@ -271,7 +271,7 @@ TEST_CASE("Pipeline state invalidation preserves checkpoint prefixes and is idem
         for (const slicing_step_t step : Steps::execution_order()) {
             const bool invalid = checkpoint != Checkpoint::GCode &&
                 !Steps::executes_before(step, Steps::checkpoint_resume_step(checkpoint));
-            const PrintStateBase::StateWithWarnings state = print.pipeline_step_state(step);
+            const PrintStateBase::StateWithWarnings state = print.step_state_with_warnings(step);
             CAPTURE(checkpoint, step);
             CHECK(state.enabled);
             CHECK(state.is_done() == !invalid);
@@ -284,7 +284,7 @@ TEST_CASE("Pipeline state invalidation preserves checkpoint prefixes and is idem
     print.set_running_step(STEP_GCODE);
     print.clear();
     CHECK(print.running_step() == STEP_NONE);
-    CHECK(print.pipeline_step_state(STEP_SLICING).timestamp == 0);
+    CHECK(print.step_state_with_warnings(STEP_SLICING).timestamp == 0);
 }
 
 TEST_CASE("Pipeline control replay captures a running step before the stop callback clears it",
@@ -303,7 +303,7 @@ TEST_CASE("Pipeline control replay captures a running step before the stop callb
         CHECK(print.request_replay_from(Steps::Checkpoint::Slicing));
         CHECK_FALSE(print.request_replay_from(Steps::Checkpoint::Slicing));
     }
-    CHECK_FALSE(print.pipeline_step_state(STEP_PERIMETER).is_done());
+    CHECK_FALSE(print.step_state_with_warnings(STEP_PERIMETER).is_done());
     print.set_cancel_callback([]() {});
 }
 
@@ -463,8 +463,8 @@ TEST_CASE("Task bounds only stop the worker and slicing still completes the full
     print.set_task(task);
     CHECK(stops == 1);
     print.process();
-    CHECK(print.pipeline_step_state(STEP_PERIMETER).is_done());
-    CHECK(print.pipeline_step_state(STEP_PERIMETER).enabled);
+    CHECK(print.step_state_with_warnings(STEP_PERIMETER).is_done());
+    CHECK(print.step_state_with_warnings(STEP_PERIMETER).enabled);
     CHECK(print.is_step_done(STEP_PERIMETER));
     CHECK(print.step_state_with_timestamp(STEP_PERIMETER).enabled);
     REQUIRE(print.object(0).layer_count() > 0);
@@ -490,12 +490,12 @@ TEST_CASE("Pipeline completion cannot publish done after cancellation",
     using namespace Slic3r;
     Print print;
     print.set_running_step(STEP_PERIMETER);
-    const PrintStateBase::TimeStamp started = print.pipeline_step_state(STEP_PERIMETER).timestamp;
+    const PrintStateBase::TimeStamp started = print.step_state_with_warnings(STEP_PERIMETER).timestamp;
     print.cancel_internal();
     print.set_running_step(STEP_NONE);
     CHECK_THROWS_AS(print.mark_step_executed(STEP_PERIMETER), CanceledException);
-    CHECK_FALSE(print.pipeline_step_state(STEP_PERIMETER).is_done());
-    CHECK(print.pipeline_step_state(STEP_PERIMETER).timestamp > started);
+    CHECK_FALSE(print.step_state_with_warnings(STEP_PERIMETER).is_done());
+    CHECK(print.step_state_with_warnings(STEP_PERIMETER).timestamp > started);
     print.restart();
 }
 
@@ -509,31 +509,29 @@ TEST_CASE("Pipeline warnings change the clock and are retired on successful retr
     print.set_status_callback([&](const PrintBase::SlicingStatus &status) {
         if (status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
             CHECK(status.warning_step == STEP_GCODE);
-            print.pipeline_step_state(STEP_GCODE);
+            print.step_state_with_warnings(STEP_GCODE);
             ++notifications;
         }
     });
     print.set_running_step(STEP_GCODE);
-    const PrintStateBase::TimeStamp started = print.pipeline_step_state(STEP_GCODE).timestamp;
-    CHECK(print.pipeline_step_state(STEP_GCODE).state == PrintStateBase::State::Started);
+    const PrintStateBase::TimeStamp started = print.step_state_with_warnings(STEP_GCODE).timestamp;
+    CHECK(print.step_state_with_warnings(STEP_GCODE).state == PrintStateBase::State::Started);
     facade.active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
-    const PrintStateBase::TimeStamp added = print.pipeline_step_state(STEP_GCODE).timestamp;
+    const PrintStateBase::TimeStamp added = print.step_state_with_warnings(STEP_GCODE).timestamp;
     CHECK(added > started);
     facade.active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
-    CHECK(print.pipeline_step_state(STEP_GCODE).timestamp == added);
+    CHECK(print.step_state_with_warnings(STEP_GCODE).timestamp == added);
     facade.active_step_add_warning(PrintStateBase::WarningLevel::CRITICAL, "updated", 71);
-    CHECK(print.pipeline_step_state(STEP_GCODE).timestamp > added);
-    REQUIRE(print.pipeline_step_state(STEP_GCODE).warnings.size() == 1);
+    CHECK(print.step_state_with_warnings(STEP_GCODE).timestamp > added);
     REQUIRE(print.step_state_with_warnings(STEP_GCODE).warnings.size() == 1);
     CHECK(print.step_state_with_warnings(STEP_GCODE).warnings.front().message == "updated");
     print.set_running_step(STEP_NONE);
     print.mark_step_executed(STEP_GCODE);
     REQUIRE(print.request_replay_from_worker(Steps::Checkpoint::Plan));
-    CHECK_FALSE(print.pipeline_step_state(STEP_GCODE).warnings[0].current);
+    CHECK_FALSE(print.step_state_with_warnings(STEP_GCODE).warnings[0].current);
     print.set_running_step(STEP_GCODE);
     print.set_running_step(STEP_NONE);
     print.mark_step_executed(STEP_GCODE);
-    CHECK(print.pipeline_step_state(STEP_GCODE).warnings.empty());
     CHECK(print.step_state_with_warnings(STEP_GCODE).warnings.empty());
     CHECK(notifications == 3);
 }
@@ -687,10 +685,10 @@ TEST_CASE("PostSlicing failures never publish a metadata checkpoint",
     CHECK(print.has_metadata_checkpoint(Checkpoint::None));
     CHECK_FALSE(print.has_metadata_checkpoint(Checkpoint::Slicing));
     CHECK(print.should_execute_step(STEP_POST_SLICING));
-    CHECK_FALSE(print.pipeline_step_state(STEP_POST_SLICING).is_done());
+    CHECK_FALSE(print.step_state_with_warnings(STEP_POST_SLICING).is_done());
     CHECK(print.running_step() == STEP_NONE);
-    CHECK(print.pipeline_step_state(STEP_POST_SLICING).timestamp >
-          print.pipeline_step_state(STEP_SLICING).timestamp);
+    CHECK(print.step_state_with_warnings(STEP_POST_SLICING).timestamp >
+          print.step_state_with_warnings(STEP_SLICING).timestamp);
     ScopedMetadataPlugins::post().cancel_setup = false;
     ScopedMetadataPlugins::post().fail_setup = false;
     print.restart();

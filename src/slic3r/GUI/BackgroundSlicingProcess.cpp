@@ -268,7 +268,6 @@ void BackgroundSlicingProcess::thread_proc()
         	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
         	// Cancelled by the user, not internally. The FFF Print keeps the partial
         	// outputs until the next run removes them before resuming.
-        	m_print->cleanup();
         }
 	    m_print->restart();
 		lck.unlock();

@@ -1351,7 +1351,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 for (const PrintObjectStatus &print_object_status : print_object_status_db.get_range(model_object)) {
                     t_config_option_keys diff = print_object_status.print_object->config().diff(new_config);
                     if (! diff.empty()) {
-                        update_apply_status(print_object_status.print_object->invalidate_state_by_config_options(print_object_status.print_object->config(), new_config, diff) |
+                        update_apply_status(this->invalidate_state_by_config_options(new_config, diff) |
                                             config_running_step_affected(diff));
                         print_object_status.print_object->config_apply_only(new_config, diff, true);
                     }
@@ -1542,10 +1542,10 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     num_extruders,
                     painting_extruders,
                     *print_object_regions,
-                    [it_print_object, it_print_object_end, &update_apply_status, &config_running_step_affected](const PrintRegionConfig &old_config, const PrintRegionConfig &new_config, const t_config_option_keys &diff_keys) {
+                    [this, it_print_object, it_print_object_end, &update_apply_status, &config_running_step_affected](const PrintRegionConfig &, const PrintRegionConfig &new_config, const t_config_option_keys &diff_keys) {
                         for (auto it = it_print_object; it != it_print_object_end; ++it)
                             if ((*it)->m_shared_regions != nullptr)
-                                update_apply_status((*it)->invalidate_state_by_config_options(old_config, new_config, diff_keys) |
+                                update_apply_status(this->invalidate_state_by_config_options(new_config, diff_keys) |
                                                     config_running_step_affected(diff_keys));
                     })) {
                 // Successful verification preserves dense local indices. Rebind
@@ -1597,7 +1597,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
     // Update SlicingParameters for each object where the SlicingParameters is not valid.
     // If it is not valid, then it is ensured that PrintObject.m_slicing_params is not in use
-    // (posSlicing and posSupportMaterial was invalidated).
+    // (slicing and support outputs were invalidated).
     for (PrintObjectUPtr &object : m_objects)
         object->update_slicing_parameters();
 
@@ -1622,13 +1622,6 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     }
 
     return static_cast<ApplyStatus>(apply_status);
-}
-
-void Print::cleanup()
-{
-    // Nothing to do: apply() destroys invalidated outputs at invalidation time,
-    // and prepare_checkpoint_resume() removes the partial outputs of a canceled
-    // run before the next one. PrintBase still calls this after a user cancel.
 }
 
 } // namespace Slic3r

@@ -34,14 +34,11 @@
 
 #include "DataTreeFwd.hpp"
 #include "ExtrusionEntityCollection.hpp"
-#include "Fill/FillAdaptive.hpp"
-#include "Fill/FillLightning.hpp"
 #include "libslic3r.h"
 #include "Point.hpp"
 #include "Polygon.hpp"
 #include "PrintBase.hpp"
 #include "Config/FFFPrintConfig.hpp"
-#include "PrintSteps.hpp"
 #include "Surface.hpp"
 
 namespace Slic3r {
@@ -51,28 +48,7 @@ class GCodeGenerator;
 class Print;
 class PrintObject;
 struct SlicingParameters;
-namespace Steps { class StepPipeline; }
 namespace ApiInternal { struct PrintObjectAccess; }
-
-/**
-* order:
-*            m_objects[idx]->make_perimeters();
-*                   -> slice()
-*                   -> make_perimeters()
-*            m_objects[idx]->infill();
-*            m_objects[idx]->ironing();
-*            obj->generate_support_spots();
-*            psAlertWhenSupportsNeeded
-*            obj.generate_support_material();
-*            obj.estimate_curled_extrusions();
-*            obj.calculate_overhanging_perimeters();
-*            _make_wipe_tower();
-*            _make_skirt();
-*            make_brim();
-*            simplify_extrusion_path();
-* 
-*           then export_gcode();
-* */
 
 // Single instance of a PrintObject.
 // As multiple PrintObjects may be generated for a single ModelObject (their instances differ in rotation around Z),
@@ -87,12 +63,11 @@ struct PrintInstance
 	Point 				 shift;
 };
 
-class PrintObject : public PrintObjectBaseWithState<Print, PrintObjectStep, posCount>, public PluginPropertyContainer
+class PrintObject : public PrintObjectBase, public PluginPropertyContainer
 {
-private: // Prevents erroneous use by other classes.
-    typedef PrintObjectBaseWithState<Print, PrintObjectStep, posCount> Inherited;
-
 public:
+    Print*                      print() { return m_print; }
+    const Print*                print() const { return m_print; }
     // Size of an object: XYZ in scaled coordinates. The size might not be quite snug in XY plane.
     const Vec3crd&               size() const           { return m_size; }
     const PrintObjectConfig&     config() const         { return m_config; }
@@ -179,9 +154,6 @@ public:
     std::set<extruder_index_t> object_extruders() const;
     double               get_first_layer_height() const;
 
-    // Called by make_perimeters()
-    void slice();
-
     // Helpers to slice support enforcer / blocker meshes by the support generator.
     std::vector<ExPolygons>     slice_support_volumes(const ModelVolumeType model_volume_type) const;
     std::vector<ExPolygons>     slice_support_blockers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_BLOCKER); }
@@ -204,8 +176,6 @@ public:
 protected:
     // to be called from Print only.
     friend class Print;
-    template<typename PrintStepEnumType, const size_t COUNT> friend class PrintBaseWithState;
-    friend class Steps::StepPipeline;
     friend struct ApiInternal::PrintObjectAccess;
 
     PrintObject(Print* print, ModelObject* model_object, const Transform3d& trafo, PrintInstances&& instances);
@@ -223,59 +193,15 @@ protected:
     void                    config_apply(const ConfigBase &other, bool ignore_nonexistent = false) { m_config.apply(other, ignore_nonexistent); }
     void                    config_apply_only(const ConfigBase &other, const t_config_option_keys &keys, bool ignore_nonexistent = false) { m_config.apply_only(other, keys, ignore_nonexistent); }
     PrintBase::ApplyStatus  set_instances(PrintInstances &&instances);
-    // Invalidates the step, and its depending steps in PrintObject and Print.
-    bool                    invalidate_step(slicing_step_t step);
-    bool                    invalidate_step_direct(slicing_step_t step);
-    bool                    invalidate_steps_direct(std::initializer_list<slicing_step_t> steps);
-    // Invalidates all PrintObject and Print steps.
-    bool                    invalidate_all_steps();
-    bool                    invalidate_all_steps_direct();
-    // Invalidate steps based on a set of parameters changed.
-    // It may be called for both the PrintObjectConfig and PrintRegionConfig.
-    bool                    invalidate_state_by_config_options(
-        const ConfigOptionResolver &old_config, const ConfigOptionResolver &new_config, const std::vector<t_config_option_key> &opt_keys);
     // If ! m_slicing_params.valid, recalculate.
     void                    update_slicing_parameters();
 
     static PrintObjectConfig object_config_from_model_object(const PrintObjectConfig &default_object_config, const ModelObject &object, size_t num_extruders);
+    // Delegates cancellation without giving the object its own execution state.
+    void                    throw_if_canceled();
+    Print                  *m_print;
 
 private:
-    void make_perimeters();
-    void prepare_infill();
-    void clear_fills();
-    bool has_typed_slices() const;
-    void restore_untyped_slices();
-    void infill();
-    void ironing();
-    void generate_support_spots();
-    void generate_support_material();
-    void estimate_curled_extrusions();
-    void calculate_overhanging_perimeters();
-    void simplify_extrusion_path();
-
-    void slice_volumes();
-    // Has any support (not counting the raft).
-    ExPolygons _shrink_contour_holes(double contour_delta, double default_delta, double convex_delta, const ExPolygons& input) const;
-    void _transform_hole_to_polyholes();
-    void _max_overhang_threshold();
-    ExPolygons _smooth_curves(const ExPolygons &input, const PrintRegionConfig &conf) const;
-    void detect_surfaces_type();
-    void apply_solid_infill_below_layer_area();
-    void process_external_surfaces(bool old);
-    void discover_vertical_shells();
-    void bridge_over_infill();
-    void replaceSurfaceType(SurfaceType st_to_replace, SurfaceType st_replacement, SurfaceType st_under_it);
-    // void clip_fill_surfaces(); //infill_only_where_needed
-    void tag_under_bridge();
-    void discover_horizontal_shells();
-    void clean_surfaces();
-    void combine_infill();
-    void _generate_support_material();
-    void _compute_max_sparse_spacing();
-    std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> prepare_adaptive_infill_data(
-        const std::vector<std::pair<const Surface*, coord_t>>& surfaces_w_bottom_z) const;
-    FillLightning::GeneratorPtr prepare_lightning_infill_data();
-
     // XYZ in scaled coordinates
     Vec3crd									m_size;
     PrintObjectConfig                       m_config;
@@ -304,17 +230,8 @@ private:
     mutable ExtrusionEntityCollection               m_legacy_skirt_cache;
     mutable ExtrusionEntityCollection               m_legacy_brim_cache;
 
-    // this is set to true when LayerRegion->slices is split in top/internal/bottom
-    // so that next call to make_perimeters() performs a union() before computing loops
-    bool                                  m_typed_slices = false;
-
     //this setting allow fill_aligned_z to get the max sparse spacing spacing.
     coord_t                                 m_max_sparse_spacing = 0;
-
-    // pair < adaptive , support>, filled by prepare_adaptive_infill_data() (in bridge_over_infill() in prepare_infill()) and used in infill()
-    std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> m_adaptive_fill_octrees;
-    // filled by prepare_lightning_infill_data() (in bridge_over_infill() in prepare_infill()) and used in infill()
-    FillLightning::GeneratorPtr m_lightning_generator;
 
     // Result of STEP_LAYER_HEIGHT. It stores explicit object-local
     // [layer_top_z, layer_height] pairs, one pair per object layer.

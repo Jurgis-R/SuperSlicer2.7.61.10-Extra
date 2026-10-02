@@ -4,7 +4,8 @@
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/steps/SupportDemandStep.hpp"
-#include "libslic3r/Api/internal/PrintObjectAccess.hpp"
+#include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
+#include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Config/ConfigOption.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/Layer.hpp"
@@ -13,11 +14,15 @@
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Steps/StepLayerHeightGeneration.hpp"
+#include "libslic3r/Steps/StepGeneratePerimeter.hpp"
+#include "libslic3r/Steps/StepPostPerimeterGeneration.hpp"
+#include "libslic3r/Steps/StepPrepareForPeriemters.hpp"
 #include "libslic3r/Steps/StepPostSlicing.hpp"
 #include "libslic3r/Steps/StepSlicing.hpp"
 #include "libslic3r/Steps/StepSupportDemand.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -50,6 +55,9 @@ struct DemandSummary
     uint32_t entry_count = 0;
     size_t polygon_count = 0;
     double area_mm2 = 0.;
+    size_t anchored_roof_spans = 0;
+    size_t free_roof_spans = 0;
+    double longest_roof_span_mm = 0.;
 };
 
 TriangleMesh make_box(const Box &box)
@@ -204,18 +212,23 @@ void run_until_support_demand_input(Orchestrator &orchestrator, Print &print)
     Steps::StepPostSlicing::run_step(orchestrator, print);
 }
 
-#ifdef _DEBUG
 void run_until_support_demand_input_with_extrusions(Orchestrator &orchestrator, Print &print)
 {
     run_until_support_demand_input(orchestrator, print);
-
-    // The pluginized perimeter steps are still placeholders in this branch.
-    // Bridge-removal tests need real LayerRegionIsland extrusion entities, so
-    // they deliberately call the existing production implementation directly.
-    for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx)
-        ApiInternal::PrintObjectAccess::make_perimeters(print.object(object_idx));
+    Steps::StepPrepareForPeriemters::prepare(print);
+    Steps::StepPrepareForPeriemters::run_step(orchestrator, print);
+    Steps::StepGeneratePerimeter::prepare(print);
+    Steps::StepGeneratePerimeter::run_step(orchestrator, print);
+    Steps::StepPostPerimeterGeneration::prepare(print);
+    Steps::StepPostPerimeterGeneration::run_step(orchestrator, print);
+    bool has_perimeters = false;
+    for (const PrintObject &object : print.objects())
+        for (const Layer &layer : object.layers())
+            for (const LayerSliceIsland &island : layer.islands())
+                for (const LayerRegionIsland &region : island.regions_islands())
+                    has_perimeters |= region.has_extrusion(LayerRegionIsland::PERIMETERS);
+    REQUIRE(has_perimeters);
 }
-#endif
 
 DemandSummary summarize_support_demand(ApiHost::Steps::SupportDemandSet &demand)
 {
@@ -240,19 +253,63 @@ DemandSummary run_support_demand(Model &&model, const DynamicPrintConfig &config
     init_print_from_model(model, print, config);
 
     Orchestrator &orchestrator = Orchestrator::instance();
-    if (prepare_extrusions) {
-#ifdef _DEBUG
+    if (prepare_extrusions)
         run_until_support_demand_input_with_extrusions(orchestrator, print);
-#else
-        FAIL("prepare_extrusions requires debug-only PrintObjectAccess::make_perimeters()");
-#endif
-    } else
+    else
         run_until_support_demand_input(orchestrator, print);
 
     Steps::StepSupportDemand::State state;
     Steps::StepSupportDemand::run_step(orchestrator, print, state);
     ApiHost::Steps::SupportDemandSet &demand = state.demand_for(print.object(0));
-    return summarize_support_demand(demand);
+    DemandSummary summary = summarize_support_demand(demand);
+    if (prepare_extrusions) {
+        const PrintObject &object = print.object(0);
+        REQUIRE(object.layer_count() >= 2);
+        for (size_t layer_idx = 1; layer_idx < object.layer_count(); ++layer_idx) {
+            const Layer &roof = object.layer(layer_idx);
+            // The fixture's 0.4 mm nozzle gives BridgeRemoval a 0.2 mm lower-support probe.
+            const ExPolygons lower_support = offset_ex(object.layer(layer_idx - 1).lslices(),
+                                                       scale_d(0.2), ClipperLib::jtSquare);
+            const auto supported = [&lower_support](const Point &point) {
+                for (const ExPolygon &polygon : lower_support)
+                    if (polygon.contains(point))
+                        return true;
+                return false;
+            };
+            // Inspect individual post-step segments, never join densified pieces into a synthetic span.
+            for (const LayerSliceIsland &island : roof.islands())
+                for (const LayerRegionIsland &region : island.regions_islands()) {
+                    if (!region.has_extrusion(LayerRegionIsland::PERIMETERS))
+                        continue;
+                    std::vector<slic3r_api::ExtrusionEntity> pending;
+                    pending.emplace_back(reinterpret_cast<const extrusion_entity_handle *>(
+                        &region.extrusion(LayerRegionIsland::PERIMETERS)));
+                    while (!pending.empty()) {
+                        const slic3r_api::ExtrusionEntity entity = pending.back();
+                        pending.pop_back();
+                        for (uint32_t idx = 0; idx < entity.child_count(); ++idx)
+                            pending.push_back(entity.child(idx));
+                        for (uint32_t idx = 0; idx < entity.segment_count(); ++idx) {
+                            const c_extrusion_segment segment = entity.segment(idx);
+                            const Point start(segment.point_a.x, segment.point_a.y);
+                            const Point end(segment.point_b.x, segment.point_b.y);
+                            const double length_mm = unscaled((end - start).cast<double>().norm());
+                            if (segment.radius != 0.f || length_mm <= 10.)
+                                continue;
+                            const Point midpoint((start.x() + end.x()) / 2, (start.y() + end.y()) / 2);
+                            if (supported(midpoint))
+                                continue;
+                            const bool start_supported = supported(start);
+                            const bool end_supported = supported(end);
+                            summary.anchored_roof_spans += start_supported && end_supported;
+                            summary.free_roof_spans += start_supported != end_supported;
+                            summary.longest_roof_span_mm = std::max(summary.longest_roof_span_mm, length_mm);
+                        }
+                    }
+                }
+        }
+    }
+    return summary;
 }
 
 bool has_meaningful_demand(const DemandSummary &summary)
@@ -429,20 +486,26 @@ TEST_CASE("SupportDemandPainting can reject automatic overhang demand", "[plugin
     REQUIRE(painted_blocked.area_mm2 < baseline.area_mm2);
 }
 
-#ifdef _DEBUG
 TEST_CASE("SupportDemandBridgeRemoval removes demand below real bridges", "[plugins][support-demand]")
 {
     // The model is a roof between two pillars. Automatic support demand marks
     // the central gap as unsupported, then SupportDemandBridgeRemoval inspects
     // generated perimeters. The long straight perimeter spans are anchored on
     // both pillars, so enabling dont_support_bridges should reduce demand.
-    const DynamicPrintConfig keep_bridges_supported = support_demand_config(true, true, 0, 0, false);
-    const DynamicPrintConfig remove_bridges = support_demand_config(true, true, 0, 0, true);
+    DynamicPrintConfig keep_bridges_supported = support_demand_config(true, true, 0, 0, false);
+    // The contract needs intact anchored spans, without DetectOverhang flow/speed densification.
+    keep_bridges_supported.set_deserialize_strict("overhangs", "0");
+    DynamicPrintConfig remove_bridges = keep_bridges_supported;
+    remove_bridges.set_deserialize_strict("dont_support_bridges", "1");
 
     const DemandSummary baseline = run_support_demand(make_bridge_model(), keep_bridges_supported, true);
     const DemandSummary bridge_removed = run_support_demand(make_bridge_model(), remove_bridges, true);
 
     REQUIRE(has_meaningful_demand(baseline));
+    REQUIRE(baseline.anchored_roof_spans > 0);
+    REQUIRE(bridge_removed.anchored_roof_spans == baseline.anchored_roof_spans);
+    REQUIRE(baseline.longest_roof_span_mm > 10.);
+    REQUIRE(bridge_removed.longest_roof_span_mm > 10.);
     REQUIRE(bridge_removed.area_mm2 < baseline.area_mm2);
 }
 
@@ -451,13 +514,21 @@ TEST_CASE("SupportDemandBridgeRemoval keeps cantilever demand", "[plugins][suppo
     // This roof has only one supporting pillar. The straight perimeter over the
     // gap has a free end, so it is a cantilever rather than a bridge. Enabling
     // dont_support_bridges must not remove that support demand.
-    const DynamicPrintConfig keep_bridges_supported = support_demand_config(true, true, 0, 0, false);
-    const DynamicPrintConfig remove_bridges = support_demand_config(true, true, 0, 0, true);
+    DynamicPrintConfig keep_bridges_supported = support_demand_config(true, true, 0, 0, false);
+    // Keep the free-ended span intact so this case isolates the bridge-removal contract.
+    keep_bridges_supported.set_deserialize_strict("overhangs", "0");
+    DynamicPrintConfig remove_bridges = keep_bridges_supported;
+    remove_bridges.set_deserialize_strict("dont_support_bridges", "1");
 
     const DemandSummary baseline = run_support_demand(make_cantilever_model(), keep_bridges_supported, true);
     const DemandSummary with_bridge_removal = run_support_demand(make_cantilever_model(), remove_bridges, true);
 
     REQUIRE(has_meaningful_demand(baseline));
+    REQUIRE(baseline.free_roof_spans > 0);
+    REQUIRE(with_bridge_removal.free_roof_spans == baseline.free_roof_spans);
+    REQUIRE(baseline.anchored_roof_spans == 0);
+    REQUIRE(with_bridge_removal.anchored_roof_spans == 0);
+    REQUIRE(baseline.longest_roof_span_mm > 10.);
+    REQUIRE(with_bridge_removal.longest_roof_span_mm > 10.);
     REQUIRE(with_bridge_removal.area_mm2 == Approx(baseline.area_mm2).epsilon(0.01));
 }
-#endif

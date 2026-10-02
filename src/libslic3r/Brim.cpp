@@ -25,6 +25,7 @@
 #include "libslic3r.h"
 #include "Print.hpp"
 #include "PrintObject.hpp"
+#include "Fill/FillBase.hpp"
 #include "Config/PrintConfig.hpp"
 #include "ShortestPath.hpp"
 

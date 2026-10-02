@@ -45,13 +45,6 @@
 
 #include <boost/log/trivial.hpp>
 
-#ifdef _DEBUG
-#include "libslic3r/Steps/DebugPrintProcessComparator.hpp"
-
-#include <iostream>
-#include <stdexcept>
-#endif
-
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -60,10 +53,6 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
-
-namespace Slic3r {
-LayerUPtrs new_layers(PrintObject *print_object, const std::vector<double> &object_layers);
-}
 
 namespace Slic3r::Steps {
 
@@ -1087,86 +1076,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
     if (stop_after(STEP_GCODE, until)) return;
 }
 
-#ifdef _DEBUG
-
-void assert_same(DebugPrintProcessComparator &comparator, const char *label)
-{
-    std::string error;
-    if (comparator.compare_tree_after(label, error))
-        return;
-
-    std::cerr << error << std::endl;
-    assert(false && "Debug step pipeline comparison failed");
-    throw std::runtime_error(error);
-}
-
-std::vector<coord_t> layer_profile_from_object_layers(const std::vector<double> &object_layers)
-{
-    std::vector<coord_t> out;
-    out.reserve(object_layers.size());
-    for (size_t idx = 1; idx < object_layers.size(); idx += 2) {
-        out.push_back(scale_i(object_layers[idx]));
-        out.push_back(scale_i(object_layers[idx] - object_layers[idx - 1]));
-    }
-    return out;
-}
-
-std::vector<double> object_layers_from_layer_profile(const std::vector<coord_t> &layer_profile)
-{
-    std::vector<double> out;
-    out.reserve(layer_profile.size());
-    for (size_t idx = 0; idx + 1 < layer_profile.size(); idx += 2) {
-        const double z = unscaled(layer_profile[idx]);
-        const double height = unscaled(layer_profile[idx + 1]);
-        out.push_back(z - height);
-        out.push_back(z);
-    }
-    return out;
-}
-
-void recompute_layer_slices_from_regions(PrintObject &object)
-{
-    for (Layer &layer : object.layers())
-        ApiInternal::LayerAccess::recompute_slices_from_layer_regions(layer);
-}
-
-void add_debug_surfaces_from_raw_slices(PrintObject &object)
-{
-    for (Layer &layer : object.layers()) {
-        for (LayerRegion &region : layer.regions()) {
-            SurfaceCollection &surfaces = ApiInternal::LayerRegionAccess::surfaces_mutable(region);
-            surfaces.clear();
-            // Native slice_volumes() creates temporary internal/sparse surfaces
-            // from raw slices. Recreate them only for debug comparisons while
-            // the plugin slicing step intentionally owns just the raw slices.
-            surfaces.append(region.get_raw_slices(), stPosInternal | stDensSparse);
-        }
-    }
-}
-
-void add_debug_surfaces_from_raw_slices(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        add_debug_surfaces_from_raw_slices(print.object(idx));
-    });
-}
-
-void clear_debug_surfaces(PrintObject &object)
-{
-    for (Layer &layer : object.layers())
-        for (LayerRegion &region : layer.regions())
-            ApiInternal::LayerRegionAccess::surfaces_mutable(region).clear();
-}
-
-void clear_debug_surfaces(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        clear_debug_surfaces(print.object(idx));
-    });
-}
-
-#endif
-
 } // namespace
 
 void StepPipeline::clear_checkpoint_outputs(Print &print, const Checkpoint checkpoint)
@@ -1249,96 +1158,6 @@ void StepPipeline::run(Orchestrator &orchestrator, Print &print, const std::stri
     if (!path.empty())
         StepPipeline::run_gcode(orchestrator, print, path);
 }
-
-#ifdef _DEBUG
-void StepPipeline::run_native_layer_height_generation(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        StepPipeline::run_native_layer_height_generation_object(print.object(idx));
-    });
-}
-
-void StepPipeline::run_native_slicing(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        StepPipeline::run_native_slicing_object(print.object(idx));
-    });
-}
-
-void StepPipeline::run_native_post_slicing(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        StepPipeline::run_native_post_slicing_object(print.object(idx));
-    });
-}
-
-void StepPipeline::run_native_layer_height_generation_object(PrintObject &object)
-{
-    object.update_slicing_parameters();
-
-    std::vector<coordf_t> layer_height_profile;
-    PrintObject::update_layer_height_profile(*object.model_object(), *object.m_slicing_params, layer_height_profile);
-
-    ApiInternal::PrintObjectAccess::set_layer_profile(
-        object,
-        layer_profile_from_object_layers(generate_object_layers(object.slicing_parameters(), layer_height_profile)));
-}
-
-void StepPipeline::run_native_slicing_object(PrintObject &object)
-{
-    LayerUPtrs object_layers = new_layers(&object, object_layers_from_layer_profile(object.layer_profile()));
-    for (std::unique_ptr<Layer> &layer : object_layers)
-        ApiInternal::LayerAccess::init_regions_from_object(*layer);
-
-    ApiInternal::PrintObjectAccess::replace_layers_by_moving_contents(object, std::move(object_layers));
-    object.slice_volumes();
-    recompute_layer_slices_from_regions(object);
-}
-
-void StepPipeline::run_native_post_slicing_object(PrintObject &object)
-{
-    object._transform_hole_to_polyholes();
-    object._max_overhang_threshold();
-    recompute_layer_slices_from_regions(object);
-}
-
-void StepPipeline::debug_run(Orchestrator &orchestrator, const Print &source, slicing_step_t until)
-{
-    const std::string path;
-    DebugPrintProcessComparator comparator(source);
-    orchestrator.reset_plugin_cancel();
-
-    assert_same(comparator, "START");
-
-    run_native_layer_height_generation(comparator.reference_print());
-    run_layer_height_generation(orchestrator, comparator.candidate_print(), path);
-    assert_same(comparator, "STEP_LAYER_HEIGHT");
-    if (stop_after(STEP_LAYER_HEIGHT, until)) return;
-
-    run_native_slicing(comparator.reference_print());
-    run_slicing(orchestrator, comparator.candidate_print(), path);
-    // temporairement generer des surface dans les regionlayer du plugin pour correspondre à ce que fait le natif
-    add_debug_surfaces_from_raw_slices(comparator.candidate_print());
-    assert_same(comparator, "STEP_SLICING");
-    // on retire les surfaces
-    clear_debug_surfaces(comparator.candidate_print());
-    if (stop_after(STEP_SLICING, until)) return;
-
-    run_native_post_slicing(comparator.reference_print());
-    run_post_slicing(orchestrator, comparator.candidate_print(), path);
-    // temporairement generer des surface dans les regionlayer du plugin pour correspondre à ce que fait le natif
-    add_debug_surfaces_from_raw_slices(comparator.candidate_print());
-    assert_same(comparator, "STEP_POST_SLICING");
-    // on retire les surfaces
-    clear_debug_surfaces(comparator.candidate_print());
-    if (stop_after(STEP_POST_SLICING, until)) return;
-
-    // The remaining step classes are still being filled one by one. Keep the
-    // candidate path executable. Add the native side above as each step gets a
-    // stable split point.
-    run_remaining_steps(orchestrator, comparator.candidate_print(), path, until);
-}
-#endif
 
 
 } // namespace Slic3r::Steps

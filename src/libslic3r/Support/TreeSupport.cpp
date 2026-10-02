@@ -22,6 +22,7 @@
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/EdgeGrid.hpp"
+#include "libslic3r/Fill/FillBase.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/MultiPoint.hpp"
 #include "libslic3r/MutablePolygon.hpp"
