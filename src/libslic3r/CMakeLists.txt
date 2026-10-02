@@ -886,7 +886,6 @@ set(SLIC3R_SOURCES
     ShortestPath.cpp
     ShortestPath.hpp
     SLAPrint.cpp
-    PrintSteps.hpp
     SLAPrintSteps.cpp
     SLAPrintSteps.hpp
     SLAPrint.hpp

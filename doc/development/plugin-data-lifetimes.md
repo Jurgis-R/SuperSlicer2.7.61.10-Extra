@@ -40,7 +40,7 @@ The actual order is that of `Steps::execution_order()`, not the numeric order of
 
 Sources: `src/libslic3r/Steps/StepPipeline.hpp:34`, `src/libslic3r/Steps/StepPipeline.cpp:69`.
 
-### Routing audit of `psSkirtBrim` options
+### Routing audit of `STEP_SKIRT_BRIM` options
 
 The **67 initial definitions** of `src/libslic3r/Config/FFFPrintConfig.cpp` give **8 reclassifications and 59 kept routes**. This inventory is the tracked reference; it does not mean that the 67 options were optimized. No key name, persisted alias, algorithm or ABI contract is changed.
 
