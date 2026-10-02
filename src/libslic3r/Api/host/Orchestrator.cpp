@@ -1527,7 +1527,9 @@ void Orchestrator::add_plugin_message(PluginMessageLevel level,
     // the callback returns.
     PluginMessage plugin_message;
     plugin_message.level = level;
-    plugin_message.plugin_id = plugin != nullptr ? plugin->get_id() : "<unknown>";
+    // Idle diagnostics without a plugin belong to the host; a real step remains unattributed.
+    plugin_message.plugin_id = plugin != nullptr ? plugin->get_id() :
+        (step == STEP_NONE ? "<host>" : "<unknown>");
     plugin_message.step = step;
     plugin_message.diagnostic_id = diagnostic_id;
     plugin_message.message = message != nullptr && message[0] != '\0' ?

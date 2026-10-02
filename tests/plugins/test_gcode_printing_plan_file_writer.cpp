@@ -867,9 +867,13 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
     remove_output_pair(output_path);
     try {
         print.process();
+        CHECK_FALSE(print.is_step_done(STEP_WIPETOWER));
+        CHECK(print.should_execute_step(STEP_WIPETOWER));
+        CHECK_FALSE(print.tool_orderings().empty());
         const std::string generated_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
         CHECK(generated_path == output_path.string());
+        CHECK(print.is_step_done(STEP_WIPETOWER));
         REQUIRE(boost::filesystem::exists(output_path));
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
         const std::vector<std::string> fresh_commands = normalized_commands(read_text_file(output_path));

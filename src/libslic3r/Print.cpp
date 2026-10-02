@@ -399,91 +399,13 @@ void Print::reset_auxiliary_object()
     rebuild_active_print_regions();
 }
 
-void Print::set_task(const TaskParams &params)
-{
-    const SlicingStepArray &object_steps = ordered_object_steps();
-    const PrintStepArray &print_steps = ordered_print_steps();
-
-    std::scoped_lock<std::mutex> lock(this->state_mutex());
-
-    size_t n_object_steps = enabled_step_count(object_steps, params.to_object_step);
-
-    if (params.single_model_object.valid()) {
-        PrintObject *print_object = nullptr;
-        size_t idx_print_object = 0;
-        for (; idx_print_object < m_objects.size(); ++idx_print_object)
-            if (m_objects[idx_print_object]->model_object()->id() == params.single_model_object) {
-                print_object = m_objects[idx_print_object].get();
-                break;
-            }
-        assert(print_object != nullptr);
-
-        bool running = false;
-        for (size_t istep = 0; istep < n_object_steps; ++istep) {
-            if (!print_object->is_step_enabled_unguarded(object_steps[istep]))
-                break;
-            if (print_object->is_step_started_unguarded(object_steps[istep])) {
-                running = true;
-                break;
-            }
-        }
-        if (!running)
-            this->call_cancel_callback();
-
-        if (params.single_model_instance_only) {
-            for (PrintObjectUPtr &object : m_objects)
-                for (slicing_step_t step : object_steps)
-                    object->enable_step_unguarded(step, false);
-        } else if (!running && idx_print_object != 0)
-            std::swap(m_objects.front(), m_objects[idx_print_object]);
-
-        for (size_t istep = 0; istep < n_object_steps; ++istep)
-            print_object->enable_step_unguarded(object_steps[istep], true);
-        for (size_t istep = n_object_steps; istep < object_steps.size(); ++istep)
-            print_object->enable_step_unguarded(object_steps[istep], false);
-    } else {
-        bool running = false;
-        for (PrintObjectUPtr &object : m_objects) {
-            for (size_t istep = 0; istep < n_object_steps; ++istep) {
-                if (!object->is_step_enabled_unguarded(object_steps[istep]))
-                    goto loop_end;
-                if (object->is_step_started_unguarded(object_steps[istep])) {
-                    running = true;
-                    goto loop_end;
-                }
-            }
-        }
-    loop_end:
-        if (!running)
-            this->call_cancel_callback();
-        for (PrintObjectUPtr &object : m_objects) {
-            for (size_t istep = 0; istep < n_object_steps; ++istep)
-                object->enable_step_unguarded(object_steps[istep], true);
-            for (size_t istep = n_object_steps; istep < object_steps.size(); ++istep)
-                object->enable_step_unguarded(object_steps[istep], false);
-        }
-    }
-
-    if (params.to_object_step != -1) {
-        for (slicing_step_t step : print_steps)
-            for (PrintObjectUPtr &object : m_objects)
-                object->enable_step_unguarded(step, false);
-    } else if (params.to_print_step != -1) {
-        PrintStepArray::const_iterator it = std::find(print_steps.begin(), print_steps.end(), static_cast<slicing_step_t>(params.to_print_step));
-        if (it != print_steps.end()) {
-            for (++it; it != print_steps.end(); ++it)
-                for (PrintObjectUPtr &object : m_objects)
-                    object->enable_step_unguarded(*it, false);
-        }
-    }
-}
-
-void Print::finalize()
+void Print::set_task(const TaskParams &)
 {
     std::scoped_lock<std::mutex> lock(this->state_mutex());
-    for (PrintObjectUPtr &object : m_objects)
-        object->finalize_impl();
+    this->call_cancel_callback();
 }
+
+void Print::finalize() {}
 
 void Print::clear() {
     std::unique_lock<std::mutex> lock(this->state_mutex());
@@ -1022,18 +944,13 @@ PrintStateBase::TimeStamp Print::set_done(slicing_step_t step)
 
 void Print::active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message, int message_id)
 {
-    for (PrintObjectUPtr &object : m_objects) {
-        bool has_active_step = false;
-        for (slicing_step_t step : { psAlertWhenSupportsNeeded, psSkirtBrim, psWipeTower, psGCodeExport }) {
-            PrintStateBase::StateWithTimeStamp state = object->step_state_with_timestamp(step);
-            if (state.state == PrintStateBase::State::Started) {
-                has_active_step = true;
-                break;
-            }
-        }
-        if (has_active_step)
-            object->active_step_add_warning(warning_level, message, message_id);
-    }
+    if (running_step() != STEP_NONE)
+        add_step_warning(warning_level, message, message_id);
+    else
+        Orchestrator::instance().add_plugin_message(
+            warning_level == PrintStateBase::WarningLevel::CRITICAL ?
+                Orchestrator::PluginMessageLevel::Error : Orchestrator::PluginMessageLevel::Warning,
+            nullptr, STEP_NONE, message.c_str());
 }
 
 // returns 0-based indices of used extruders
@@ -1897,8 +1814,8 @@ void Print::process() {
 
     // bits not already moved by the new pipeline
     
-    // Tool ordering
-    if (this->set_started(psWipeTower)) {
+    // Native preparation does not publish the export-side wipe-tower step.
+    if (this->should_execute_step(STEP_WIPETOWER)) {
         //m_ordering.clear();
         //if (this->config().complete_objects.value || config().parallel_objects_step.value > 0) {
         //    //an ordering per object
@@ -1967,7 +1884,6 @@ void Print::process() {
                     objects.emplace_back(object.get());
                 this->m_wipe_tower2->init(this, objects, this->m_tool_orderings.back());
 
-                this->set_done(psWipeTower);
                 // fill wtdata
                 {
                     std::scoped_lock<std::mutex> lock(m_wipe_tower_data_mutex);

@@ -8127,7 +8127,7 @@ void Plater::reslice_until_step_inner(int step, const ModelObject &object, bool 
         // Nothing to do on empty input or invalid configuration.
         return;
 
-    // Limit calculation to the single object only.
+    // FFF ignores these task bounds while STEP_SUPPORT_SPOT remains unimplemented.
     PrintBase::TaskParams task;
     task.single_model_object = object.id();
     // If the background processing is not enabled, calculate supports just for the single instance.

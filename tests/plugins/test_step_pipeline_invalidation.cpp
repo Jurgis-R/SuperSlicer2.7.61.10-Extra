@@ -310,7 +310,7 @@ TEST_CASE("Pipeline control replay captures a running step before the stop callb
     print.set_cancel_callback([]() {});
 }
 
-TEST_CASE("Canonical Print readers stay enabled independently of legacy task flags",
+TEST_CASE("Task bounds only stop the worker and slicing still completes the full prefix",
           "[plugins][step-pipeline][pipeline-state]")
 {
     using namespace Slic3r;
@@ -321,15 +321,28 @@ TEST_CASE("Canonical Print readers stay enabled independently of legacy task fla
                      Test::PerimeterPluginTests::perimeter_config({}));
     Print::TaskParams task;
     task.to_object_step = STEP_SLICING;
+    task.single_model_object = print.object(0).model_object()->id();
+    task.single_model_instance_only = true;
+    size_t stops = 0;
+    print.set_cancel_callback([&]() { ++stops; });
     print.set_task(task);
+    CHECK(stops == 1);
     print.process();
     CHECK(print.pipeline_step_state(STEP_PERIMETER).is_done());
     CHECK(print.pipeline_step_state(STEP_PERIMETER).enabled);
     CHECK(print.is_step_done(STEP_PERIMETER));
     CHECK(print.step_state_with_timestamp(STEP_PERIMETER).enabled);
-    CHECK_FALSE(print.object(0).is_step_done(STEP_PERIMETER));
-    CHECK_FALSE(print.object(0).step_state_with_timestamp(STEP_PERIMETER).enabled);
+    CHECK(print.object(0).is_step_done(STEP_PERIMETER));
+    CHECK(print.object(0).step_state_with_timestamp(STEP_PERIMETER).enabled);
     CHECK(print.slices_ready());
+    for (const slicing_step_t step : Steps::execution_order())
+        if (!Steps::executes_before(STEP_FINALIZE_SLICING, step))
+            CHECK(print.is_step_done(step));
+    const PrintStateBase::TimeStamp finalized = print.step_state_with_timestamp(STEP_FINALIZE_SLICING).timestamp;
+    print.finalize();
+    CHECK(print.step_state_with_timestamp(STEP_FINALIZE_SLICING).timestamp == finalized);
+    CHECK(stops == 1);
+    print.set_cancel_callback([]() {});
 }
 
 TEST_CASE("Pipeline completion cannot publish done after cancellation",
@@ -353,6 +366,7 @@ TEST_CASE("Pipeline warnings change the clock and are retired on successful retr
     using namespace Slic3r;
     Print print;
     size_t notifications = 0;
+    Print::StatusMonitor facade(print);
     print.set_status_callback([&](const PrintBase::SlicingStatus &status) {
         if (status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
             CHECK(status.warning_step == STEP_GCODE);
@@ -363,12 +377,12 @@ TEST_CASE("Pipeline warnings change the clock and are retired on successful retr
     print.set_running_step(STEP_GCODE);
     const PrintStateBase::TimeStamp started = print.pipeline_step_state(STEP_GCODE).timestamp;
     CHECK(print.pipeline_step_state(STEP_GCODE).state == PrintStateBase::State::Started);
-    print.add_step_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
+    facade.active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
     const PrintStateBase::TimeStamp added = print.pipeline_step_state(STEP_GCODE).timestamp;
     CHECK(added > started);
-    print.add_step_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
+    facade.active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
     CHECK(print.pipeline_step_state(STEP_GCODE).timestamp == added);
-    print.add_step_warning(PrintStateBase::WarningLevel::CRITICAL, "updated", 71);
+    facade.active_step_add_warning(PrintStateBase::WarningLevel::CRITICAL, "updated", 71);
     CHECK(print.pipeline_step_state(STEP_GCODE).timestamp > added);
     REQUIRE(print.pipeline_step_state(STEP_GCODE).warnings.size() == 1);
     REQUIRE(print.step_state_with_warnings(STEP_GCODE).warnings.size() == 1);
@@ -383,6 +397,46 @@ TEST_CASE("Pipeline warnings change the clock and are retired on successful retr
     CHECK(print.pipeline_step_state(STEP_GCODE).warnings.empty());
     CHECK(print.step_state_with_warnings(STEP_GCODE).warnings.empty());
     CHECK(notifications == 3);
+}
+
+TEST_CASE("Idle host warnings are transient and real-step null messages remain unknown",
+          "[plugins][step-pipeline][pipeline-state][warnings][host-attribution]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    orchestrator.consume_plugin_messages();
+    orchestrator.reset_plugin_cancel();
+    Print print;
+    Print::StatusMonitor facade(print);
+    facade.active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "host warning");
+    facade.active_step_add_warning(PrintStateBase::WarningLevel::CRITICAL, "host error");
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    REQUIRE(messages.size() == 2);
+    CHECK(messages[0].level == Orchestrator::PluginMessageLevel::Warning);
+    CHECK(messages[1].level == Orchestrator::PluginMessageLevel::Error);
+    CHECK(messages[0].message == "host warning");
+    CHECK(messages[1].message == "host error");
+    for (const Orchestrator::PluginMessage &message : messages) {
+        CHECK(message.plugin_id == "<host>");
+        CHECK(message.step == STEP_NONE);
+    }
+    for (const slicing_step_t step : Steps::execution_order()) {
+        CHECK(print.step_state_with_warnings(step).warnings.empty());
+        CHECK(print.step_state_with_timestamp(step).timestamp == 0);
+    }
+    CHECK_FALSE(print.canceled());
+    CHECK_FALSE(orchestrator.is_plugin_cancelled());
+    Plugin *writer = orchestrator.get_plugin("gcode.printing_plan_file_writer");
+    REQUIRE(writer != nullptr);
+    orchestrator.add_plugin_message(Orchestrator::PluginMessageLevel::Error, nullptr, STEP_ORDERING, "unattributed step");
+    orchestrator.add_plugin_message(Orchestrator::PluginMessageLevel::Warning, writer, STEP_NONE, "plugin initialization");
+    const std::vector<Orchestrator::PluginMessage> attributed = orchestrator.consume_plugin_messages();
+    REQUIRE(attributed.size() == 2);
+    CHECK(attributed[0].plugin_id == "<unknown>");
+    CHECK(attributed[0].step == STEP_ORDERING);
+    CHECK(attributed[1].plugin_id == writer->get_id());
+    CHECK(attributed[1].step == STEP_NONE);
 }
 
 TEST_CASE("Slices readiness waits for Finalize and closes on a Slicing replay",
