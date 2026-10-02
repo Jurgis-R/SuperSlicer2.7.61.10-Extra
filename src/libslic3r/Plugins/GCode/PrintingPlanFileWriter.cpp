@@ -317,6 +317,18 @@ private:
     slicing_step_t step_impl() const noexcept override { return STEP_GCODE; }
     const char *const *dependencies_impl() const noexcept override { return k_no_dependencies; }
     int32_t priority_impl() const noexcept override { return 0; }
+    void inilialize_impl(storage_handle *) const override
+    {
+        // Firmware selectors insert after this anchor in the printer page.
+        orchestrator_add_ui_fragment(
+            m_orchestrator,
+            "printer_fff.ui",
+            "step_gcode_plugin",
+            "page:General:printer\n"
+            "group:Firmware\n"
+            "\tsetting:insert$beforesetting$gcode_flavor:step_gcode_plugin\n",
+            0);
+    }
     const char *progress_message_format_impl() const noexcept override
     {
         return "Writing G-code: %u / %u extrusions";

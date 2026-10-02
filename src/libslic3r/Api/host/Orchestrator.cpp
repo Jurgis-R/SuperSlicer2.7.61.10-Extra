@@ -2444,22 +2444,6 @@ std::string Orchestrator::export_gcode(Print &print,
     // output everything to a G-code file
     // The following call may die if the output_filename_format template substitution fails.
     const std::string path = print.output_filepath(path_template);
-    Plugin *gcode_plugin = Steps::selected_or_active_plugin_for_step(*this, STEP_GCODE, &print.full_print_config());
-    if (gcode_plugin != nullptr && gcode_plugin->get_id() == "gcode.legacy") {
-        /*
-        The legacy selector is not a normal STEP_GCODE plugin. It asks the host
-        to keep using the original GCodeGenerator, which still owns real G-code
-        emission and thumbnail generation while the plugin writer is a prototype.
-        */
-        std::unique_ptr<GCodeGenerator> gcode(new GCodeGenerator());
-        gcode->do_export(&print, path.c_str(), result, thumbnail_cb);
-        if (result != nullptr)
-            result->reader_plugin_id = DEFAULT_GCODE_READER_PLUGIN_ID;
-        if (result != nullptr && print.conflict_result())
-            result->conflict_result = *print.conflict_result();
-        return path;
-    }
-
     // Re-export through the worker path: the UI cancellation callback would wait for this very thread.
     print.request_replay_from_worker(Steps::Checkpoint::Plan);
     GCodeThumbnailRenderer thumbnail_renderer(print, std::move(thumbnail_cb));

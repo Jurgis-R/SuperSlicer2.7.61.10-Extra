@@ -271,8 +271,6 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/CustomGCodePerPrintZOrdering.cpp
 	Plugins/GCode/CustomGCodePerPrintZRecord.cpp
 	Plugins/GCode/CustomGCodePerPrintZRecord.hpp
-	Plugins/GCode/LegacyGCodeGenerator.cpp
-	Plugins/GCode/LegacyGCodeGenerator.hpp
 	Plugins/GCode/PrintingPlanFileWriter.cpp
 	Plugins/GCode/PrintingPlanFileWriter.hpp
 	Plugins/GCode/SettingsGCodeScripts.cpp

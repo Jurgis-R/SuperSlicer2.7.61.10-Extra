@@ -179,7 +179,7 @@ std::unique_ptr<ExtrusionPath> make_integration_path(const ArcPolyline &polyline
 
 } // namespace
 
-TEST_CASE("STEP_GCODE legacy selector is the default and owns the printer UI slot", "[plugins][gcode]")
+TEST_CASE("STEP_GCODE PrintingPlan writer is the default and owns the printer UI slot", "[plugins][gcode][default-writer]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
@@ -187,13 +187,14 @@ TEST_CASE("STEP_GCODE legacy selector is the default and owns the printer UI slo
     Print print;
 
     const std::vector<Plugin *> gcode_plugins = orchestrator.get_active_plugins_for_step(STEP_GCODE);
-    REQUIRE(gcode_plugins.size() >= 2);
-    CHECK(gcode_plugins.front()->get_id() == "gcode.legacy");
+    REQUIRE(gcode_plugins.size() == 1);
+    CHECK(gcode_plugins.front()->get_id() == "gcode.printing_plan_file_writer");
+    CHECK(orchestrator.get_plugin("gcode.legacy") == nullptr);
 
     Plugin *selected = Steps::selected_or_active_plugin_for_step(
         orchestrator, STEP_GCODE, &print.full_print_config());
     REQUIRE(selected != nullptr);
-    CHECK(selected->get_id() == "gcode.legacy");
+    CHECK(selected->get_id() == "gcode.printing_plan_file_writer");
     const ConfigOptionDef *definition = PrintConfigDef::instance().get("step_gcode_plugin");
     REQUIRE(definition != nullptr);
     CHECK(definition->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
@@ -221,8 +222,12 @@ TEST_CASE("STEP_GCODE legacy selector is the default and owns the printer UI slo
         "\tsetting:gcode_flavor\n");
     const size_t gcode_selector_pos = merged_printer_layout.find("setting:step_gcode_plugin");
     const size_t flavor_pos = merged_printer_layout.find("setting:gcode_flavor");
+    const size_t firmware_pos = merged_printer_layout.find("setting:gcode_firmware_plugin");
     REQUIRE(gcode_selector_pos != std::string::npos);
     REQUIRE(flavor_pos != std::string::npos);
+    REQUIRE(firmware_pos != std::string::npos);
+    CHECK(gcode_selector_pos < firmware_pos);
+    CHECK(firmware_pos < flavor_pos);
     CHECK(gcode_selector_pos < flavor_pos);
 
     const std::vector<Orchestrator::PluginUiFragment> print_fragments =
@@ -230,19 +235,17 @@ TEST_CASE("STEP_GCODE legacy selector is the default and owns the printer UI slo
     for (const Orchestrator::PluginUiFragment &fragment : print_fragments)
         CHECK(fragment.fragment_id != "step_gcode_plugin");
 }
-TEST_CASE("STEP_GCODE legacy selector is not a direct plugin writer", "[plugins][gcode]")
+TEST_CASE("STEP_GCODE default writer rejects an invalid plan without publishing output", "[plugins][gcode][default-writer]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator.reset_plugin_cancel();
     Print print;
-    print.mutable_printing_plan();
+    print.mutable_printing_plan().groups.emplace_back().layers.emplace_back().tool_groups.emplace_back().extrusions.emplace_back();
     const boost::filesystem::path output_path = temporary_gcode_path();
     remove_output_pair(output_path);
 
-    // The orchestrator owns the legacy export path. Running the STEP_GCODE
-    // plugin bridge directly must not turn that marker plugin into a writer.
     CHECK_THROWS_AS(Steps::StepGenerateGcode::run_step(
                         orchestrator, print, output_path.string()), RuntimeError);
     orchestrator.reset_plugin_cancel();

@@ -1546,16 +1546,6 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
 
     CNumericLocalesSetter locales_setter;
 
-    // Does the file exist? If so, we hope that it is still valid.
-    {
-        PrintStateBase::StateWithTimeStamp state = print->step_state_with_timestamp(psGCodeExport);
-        if (! state.enabled || (state.is_done() && boost::filesystem::exists(boost::filesystem::path(path))))
-            return;
-    }
-    
-    // Enabled and either not done, or marked as done while the output file is missing.
-    monitor.set_started(psGCodeExport);
-
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
     std::vector<std::pair<std::string, std::string>> validation_res = DoExport::validate_custom_gcode(*print);
@@ -1653,7 +1643,6 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     }
 
     BOOST_LOG_TRIVIAL(info) << "Exporting G-code finished" << log_memory_info();
-    monitor.set_done(psGCodeExport);
     //notify gui that the gcode is ready to be drawed
     print->set_status(100, "", PrintBase::SlicingStatus::DEFAULT | PrintBase::SlicingStatus::SECONDARY_STATE);
     print->set_status(100, L("Gcode done"), PrintBase::SlicingStatus::FlagBits::GCODE_ENDED);

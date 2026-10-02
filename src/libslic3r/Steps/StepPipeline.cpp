@@ -603,10 +603,8 @@ std::vector<StepExclusivePluginGroup> active_exclusive_plugin_groups(Orchestrato
     // the same selection model.
     for (const std::pair<const slicing_step_t, StepExclusiveGroup> &entry : exclusive_steps) {
         std::vector<Plugin *> active_plugins = orchestrator.get_active_plugins_for_step(entry.first);
-        // The firmware selector is intentionally visible with its single
-        // reference provider so printer profiles already serialize the choice
-        // before additional firmware packages are installed.
-        if (active_plugins.empty() || (active_plugins.size() == 1 && entry.first != GCODE_FIRMWARE))
+        // The printer layout anchors the firmware selector to the G-code selector even with one writer.
+        if (active_plugins.empty() || (active_plugins.size() == 1 && entry.first != GCODE_FIRMWARE && entry.first != STEP_GCODE))
             continue;
 
         StepExclusivePluginGroup plugin_group;

@@ -755,7 +755,6 @@ TEST_CASE("Legacy custom scripts substitute and update machine state",
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     config.set_deserialize_strict({
-        { "step_gcode_plugin", "gcode.legacy" },
         { "start_gcode", "" },
         { "end_gcode", "" },
         { "gcode_comments", "0" }

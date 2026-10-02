@@ -86,7 +86,6 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/FeatureGCode.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/BuiltinGCodeFirmwares.hpp"
 #include "libslic3r/Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp"
-#include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/SeamPlacer/AlignedSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/ContiguousSeamPlacer.hpp"
@@ -661,8 +660,6 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::MaxOverhangThresholdPlugin::register_max_overhang_threshold_plugin);
     register_builtin_plugin(orchestrator, "vase.multi_island_connector",
         slic3r_api::VaseMultiIslandConnectorPlugin::register_vase_multi_island_connector_plugin);
-    register_builtin_plugin(orchestrator, "gcode.legacy",
-        slic3r_api::GCodeGeneration::LegacyGCodeGeneratorPlugin::register_legacy_gcode_generator_plugin);
     register_builtin_plugin(orchestrator, "gcode.printing_plan_file_writer",
         slic3r_api::GCodeGeneration::PrintingPlanFileWriterPlugin::register_printing_plan_file_writer_plugin);
     register_builtin_plugin(

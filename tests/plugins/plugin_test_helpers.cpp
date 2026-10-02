@@ -35,7 +35,6 @@
 #include "libslic3r/Plugins/GCode/CustomGCodePerPrintZ.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/BuiltinGCodeFirmwares.hpp"
 #include "libslic3r/Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp"
-#include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
@@ -471,8 +470,6 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::SliceVolumePlugin::register_slice_volume_plugin(orchestrator_handle_value);
         slic3r_api::VaseMultiIslandConnectorPlugin::register_vase_multi_island_connector_plugin(
             orchestrator_handle_value);
-        slic3r_api::GCodeGeneration::LegacyGCodeGeneratorPlugin::register_legacy_gcode_generator_plugin(
-            orchestrator_handle_value);
         slic3r_api::GCodeGeneration::PrintingPlanFileWriterPlugin::register_printing_plan_file_writer_plugin(
             orchestrator_handle_value);
         slic3r_api::GCodeGeneration::SettingsGCodeScriptsPlugin::register_settings_gcode_scripts_plugin(
@@ -593,7 +590,6 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "standard_layer_height_generator");
         activate_plugin_or_fail(orchestrator, "slice_volume");
         activate_plugin_or_fail(orchestrator, "vase.multi_island_connector");
-        activate_plugin_or_fail(orchestrator, "gcode.legacy");
         activate_plugin_or_fail(orchestrator, "gcode.printing_plan_file_writer");
         activate_plugin_or_fail(orchestrator, "gcode.settings_scripts");
         activate_plugin_or_fail(orchestrator, "gcode.feature_gcode");

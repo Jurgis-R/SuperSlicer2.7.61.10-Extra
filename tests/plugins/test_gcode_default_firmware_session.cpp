@@ -3196,7 +3196,7 @@ TEST_CASE("Legacy text export uses the dynamic thumbnail service",
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     INFO("deserializing config");
     config.set_deserialize_strict({
-        {"step_gcode_plugin", "gcode.legacy"}, {"thumbnails_format", id},
+        {"thumbnails_format", id},
         {"thumbnails", "4x4"}, {"thumbnails_tag_format", "1"},
         {"thumbnails_end_file", id == "QOI" || id == "BIQU" ? "1" : "0"},
         {"start_gcode", ";thumbnail-test-start"}, {"end_gcode", ";thumbnail-test-end"}
