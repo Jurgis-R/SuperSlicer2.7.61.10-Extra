@@ -46,7 +46,7 @@ void test_support_model_collision(
 
         Polygons intersections = intersection(sup_slice, mod_slice);
 
-        double pinhead_r  = scaled(input_supportcfg.head_front_radius_mm);
+        double pinhead_r  = scale_i(input_supportcfg.head_front_radius_mm);
 
         // TODO:: make it strict without a threshold of PI * pihead_radius ^ 2
         notouch = notouch && area(intersections) < PI * pinhead_r * pinhead_r;
@@ -308,7 +308,7 @@ static void _test_concave_hull(const Polygons &hull, const ExPolygons &polys)
 
     double diff_area = area(diff_poly);
 
-    REQUIRE(std::abs(diff_area) < std::pow(scaled(2 * EPSILON), 2));
+    REQUIRE(std::abs(diff_area) < std::pow(scale_i(2 * EPSILON), 2));
 }
 
 void test_concave_hull(const ExPolygons &polys) {
@@ -318,7 +318,7 @@ void test_concave_hull(const ExPolygons &polys) {
     
     _test_concave_hull(cchull.polygons(), polys);
     
-    coord_t delta = scaled(pcfg.brim_size_mm + pcfg.wing_distance());
+    coord_t delta = scale_i(pcfg.brim_size_mm + pcfg.wing_distance());
     ExPolygons wafflex = sla::offset_waffle_style_ex(cchull, delta);
     Polygons waffl = sla::offset_waffle_style(cchull, delta);
     
@@ -357,7 +357,7 @@ void check_raster_transformations(sla::RasterBase::Orientation o, sla::RasterBas
     sla::Resolution res{2560, 1440};
     sla::PixelDim pixdim{disp_w / res.width_px, disp_h / res.height_px};
     
-    auto bb = BoundingBox({0, 0}, {scaled(disp_w), scaled(disp_h)});
+    auto bb = BoundingBox({0, 0}, {scale_i(disp_w), scale_i(disp_h)});
     sla::RasterBase::Trafo trafo{o, mirroring};
     trafo.center_x = bb.center().x();
     trafo.center_y = bb.center().y();
@@ -366,12 +366,12 @@ void check_raster_transformations(sla::RasterBase::Orientation o, sla::RasterBas
     sla::RasterGrayscaleAAGammaPower raster{res, pixdim, trafo, gamma};
     
     // create box of size 32x32 pixels (not 1x1 to avoid antialiasing errors)
-    coord_t pw = 32 * coord_t(std::ceil(scaled<double>(pixdim.w_mm)));
-    coord_t ph = 32 * coord_t(std::ceil(scaled<double>(pixdim.h_mm)));
+    coord_t pw = 32 * coord_t(std::ceil(scale_d(pixdim.w_mm)));
+    coord_t ph = 32 * coord_t(std::ceil(scale_d(pixdim.h_mm)));
     ExPolygon box;
     box.contour.points = {{-pw, -ph}, {pw, -ph}, {pw, ph}, {-pw, ph}};
     
-    double tr_x = scaled<double>(20.), tr_y = tr_x;
+    double tr_x = scale_d(20.), tr_y = tr_x;
     
     box.translate(tr_x, tr_y);
     ExPolygon expected_box = box;
@@ -410,7 +410,7 @@ void check_raster_transformations(sla::RasterBase::Orientation o, sla::RasterBas
 ExPolygon square_with_hole(double v)
 {
     ExPolygon poly;
-    coord_t V = scaled(v / 2.);
+    coord_t V = scale_i(v / 2.);
     
     poly.contour.points = {{-V, -V}, {V, -V}, {V, V}, {-V, V}};
     poly.holes.emplace_back();

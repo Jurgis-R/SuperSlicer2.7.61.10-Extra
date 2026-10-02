@@ -3,6 +3,7 @@
 
 #include "libslic3r/SLAPrint.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
 #include "libslic3r/Format/SLAArchiveFormatRegistry.hpp"
 #include "libslic3r/Format/SLAArchiveWriter.hpp"
 #include "libslic3r/Format/SLAArchiveReader.hpp"
@@ -12,18 +13,24 @@
 using namespace Slic3r;
 
 TEST_CASE("Archive export test", "[sla_archives]") {
+    // Static SLA configs require definitions and their cache before construction.
+    PrintConfigDef::instance_mutable().init_common_params();
+    init_fff_params(PrintConfigDef::instance_mutable());
+    init_sla_params(PrintConfigDef::instance_mutable());
+    initialize_fff_print_config_cache();
+    initialize_sla_print_config_cache();
     auto registry = registered_sla_archives();
 
     for (const char * pname : {"20mm_cube", "extruder_idler"})
-    for (const ArchiveEntry &entry : registry) {
+    for (const auto &[format, entry] : registry) {
         INFO(std::string("Testing archive type: ") + entry.id + " -- writing...");
         SLAPrint print;
         SLAFullPrintConfig fullcfg;
 
         auto m = Model::read_from_file(TEST_DATA_DIR PATH_SEPARATOR + std::string(pname) + ".obj", nullptr);
 
-        fullcfg.printer_technology.setInt(ptSLA); // FIXME this should be ensured
-        fullcfg.set("sla_archive_format", entry.id);
+        fullcfg.printer_technology.set_int(ptSLA); // FIXME this should be ensured
+        fullcfg.output_format.set_int(format);
         fullcfg.set("supports_enable", false);
         fullcfg.set("pad_enable", false);
 
@@ -50,9 +57,8 @@ TEST_CASE("Archive export test", "[sla_archives]") {
             DynamicPrintConfig cfg;
 
             try {
-                // Leave format_id deliberetaly empty, guessing should always
-                // work here.
-                import_sla_archive(outputfname, "", its, cfg);
+                // Unknown format retains extension-based reader detection.
+                import_sla_archive(outputfname, ofUnknown, its, cfg);
             } catch (...) {
                 REQUIRE(false);
             }
