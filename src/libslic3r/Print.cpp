@@ -978,34 +978,17 @@ bool Print::invalidate_all_steps()
 
 bool Print::is_step_done(slicing_step_t step) const
 {
-    if (m_objects.empty())
-        return false;
-    std::scoped_lock<std::mutex> lock(this->state_mutex());
-    for (const PrintObjectUPtr &object : m_objects)
-        if (! object->is_step_done_unguarded(step))
-            return false;
-    return true;
+    return pipeline_step_state(step).is_done();
 }
 
 PrintStateBase::StateWithTimeStamp Print::step_state_with_timestamp(slicing_step_t step) const
 {
-    return aggregate_step_state(m_objects, step);
+    return pipeline_step_state(step);
 }
 
 PrintStateBase::StateWithWarnings Print::step_state_with_warnings(slicing_step_t step) const
 {
-    PrintStateBase::StateWithWarnings result;
-    PrintStateBase::StateWithTimeStamp state = aggregate_step_state(m_objects, step);
-    result.state = state.state;
-    result.timestamp = state.timestamp;
-    result.enabled = state.enabled;
-
-    for (const PrintObjectUPtr &object : m_objects) {
-        PrintStateBase::StateWithWarnings object_state = object->step_state_with_warnings(step);
-        for (const PrintStateBase::Warning &warning : object_state.warnings)
-            merge_warning(result, warning);
-    }
-    return result;
+    return pipeline_step_state(step);
 }
 
 bool Print::set_started(slicing_step_t step)

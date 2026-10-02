@@ -173,7 +173,7 @@ void BackgroundSlicingProcess::process_fff()
 	wxCommandEvent evt(m_event_slicing_completed_id);
 	// Post the Slicing Finished message for the G-code viewer to update.
 	// Passing the timestamp 
-	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(psSlicingFinished).timestamp));
+	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(STEP_FINALIZE_SLICING).timestamp));
 	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
 	Orchestrator::instance().export_gcode(*m_fff_print, m_temp_output_path, m_gcode_result, [this](const ThumbnailsParams& params) { return this->render_thumbnails(params); });
 	if (this->set_step_started(bspsGCodeFinalize)) {
@@ -188,7 +188,7 @@ void BackgroundSlicingProcess::process_fff()
 	    }
 		this->set_step_done(bspsGCodeFinalize);
 	}
-	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(psGCodeExport).timestamp));
+	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(STEP_GCODE).timestamp));
 	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
 }
 
@@ -641,7 +641,7 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model &model, const Dyn
             invalidated = PrintBase::APPLY_STATUS_INVALIDATED;
     }
 	if ((invalidated & PrintBase::APPLY_STATUS_INVALIDATED) != 0 && m_print->technology() == ptFFF &&
-		!m_fff_print->is_step_done(psGCodeExport)) {
+		!m_fff_print->is_step_done(STEP_GCODE)) {
 		// Some FFF status was invalidated, and the G-code was not exported yet.
 		// Let the G-code preview UI know that the final G-code preview is not valid.
 		// In addition, this early memory deallocation reduces memory footprint.

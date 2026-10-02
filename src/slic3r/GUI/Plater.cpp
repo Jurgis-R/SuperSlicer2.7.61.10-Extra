@@ -4647,11 +4647,7 @@ void Plater::priv::process_slicing_status(const PrintStatus::SlicingStatus &stat
                 state = this->fff_print.step_state_with_warnings(static_cast<PrintStep>(warning_step));
             else if (this->printer_technology == ptSLA)
                 state = this->sla_print.step_state_with_warnings(static_cast<SLAPrintStep>(warning_step));
-        } else if (this->printer_technology == ptFFF) {
-            const PrintObject *print_object = this->fff_print.get_object(object_id);
-            if (print_object)
-                state = print_object->step_state_with_warnings(static_cast<PrintObjectStep>(warning_step));
-        } else {
+        } else if (this->printer_technology == ptSLA) {
             const SLAPrintObject *print_object = this->sla_print.get_object(object_id);
             if (print_object)
                 state = print_object->step_state_with_warnings(static_cast<SLAPrintObjectStep>(warning_step));

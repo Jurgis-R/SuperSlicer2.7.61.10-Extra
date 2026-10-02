@@ -2771,11 +2771,11 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
             if (depth != 0.) {
     #if ENABLE_OPENGL_ES
                 int volume_idx_wipe_tower_new = m_volumes.load_wipe_tower_preview(
-                    x, y, w, depth, z_and_depth_pairs, (float)height, ca, a, !print->is_step_done(psWipeTower),
+                    x, y, w, depth, z_and_depth_pairs, (float)height, ca, a, !print->is_step_done(STEP_WIPETOWER),
                     bw, &m_wipe_tower_mesh);
     #else
                 int volume_idx_wipe_tower_new = m_volumes.load_wipe_tower_preview(
-                    x, y, w, depth, z_and_depth_pairs, (float)height, ca, a, !print->is_step_done(psWipeTower),
+                    x, y, w, depth, z_and_depth_pairs, (float)height, ca, a, !print->is_step_done(STEP_WIPETOWER),
                     bw);
     #endif // ENABLE_OPENGL_ES
                 if (volume_idx_wipe_tower_old != -1)
@@ -7427,7 +7427,7 @@ void GLCanvas3D::_load_skirt_brim_preview_toolpaths(const BuildVolume &build_vol
     if (print == nullptr)
         return;
 
-    if (! print->is_step_done(psSkirtBrim))
+    if (! print->slices_ready())
         return;
 
     if (!print->has_skirt() && !print->has_brim())
@@ -7675,9 +7675,10 @@ void GLCanvas3D::_load_print_object_toolpaths(const PrintObject &               
 
     } ctxt;
 
-    ctxt.has_perimeters = print_object.is_step_done(posPerimeters);
-    ctxt.has_infill = print_object.is_step_done(posInfill);
-    ctxt.has_support = print_object.is_step_done(posSupportMaterial);
+    const bool slices_ready = print_object.print()->slices_ready();
+    ctxt.has_perimeters = slices_ready;
+    ctxt.has_infill = slices_ready;
+    ctxt.has_support = slices_ready;
     ctxt.tool_colors = tool_colors.empty() ? nullptr : &tool_colors;
     ctxt.color_print_values = color_print_values.empty() ? nullptr : &color_print_values;
     ctxt.is_single_material_print = this->fff_print()->extruders().size()==1;
@@ -7982,7 +7983,7 @@ void GLCanvas3D::_load_wipe_tower_toolpaths(const BuildVolume& build_volume, con
     if (print == nullptr || print->wipe_tower_data().tool_changes.empty())
         return;
 
-    if (!print->is_step_done(psWipeTower))
+    if (!print->is_step_done(STEP_WIPETOWER))
         return;
 
     std::vector<ColorRGBA> tool_colors;

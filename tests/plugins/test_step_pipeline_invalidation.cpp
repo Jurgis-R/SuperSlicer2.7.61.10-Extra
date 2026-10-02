@@ -162,6 +162,7 @@ public:
     slic3r_property_type phase_property_type;
     mutable int observed_record = -1;
     mutable int observed_property = -1;
+    mutable bool observed_slices_ready = true;
     bool cancel_setup = false;
     bool fail_setup = false;
 
@@ -175,6 +176,7 @@ private:
     void setup_impl(const plugin_run_context *context, uint32_t) const override
     {
         Slic3r::Print &print = *const_cast<Slic3r::Print *>(reinterpret_cast<const Slic3r::Print *>(context->print));
+        observed_slices_ready = print.slices_ready();
         Slic3r::DynamicConfig &record = print.records().get_or_add("test.metadata");
         const Slic3r::ConfigOptionInt *previous = record.option<Slic3r::ConfigOptionInt>("value");
         observed_record = previous == nullptr ? -1 : previous->value;
@@ -308,7 +310,7 @@ TEST_CASE("Pipeline control replay captures a running step before the stop callb
     print.set_cancel_callback([]() {});
 }
 
-TEST_CASE("Pipeline state does not change disabled legacy task readers",
+TEST_CASE("Canonical Print readers stay enabled independently of legacy task flags",
           "[plugins][step-pipeline][pipeline-state]")
 {
     using namespace Slic3r;
@@ -323,8 +325,10 @@ TEST_CASE("Pipeline state does not change disabled legacy task readers",
     print.process();
     CHECK(print.pipeline_step_state(STEP_PERIMETER).is_done());
     CHECK(print.pipeline_step_state(STEP_PERIMETER).enabled);
-    CHECK_FALSE(print.is_step_done(STEP_PERIMETER));
-    CHECK_FALSE(print.step_state_with_timestamp(STEP_PERIMETER).enabled);
+    CHECK(print.is_step_done(STEP_PERIMETER));
+    CHECK(print.step_state_with_timestamp(STEP_PERIMETER).enabled);
+    CHECK_FALSE(print.object(0).is_step_done(STEP_PERIMETER));
+    CHECK_FALSE(print.object(0).step_state_with_timestamp(STEP_PERIMETER).enabled);
     CHECK(print.slices_ready());
 }
 
@@ -367,6 +371,8 @@ TEST_CASE("Pipeline warnings change the clock and are retired on successful retr
     print.add_step_warning(PrintStateBase::WarningLevel::CRITICAL, "updated", 71);
     CHECK(print.pipeline_step_state(STEP_GCODE).timestamp > added);
     REQUIRE(print.pipeline_step_state(STEP_GCODE).warnings.size() == 1);
+    REQUIRE(print.step_state_with_warnings(STEP_GCODE).warnings.size() == 1);
+    CHECK(print.step_state_with_warnings(STEP_GCODE).warnings.front().message == "updated");
     print.set_running_step(STEP_NONE);
     print.mark_step_executed(STEP_GCODE);
     REQUIRE(print.request_replay_from_worker(Steps::Checkpoint::Plan));
@@ -375,7 +381,33 @@ TEST_CASE("Pipeline warnings change the clock and are retired on successful retr
     print.set_running_step(STEP_NONE);
     print.mark_step_executed(STEP_GCODE);
     CHECK(print.pipeline_step_state(STEP_GCODE).warnings.empty());
+    CHECK(print.step_state_with_warnings(STEP_GCODE).warnings.empty());
     CHECK(notifications == 3);
+}
+
+TEST_CASE("Slices readiness waits for Finalize and closes on a Slicing replay",
+          "[plugins][step-pipeline][pipeline-state][readiness]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ScopedMetadataPlugins plugins;
+    Print print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     Test::PerimeterPluginTests::perimeter_config({}));
+    CHECK_FALSE(print.slices_ready());
+    print.process();
+    CHECK_FALSE(ScopedMetadataPlugins::post().observed_slices_ready);
+    CHECK_FALSE(ScopedMetadataPlugins::skirt().observed_slices_ready);
+    CHECK(print.slices_ready());
+    CHECK(print.is_step_done(STEP_FINALIZE_SLICING));
+    REQUIRE(print.request_replay_from_worker(Steps::Checkpoint::Slicing));
+    CHECK(print.is_step_done(STEP_POST_SLICING));
+    CHECK_FALSE(print.is_step_done(STEP_FINALIZE_SLICING));
+    CHECK_FALSE(print.slices_ready());
+    print.process();
+    CHECK_FALSE(ScopedMetadataPlugins::skirt().observed_slices_ready);
+    CHECK(print.slices_ready());
 }
 
 TEST_CASE("Metadata checkpoints retain PostSlicing and roll back SkirtBrim across retries",
@@ -969,7 +1001,7 @@ TEST_CASE("Control-thread invalidation stops the worker before scheduling or sna
     CHECK_FALSE(print.has_ordering_checkpoint());
 }
 
-TEST_CASE("Checkpoint replay invalidates and republishes the corresponding historical milestones",
+TEST_CASE("Checkpoint replay invalidates and republishes every canonical Print reader",
           "[plugins][step-pipeline][invalidation][checkpoint][milestones]")
 {
     using namespace Slic3r;
@@ -980,27 +1012,19 @@ TEST_CASE("Checkpoint replay invalidates and republishes the corresponding histo
     LifecyclePrint print;
     Model model;
     Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, DynamicPrintConfig::full_print_config());
-    // Each boundary is the latest checkpoint whose replay must invalidate this milestone.
-    const std::vector<std::pair<slicing_step_t, Checkpoint>> milestones {
-        {posSlice, Checkpoint::None},
-        {posPerimeters, Checkpoint::Slicing}, {posPrepareInfill, Checkpoint::Slicing},
-        {posInfill, Checkpoint::Slicing}, {posIroning, Checkpoint::Slicing},
-        {posSupportMaterial, Checkpoint::Slicing}, {psSkirtBrim, Checkpoint::Slicing},
-        {psAlertWhenSupportsNeeded, Checkpoint::Slicing},
-        {psToolOrdering, Checkpoint::Print}, {psCheckConflict, Checkpoint::Print},
-        {psWipeTower, Checkpoint::Ordering}, {posSupportSpotsSearch, Checkpoint::Ordering},
-        {posEstimateCurledExtrusions, Checkpoint::Ordering},
-        {posCalculateOverhangingPerimeters, Checkpoint::Ordering}, {posSimplifyPath, Checkpoint::Ordering},
-        {psGCodeExport, Checkpoint::Plan}
-    };
+    const std::vector<slicing_step_t> &milestones = Steps::execution_order();
     Print::StatusMonitor status(print);
     std::vector<PrintStateBase::TimeStamp> timestamps;
-    for (const std::pair<slicing_step_t, Checkpoint> &milestone : milestones) {
-        const slicing_step_t step = milestone.first;
+    for (const slicing_step_t step : milestones) {
+        print.mark_step_executed(step);
+        timestamps.push_back(print.step_state_with_timestamp(step).timestamp);
+    }
+    // Phantom legacy milestones have no canonical producer or visible completion.
+    for (const slicing_step_t step : {STEP_ALERT_SUPPORTS_NEEDED, STEP_CHECK_CONFLICT}) {
         REQUIRE(status.set_started(step));
-        timestamps.push_back(status.set_done(step));
-        if (Steps::execution_index(step) < Steps::execution_order().size())
-            print.mark_step_executed(step);
+        status.set_done(step);
+        CHECK_FALSE(print.is_step_done(step));
+        CHECK(print.step_state_with_timestamp(step).timestamp == 0);
     }
     size_t stops = 0;
     print.set_cancel_callback([&]() { ++stops; });
@@ -1017,13 +1041,19 @@ TEST_CASE("Checkpoint replay invalidates and republishes the corresponding histo
     }
     print.set_cancel_callback([]() {});
     for (size_t index = 0; index < milestones.size(); ++index) {
-        const slicing_step_t step = milestones[index].first;
-        const bool invalidated = checkpoint <= milestones[index].second;
+        const slicing_step_t step = milestones[index];
+        const bool invalidated = checkpoint != Checkpoint::GCode &&
+            !Steps::executes_before(step, Steps::checkpoint_resume_step(checkpoint));
         CAPTURE(checkpoint, step);
         CHECK(print.is_step_done(step) == !invalidated);
         if (invalidated) {
-            REQUIRE(status.set_started(step));
-            CHECK(status.set_done(step) > timestamps[index]);
+            CHECK(print.step_state_with_timestamp(step).timestamp > timestamps[index]);
+            print.set_running_step(step);
+            CHECK(print.step_state_with_timestamp(step).state == PrintStateBase::State::Started);
+            CHECK_FALSE(print.is_step_done(step));
+            print.set_running_step(STEP_NONE);
+            print.mark_step_executed(step);
+            CHECK(print.step_state_with_timestamp(step).timestamp > timestamps[index]);
         } else {
             CHECK(print.step_state_with_timestamp(step).timestamp == timestamps[index]);
         }

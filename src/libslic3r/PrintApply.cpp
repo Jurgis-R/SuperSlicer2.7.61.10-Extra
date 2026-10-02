@@ -1584,9 +1584,9 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
     } // exit the mutex before re-using it via is_step_done (unlock(this->state_mutex()))
 
-    if (!is_step_done(posSlice)) {
+    if (!slices_ready()) {
         this->m_timestamp_last_change = std::time(0);
-    } else if (!is_step_done(psSkirtBrim)) {
+    } else if (!is_step_done(STEP_SKIRT_BRIM)) {
         // reset the modify time if not all step done
         this->m_timestamp_last_change = std::time(0);
     }

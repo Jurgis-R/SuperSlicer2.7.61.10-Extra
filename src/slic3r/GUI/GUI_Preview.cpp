@@ -442,7 +442,7 @@ bool Preview::can_display_volume()
     if (print == nullptr)
         return false;
 
-    if (!print->is_step_done(psSkirtBrim))
+    if (!print->slices_ready())
         return false;
     return true;
 }
@@ -869,19 +869,17 @@ void Preview::load_print_as_fff(bool keep_z_range)
     if (m_loaded || m_process.current_printer_technology() != ptFFF)
         return;
 
-    // we require that there's at least one object and the posSlice step
-    // is performed on all of them(this ensures that _shifted_copies was
-    // populated and we know the number of layers)
+    // Partial source trees are not stable inputs for preview traversal.
     bool has_layers = false;
     const Print *print = m_process.fff_print();
-    if (print->is_step_done(posSlice)) {
+    if (print->slices_ready()) {
         for (const PrintObject& print_object : print->objects())
             if (! print_object.layers().empty()) {
                 has_layers = true;
                 break;
             }
     }
-    if (!has_layers && print->is_step_done(posSupportMaterial)) {
+    if (!has_layers && print->slices_ready()) {
         for (const PrintObject& print_object : print->objects()) {
             for (const Layer &layer : print_object.auxiliary_layers())
                 if (layer.get_property<LayerSupportProperty>() != nullptr) {

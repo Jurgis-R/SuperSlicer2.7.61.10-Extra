@@ -2288,6 +2288,7 @@ TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
         {make_cube(10.0, 10.0, 10.0)}, print, model,
         DynamicPrintConfig::full_print_config());
     Print::StatusMonitor status(print);
+    print.set_running_step(STEP_GCODE);
     REQUIRE(status.set_started(psGCodeExport));
 
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
@@ -2302,8 +2303,9 @@ TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
         "gcode.reader.default", "M9999\n");
     REQUIRE(result.reader_diagnostics.size() == 1);
 
+    // Host diagnostics belong to the object's active milestone, not the canonical warning store.
     const PrintStateBase::StateWithWarnings step =
-        print.step_state_with_warnings(psGCodeExport);
+        print.object(0).step_state_with_warnings(psGCodeExport);
     REQUIRE(step.warnings.size() == 1);
     CHECK(step.warnings.front().level ==
           PrintStateBase::WarningLevel::NON_CRITICAL);
@@ -2311,6 +2313,9 @@ TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
           std::string::npos);
     CHECK(step.warnings.front().message.find("line 1") != std::string::npos);
     status.set_done(psGCodeExport);
+    print.set_running_step(STEP_NONE);
+    print.mark_step_executed(STEP_GCODE);
+    CHECK(print.is_step_done(STEP_GCODE));
 }
 
 TEST_CASE("Host G-code reader initializes the built-in RepRap private schema",
