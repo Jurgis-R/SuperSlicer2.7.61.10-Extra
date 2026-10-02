@@ -252,13 +252,10 @@ TEST_CASE("Pipeline state invalidation preserves checkpoint prefixes and is idem
                      Test::PerimeterPluginTests::perimeter_config({}));
     print.process();
     REQUIRE(print.slices_ready());
-    Print::StatusMonitor legacy(print);
     for (const Checkpoint checkpoint : {Checkpoint::None, Checkpoint::Slicing, Checkpoint::Print,
                                         Checkpoint::Ordering, Checkpoint::Plan, Checkpoint::GCode}) {
         std::map<slicing_step_t, PrintStateBase::StateWithWarnings> before;
         for (const slicing_step_t step : Steps::execution_order()) {
-            if (legacy.set_started(step))
-                legacy.set_done(step);
             print.mark_step_executed(step);
             before.emplace(step, print.pipeline_step_state(step));
         }
@@ -310,6 +307,144 @@ TEST_CASE("Pipeline control replay captures a running step before the stop callb
     print.set_cancel_callback([]() {});
 }
 
+TEST_CASE("Apply status distinguishes fresh pending steps from calculated outputs",
+          "[plugins][step-pipeline][invalidation][config][apply-status]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    DynamicPrintConfig config = Test::PerimeterPluginTests::perimeter_config({});
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    config.set_deserialize_strict("perimeters", "2");
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_CHANGED);
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_UNCHANGED);
+    print.process();
+    const Layer *retained_layer = &print.object(0).layer(0);
+    config.set_deserialize_strict("temperature", "210");
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_CHANGED);
+    CHECK(print.slices_ready());
+    CHECK(&print.object(0).layer(0) == retained_layer);
+    config.set_deserialize_strict("perimeters", "3");
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_INVALIDATED);
+    CHECK_FALSE(print.slices_ready());
+    CHECK(&print.object(0).layer(0) == retained_layer);
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_UNCHANGED);
+}
+
+TEST_CASE("Apply retains the affected first running step across stops and deeper replay",
+          "[plugins][step-pipeline][invalidation][apply-status]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool running = GENERATE(false, true);
+    LifecyclePrint print;
+    Model model;
+    DynamicPrintConfig config = Test::PerimeterPluginTests::perimeter_config({});
+    Test::init_print({Test::TestMesh::cube_20x20x20, Test::TestMesh::cube_20x20x20}, print, model, config);
+    print.prepare_checkpoint_resume();
+    for (const slicing_step_t step : Steps::execution_order())
+        REQUIRE_FALSE(print.is_step_done(step));
+    if (running)
+        print.set_running_step(STEP_LAYER_HEIGHT);
+    bool stopped_height = false;
+    print.set_cancel_callback([&print, &stopped_height]() {
+        stopped_height |= print.running_step() == STEP_LAYER_HEIGHT;
+        print.state_mutex().unlock();
+        print.set_running_step(STEP_NONE);
+        print.state_mutex().lock();
+    });
+    Print::ApplyStatus status = Print::APPLY_STATUS_UNCHANGED;
+    SECTION("model replacement pre-stop") {
+        Model replacement;
+        replacement.add_object(model.objects()[0]);
+        status = print.apply(replacement, config);
+        CHECK(print.apply(replacement, config) == Print::APPLY_STATUS_UNCHANGED);
+    }
+    SECTION("removal after an early export-only replay") {
+        config.set_deserialize_strict("temperature", "210");
+        model.delete_object(size_t(1));
+        status = print.apply(model, config);
+        CHECK(print.apply(model, config) == Print::APPLY_STATUS_UNCHANGED);
+    }
+    SECTION("object addition after an early export-only replay") {
+        config.set_deserialize_strict("temperature", "210");
+        model.add_object(model.objects()[0]);
+        status = print.apply(model, config);
+        CHECK(print.apply(model, config) == Print::APPLY_STATUS_UNCHANGED);
+    }
+    SECTION("export-only replay does not affect the running prefix") {
+        config.set_deserialize_strict("temperature", "210");
+        status = print.apply(model, config);
+        CHECK(status == Print::APPLY_STATUS_CHANGED);
+        CHECK(print.apply(model, config) == Print::APPLY_STATUS_UNCHANGED);
+        print.set_cancel_callback([]() {});
+        return;
+    }
+    CHECK(status == (running ? Print::APPLY_STATUS_INVALIDATED : Print::APPLY_STATUS_CHANGED));
+    CHECK(stopped_height == running);
+    CHECK(print.current_checkpoint() == Steps::Checkpoint::None);
+    for (const slicing_step_t step : Steps::execution_order()) {
+        CHECK_FALSE(print.is_step_done(step));
+        CHECK(print.should_execute_step(step));
+    }
+    print.set_cancel_callback([]() {});
+}
+
+TEST_CASE("Instance shifts and count changes replay adhesion while retaining slicing",
+          "[plugins][step-pipeline][invalidation][apply-status]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    DynamicPrintConfig config = Test::PerimeterPluginTests::perimeter_config({});
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    print.process();
+    for (const slicing_step_t step : Steps::execution_order())
+        print.mark_step_executed(step);
+    const Layer *retained_layer = &print.object(0).layer(0);
+    const PrintStateBase::TimeStamp slicing_timestamp = print.step_state_with_timestamp(STEP_POST_SLICING).timestamp;
+    SECTION("shift") {
+        model.objects()[0].instances.front()->set_offset(Vec3d(40., 40., 0.));
+    }
+    SECTION("count") {
+        model.objects()[0].add_instance()->set_offset(Vec3d(40., 40., 0.));
+    }
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_INVALIDATED);
+    CHECK(print.object(0).instances().size() == model.objects()[0].instances.size());
+    CHECK(&print.object(0).layer(0) == retained_layer);
+    CHECK(print.is_step_done(STEP_POST_SLICING));
+    CHECK(print.step_state_with_timestamp(STEP_POST_SLICING).timestamp == slicing_timestamp);
+    CHECK(print.should_execute_step(STEP_SKIRT_BRIM));
+    CHECK(print.should_execute_step(STEP_WIPETOWER));
+    CHECK(print.should_execute_step(STEP_GCODE));
+    CHECK_FALSE(print.slices_ready());
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_UNCHANGED);
+}
+
+TEST_CASE("Canonical config invalidation follows metadata and returns affected booleans",
+          "[plugins][step-pipeline][invalidation][config][apply-status]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    LifecyclePrint print;
+    Model model;
+    DynamicPrintConfig config = Test::PerimeterPluginTests::perimeter_config({});
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    for (const slicing_step_t step : Steps::execution_order())
+        print.mark_step_executed(step);
+    {
+        std::scoped_lock<std::mutex> lock(print.state_mutex());
+        CHECK(print.invalidate_state_by_config_options(config, {"perimeters"}));
+        CHECK_FALSE(print.invalidate_state_by_config_options(config, {"perimeters"}));
+        CHECK_FALSE(print.invalidate_state_by_config_options(config, {"temperature"}));
+    }
+    CHECK(print.is_step_done(STEP_POST_SLICING));
+    CHECK(print.should_execute_step(STEP_PERIMETER));
+    CHECK_FALSE(print.is_step_done(STEP_FINALIZE_SLICING));
+}
+
 TEST_CASE("Task bounds only stop the worker and slicing still completes the full prefix",
           "[plugins][step-pipeline][pipeline-state]")
 {
@@ -332,8 +467,12 @@ TEST_CASE("Task bounds only stop the worker and slicing still completes the full
     CHECK(print.pipeline_step_state(STEP_PERIMETER).enabled);
     CHECK(print.is_step_done(STEP_PERIMETER));
     CHECK(print.step_state_with_timestamp(STEP_PERIMETER).enabled);
-    CHECK(print.object(0).is_step_done(STEP_PERIMETER));
-    CHECK(print.object(0).step_state_with_timestamp(STEP_PERIMETER).enabled);
+    REQUIRE(print.object(0).layer_count() > 0);
+    bool has_perimeters = false;
+    for (const LayerSliceIsland &island : print.object(0).layer(0).islands())
+        for (const LayerRegionIsland &region_island : island.regions_islands())
+            has_perimeters |= region_island.has_extrusion(LayerRegionIsland::PERIMETERS);
+    CHECK(has_perimeters);
     CHECK(print.slices_ready());
     for (const slicing_step_t step : Steps::execution_order())
         if (!Steps::executes_before(STEP_FINALIZE_SLICING, step))
@@ -1004,9 +1143,6 @@ TEST_CASE("Control-thread invalidation stops the worker before scheduling or sna
         print.mark_step_executed(step);
     print.mutable_printing_plan().groups.emplace_back();
     REQUIRE(print.save_ordering_checkpoint());
-    Print::StatusMonitor status(print);
-    REQUIRE(status.set_started(posPerimeters));
-    status.set_done(posPerimeters);
 
     std::promise<void> started;
     std::promise<void> finish;
@@ -1039,7 +1175,7 @@ TEST_CASE("Control-thread invalidation stops the worker before scheduling or sna
             print.request_replay_from(Steps::Checkpoint::Slicing);
         }
         SECTION("complete invalidation") {
-            print.invalidate_all_steps();
+            print.request_replay_from(Steps::Checkpoint::None);
         }
         print.set_cancel_callback([]() {});
     }
@@ -1067,7 +1203,6 @@ TEST_CASE("Checkpoint replay invalidates and republishes every canonical Print r
     Model model;
     Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, DynamicPrintConfig::full_print_config());
     const std::vector<slicing_step_t> &milestones = Steps::execution_order();
-    Print::StatusMonitor status(print);
     std::vector<PrintStateBase::TimeStamp> timestamps;
     for (const slicing_step_t step : milestones) {
         print.mark_step_executed(step);
@@ -1075,8 +1210,6 @@ TEST_CASE("Checkpoint replay invalidates and republishes every canonical Print r
     }
     // Phantom legacy milestones have no canonical producer or visible completion.
     for (const slicing_step_t step : {STEP_ALERT_SUPPORTS_NEEDED, STEP_CHECK_CONFLICT}) {
-        REQUIRE(status.set_started(step));
-        status.set_done(step);
         CHECK_FALSE(print.is_step_done(step));
         CHECK(print.step_state_with_timestamp(step).timestamp == 0);
     }

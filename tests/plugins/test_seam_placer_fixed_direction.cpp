@@ -1917,7 +1917,7 @@ TEST_CASE("Regional registry survives apply and rebinds retained layers", "[plug
     CHECK(&retained->region(0).region() == changed);
     CHECK(print.num_print_regions() == region_count);
     for (const PrintRegion &active : print.print_regions()) CHECK(&active != original);
-    print.invalidate_all_steps();
+    print.request_replay_from_worker(Steps::Checkpoint::None);
     CHECK(original->config() == saved);
     config.set_deserialize_strict("perimeters", std::to_string(saved.perimeters.value));
     print.apply(prepared.model, config);

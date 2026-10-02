@@ -276,9 +276,13 @@ PrintBase::ApplyStatus PrintObject::set_instances(PrintInstances &&instances) {
         [](const PrintInstance& lhs, const PrintInstance& rhs) { return lhs.model_instance == rhs.model_instance && lhs.shift == rhs.shift; });
     if (! equal) {
         status = PrintBase::APPLY_STATUS_CHANGED;
-        if (m_print->invalidate_steps({psSkirtBrim, psGCodeExport}) ||
-            (!equal_length && m_print->invalidate_step(psWipeTower))) {
-            status = PrintBase::APPLY_STATUS_INVALIDATED;
+        // Initial construction has no published instance data or plugin borrows to invalidate.
+        if (!m_instances.empty()) {
+            bool invalidated = m_print->request_replay_from(Steps::checkpoint_before_step(STEP_SKIRT_BRIM));
+            if (!equal_length)
+                invalidated |= m_print->request_replay_from(Steps::checkpoint_before_step(STEP_WIPETOWER));
+            if (invalidated)
+                status = PrintBase::APPLY_STATUS_INVALIDATED;
         }
         m_instances = std::move(instances);
         for (PrintInstance &i : m_instances) {
@@ -1573,91 +1577,9 @@ LayerUPtrs::iterator PrintObject::insert_auxiliary_layer(LayerUPtrs::const_itera
 // Called by Print::apply().
 // This method only accepts PrintObjectConfig and PrintRegionConfig option keys.
 bool PrintObject::invalidate_state_by_config_options(
-    const ConfigOptionResolver & /* old_config */, const ConfigOptionResolver & /* new_config */, const std::vector<t_config_option_key> &opt_keys)
+    const ConfigOptionResolver & /* old_config */, const ConfigOptionResolver &new_config, const std::vector<t_config_option_key> &opt_keys)
 {
-    if (opt_keys.empty())
-        return false;
-
-    bool invalidated = false;
-    for (const t_config_option_key &opt_key : opt_keys) {
-        const ConfigOptionDef *def = PrintConfigDef::instance().get(opt_key);
-        if (def != nullptr && def->invalidates_step == STEP_NONE)
-            continue;
-
-        // Unknown definitions have no proven reusable producer output. Known
-        // definitions resume from the last checkpoint before their step.
-        m_print->request_replay_from(Steps::checkpoint_before_step(
-            def == nullptr ? STEP_ANY : def->invalidates_step));
-        invalidated = true;
-    }
-    return invalidated;
-}
-
-bool PrintObject::invalidate_step(slicing_step_t step)
-{
-    // Deprecated: this linear propagation belongs to the old PrintObject step
-    // graph. Keep it for legacy callers, but do not extend it for new plugin
-    // steps; use Print::request_replay_from() for control-thread invalidation instead.
-	bool invalidated = Inherited::invalidate_step(step);
-    
-    // propagate to dependent steps
-    if (step == posPerimeters) {
-		invalidated |= this->invalidate_steps({ posPrepareInfill, posInfill, posIroning,
-            posSupportSpotsSearch, posEstimateCurledExtrusions, posCalculateOverhangingPerimeters, posSimplifyPath });
-        invalidated |= m_print->invalidate_steps({ psSkirtBrim });
-    } else if (step == posPrepareInfill) {
-        invalidated |= this->invalidate_steps({ posInfill, posIroning, posSupportSpotsSearch, posSimplifyPath });
-    } else if (step == posInfill) {
-        invalidated |= this->invalidate_steps({ posIroning, posSupportSpotsSearch, posSimplifyPath });
-        invalidated |= m_print->invalidate_steps({ psSkirtBrim });
-    } else if (step == posSlice) {
-        invalidated |= this->invalidate_steps({posPerimeters, posPrepareInfill, posInfill, posIroning, posSupportSpotsSearch,
-                                               posSupportMaterial, posEstimateCurledExtrusions, posCalculateOverhangingPerimeters,
-                                               posSimplifyPath });
-        invalidated |= m_print->invalidate_steps({ psSkirtBrim });
-        m_slicing_params->valid = false;
-    } else if (step == posSupportMaterial) {
-        invalidated |= m_print->invalidate_steps({ psSkirtBrim,  });
-        invalidated |= this->invalidate_steps({ posEstimateCurledExtrusions });
-        m_slicing_params->valid = false;
-    }
-
-    // invalidate alerts step always, since it depends on everything (except supports, but with supports enabled it is skipped anyway.)
-    invalidated |= m_print->invalidate_step(psAlertWhenSupportsNeeded);
-    // Wipe tower depends on the ordering of extruders, which in turn depends on everything.
-    // It also decides about what the wipe_into_infill / wipe_into_object features will do,
-    // and that too depends on many of the settings.
-    invalidated |= m_print->invalidate_step(psWipeTower);
-    // Invalidate G-code export in any case.
-    invalidated |= m_print->invalidate_step(psGCodeExport);
-    return invalidated;
-}
-
-bool PrintObject::invalidate_step_direct(slicing_step_t step)
-{
-    return Inherited::invalidate_step(step);
-}
-
-bool PrintObject::invalidate_steps_direct(std::initializer_list<slicing_step_t> steps)
-{
-    return Inherited::invalidate_steps(steps);
-}
-
-bool PrintObject::invalidate_all_steps()
-{
-    // The parent must stop its worker before this object's cached inputs can be invalidated.
-    bool result = m_print->invalidate_all_steps();
-    result |= this->invalidate_all_steps_direct();
-    // Mark derived slicing parameters stale so input preparation recomputes them before execution.
-	m_slicing_params->valid = false;
-	return result;
-}
-
-bool PrintObject::invalidate_all_steps_direct()
-{
-    bool result = Inherited::invalidate_all_steps();
-    m_slicing_params->valid = false;
-    return result;
+    return m_print->invalidate_state_by_config_options(new_config, opt_keys);
 }
 
 //Fit to size helper

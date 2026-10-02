@@ -1037,17 +1037,43 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     // Do not use the ApplyStatus as we will use the max function when updating apply_status.
     unsigned int apply_status = APPLY_STATUS_UNCHANGED;
     { std::unique_lock<std::mutex> lock(this->state_mutex());
+    // Stops can retire the running step before a later input requests a deeper replay.
+    const slicing_step_t running_step_at_entry = this->running_step();
+    const auto running_step_affected = [running_step_at_entry](const Steps::Checkpoint checkpoint) {
+        return running_step_at_entry != STEP_NONE && checkpoint != Steps::Checkpoint::GCode &&
+            !Steps::executes_before(running_step_at_entry, Steps::checkpoint_resume_step(checkpoint));
+    };
+    const auto request_replay = [this, &running_step_affected](const Steps::Checkpoint checkpoint) {
+        const bool affected = this->request_replay_from(checkpoint);
+        return affected || running_step_affected(checkpoint);
+    };
+    const auto config_running_step_affected = [&running_step_affected](const t_config_option_keys &keys) {
+        for (const t_config_option_key &key : keys) {
+            const ConfigOptionDef *def = PrintConfigDef::instance().get(key);
+            if (def != nullptr && def->invalidates_step == STEP_NONE)
+                continue;
+            if (running_step_affected(def == nullptr ? Steps::Checkpoint::None :
+                Steps::checkpoint_before_step(def->invalidates_step)))
+                return true;
+        }
+        return false;
+    };
     // Failed cleanup may leave defaults or model timestamps ahead of live object configs.
     const bool plugin_cleanup_pending_at_entry = m_plugin_cleanup_pending.load(std::memory_order_acquire);
     // Set once plugins released the invalidated outputs; the host destroys them at the end of apply().
     bool destroy_invalidated_outputs = false;
-    const auto clear_invalidated_plugin_state = [this, &lock, &apply_status, &destroy_invalidated_outputs]()
+    const auto clear_invalidated_plugin_state = [this, &lock, &apply_status, &destroy_invalidated_outputs, plugin_cleanup_pending_at_entry]()
     {
         if (!m_plugin_cleanup_pending.load(std::memory_order_acquire))
             return;
         // Only an invalidation or a failed cleanup may stop an otherwise valid worker.
         this->call_cancel_callback();
         const Steps::Checkpoint checkpoint = this->current_checkpoint();
+        const bool has_processing_history = !m_plugin_cleanup_participants.empty() ||
+            std::any_of(m_pipeline_state.begin(), m_pipeline_state.end(),
+                [](const std::pair<const slicing_step_t, PipelineStepState> &entry) {
+                    return entry.second.timestamp != 0;
+                });
         if (checkpoint != Steps::Checkpoint::GCode) {
             // Call plugin code outside the state lock and preserve owners if cleanup must be retried.
             lock.unlock();
@@ -1060,7 +1086,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             // Other outputs wait for the end of apply(): objects may lack their regions until then.
             destroy_invalidated_outputs = true;
             // A successful retry must restart the GUI worker even when the input diff is now empty.
-            apply_status = APPLY_STATUS_INVALIDATED;
+            if (plugin_cleanup_pending_at_entry && has_processing_history)
+                apply_status = APPLY_STATUS_INVALIDATED;
         }
         m_plugin_cleanup_pending.store(false, std::memory_order_release);
     };
@@ -1082,14 +1109,15 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
     // The following call may stop the background processing.
     if (! print_diff.empty())
-        update_apply_status(this->invalidate_state_by_config_options(new_full_config, print_diff));
+        update_apply_status(this->invalidate_state_by_config_options(new_full_config, print_diff) |
+                            config_running_step_affected(print_diff));
 
     // Apply variables to placeholder parser. The placeholder parser is used by G-code export,
     // which should be stopped if print_diff is not empty.
     size_t num_extruders = m_config.nozzle_diameter.size();
     bool   num_extruders_changed = false;
     if (! full_config_diff.empty()) {
-        update_apply_status(this->invalidate_step(psGCodeExport));
+        update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_GCODE)));
         m_placeholder_parser.clear_config();
         // Set the profile aliases for the PrintBase::output_filename()
 		m_placeholder_parser.set("print_preset",              new_full_config.option("print_settings_id")->clone());
@@ -1124,10 +1152,10 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         // Kill everything, initialize from scratch.
         // Stop background processing.
         this->call_cancel_callback();
-        update_apply_status(this->invalidate_all_steps());
+        update_apply_status(request_replay(Steps::Checkpoint::None));
         for (PrintObjectUPtr &object : m_objects) {
             model_object_status_db.add(*object->model_object(), ModelObjectStatus::Deleted);
-			update_apply_status(object->invalidate_all_steps());
+			update_apply_status(request_replay(Steps::Checkpoint::None));
             this->forget_metadata_checkpoint_object(object.get());
         }
         m_objects.clear();
@@ -1138,9 +1166,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     } else {
         if (custom_gcode_record_changed) {
             // Ordering is the first consumer, including changes to an empty table's mode.
-            this->request_replay_from(Steps::Checkpoint::Print);
+            update_apply_status(request_replay(Steps::Checkpoint::Print));
             m_model.custom_gcode_per_print_z = model.custom_gcode_per_print_z;
-            update_apply_status(true);
         }
         if (model_object_list_equal(m_model, model)) {
             // The object list did not change.
@@ -1148,7 +1175,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 				model_object_status_db.add(model_object, ModelObjectStatus::Old);
         } else if (model_object_list_extended(m_model, model)) {
             // Add new objects. Their volumes and configs will be synchronized later.
-            update_apply_status(this->invalidate_step(psGCodeExport));
+            update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_GCODE)));
             for (const ModelObject &model_object : m_model.objects())
                 model_object_status_db.add(model_object, ModelObjectStatus::Old);
             for (size_t i = m_model.m_objects.size(); i < model.objects().size(); ++ i) {
@@ -1160,7 +1187,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             // Reorder the objects, add new objects.
             // First stop background processing before shuffling or deleting the PrintObjects in the object list.
             this->call_cancel_callback();
-            update_apply_status(this->invalidate_step(psGCodeExport));
+            update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_GCODE)));
             // Detect removals before moving owners: a cleanup failure must leave the old model alive.
             const bool removes_object = std::any_of(m_model.m_objects.begin(), m_model.m_objects.end(),
                 [&model](const ModelObjectUPtr &old_object) {
@@ -1170,7 +1197,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     return true;
                 });
             if (removes_object)
-                update_apply_status(this->invalidate_all_steps());
+                update_apply_status(request_replay(Steps::Checkpoint::None));
             // Second create a new list of objects.
             ModelObjectUPtrs model_objects_old(std::move(m_model.m_objects));
             ModelObjectPtrs model_objects_old_sorted;
@@ -1213,7 +1240,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 for (PrintObjectUPtr &print_object : print_objects_old) {
                     const ModelObjectStatus &status = model_object_status_db.get(*print_object->model_object());
                     if (status.status == ModelObjectStatus::Deleted) {
-                        update_apply_status(print_object->invalidate_all_steps());
+                        update_apply_status(request_replay(Steps::Checkpoint::None));
                         this->forget_metadata_checkpoint_object(print_object.get());
                     } else
                         m_objects.emplace_back(std::move(print_object));
@@ -1269,7 +1296,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 // Reuse bounding boxes of print_objects_regions for ModelVolumes with unmodified transformation.
                 ModelObjectStatus::PrintObjectRegionsStatus::PartiallyValid;
             for (const PrintObjectStatus &print_object_status : print_objects_range) {
-                update_apply_status(print_object_status.print_object->invalidate_all_steps());
+                update_apply_status(request_replay(Steps::Checkpoint::None));
                 const_cast<PrintObjectStatus&>(print_object_status).status = PrintObjectStatus::Deleted;
             }
             if (model_object_status.print_object_regions_status == ModelObjectStatus::PrintObjectRegionsStatus::PartiallyValid)
@@ -1289,7 +1316,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 }
                 // Invalidate just the supports step.
                 for (const PrintObjectStatus &print_object_status : print_objects_range) {
-                    update_apply_status(print_object_status.print_object->invalidate_step(posSupportMaterial));
+                    update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_SUPPORT)));
                 }
                 if (supports_differ) {
                     // Copy just the support volumes.
@@ -1299,19 +1326,19 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     this->call_cancel_callback();
                     update_apply_status(false);
                     // Invalidate just the gcode step.
-                    invalidate_step(psGCodeExport);
+                    update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_GCODE)));
                     // Copy just the seam volumes.
                     model_volume_list_update_supports_seams(model_object, model_object_new);
                 } else if (brim_patch_differ) {
                     this->call_cancel_callback();
                     update_apply_status(false);
                     // Invalidate just the gcode step.
-                    invalidate_step(psSkirtBrim);
+                    update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_SKIRT_BRIM)));
                     // Copy just the seam volumes.
                     model_volume_list_update_supports_seams(model_object, model_object_new);
                 }
             } else if (model_custom_seam_data_changed(model_object, model_object_new)) {
-                update_apply_status(this->invalidate_step(psGCodeExport));
+                update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_GCODE)));
             }
         }
         if (! solid_or_modifier_differ) {
@@ -1324,7 +1351,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 for (const PrintObjectStatus &print_object_status : print_object_status_db.get_range(model_object)) {
                     t_config_option_keys diff = print_object_status.print_object->config().diff(new_config);
                     if (! diff.empty()) {
-                        update_apply_status(print_object_status.print_object->invalidate_state_by_config_options(print_object_status.print_object->config(), new_config, diff));
+                        update_apply_status(print_object_status.print_object->invalidate_state_by_config_options(print_object_status.print_object->config(), new_config, diff) |
+                                            config_running_step_affected(diff));
                         print_object_status.print_object->config_apply_only(new_config, diff, true);
                     }
                 }
@@ -1336,7 +1364,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             layer_height_ranges_copy_configs(model_object.layer_config_ranges /* dst */, model_object_new.layer_config_ranges /* src */);
             // Copy the ModelObject name, input_file and instances. The instances will be compared against PrintObject instances in the next step.
             if (model_object.name != model_object_new.name) {
-                update_apply_status(this->invalidate_step(psGCodeExport));
+                update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_GCODE)));
                 model_object.name = model_object_new.name;
             }
             model_object.input_file = model_object_new.input_file;
@@ -1344,7 +1372,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             if (model_object.instances.size() != model_object_new.instances.size() || 
             	! std::equal(model_object.instances.begin(), model_object.instances.end(), model_object_new.instances.begin(), [](auto l, auto r){ return l->id() == r->id(); })) {
             	// G-code generator accesses model_object.instances to generate sequential print ordering matching the Plater object list.
-            	update_apply_status(this->invalidate_step(psGCodeExport));
+                update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_GCODE)));
 	            model_object.clear_instances();
 	            model_object.instances.reserve(model_object_new.instances.size());
 	            for (const ModelInstance *model_instance : model_object_new.instances) {
@@ -1430,7 +1458,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     // The PrintObject already exists and the copies differ.
 					PrintBase::ApplyStatus status = (*it_old)->print_object->set_instances(std::move(new_instances.instances));
                     if (status != PrintBase::APPLY_STATUS_UNCHANGED)
-						update_apply_status(status == PrintBase::APPLY_STATUS_INVALIDATED);
+						update_apply_status(status == PrintBase::APPLY_STATUS_INVALIDATED ||
+                            running_step_affected(Steps::checkpoint_before_step(STEP_SKIRT_BRIM)));
                     print_object_order.push_back((*it_old)->print_object);
 					const_cast<PrintObjectStatus*>(*it_old)->status = PrintObjectStatus::Reused;
 				}
@@ -1438,12 +1467,12 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         }
         if (!print_object_lists_equal(m_objects, print_object_order)) {
             this->call_cancel_callback();
-			update_apply_status(this->invalidate_all_steps());
+			update_apply_status(request_replay(Steps::Checkpoint::None));
             // Delete the PrintObjects marked as Unknown or Deleted.
             bool deleted_objects = false;
             for (const PrintObjectStatus &pos : print_object_status_db) {
                 if (pos.status == PrintObjectStatus::Unknown || pos.status == PrintObjectStatus::Deleted) {
-                    update_apply_status(pos.print_object->invalidate_all_steps());
+                    update_apply_status(request_replay(Steps::Checkpoint::None));
                     this->forget_metadata_checkpoint_object(pos.print_object);
 					deleted_objects = true;
                 }
@@ -1457,7 +1486,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             }
             m_objects = std::move(reordered_objects);
 			if (new_objects || deleted_objects)
-                update_apply_status(this->invalidate_steps({ psAlertWhenSupportsNeeded, psSkirtBrim, psWipeTower, psGCodeExport }));
+                update_apply_status(request_replay(Steps::checkpoint_before_step(STEP_SKIRT_BRIM)));
 			if (new_objects)
 	            update_apply_status(false);
 
@@ -1495,10 +1524,10 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         }
         if (model_object_status.print_object_regions_status == ModelObjectStatus::PrintObjectRegionsStatus::Valid) {
             // Verify that the trafo for regions & volume bounding boxes thus for regions is still applicable.
-            auto invalidate = [it_print_object, it_print_object_end, update_apply_status]() {
+            auto invalidate = [&request_replay, it_print_object, it_print_object_end, update_apply_status]() {
                 for (auto it = it_print_object; it != it_print_object_end; ++ it)
                     if ((*it)->m_shared_regions != nullptr)
-                        update_apply_status((*it)->invalidate_all_steps());
+                        update_apply_status(request_replay(Steps::Checkpoint::None));
             };
             if (print_object_regions && ! trafos_differ_in_rotation_by_z_and_mirroring_by_xy_only(print_object_regions->trafo_bboxes, model_object_status.print_instances.front().trafo)) {
                 invalidate();
@@ -1513,10 +1542,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     num_extruders,
                     painting_extruders,
                     *print_object_regions,
-                    [it_print_object, it_print_object_end, &update_apply_status](const PrintRegionConfig &old_config, const PrintRegionConfig &new_config, const t_config_option_keys &diff_keys) {
+                    [it_print_object, it_print_object_end, &update_apply_status, &config_running_step_affected](const PrintRegionConfig &old_config, const PrintRegionConfig &new_config, const t_config_option_keys &diff_keys) {
                         for (auto it = it_print_object; it != it_print_object_end; ++it)
                             if ((*it)->m_shared_regions != nullptr)
-                                update_apply_status((*it)->invalidate_state_by_config_options(old_config, new_config, diff_keys));
+                                update_apply_status((*it)->invalidate_state_by_config_options(old_config, new_config, diff_keys) |
+                                                    config_running_step_affected(diff_keys));
                     })) {
                 // Successful verification preserves dense local indices. Rebind
                 // retained layers before any subsequent pipeline work observes them.

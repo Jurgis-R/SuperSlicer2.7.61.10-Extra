@@ -34,6 +34,7 @@
 #include "libslic3r/GCode/PostProcessor.hpp"
 #include "libslic3r/Format/SL1.hpp"
 #include "libslic3r/Thread.hpp"
+#include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/libslic3r.h"
 
 #include <cassert>
@@ -632,7 +633,7 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model &model, const Dyn
         // Export may read these options; stop the worker before replacing their storage.
         std::scoped_lock<std::mutex> lock(m_print->state_mutex());
         if (m_print->technology() == ptFFF)
-            m_fff_print->invalidate_step(psGCodeExport);
+            m_fff_print->request_replay_from(Steps::Checkpoint::Plan);
         else
             m_print->call_cancel_callback();
         m_print->physical_printer_config().clear();

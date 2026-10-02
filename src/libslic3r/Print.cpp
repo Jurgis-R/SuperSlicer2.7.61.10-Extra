@@ -417,7 +417,6 @@ void Print::clear() {
         BOOST_LOG_TRIVIAL(error) << "Discarding failed plugin cleanup participants while resetting Print.";
     lock.lock();
     // The worker is already stopped; reset its bookkeeping before destroying the retained owners.
-    this->invalidate_all_steps();
     // Plans borrow islands and layers; release them before their owners.
     this->reset_printing_plan();
     this->reset_gcode_reader_source_path();
@@ -449,10 +448,11 @@ bool Print::request_replay_from(const Steps::Checkpoint checkpoint)
     // The worker does not lock the step set or snapshot pointer; wait for it before touching either.
     this->call_cancel_callback();
     const bool affected = this->request_steps_after(checkpoint);
-    this->invalidate_checkpoint_milestones(checkpoint);
     if (checkpoint == Steps::Checkpoint::None)
         for (PrintObjectUPtr &object : m_objects)
-            object->m_slicing_params->valid = false;
+            // apply() publishes new objects before creating their lazy slicing parameters.
+            if (object->m_slicing_params != nullptr)
+                object->m_slicing_params->valid = false;
     return affected || running_affected;
 }
 
@@ -460,61 +460,12 @@ bool Print::request_replay_from_worker(const Steps::Checkpoint checkpoint)
 {
     if (checkpoint == Steps::Checkpoint::GCode)
         return false;
-    // Protect milestone readers without invoking the UI callback that would wait for this same worker.
+    // Protect state readers without invoking the UI callback that would wait for this same worker.
     std::scoped_lock<std::mutex> lock(this->state_mutex());
     const bool affected = this->request_steps_after(checkpoint);
-    this->invalidate_checkpoint_milestones(checkpoint);
     // The worker owns this replay; an unchanged UI apply must not interrupt its preparation.
     m_plugin_cleanup_pending.store(false, std::memory_order_release);
     return affected;
-}
-
-bool Print::invalidate_checkpoint_milestones(const Steps::Checkpoint checkpoint)
-{
-    bool invalidated = false;
-    for (PrintObjectUPtr &object : m_objects) {
-        // No cancellation here: the caller already owns execution or has stopped the worker.
-        const auto invalidate_steps = [&object](std::initializer_list<slicing_step_t> steps) {
-            return object->m_state.invalidate_multiple(steps.begin(), steps.end(), []() {});
-        };
-        switch (checkpoint) {
-        case Steps::Checkpoint::None:
-            invalidated |= object->m_state.invalidate_all([]() {});
-            break;
-        case Steps::Checkpoint::Slicing:
-            invalidated |= invalidate_steps({
-                posPerimeters, posPrepareInfill, posInfill, posIroning,
-                posSupportMaterial, psAlertWhenSupportsNeeded, psSkirtBrim,
-                psToolOrdering, psWipeTower, psCheckConflict,
-                posSupportSpotsSearch, posEstimateCurledExtrusions,
-                posCalculateOverhangingPerimeters, posSimplifyPath,
-                psGCodeExport });
-            break;
-        case Steps::Checkpoint::Print:
-            invalidated |= invalidate_steps({
-                psToolOrdering, psWipeTower, psCheckConflict,
-                posSupportSpotsSearch, posEstimateCurledExtrusions,
-                posCalculateOverhangingPerimeters, posSimplifyPath,
-                psGCodeExport });
-            break;
-        case Steps::Checkpoint::Ordering:
-            invalidated |= invalidate_steps({
-                psWipeTower, posSupportSpotsSearch, posEstimateCurledExtrusions,
-                posCalculateOverhangingPerimeters, posSimplifyPath,
-                psGCodeExport });
-            break;
-        case Steps::Checkpoint::Plan:
-            invalidated |= object->m_state.invalidate(psGCodeExport, []() {});
-            break;
-        case Steps::Checkpoint::GCode:
-            break;
-        }
-    }
-    for (const slicing_step_t step : Steps::execution_order())
-        if (checkpoint != Steps::Checkpoint::GCode &&
-            !Steps::executes_before(step, Steps::checkpoint_resume_step(checkpoint)))
-            verify_pipeline_mirror_unguarded(step);
-    return invalidated;
 }
 
 Steps::Checkpoint Print::current_checkpoint() const
@@ -770,41 +721,6 @@ void Print::add_step_warning(PrintStateBase::WarningLevel level, const std::stri
         status_update_warnings(int(step), level, message);
 }
 
-void Print::verify_pipeline_mirror(slicing_step_t step) const
-{
-    std::scoped_lock<std::mutex> lock(state_mutex());
-    // Disabled legacy writers cannot publish a completion transition, although the pipeline still runs.
-    for (const PrintObjectUPtr &object : m_objects)
-        if (!object->is_step_enabled_unguarded(step))
-            return;
-    verify_pipeline_mirror_unguarded(step);
-}
-
-void Print::verify_pipeline_mirror_unguarded(slicing_step_t step) const
-{
-#ifndef NDEBUG
-    switch (step) {
-    case STEP_SLICING: case STEP_PERIMETER: case STEP_PRE_INFILL: case STEP_INFILL:
-    case STEP_POST_INFILL: case STEP_SUPPORT: case STEP_SKIRT_BRIM: case STEP_WIPETOWER:
-    case STEP_SUPPORT_SPOT: case STEP_LAYER_EXTRUSION_EDIT: case STEP_EXTRUSION_EDIT:
-    case STEP_EXTRUSION_SIMPLIFICATION: case STEP_GCODE:
-        break;
-    default:
-        return;
-    }
-    // Empty Prints have no legacy object aggregate, but can own valid pipeline state.
-    if (m_objects.empty())
-        return;
-    bool legacy_done = true;
-    for (const PrintObjectUPtr &object : m_objects)
-        legacy_done &= object->is_step_done_unguarded(step);
-    const std::map<slicing_step_t, PipelineStepState>::const_iterator it = m_pipeline_state.find(step);
-    assert(legacy_done == (it != m_pipeline_state.end() && it->second.done));
-#else
-    (void)step;
-#endif
-}
-
 const PrintObject *Print::get_print_object_by_model_object_id(ObjectID object_id) const {
     auto it = std::find_if(m_objects.begin(), m_objects.end(), [object_id](const PrintObjectUPtr &obj) {
         return obj->model_object()->id() == object_id;
@@ -818,8 +734,7 @@ const PrintObject *Print::get_object(ObjectID object_id) const {
     return (it == m_objects.end()) ? nullptr : it->get();
 }
 
-// Called by Print::apply().
-// This method only accepts PrintConfig option keys. Not PrintObjectConfig or PrintRegionConfig, go to PrintObject for these
+// All FFF config scopes use the same declared first-consumer checkpoint.
 bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* new_config */,
                                                const std::vector<t_config_option_key> &opt_keys) {
     if (opt_keys.empty())
@@ -829,72 +744,15 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
     for (const t_config_option_key &opt_key : opt_keys) {
         const ConfigOptionDef *def = PrintConfigDef::instance().get(opt_key);
         if (def == nullptr) {
-            this->request_replay_from(Steps::Checkpoint::None);
-            invalidated = true;
+            invalidated |= this->request_replay_from(Steps::Checkpoint::None);
             continue;
         }
         if (def->invalidates_step == STEP_NONE)
             continue;
-        this->request_replay_from(Steps::checkpoint_before_step(def->invalidates_step));
-        invalidated = true;
+        invalidated |= this->request_replay_from(Steps::checkpoint_before_step(def->invalidates_step));
     }
     if (invalidated)
         m_timestamp_last_change = std::time(0);
-    return invalidated;
-}
-
-bool Print::invalidate_step(slicing_step_t step)
-{
-    // Deprecated legacy invalidation. Keep it wired to the new execution plan
-    // while old callers still invalidate historical PrintObject/PrintState
-    // milestones directly.
-    if (step == STEP_ANY ||
-        Steps::execution_index(step) < Steps::execution_order().size())
-        this->request_replay_from(Steps::checkpoint_before_step(step));
-
-    bool invalidated = false;
-    if (is_print_object_step(step)) {
-        for (PrintObjectUPtr &object : m_objects)
-            invalidated |= object->invalidate_step(step);
-        return invalidated;
-    }
-
-    for (PrintObjectUPtr &object : m_objects)
-        invalidated |= object->invalidate_step_direct(step);
-    // Propagate legacy print milestones by their declared order. ABI numeric
-    // values contain gaps and do not define pipeline precedence.
-    const PrintStepArray &print_steps = ordered_print_steps();
-    const PrintStepArray::const_iterator current =
-        std::find(print_steps.begin(), print_steps.end(), step);
-    if (current != print_steps.end())
-        for (PrintStepArray::const_iterator downstream = current + 1;
-             downstream != print_steps.end(); ++downstream)
-            for (PrintObjectUPtr &object : m_objects)
-                invalidated |= object->invalidate_step_direct(*downstream);
-    if (step != psGCodeExport)
-        for (PrintObjectUPtr &object : m_objects)
-            invalidated |= object->invalidate_step_direct(psGCodeExport);
-    return invalidated;
-}
-
-bool Print::invalidate_steps(std::initializer_list<slicing_step_t> steps)
-{
-    bool invalidated = false;
-    for (slicing_step_t step : steps)
-        invalidated |= this->invalidate_step(step);
-    return invalidated;
-}
-
-bool Print::invalidate_all_steps()
-{
-    // Deprecated legacy invalidation. It remains the compatibility entry point
-    // for old code paths, but the new pipeline consumes m_steps_to_execute.
-    // Stop the worker first: the caller may run while it is still reading data.
-    this->call_cancel_callback();
-    this->reset_step_execution_plan_all_unguarded();
-    const bool invalidated = this->invalidate_checkpoint_milestones(Steps::Checkpoint::None);
-    for (PrintObjectUPtr &object : m_objects)
-        object->m_slicing_params->valid = false;
     return invalidated;
 }
 

@@ -855,18 +855,6 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
         print.save_metadata_checkpoint(Checkpoint::Slicing);
     }
     print.mark_step_executed(step);
-    print.verify_pipeline_mirror(step);
-}
-
-void mark_legacy_step_done(Print &print, slicing_step_t step)
-{
-    // The new plugin pipeline writes the same data that the legacy GUI expects,
-    // but the GUI still asks the historical Print/PrintObject state machine
-    // whether slices, perimeters or infill are available. Mark only those
-    // compatibility milestones that really correspond to finished data.
-    Print::StatusMonitor status(print);
-    if (status.set_started(step))
-        status.set_done(step);
 }
 
 void run_layer_height_generation(Orchestrator &orchestrator, Print &print, const std::string &path)
@@ -883,7 +871,6 @@ void run_slicing(Orchestrator &orchestrator, Print &print, const std::string &pa
     run_step_if_requested(print, STEP_SLICING, [&] {
         begin_step(print, STEP_SLICING, L("StepSlicing"));
         StepSlicing::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posSlice);
     });
 }
 
@@ -918,7 +905,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_PERIMETER, L("Generating perimeters"));
         StepGeneratePerimeter::prepare(print);
         StepGeneratePerimeter::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posPerimeters);
     });
     if (stop_after(STEP_PERIMETER, until)) return;
     
@@ -946,7 +932,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_PRE_INFILL, L("Preparing infill"));
         StepPrepareInfill::prepare(print);
         StepPrepareInfill::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posPrepareInfill);
     });
     if (stop_after(STEP_PRE_INFILL, until)) return;
 
@@ -961,7 +946,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_INFILL, L("Generating infill"));
         StepGenerateInfill::prepare(print);
         StepGenerateInfill::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posInfill);
     });
     if (stop_after(STEP_INFILL, until)) return;
 
@@ -969,7 +953,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_POST_INFILL, L("Post-processing infill"));
         StepPostInfillGeneration::prepare(print);
         StepPostInfillGeneration::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posIroning);
     });
     if (stop_after(STEP_POST_INFILL, until)) return;
 
@@ -984,7 +967,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_SUPPORT, L("Generating support material"));
         StepGenerateSupport::prepare(print);
         StepGenerateSupport::run_step(orchestrator, print, support_demand);
-        mark_legacy_step_done(print, posSupportMaterial);
     });
     if (stop_after(STEP_SUPPORT, until)) return;
 
@@ -992,7 +974,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_SKIRT_BRIM, L("Generating skirt and brim"));
         StepSkirtBrim::prepare(print);
         StepSkirtBrim::run_step(orchestrator, print);
-        mark_legacy_step_done(print, psSkirtBrim);
     });
     if (stop_after(STEP_SKIRT_BRIM, until)) return;
 
@@ -1019,7 +1000,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_WIPETOWER, L("Generating wipe tower"));
         StepGenerateWipeTower::prepare(print);
         StepGenerateWipeTower::run_step(orchestrator, print);
-        mark_legacy_step_done(print, psWipeTower);
     });
     if (stop_after(STEP_WIPETOWER, until)) return;
 
@@ -1027,7 +1007,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_SUPPORT_SPOT, L("Detecting support spots"));
         StepDetectSupportSpots::prepare(print);
         StepDetectSupportSpots::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posSupportSpotsSearch);
     });
     if (stop_after(STEP_SUPPORT_SPOT, until)) return;
 
@@ -1035,7 +1014,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_LAYER_EXTRUSION_EDIT, L("Editing layers extrusions"));
         StepLayerExtrusionEdition::prepare(print);
         StepLayerExtrusionEdition::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posEstimateCurledExtrusions);
     });
     if (stop_after(STEP_LAYER_EXTRUSION_EDIT, until)) return;
 
@@ -1050,7 +1028,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_EXTRUSION_EDIT, L("Editing extrusions"));
         StepExtrusionEdition::prepare(print);
         StepExtrusionEdition::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posCalculateOverhangingPerimeters);
     });
     if (stop_after(STEP_EXTRUSION_EDIT, until)) return;
 
@@ -1058,16 +1035,11 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         begin_step(print, STEP_EXTRUSION_SIMPLIFICATION, L("Simplifying extrusions"));
         StepExtrusionSimplification::prepare(print);
         StepExtrusionSimplification::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posSimplifyPath);
     });
     if (stop_after(STEP_EXTRUSION_SIMPLIFICATION, until)) return;
 
     run_step_if_requested(print, STEP_GCODE, [&] {
         begin_step(print, STEP_GCODE, L("Generating G-code"));
-        {
-            Print::StatusMonitor status(print);
-            status.set_started(psGCodeExport);
-        }
         StepGenerateGcode::prepare(print);
         const std::string selected_reader = StepGenerateGcode::run_step(
             orchestrator, print, path, thumbnail_renderer);
@@ -1104,11 +1076,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
                     PrintStateBase::WarningLevel::NON_CRITICAL, message);
             }
         }
-        // Keep psGCodeExport active through the host Reader phase so parsing
-        // diagnostics are attached to the same export operation as writing.
-        Print::StatusMonitor status(print);
-        status.set_done(psGCodeExport);
-
         // The Reader and firmware are services nested under the G-code writer.
         // Complete the writer's single top-level unit only after those services
         // and the optional viewer result have also finished.
