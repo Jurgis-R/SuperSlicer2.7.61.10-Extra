@@ -499,7 +499,9 @@ void Print::clear() {
     // Plans borrow islands and layers; release them before their owners.
     this->reset_printing_plan();
     this->reset_gcode_reader_source_path();
-    this->reset_step_execution_plan_all();
+    this->reset_step_execution_plan_all_unguarded();
+    m_pipeline_state.clear();
+    m_running_step.store(STEP_NONE, std::memory_order_release);
     m_none_metadata_checkpoint.reset();
     m_slicing_metadata_checkpoint.reset();
     m_objects.clear();
@@ -514,29 +516,35 @@ void Print::clear() {
     m_region_registry.clear();
 }
 
-void Print::request_replay_from(const Steps::Checkpoint checkpoint)
+bool Print::request_replay_from(const Steps::Checkpoint checkpoint)
 {
     if (checkpoint == Steps::Checkpoint::GCode)
-        return;
+        return false;
+    // The stop callback may clear the running step while it releases this mutex.
+    const slicing_step_t running = running_step();
+    const bool running_affected = running != STEP_NONE &&
+        !Steps::executes_before(running, Steps::checkpoint_resume_step(checkpoint));
     // The worker does not lock the step set or snapshot pointer; wait for it before touching either.
     this->call_cancel_callback();
-    this->request_steps_after(checkpoint);
+    const bool affected = this->request_steps_after(checkpoint);
     this->invalidate_checkpoint_milestones(checkpoint);
     if (checkpoint == Steps::Checkpoint::None)
         for (PrintObjectUPtr &object : m_objects)
             object->m_slicing_params->valid = false;
+    return affected || running_affected;
 }
 
-void Print::request_replay_from_worker(const Steps::Checkpoint checkpoint)
+bool Print::request_replay_from_worker(const Steps::Checkpoint checkpoint)
 {
     if (checkpoint == Steps::Checkpoint::GCode)
-        return;
+        return false;
     // Protect milestone readers without invoking the UI callback that would wait for this same worker.
     std::scoped_lock<std::mutex> lock(this->state_mutex());
-    this->request_steps_after(checkpoint);
+    const bool affected = this->request_steps_after(checkpoint);
     this->invalidate_checkpoint_milestones(checkpoint);
     // The worker owns this replay; an unchanged UI apply must not interrupt its preparation.
     m_plugin_cleanup_pending.store(false, std::memory_order_release);
+    return affected;
 }
 
 bool Print::invalidate_checkpoint_milestones(const Steps::Checkpoint checkpoint)
@@ -580,6 +588,10 @@ bool Print::invalidate_checkpoint_milestones(const Steps::Checkpoint checkpoint)
             break;
         }
     }
+    for (const slicing_step_t step : Steps::execution_order())
+        if (checkpoint != Steps::Checkpoint::GCode &&
+            !Steps::executes_before(step, Steps::checkpoint_resume_step(checkpoint)))
+            verify_pipeline_mirror_unguarded(step);
     return invalidated;
 }
 
@@ -659,11 +671,11 @@ void Print::erase_plugin_cleanup_participant(Plugin *plugin, const slicing_step_
 
 bool Print::running_step_may_edit(const slicing_step_t last_editor_step) const
 {
-    return m_running_step == STEP_NONE ||
-           !Steps::executes_before(last_editor_step, m_running_step);
+    const slicing_step_t running = running_step();
+    return running == STEP_NONE || !Steps::executes_before(last_editor_step, running);
 }
 
-void Print::request_steps_after(const Steps::Checkpoint checkpoint)
+bool Print::request_steps_after(const Steps::Checkpoint checkpoint)
 {
     assert(checkpoint != Steps::Checkpoint::GCode);
     // Release only the stored Ordering copy: the live plan still owns data that
@@ -672,31 +684,58 @@ void Print::request_steps_after(const Steps::Checkpoint checkpoint)
         this->clear_ordering_checkpoint();
     if (checkpoint == Steps::Checkpoint::None)
         m_slicing_metadata_checkpoint.reset();
-    this->mark_step_and_dependents_for_execution(Steps::checkpoint_resume_step(checkpoint));
+    return this->mark_step_and_dependents_for_execution_unguarded(Steps::checkpoint_resume_step(checkpoint));
 }
 
 void Print::mark_step_for_execution(slicing_step_t step)
 {
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    mark_step_for_execution_unguarded(step);
+}
+
+bool Print::mark_step_for_execution_unguarded(slicing_step_t step)
+{
     if (step == STEP_NONE)
-        return;
+        return false;
+    PipelineStepState &state = m_pipeline_state[step];
+    const bool affected = state.done || running_step() == step;
+    const bool warnings_changed = std::any_of(state.warnings.begin(), state.warnings.end(),
+        [](const PrintStateBase::Warning &warning) { return warning.current; });
+    if (state.done || warnings_changed) {
+        state.done = false;
+        for (PrintStateBase::Warning &warning : state.warnings)
+            warning.current = false;
+        state.timestamp = PrintStateBase::next_timestamp();
+    }
     m_steps_to_execute.insert(step);
     // The step may reuse owners that plugin caches still hold, so the next
     // apply() or resume must offer a clear callback before running it.
     m_plugin_cleanup_pending.store(true, std::memory_order_release);
+    return affected;
 }
 
 void Print::mark_step_and_dependents_for_execution(slicing_step_t step)
 {
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    mark_step_and_dependents_for_execution_unguarded(step);
+}
+
+bool Print::mark_step_and_dependents_for_execution_unguarded(slicing_step_t step)
+{
     if (step == STEP_NONE)
-        return;
+        return false;
     if (step == STEP_ANY) {
-        this->reset_step_execution_plan_all();
-        return;
+        bool affected = running_step() != STEP_NONE;
+        for (const std::pair<const slicing_step_t, PipelineStepState> &entry : m_pipeline_state)
+            affected |= entry.second.done;
+        this->reset_step_execution_plan_all_unguarded();
+        return affected;
     }
 
-    this->mark_step_for_execution(step);
+    bool affected = this->mark_step_for_execution_unguarded(step);
     for (slicing_step_t dependent : Steps::dependent_steps_closure(step))
-        this->mark_step_for_execution(dependent);
+        affected |= this->mark_step_for_execution_unguarded(dependent);
+    return affected;
 }
 
 bool Print::should_execute_step(slicing_step_t step) const
@@ -706,19 +745,142 @@ bool Print::should_execute_step(slicing_step_t step) const
 
 void Print::mark_step_executed(slicing_step_t step)
 {
-    m_steps_to_execute.erase(step);
+    bool removed_warnings = false;
+    {
+        std::scoped_lock<std::mutex> lock(state_mutex());
+        this->throw_if_canceled();
+        PipelineStepState &state = m_pipeline_state[step];
+        const size_t count = state.warnings.size();
+        state.warnings.erase(std::remove_if(state.warnings.begin(), state.warnings.end(),
+            [](const PrintStateBase::Warning &warning) { return !warning.current; }), state.warnings.end());
+        removed_warnings = count != state.warnings.size();
+        if (!state.done || removed_warnings)
+            state.timestamp = PrintStateBase::next_timestamp();
+        state.done = true;
+        m_steps_to_execute.erase(step);
+    }
+    // Notification callbacks may read the state again, so the mutex is released first.
+    if (removed_warnings)
+        status_update_warnings(int(step), PrintStateBase::WarningLevel::NON_CRITICAL, std::string());
 }
 
 void Print::reset_step_execution_plan_all()
+{
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    reset_step_execution_plan_all_unguarded();
+}
+
+void Print::reset_step_execution_plan_all_unguarded()
 {
     m_pipeline_progress.reset();
     clear_ordering_checkpoint();
     m_slicing_metadata_checkpoint.reset();
     m_steps_to_execute.clear();
     for (slicing_step_t step : Steps::execution_order())
-        m_steps_to_execute.insert(step);
+        mark_step_for_execution_unguarded(step);
     // A full replay can reuse every owner, so plugin caches must be cleared first.
     m_plugin_cleanup_pending.store(true, std::memory_order_release);
+}
+
+void Print::set_running_step(slicing_step_t step)
+{
+    // Freeze checks can borrow the atomic step while control paths already own this mutex.
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    const slicing_step_t previous = running_step();
+    if (step != STEP_NONE) {
+        PipelineStepState &state = m_pipeline_state[step];
+        state.done = false;
+        for (PrintStateBase::Warning &warning : state.warnings)
+            warning.current = false;
+        state.timestamp = PrintStateBase::next_timestamp();
+        m_freeze_diagnostic_claimed.store(false, std::memory_order_relaxed);
+    } else if (previous != STEP_NONE) {
+        m_pipeline_state.at(previous).timestamp = PrintStateBase::next_timestamp();
+    }
+    m_running_step.store(step, std::memory_order_release);
+}
+
+PrintStateBase::StateWithWarnings Print::pipeline_step_state(slicing_step_t step) const
+{
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    PrintStateBase::StateWithWarnings result;
+    const std::map<slicing_step_t, PipelineStepState>::const_iterator it = m_pipeline_state.find(step);
+    if (it != m_pipeline_state.end()) {
+        result.state = it->second.done ? PrintStateBase::State::Done : PrintStateBase::State::Fresh;
+        result.timestamp = it->second.timestamp;
+        result.warnings = it->second.warnings;
+    }
+    if (step != STEP_NONE && running_step() == step)
+        result.state = PrintStateBase::State::Started;
+    return result;
+}
+
+bool Print::slices_ready() const
+{
+    return pipeline_step_state(STEP_FINALIZE_SLICING).is_done();
+}
+
+void Print::add_step_warning(PrintStateBase::WarningLevel level, const std::string &message, int message_id)
+{
+    slicing_step_t step;
+    bool changed = false;
+    {
+        std::scoped_lock<std::mutex> lock(state_mutex());
+        step = running_step();
+        assert(step != STEP_NONE);
+        PipelineStepState &state = m_pipeline_state.at(step);
+        std::vector<PrintStateBase::Warning>::iterator it = std::find_if(state.warnings.begin(), state.warnings.end(),
+            [&](const PrintStateBase::Warning &warning) {
+                return message_id == 0 ? warning.message_id == 0 && warning.message == message : warning.message_id == message_id;
+            });
+        if (it == state.warnings.end()) {
+            state.warnings.push_back({level, true, message, message_id});
+            changed = true;
+        } else if (!it->current || it->level != level || it->message != message) {
+            *it = {level, true, message, message_id};
+            changed = true;
+        }
+        if (changed)
+            state.timestamp = PrintStateBase::next_timestamp();
+    }
+    // Warning delivery can synchronously invoke a reader of pipeline_step_state().
+    if (changed)
+        status_update_warnings(int(step), level, message);
+}
+
+void Print::verify_pipeline_mirror(slicing_step_t step) const
+{
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    // Disabled legacy writers cannot publish a completion transition, although the pipeline still runs.
+    for (const PrintObjectUPtr &object : m_objects)
+        if (!object->is_step_enabled_unguarded(step))
+            return;
+    verify_pipeline_mirror_unguarded(step);
+}
+
+void Print::verify_pipeline_mirror_unguarded(slicing_step_t step) const
+{
+#ifndef NDEBUG
+    switch (step) {
+    case STEP_SLICING: case STEP_PERIMETER: case STEP_PRE_INFILL: case STEP_INFILL:
+    case STEP_POST_INFILL: case STEP_SUPPORT: case STEP_SKIRT_BRIM: case STEP_WIPETOWER:
+    case STEP_SUPPORT_SPOT: case STEP_LAYER_EXTRUSION_EDIT: case STEP_EXTRUSION_EDIT:
+    case STEP_EXTRUSION_SIMPLIFICATION: case STEP_GCODE:
+        break;
+    default:
+        return;
+    }
+    // Empty Prints have no legacy object aggregate, but can own valid pipeline state.
+    if (m_objects.empty())
+        return;
+    bool legacy_done = true;
+    for (const PrintObjectUPtr &object : m_objects)
+        legacy_done &= object->is_step_done_unguarded(step);
+    const std::map<slicing_step_t, PipelineStepState>::const_iterator it = m_pipeline_state.find(step);
+    assert(legacy_done == (it != m_pipeline_state.end() && it->second.done));
+#else
+    (void)step;
+#endif
 }
 
 const PrintObject *Print::get_print_object_by_model_object_id(ObjectID object_id) const {
@@ -807,7 +969,7 @@ bool Print::invalidate_all_steps()
     // for old code paths, but the new pipeline consumes m_steps_to_execute.
     // Stop the worker first: the caller may run while it is still reading data.
     this->call_cancel_callback();
-    this->reset_step_execution_plan_all();
+    this->reset_step_execution_plan_all_unguarded();
     const bool invalidated = this->invalidate_checkpoint_milestones(Steps::Checkpoint::None);
     for (PrintObjectUPtr &object : m_objects)
         object->m_slicing_params->valid = false;

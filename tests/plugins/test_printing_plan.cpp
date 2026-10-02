@@ -1379,14 +1379,14 @@ TEST_CASE("Print ordering checkpoint survives only valid downstream edits",
               .extrusions[0].root->length() == original_length);
 
     // G-code and plan-editor replay both preserve their ordered source.
-    print.request_replay_from(Steps::Checkpoint::Plan);
+    print.request_replay_from_worker(Steps::Checkpoint::Plan);
     CHECK(print.has_ordering_checkpoint());
-    print.request_replay_from(Steps::Checkpoint::Ordering);
+    print.request_replay_from_worker(Steps::Checkpoint::Ordering);
     CHECK(print.has_ordering_checkpoint());
     REQUIRE(print.restore_ordering_checkpoint());
 
     // An upstream change makes the saved source stale and must release it.
-    print.request_replay_from(Steps::Checkpoint::Slicing);
+    print.request_replay_from_worker(Steps::Checkpoint::Slicing);
     CHECK_FALSE(print.has_ordering_checkpoint());
     CHECK_FALSE(print.restore_ordering_checkpoint());
 

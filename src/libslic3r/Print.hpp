@@ -375,9 +375,14 @@ public:
     // Control thread only: callers hold state_mutex, which the GUI cancel
     // callback expects before it can stop and wait for the worker. Worker-side
     // paths must use request_replay_from_worker() instead.
-    void                request_replay_from(Steps::Checkpoint checkpoint);
+    bool                request_replay_from(Steps::Checkpoint checkpoint);
     // Worker/idle only: refresh scheduling and historical milestones without self-cancellation.
-    void                request_replay_from_worker(Steps::Checkpoint checkpoint);
+    bool                request_replay_from_worker(Steps::Checkpoint checkpoint);
+    PrintStateBase::StateWithWarnings pipeline_step_state(slicing_step_t step) const;
+    bool                slices_ready() const;
+    void                add_step_warning(PrintStateBase::WarningLevel level, const std::string &message, int message_id = 0);
+    // Compare mirrors only after both owners have published the same transition.
+    void                verify_pipeline_mirror(slicing_step_t step) const;
     // Latest checkpoint whose data is valid: the checkpoint just before the
     // first requested step, moved back to Checkpoint::Print when its plan
     // (Ordering copy or live Plan) is missing.
@@ -411,13 +416,9 @@ public:
     // Drop one participant after its clear callback succeeded.
     void erase_plugin_cleanup_participant(Plugin *plugin, slicing_step_t step);
     // Pipeline step currently running, or STEP_NONE outside the pipeline.
-    slicing_step_t      running_step() const { return m_running_step; }
+    slicing_step_t      running_step() const { return m_running_step.load(std::memory_order_acquire); }
     // Publishing a non-idle step starts a fresh execution attempt, including a retry of the same step.
-    void                set_running_step(slicing_step_t step) {
-        if (step != STEP_NONE)
-            m_freeze_diagnostic_claimed.store(false, std::memory_order_relaxed);
-        m_running_step = step;
-    }
+    void                set_running_step(slicing_step_t step);
     // Atomically elect one reporter per attempt; only a non-idle step begin resets the claim, never cleanup.
     bool                claim_freeze_diagnostic() const { return !m_freeze_diagnostic_claimed.exchange(true, std::memory_order_relaxed); }
     // Checkpoint freeze contract: data owned by the steps up to
@@ -480,7 +481,12 @@ private:
     void                alert_when_supports_needed();
     // Non-cancelling scheduling invalidates downstream snapshots but retains the
     // live plan until plugins have released their borrowed handles.
-    void                request_steps_after(Steps::Checkpoint checkpoint);
+    bool                request_steps_after(Steps::Checkpoint checkpoint);
+    // Control paths already own the non-recursive state mutex.
+    bool                mark_step_for_execution_unguarded(slicing_step_t step);
+    bool                mark_step_and_dependents_for_execution_unguarded(slicing_step_t step);
+    void                reset_step_execution_plan_all_unguarded();
+    void                verify_pipeline_mirror_unguarded(slicing_step_t step) const;
     // Caller holds state_mutex and owns execution, or has already stopped the worker.
     bool                invalidate_checkpoint_milestones(Steps::Checkpoint checkpoint);
     void                restore_metadata_checkpoint(Steps::Checkpoint checkpoint);
@@ -540,7 +546,13 @@ private:
     bool                                    m_keep_ordering_checkpoint = true;
     // Written by the pipeline thread between steps only; read by host API
     // debug checks while the step runs.
-    slicing_step_t                          m_running_step = STEP_NONE;
+    std::atomic<slicing_step_t>             m_running_step{STEP_NONE};
+    struct PipelineStepState {
+        bool done = false;
+        PrintStateBase::TimeStamp timestamp = 0;
+        std::vector<PrintStateBase::Warning> warnings;
+    };
+    std::map<slicing_step_t, PipelineStepState> m_pipeline_state;
     mutable std::atomic_bool                m_freeze_diagnostic_claimed{false};
     std::string                             m_gcode_reader_source_path;
     mutable std::mutex                      m_wipe_tower_data_mutex;

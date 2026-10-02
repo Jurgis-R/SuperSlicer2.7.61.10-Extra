@@ -855,6 +855,7 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
         print.save_metadata_checkpoint(Checkpoint::Slicing);
     }
     print.mark_step_executed(step);
+    print.verify_pipeline_mirror(step);
 }
 
 void mark_legacy_step_done(Print &print, slicing_step_t step)

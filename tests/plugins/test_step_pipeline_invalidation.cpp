@@ -237,6 +237,147 @@ public:
 
 } // namespace
 
+TEST_CASE("Pipeline state invalidation preserves checkpoint prefixes and is idempotent",
+          "[plugins][step-pipeline][pipeline-state]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool worker_owned = GENERATE(false, true);
+    LifecyclePrint print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     Test::PerimeterPluginTests::perimeter_config({}));
+    print.process();
+    REQUIRE(print.slices_ready());
+    Print::StatusMonitor legacy(print);
+    for (const Checkpoint checkpoint : {Checkpoint::None, Checkpoint::Slicing, Checkpoint::Print,
+                                        Checkpoint::Ordering, Checkpoint::Plan, Checkpoint::GCode}) {
+        std::map<slicing_step_t, PrintStateBase::StateWithWarnings> before;
+        for (const slicing_step_t step : Steps::execution_order()) {
+            if (legacy.set_started(step))
+                legacy.set_done(step);
+            print.mark_step_executed(step);
+            before.emplace(step, print.pipeline_step_state(step));
+        }
+        if (worker_owned) {
+            CHECK(print.request_replay_from_worker(checkpoint) == (checkpoint != Checkpoint::GCode));
+            CHECK_FALSE(print.request_replay_from_worker(checkpoint));
+        }
+        else {
+            std::scoped_lock<std::mutex> lock(print.state_mutex());
+            CHECK(print.request_replay_from(checkpoint) == (checkpoint != Checkpoint::GCode));
+            CHECK_FALSE(print.request_replay_from(checkpoint));
+        }
+        for (const slicing_step_t step : Steps::execution_order()) {
+            const bool invalid = checkpoint != Checkpoint::GCode &&
+                !Steps::executes_before(step, Steps::checkpoint_resume_step(checkpoint));
+            const PrintStateBase::StateWithWarnings state = print.pipeline_step_state(step);
+            CAPTURE(checkpoint, step);
+            CHECK(state.enabled);
+            CHECK(state.is_done() == !invalid);
+            if (invalid)
+                CHECK(state.timestamp > before.at(step).timestamp);
+            else
+                CHECK(state.timestamp == before.at(step).timestamp);
+        }
+    }
+    print.set_running_step(STEP_GCODE);
+    print.clear();
+    CHECK(print.running_step() == STEP_NONE);
+    CHECK(print.pipeline_step_state(STEP_SLICING).timestamp == 0);
+}
+
+TEST_CASE("Pipeline control replay captures a running step before the stop callback clears it",
+          "[plugins][step-pipeline][pipeline-state][cancellation]")
+{
+    using namespace Slic3r;
+    LifecyclePrint print;
+    print.set_running_step(STEP_PERIMETER);
+    print.set_cancel_callback([&]() {
+        print.state_mutex().unlock();
+        print.set_running_step(STEP_NONE);
+        print.state_mutex().lock();
+    });
+    {
+        std::scoped_lock<std::mutex> lock(print.state_mutex());
+        CHECK(print.request_replay_from(Steps::Checkpoint::Slicing));
+        CHECK_FALSE(print.request_replay_from(Steps::Checkpoint::Slicing));
+    }
+    CHECK_FALSE(print.pipeline_step_state(STEP_PERIMETER).is_done());
+    print.set_cancel_callback([]() {});
+}
+
+TEST_CASE("Pipeline state does not change disabled legacy task readers",
+          "[plugins][step-pipeline][pipeline-state]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     Test::PerimeterPluginTests::perimeter_config({}));
+    Print::TaskParams task;
+    task.to_object_step = STEP_SLICING;
+    print.set_task(task);
+    print.process();
+    CHECK(print.pipeline_step_state(STEP_PERIMETER).is_done());
+    CHECK(print.pipeline_step_state(STEP_PERIMETER).enabled);
+    CHECK_FALSE(print.is_step_done(STEP_PERIMETER));
+    CHECK_FALSE(print.step_state_with_timestamp(STEP_PERIMETER).enabled);
+    CHECK(print.slices_ready());
+}
+
+TEST_CASE("Pipeline completion cannot publish done after cancellation",
+          "[plugins][step-pipeline][pipeline-state][cancellation]")
+{
+    using namespace Slic3r;
+    Print print;
+    print.set_running_step(STEP_PERIMETER);
+    const PrintStateBase::TimeStamp started = print.pipeline_step_state(STEP_PERIMETER).timestamp;
+    print.cancel_internal();
+    print.set_running_step(STEP_NONE);
+    CHECK_THROWS_AS(print.mark_step_executed(STEP_PERIMETER), CanceledException);
+    CHECK_FALSE(print.pipeline_step_state(STEP_PERIMETER).is_done());
+    CHECK(print.pipeline_step_state(STEP_PERIMETER).timestamp > started);
+    print.restart();
+}
+
+TEST_CASE("Pipeline warnings change the clock and are retired on successful retry",
+          "[plugins][step-pipeline][pipeline-state][warnings]")
+{
+    using namespace Slic3r;
+    Print print;
+    size_t notifications = 0;
+    print.set_status_callback([&](const PrintBase::SlicingStatus &status) {
+        if (status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
+            CHECK(status.warning_step == STEP_GCODE);
+            print.pipeline_step_state(STEP_GCODE);
+            ++notifications;
+        }
+    });
+    print.set_running_step(STEP_GCODE);
+    const PrintStateBase::TimeStamp started = print.pipeline_step_state(STEP_GCODE).timestamp;
+    CHECK(print.pipeline_step_state(STEP_GCODE).state == PrintStateBase::State::Started);
+    print.add_step_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
+    const PrintStateBase::TimeStamp added = print.pipeline_step_state(STEP_GCODE).timestamp;
+    CHECK(added > started);
+    print.add_step_warning(PrintStateBase::WarningLevel::NON_CRITICAL, "first", 71);
+    CHECK(print.pipeline_step_state(STEP_GCODE).timestamp == added);
+    print.add_step_warning(PrintStateBase::WarningLevel::CRITICAL, "updated", 71);
+    CHECK(print.pipeline_step_state(STEP_GCODE).timestamp > added);
+    REQUIRE(print.pipeline_step_state(STEP_GCODE).warnings.size() == 1);
+    print.set_running_step(STEP_NONE);
+    print.mark_step_executed(STEP_GCODE);
+    REQUIRE(print.request_replay_from_worker(Steps::Checkpoint::Plan));
+    CHECK_FALSE(print.pipeline_step_state(STEP_GCODE).warnings[0].current);
+    print.set_running_step(STEP_GCODE);
+    print.set_running_step(STEP_NONE);
+    print.mark_step_executed(STEP_GCODE);
+    CHECK(print.pipeline_step_state(STEP_GCODE).warnings.empty());
+    CHECK(notifications == 3);
+}
+
 TEST_CASE("Metadata checkpoints retain PostSlicing and roll back SkirtBrim across retries",
           "[plugins][checkpoint][metadata]")
 {
@@ -321,6 +462,10 @@ TEST_CASE("PostSlicing failures never publish a metadata checkpoint",
     CHECK(print.has_metadata_checkpoint(Checkpoint::None));
     CHECK_FALSE(print.has_metadata_checkpoint(Checkpoint::Slicing));
     CHECK(print.should_execute_step(STEP_POST_SLICING));
+    CHECK_FALSE(print.pipeline_step_state(STEP_POST_SLICING).is_done());
+    CHECK(print.running_step() == STEP_NONE);
+    CHECK(print.pipeline_step_state(STEP_POST_SLICING).timestamp >
+          print.pipeline_step_state(STEP_SLICING).timestamp);
     ScopedMetadataPlugins::post().cancel_setup = false;
     ScopedMetadataPlugins::post().fail_setup = false;
     print.restart();
@@ -393,7 +538,7 @@ TEST_CASE("Invalidation retains the live plan until plugin cleanup succeeds", "[
     print.mutable_printing_plan().groups.emplace_back();
     const Slic3r::Printing::PrintingPlan *plan = print.printing_plan();
     LifecycleClearPlugin &probe = prepare_lifecycle_probe(print);
-    print.request_replay_from(Slic3r::Steps::Checkpoint::Slicing);
+    print.request_replay_from_worker(Slic3r::Steps::Checkpoint::Slicing);
     CHECK(print.printing_plan() == plan);
     CHECK(probe.clears == 0);
 
@@ -618,7 +763,7 @@ TEST_CASE("Unchanged apply does not cancel an active execution with plugin state
     for (const slicing_step_t step : Slic3r::Steps::execution_order())
         print.mark_step_executed(step);
     print.mutable_printing_plan().groups.emplace_back();
-    print.request_replay_from(Slic3r::Steps::Checkpoint::Plan);
+    print.request_replay_from_worker(Slic3r::Steps::Checkpoint::Plan);
     print.prepare_checkpoint_resume();
     LifecycleClearPlugin &probe = prepare_lifecycle_probe(print);
     Slic3r::Orchestrator &orchestrator = Slic3r::Orchestrator::instance();
@@ -693,7 +838,7 @@ TEST_CASE("Direct G-code export rejects an invalid slicing prefix before clearin
     const size_t layers = print.object(0).layer_count();
     print.mutable_printing_plan().groups.emplace_back();
     const Slic3r::Printing::PrintingPlan *plan = print.printing_plan();
-    print.request_replay_from(Slic3r::Steps::Checkpoint::None);
+    print.request_replay_from_worker(Slic3r::Steps::Checkpoint::None);
 
     CHECK_THROWS_AS(Slic3r::Steps::StepPipeline::run_gcode(
         Slic3r::Orchestrator::instance(), print, "must-not-be-written.gcode"), Slic3r::SlicingError);
@@ -739,7 +884,7 @@ TEST_CASE("Checkpoint cleanup discards derived groups and auxiliary owners witho
         print.mark_step_executed(step);
 
     SECTION("Slicing preserves its skeleton and removes every later group") {
-        print.request_replay_from(Steps::Checkpoint::Slicing);
+        print.request_replay_from_worker(Steps::Checkpoint::Slicing);
         print.prepare_checkpoint_resume();
         CHECK(&object.layer(0) == source_layer);
         CHECK(object.layer(0).island(0).get_slice() == source_slice);
@@ -750,7 +895,7 @@ TEST_CASE("Checkpoint cleanup discards derived groups and auxiliary owners witho
         CHECK(fill_cache.empty());
     }
     SECTION("None destroys auxiliary layers before clearing main layers and profile") {
-        print.request_replay_from(Steps::Checkpoint::None);
+        print.request_replay_from_worker(Steps::Checkpoint::None);
         print.prepare_checkpoint_resume();
         CHECK(object.layer_count() == 0);
         CHECK(object.layer_profile().empty());
@@ -854,6 +999,8 @@ TEST_CASE("Checkpoint replay invalidates and republishes the corresponding histo
         const slicing_step_t step = milestone.first;
         REQUIRE(status.set_started(step));
         timestamps.push_back(status.set_done(step));
+        if (Steps::execution_index(step) < Steps::execution_order().size())
+            print.mark_step_executed(step);
     }
     size_t stops = 0;
     print.set_cancel_callback([&]() { ++stops; });
@@ -1042,22 +1189,22 @@ TEST_CASE("Replay requests resume from the earliest invalid checkpoint",
     CHECK(print.current_checkpoint() == Checkpoint::GCode);
 
     // Resuming from the final checkpoint forces nothing.
-    print.request_replay_from(Checkpoint::GCode);
+    print.request_replay_from_worker(Checkpoint::GCode);
     CHECK(print.current_checkpoint() == Checkpoint::GCode);
 
     // The plan checkpoint forces at least the G-code writer.
-    print.request_replay_from(Checkpoint::Plan);
+    print.request_replay_from_worker(Checkpoint::Plan);
     CHECK(print.current_checkpoint() == Checkpoint::Plan);
     CHECK(print.should_execute_step(STEP_GCODE));
     CHECK_FALSE(print.should_execute_step(STEP_EXTRUSION_SIMPLIFICATION));
     CHECK(print.printing_plan() != nullptr);
 
     // An earlier invalid checkpoint wins over a later request.
-    print.request_replay_from(Checkpoint::Slicing);
+    print.request_replay_from_worker(Checkpoint::Slicing);
     CHECK(print.current_checkpoint() == Checkpoint::Slicing);
     CHECK(print.should_execute_step(STEP_PRE_PERIMETER));
     CHECK_FALSE(print.should_execute_step(STEP_POST_SLICING));
-    print.request_replay_from(Checkpoint::Plan);
+    print.request_replay_from_worker(Checkpoint::Plan);
     CHECK(print.current_checkpoint() == Checkpoint::Slicing);
 
     // Invalidation preserves borrowed handles until the resume cleanup barrier.
@@ -1077,12 +1224,12 @@ TEST_CASE("Plan checkpoints fall back to the Print checkpoint without their plan
         print.mark_step_executed(step);
 
     // Without a live plan, STEP_GCODE has nothing to write.
-    print.request_replay_from(Checkpoint::Plan);
+    print.request_replay_from_worker(Checkpoint::Plan);
     CHECK(print.current_checkpoint() == Checkpoint::Print);
 
     // With a plan but without its ordered copy, plan editors cannot restart.
     print.mutable_printing_plan().groups.emplace_back();
-    print.request_replay_from(Checkpoint::Ordering);
+    print.request_replay_from_worker(Checkpoint::Ordering);
     CHECK_FALSE(print.has_ordering_checkpoint());
     CHECK(print.current_checkpoint() == Checkpoint::Print);
 
@@ -1107,7 +1254,7 @@ TEST_CASE("Ordering checkpoint survives downstream invalidation only",
     // Plan editors restart from the ordered copy. Ordering itself stays done.
     const size_t ordered_group_count = print.printing_plan()->groups.size();
     print.mutable_printing_plan().groups.emplace_back();
-    print.request_replay_from(Slic3r::Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+    print.request_replay_from_worker(Slic3r::Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
     CHECK(print.current_checkpoint() == Checkpoint::Ordering);
     CHECK(print.has_ordering_checkpoint());
     CHECK_FALSE(print.should_execute_step(STEP_ORDERING));
@@ -1124,7 +1271,7 @@ TEST_CASE("Ordering checkpoint survives downstream invalidation only",
     CHECK(print.should_execute_step(STEP_GCODE));
 
     // Invalidating ordering's own inputs makes the copy stale.
-    print.request_replay_from(Slic3r::Steps::checkpoint_before_step(STEP_SLICING));
+    print.request_replay_from_worker(Slic3r::Steps::checkpoint_before_step(STEP_SLICING));
     CHECK_FALSE(print.has_ordering_checkpoint());
     CHECK(print.should_execute_step(STEP_ORDERING));
 }

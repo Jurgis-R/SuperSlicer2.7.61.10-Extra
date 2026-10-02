@@ -117,6 +117,8 @@ public:
     };
 
 protected:
+    friend class Print;
+    static TimeStamp next_timestamp() { return ++g_last_timestamp; }
     //FIXME last timestamp is shared between Print & SLAPrint,
     // and if multiple Print or SLAPrint instances are executed in parallel, modification of g_last_timestamp
     // is not synchronized!

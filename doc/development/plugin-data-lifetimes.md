@@ -154,6 +154,9 @@ Sources: `src/libslic3r/Api/host/slic3r_data_tree.cpp:35`, `src/libslic3r/DataTr
 | `Print::m_printing_plan` | Owns the live plan; provided to step contexts | Plan construction/editing | Contents const at `Plan`; replacement/restoration invalidates old views |
 | `Print::m_ordering_checkpoint` | Host clone not exposed as an editable plan | Host capture/replacement | Immutable from capture; freed on invalidation or when its retention is disabled |
 | `Print::m_gcode_reader_source_path` | Copy of the path published by the G-code callback | During export/publication/reset | Export result, not a frozen Print input; does not own the file |
+| `Print::m_pipeline_state` | Owned step states (done, timestamp, warnings), copied by `pipeline_step_state()` under `state_mutex()` | Worker transitions or stopped-worker invalidation; callbacks are notified outside the mutex | Cleared by `Print::clear()`; scheduling state, not checkpoint metadata to restore |
+
+The pipeline-state timestamps use the shared `PrintStateBase` clock and never rewind on replay. A step becomes done only after its successful, non-cancelled execution and progress checks; replay retains prefix timestamps and retires suffix warnings until a successful retry removes those not reissued. `m_running_step` is atomic for freeze borrows, while its publication and visible-state transitions share `state_mutex()`. Control replay callers already hold that mutex and capture the affected running step before the stop callback can clear it; the worker replay path acquires the mutex without invoking the stop callback. The legacy GUI state readers and host warning facade still use object milestones; `pipeline_step_state()`, `slices_ready()` and `add_step_warning()` expose the separate pipeline state without changing those readers.
 
 `Print` does not have the `PluginPropertyContainer` of layers/objects; do not invent a `Print::properties`.
 

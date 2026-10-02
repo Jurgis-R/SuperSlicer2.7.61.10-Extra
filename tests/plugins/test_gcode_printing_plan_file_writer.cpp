@@ -873,6 +873,15 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         REQUIRE(boost::filesystem::exists(output_path));
         CHECK(read_text_file(output_path).find("G1") != std::string::npos);
         const std::vector<std::string> fresh_commands = normalized_commands(read_text_file(output_path));
+        PrintStateBase::TimeStamp previous_pipeline_timestamp = 0;
+        for (const slicing_step_t step : Steps::execution_order()) {
+            const PrintStateBase::StateWithWarnings state = print.pipeline_step_state(step);
+            CAPTURE(step);
+            CHECK(state.is_done());
+            CHECK(state.enabled);
+            CHECK(state.timestamp > previous_pipeline_timestamp);
+            previous_pipeline_timestamp = state.timestamp;
+        }
         bool has_extruding_motion = false;
         for (const std::string &command : fresh_commands) {
             if (command.find("G1 ") == 0 && command.find(" E") != std::string::npos &&
@@ -909,7 +918,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
 
         // A plan-editor change resumes from the ordering checkpoint. Background
         // slicing stops before plan replay, which belongs to export.
-        print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+        print.request_replay_from_worker(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
         const Printing::PrintingPlan *plan_before_editor_replay = print.printing_plan();
         print.process();
         CHECK(print.printing_plan() == plan_before_editor_replay);
@@ -935,7 +944,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
             REQUIRE(plan_before_cancelled_replay != nullptr);
             const size_t checkpoint_group_count = print.printing_plan()->groups.size();
             print.mutable_printing_plan().groups.emplace_back();
-            print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+            print.request_replay_from_worker(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
             REQUIRE(print.current_checkpoint() == Steps::Checkpoint::Ordering);
             CHECK(print.printing_plan() == plan_before_cancelled_replay);
             cancel_after_ordering_restore = true;
@@ -994,7 +1003,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         // A selector change can invalidate STEP_ORDERING after the downstream
         // layer extrusion edits were already marked done. Rebuilding the plan
         // must force those edits again so STEP_GCODE never sees speedless roots.
-        print.request_replay_from(Steps::checkpoint_before_step(STEP_ORDERING));
+        print.request_replay_from_worker(Steps::checkpoint_before_step(STEP_ORDERING));
         const std::string regenerated_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
         CHECK(regenerated_path == output_path.string());
@@ -1006,7 +1015,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         // Without the ordered checkpoint, editor replay rebuilds Ordering from
         // the retained extrusion trees and then reruns all later steps.
         print.set_keep_ordering_checkpoint(false);
-        print.request_replay_from(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
+        print.request_replay_from_worker(Steps::checkpoint_before_step(STEP_EXTRUSION_EDIT));
         const std::string replayed_ordering_path =
             orchestrator.export_gcode(print, output_path.string(), nullptr, nullptr);
         CHECK(replayed_ordering_path == output_path.string());
@@ -1017,7 +1026,7 @@ TEST_CASE("PrintingPlan writer exports a cube with cost seam placement",
         // Repeated cleanup must neither retain old extrusion edits nor erase the retained slices.
         for (uint32_t replay = 0; replay < 2; ++replay) {
             CAPTURE(replay);
-            print.request_replay_from(Steps::Checkpoint::Slicing);
+            print.request_replay_from_worker(Steps::Checkpoint::Slicing);
             REQUIRE(print.current_checkpoint() == Steps::Checkpoint::Slicing);
             if (replay == 0)
                 print.process();
