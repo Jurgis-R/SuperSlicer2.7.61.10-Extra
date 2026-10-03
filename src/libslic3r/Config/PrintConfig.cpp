@@ -888,6 +888,10 @@ void _handle_legacy(std::unordered_map<t_config_option_key, std::pair<t_config_o
         if (value == "monotonous") {
             value = "monotonic";
         }
+        // The Hilbert and triple variants of the ironing pattern were removed.
+        if (value == "smoothhilbert" || value == "smoothtriple") {
+            value = "smooth";
+        }
         bool set_gapfill =false;
         if (value == "rectilineargapfill") {
             value = "rectilinear";
@@ -2271,7 +2275,7 @@ std::map<std::string, std::string> PrintConfigDef::to_prusa(t_config_option_key&
         assert( (mode & comPrusa) == comPrusa || mode == coNone);
     }
     if (opt_key.find("_pattern") != std::string::npos) {
-        if ("smooth" == value || "smoothtriple" == value || "smoothhilbert" == value || "rectiwithperimeter" == value || "scatteredrectilinear" == value || "rectilineargapfill" == value || "sawtooth" == value) {
+        if ("smooth" == value || "rectiwithperimeter" == value || "scatteredrectilinear" == value || "rectilineargapfill" == value || "sawtooth" == value) {
             value = "rectilinear";
         } else if ("concentricgapfill" == value) {
             value = "concentric";

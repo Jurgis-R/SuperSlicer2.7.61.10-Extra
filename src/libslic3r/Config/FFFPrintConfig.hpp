@@ -80,7 +80,7 @@ enum InfillPattern : uint8_t{
     ipHoneycomb, ip3DHoneycomb,
     ipHilbertCurve, ipArchimedeanChords, ipOctagramSpiral,
     ipAdaptiveCubic, ipSupportCubic, ipSupportBase,
-    ipSmooth, ipSmoothHilbert, ipSmoothTriple,
+    ipSmooth,
     ipRectiWithPerimeter,
     ipScatteredRectilinear,
     ipSawtooth,

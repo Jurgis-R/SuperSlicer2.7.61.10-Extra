@@ -665,8 +665,6 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "adaptivecubic");
         activate_plugin_or_fail(orchestrator, "supportcubic");
         activate_plugin_or_fail(orchestrator, "smooth");
-        activate_plugin_or_fail(orchestrator, "smoothhilbert");
-        activate_plugin_or_fail(orchestrator, "smoothtriple");
         activate_plugin_or_fail(orchestrator, "rectiwithperimeter");
         activate_plugin_or_fail(orchestrator, "scatteredrectilinear");
         activate_plugin_or_fail(orchestrator, "sawtooth");

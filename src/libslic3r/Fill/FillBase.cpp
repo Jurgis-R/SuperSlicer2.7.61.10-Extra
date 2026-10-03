@@ -64,8 +64,6 @@ Fill* Fill::new_from_type(const InfillPattern type)
     case ipHilbertCurve:        return new FillHilbertCurve();
     case ipOctagramSpiral:      return new FillOctagramSpiral();
     case ipSmooth:              return new FillSmooth();
-    case ipSmoothTriple:        return new FillSmoothTriple();
-    case ipSmoothHilbert:       return new FillSmoothHilbert();
     case ipRectiWithPerimeter:  return new FillWithPerimeter(new FillRectilinear());
     case ipSawtooth:            return new FillRectilinearSawtooth();
     case ipAdaptiveCubic:       return new FillAdaptive::Filler();

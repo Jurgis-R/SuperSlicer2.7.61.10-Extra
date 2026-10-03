@@ -78,11 +78,9 @@ struct LegacyPatternDefinition
 // left gaps 10..14, and the rectilinear family (rectilinear, aligned
 // rectilinear, monotonic, monotonic lines, grid, triangles, stars, cubic,
 // scattered rectilinear, sawtooth and rectilinear with perimeter) is now provided by
-// RectilinearPatterns.cpp; line, concentric and smooth have standalone providers. smoothtriple
-// is abandoned: it stays here, outside every pattern list, until this wrapper goes.
-const std::array<LegacyPatternDefinition, 3> k_legacy_patterns = {{
-    {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
-    {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
+// RectilinearPatterns.cpp; line, concentric and smooth have standalone providers. The
+// smoothhilbert and smoothtriple variants were removed.
+const std::array<LegacyPatternDefinition, 1> k_legacy_patterns = {{
     {"ensuring", "Ensuring", "Solid infill pattern that improves coverage in narrow areas.", Slic3r::ipEnsuring, 24},
 }};
 

@@ -131,8 +131,6 @@ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(InfillPattern, {
     {"archimedeanchords",   ipArchimedeanChords},
     {"octagramspiral",      ipOctagramSpiral},
     {"smooth",              ipSmooth},
-    {"smoothtriple",        ipSmoothTriple},
-    {"smoothhilbert",       ipSmoothHilbert},
     {"rectiwithperimeter",  ipRectiWithPerimeter},
     {"scatteredrectilinear", ipScatteredRectilinear},
     {"sawtooth",            ipSawtooth},
