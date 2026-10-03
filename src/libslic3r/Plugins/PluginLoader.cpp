@@ -699,6 +699,7 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
     register_builtin_plugin(orchestrator, "gyroid",
         slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin);
     register_builtin_plugin(orchestrator, "line", slic3r_api::Infill::register_line_pattern_plugin);
+    register_builtin_plugin(orchestrator, "concentric", slic3r_api::Infill::register_concentric_pattern_plugin);
     register_builtin_plugin(orchestrator, "honeycomb",
         slic3r_api::Infill::register_honeycomb_pattern_plugin);
     register_builtin_plugin(orchestrator, "3dhoneycomb",

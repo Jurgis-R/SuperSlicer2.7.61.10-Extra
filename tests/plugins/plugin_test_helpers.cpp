@@ -500,6 +500,7 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_line_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_concentric_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_honeycomb_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_honeycomb_3d_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_hilbert_curve_pattern_plugin(orchestrator_handle_value);

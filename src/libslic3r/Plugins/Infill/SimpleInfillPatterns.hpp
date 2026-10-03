@@ -20,6 +20,9 @@ legacy Fill classes to standalone plugins. Each implementation lives in its own
 
 namespace slic3r_api { namespace Infill {
 
+void register_concentric_pattern_plugin(orchestrator_handle *orch);
+// Classic concentric filling preserves contour nesting and group order through the public geometry API.
+void fill_concentric_surface(const run_ctx_infill_pattern &ctx, storage_handle *storage, const plugin_run_context *run_ctx);
 void register_line_pattern_plugin(orchestrator_handle *orch);
 // Fill one surface with the line pattern; exposed for the parity tests.
 void fill_line_surface(const run_ctx_infill_pattern &ctx, storage_handle *storage, const plugin_run_context *run_ctx);

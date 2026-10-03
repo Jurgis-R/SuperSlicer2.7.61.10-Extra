@@ -78,10 +78,9 @@ struct LegacyPatternDefinition
 // left gaps 10..14, and the rectilinear family (rectilinear, aligned
 // rectilinear, monotonic, monotonic lines, grid, triangles, stars, cubic,
 // scattered rectilinear, sawtooth and rectilinear with perimeter) is now provided by
-// RectilinearPatterns.cpp; line is provided by LinePattern.cpp. smoothtriple is
+// RectilinearPatterns.cpp; line and concentric have standalone providers. smoothtriple is
 // abandoned: it stays here, outside every pattern list, until this wrapper goes.
-const std::array<LegacyPatternDefinition, 5> k_legacy_patterns = {{
-    {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric, 9},
+const std::array<LegacyPatternDefinition, 4> k_legacy_patterns = {{
     {"smooth", "Ironing", "Ironing-style smooth infill pattern.", Slic3r::ipSmooth, 17},
     {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
     {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
@@ -94,17 +93,12 @@ const std::array<LegacyPatternDefinition, 5> k_legacy_patterns = {{
 const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
 {
     static const char *const k_none[] = { nullptr };
-    static const char *const k_sparse_top_bottom_solid[] = {
-        "fill_pattern", "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
-    };
     static const char *const k_top_bottom_solid[] = {
         "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
     };
     static const char *const k_solid_only[] = { "solid_fill_pattern", nullptr };
 
     switch (pattern) {
-    case Slic3r::ipConcentric:
-        return k_sparse_top_bottom_solid;
     case Slic3r::ipSmooth:
         return k_top_bottom_solid;
     case Slic3r::ipEnsuring:

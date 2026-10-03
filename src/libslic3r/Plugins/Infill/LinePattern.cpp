@@ -87,9 +87,6 @@ struct LineDirection
 
 // Derive every spacing of the surface from the recipe, like FillLine::init_spacing().
 LineSpacing line_spacing_for(const raw_infill_pattern_params &params);
-// Port of Fill::_adjust_solid_spacing(): stretch distance so width is a whole
-// number of intervals, by at most factor_max.
-coord_t adjust_solid_spacing(coord_t width, coord_t distance, double factor_max);
 // Port of Fill::_infill_direction(): bridge angle or alternating layer angle,
 // plus the quarter turn, around the object center.
 LineDirection line_direction(const raw_infill_pattern_params &params, const ExPolygon &surface);
@@ -127,24 +124,11 @@ LineSpacing line_spacing_for(const raw_infill_pattern_params &params)
     // A full surface may stretch its spacing to fill the object width evenly.
     if (params.density > 0.9999f && (params.infill_flags & C_INFILL_FLAG_DONT_ADJUST) == 0) {
         const coord_t width = params.object_bounding_box.max.x - params.object_bounding_box.min.x;
-        spacing.line_spacing = adjust_solid_spacing(width, spacing.line_spacing, 1.2);
+        spacing.line_spacing = PatternHelpers::adjust_solid_spacing(width, spacing.line_spacing, 1.2);
         spacing.fill_spacing = unscaled(spacing.line_spacing);
         spacing.adjusted = true;
     }
     return spacing;
-}
-
-coord_t adjust_solid_spacing(coord_t width, coord_t distance, double factor_max)
-{
-    assert(width >= 0);
-    assert(distance > 0);
-    const coord_t number_of_intervals = coord_t((width - EPSILON) / distance);
-    coord_t distance_new = number_of_intervals == 0 ? distance : coord_t((width - EPSILON) / number_of_intervals);
-    const double factor = coordf_t(distance_new) / coordf_t(distance);
-    // The spacing is only widened, and by 20% at most.
-    if (factor > factor_max)
-        distance_new = coord_t(std::floor(coordf_t(distance) * factor_max + 0.5));
-    return distance_new;
 }
 
 LineDirection line_direction(const raw_infill_pattern_params &params, const ExPolygon &surface)

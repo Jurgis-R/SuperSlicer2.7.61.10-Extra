@@ -292,6 +292,7 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/ArachneInfill.cpp
 	Plugins/Infill/ArachneInfill.hpp
 	Plugins/Infill/ArchimedeanChordsPattern.cpp
+	Plugins/Infill/ConcentricPattern.cpp
 	Plugins/Infill/InfillChaining.cpp
 	Plugins/Infill/InfillPaths.hpp
 	Plugins/Infill/InfillWorkBuffers.hpp

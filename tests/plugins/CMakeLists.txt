@@ -46,6 +46,7 @@ add_executable(${_TEST_NAME}_tests
     test_simple_infill_patterns.cpp
     test_line_pattern.cpp
     test_arachne_infill.cpp
+    test_concentric_pattern.cpp
     test_post_full_fill_volume.cpp
     test_rectilinear_edge_grid.cpp
     test_rectilinear_clipper.cpp

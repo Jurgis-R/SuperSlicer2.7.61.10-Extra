@@ -123,6 +123,11 @@ remain open and retain their bends. Cubic and Lightning use batch intersection
 once per inset component, then copy the results into their mutable connector
 buffers; they do not embed a separate Clipper implementation.
 
+`clipper_offset()` and `clipper_offset2()` never leave zero-width bridges: rings
+meeting exactly along an edge are split as the native `offset_ex()` splits them.
+For ExPolygon sources they give the native rings. The order of the resulting
+components is unspecified.
+
 ## Publishing extrusion
 
 Wrap `ctx->output` in a `MutableExtrusionEntity` and move a storage-owned child
@@ -230,6 +235,37 @@ combined index there instead of changing each pattern.
 Intentional difference: with `infill_connection` set to "not connected" the
 legacy filler emitted no line at all; the plugin emits the chained lines without
 joining them.
+
+## Concentric
+
+`concentric` is a standalone `INFILL_PATTERN` provider with priority 9, available
+in `fill_pattern`, `top_fill_pattern`, `bottom_fill_pattern` and
+`solid_fill_pattern`. It ports the classic `FillConcentric` onion offsets:
+density spacing honors `max_sparse_infill_spacing`, and full adjustable surfaces
+stretch spacing to the object width; that adjusted spacing also controls the
+initial half-spacing inset, including the native millimeter/integer round-trip.
+
+The initial half-spacing inset uses `clipper_offset()`, whose component order is
+unspecified; each component restarts its seam reference at the origin, so its
+paths do not depend on the other components. Each onion level is offset from the
+previous one, so the plugin builds the ring nesting tree while generating it,
+without a union of all loops: a contour lies inside the contour it was offset
+from, a hole inside the deeper hole that grew around it or else inside its own
+contour. The tree is printed depth first, every ring after the ring around it,
+and among sibling branches the one nearest to the last seam comes next. Seam
+selection uses native reduced-bit integer distances and keeps the first
+candidate on ties; loop clipping follows the untrimmed seam reference.
+
+The extrusion group is not sortable or reversible. Tests check, per component,
+the native rings, that no ring follows a ring it encloses, and the native order
+whenever every ring is nested in the next one; seams are not compared, as loops
+are reversible and their seams are meant to change. Paths are reversible unless
+`MONOTONIC` is set, and paths closed by zero loop clipping remain extrusion loops.
+
+Intentional Arachne difference: `USE_ARACHNE` still produces classic constant-width
+loops, not variable-width wall paths. The flag remains in the recipe; variable
+width and the legacy gap-fill branch are not ported. Gap fill and full-fill
+volume correction belong to post-infill plugins.
 
 ## Adaptive and Support Cubic
 

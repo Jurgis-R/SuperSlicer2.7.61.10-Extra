@@ -379,7 +379,7 @@ TEST_CASE("Full fill volume correction reaches the stamped target",
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
-    const char *pattern_id = GENERATE("gyroid", "hilbertcurve");
+    const char *pattern_id = GENERATE("gyroid", "hilbertcurve", "concentric");
     INFO(pattern_id);
 
     const FullFillVolumeComparison comparison =
@@ -461,94 +461,13 @@ TEST_CASE("Full fill volume targets stay inert without the corrector",
     }
 }
 
-TEST_CASE("Legacy patterns keep their own full fill volume correction",
-          "[plugins][infill][volume]")
-{
-    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
-
-    // Solid / top / bottom surfaces need a legacy pattern here ("smooth"): the
-    // defaults are standalone plugins now, which leave the volume correction
-    // to the post-infill pass. The 100% "sparse" surfaces need one too: line is
-    // a plugin now, concentric is still legacy.
-    const char *pattern_id = "concentric";
-    const std::initializer_list<ConfigOverride> legacy_solid_pattern = {
-        { "top_fill_pattern", "smooth" },
-        { "bottom_fill_pattern", "smooth" },
-        { "solid_fill_pattern", "smooth" }
-    };
-    const FullFillVolumeComparison comparison =
-        run_full_fill_volume_comparison(pattern_id, "100%", true, k_full_fill_volume_corrector,
-                                        legacy_solid_pattern);
-    const FullFillVolumeRun &before = comparison.before;
-    const FullFillVolumeRun &after = comparison.after;
-
-    REQUIRE(before.stamped_roots.size() > 0);
-    REQUIRE(after.stamped_roots.size() == before.stamped_roots.size());
-
-    for (const StampedRootVolume &root : before.stamped_roots) {
-        const StampedRootVolume *corrected = find_stamped_root(after, root.surface_id);
-        REQUIRE(corrected != nullptr);
-        REQUIRE(root.target_mm3 > 0.);
-        REQUIRE(root.volume_mm3 > 0.);
-
-        // The legacy Fill corrected itself already, so the measured volume
-        // matches the normalized target and the post pass is a no-op.
-        CHECK(root.volume_mm3 * root.normalization == Approx(root.target_mm3).epsilon(0.01));
-        CHECK(corrected->volume_mm3 == Approx(root.volume_mm3).epsilon(0.01));
-    }
-}
-
-TEST_CASE("Reduced solid infill overlap keeps the legacy parity",
-          "[plugins][infill][volume]")
-{
-    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
-
-    // solid_infill_overlap below 100% spreads the lines apart on purpose. The
-    // normalized target must follow the legacy correction, so the volume the
-    // legacy pattern already extrudes matches the stamp and the corrector does
-    // not fill those intentional voids.
-    const char *pattern_id = "concentric";
-    const std::initializer_list<ConfigOverride> reduced_overlap = {
-        { "top_fill_pattern", "smooth" },
-        { "bottom_fill_pattern", "smooth" },
-        { "solid_fill_pattern", "smooth" },
-        { "solid_infill_overlap", "50%" },
-        { "top_solid_infill_overlap", "50%" }
-    };
-
-    const FullFillVolumeComparison comparison = run_full_fill_volume_comparison(
-        pattern_id, "100%", true, k_full_fill_volume_corrector, reduced_overlap);
-    const FullFillVolumeRun &before = comparison.before;
-    const FullFillVolumeRun &after = comparison.after;
-
-    REQUIRE(before.stamped_roots.size() > 0);
-    REQUIRE(after.stamped_roots.size() == before.stamped_roots.size());
-
-    for (const StampedRootVolume &root : before.stamped_roots) {
-        const StampedRootVolume *corrected = find_stamped_root(after, root.surface_id);
-        REQUIRE(corrected != nullptr);
-        REQUIRE(root.target_mm3 > 0.);
-        REQUIRE(root.volume_mm3 > 0.);
-        // Only the solid roles honor the reduced overlap.
-        REQUIRE(root.normalization > 1.);
-
-        // The legacy pattern already reaches the normalized target, so the
-        // corrector measures the target and must not refill the intentional
-        // voids of the reduced overlap.
-        CHECK(root.volume_mm3 * root.normalization == Approx(root.target_mm3).epsilon(0.01));
-        CHECK(corrected->volume_mm3 == Approx(root.volume_mm3).epsilon(0.01));
-    }
-}
-
 TEST_CASE("Reduced solid infill overlap is honored by standalone patterns",
           "[plugins][infill][volume]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
-    // Same intent as the legacy parity test, but the corrector is the only one
-    // applying the flow: the corrected volume times the normalization must land
-    // on the free area volume, so the intentional voids stay open.
-    const char *pattern_id = GENERATE("gyroid", "hilbertcurve", "rectilinear");
+    // Normalization keeps the intentional overlap voids open after the post-infill correction.
+    const char *pattern_id = GENERATE("gyroid", "hilbertcurve", "rectilinear", "concentric");
     INFO(pattern_id);
 
     const std::initializer_list<ConfigOverride> reduced_overlap = {
