@@ -12,6 +12,7 @@
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
+#include "libslic3r/ExtrusionEntityVisitors.hpp"
 #include "libslic3r/Flow.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/Geometry/MedialAxis.hpp"
@@ -1380,6 +1381,51 @@ extrusion_entity_handle *expolygon_medial_axis_extrusion(
         return nullptr;
 
     return Slic3r::store_extrusion_entity(storage, std::move(root));
+}
+
+extrusion_entity_handle *thick_polyline_extrusion(
+    storage_handle *storage,
+    const c_point *points,
+    const coord_t *widths,
+    uint32_t count,
+    const c_thick_polyline_extrusion_params *params)
+{
+    if (storage == nullptr || points == nullptr || widths == nullptr || params == nullptr || count < 2)
+        return nullptr;
+
+    Slic3r::ThickPolyline centerline;
+    centerline.points.reserve(count);
+    centerline.points_width.reserve(count);
+    for (uint32_t index = 0; index < count; ++index) {
+        centerline.points.emplace_back(points[index].x, points[index].y);
+        centerline.points_width.push_back(widths[index]);
+    }
+    centerline.endpoints = {true, true};
+
+    const c_flow &flow = params->flow;
+    const Slic3r::Flow base_flow = (params->flags & THICK_POLYLINE_EXTRUSION_FLOW_FROM_SPACING) != 0 ?
+        Slic3r::Flow::new_from_spacing(float(Slic3r::unscaled(flow.spacing)), float(Slic3r::unscaled(flow.nozzle_diameter)),
+                                       float(Slic3r::unscaled(flow.height)), flow.spacing_ratio, flow.is_bridge != 0) :
+        Slic3r::to_flow(flow);
+    const coord_t resolution = params->variable_width_resolution > 0 ?
+        params->variable_width_resolution : base_flow.scaled_width() / 8;
+    if (resolution <= SCALED_EPSILON)
+        return nullptr;
+    const bool can_reverse = (params->flags & THICK_POLYLINE_EXTRUSION_CAN_REVERSE) != 0;
+    Slic3r::ExtrusionEntitiesPtr entities = params->width_change_tolerance > 0 ?
+        Slic3r::Geometry::thin_variable_width({centerline}, Slic3r::to_extrusion_role(params->role), base_flow,
+                                              resolution, params->width_change_tolerance, can_reverse) :
+        Slic3r::Geometry::thin_variable_width({centerline}, Slic3r::to_extrusion_role(params->role), base_flow,
+                                              resolution, can_reverse);
+    // One centerline gives at most one entity.
+    std::unique_ptr<Slic3r::ExtrusionEntity> entity(entities.empty() ? nullptr : entities.front());
+    for (size_t index = 1; index < entities.size(); ++index)
+        delete entities[index];
+    if (entity == nullptr)
+        return nullptr;
+    if (params->flow_mult != 1.f)
+        Slic3r::ExtrusionModifyFlow(params->flow_mult).traverse(*entity);
+    return Slic3r::store_extrusion_entity(storage, std::move(entity));
 }
 
 } // extern "C"

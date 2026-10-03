@@ -1292,6 +1292,22 @@ inline MedialAxisExtrusionFactory medial_axis_extrusion(raw_extrusion_role role,
     return MedialAxisExtrusionFactory(role, flow);
 }
 
+// Convert one variable-width centerline, one width per point, with thick_polyline_extrusion().
+// Returns nothing when the centerline produces no extrusion.
+inline std::optional<StoredExtrusionEntity> thick_polyline_extrusion(storage_handle *storage,
+                                                                     const std::vector<c_point> &points,
+                                                                     const std::vector<coord_t> &widths,
+                                                                     const c_thick_polyline_extrusion_params &params)
+{
+    if (points.size() != widths.size())
+        throw std::invalid_argument("A thick polyline needs one width per point.");
+    extrusion_entity_handle *handle =
+        ::thick_polyline_extrusion(storage, points.data(), widths.data(), uint32_t(points.size()), &params);
+    if (handle == nullptr)
+        return std::nullopt;
+    return StoredExtrusionEntity::adopt(storage, handle);
+}
+
 inline MedialAxisExtrusionFactory medial_axis_thin_wall(c_flow flow)
 {
     return MedialAxisExtrusionFactory(RAW_EXTRUSION_ROLE_THIN_WALL, flow);

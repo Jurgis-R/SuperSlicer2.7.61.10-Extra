@@ -279,6 +279,8 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/SettingsGCodeScripts.hpp
 	Plugins/GuiRulesExample.cpp
 	Plugins/GuiRulesExample.hpp
+	Plugins/Infill/ArachneInfill.cpp
+	Plugins/Infill/ArachneInfill.hpp
 	Plugins/Infill/DefaultInfillGenerator.cpp
 	Plugins/Infill/DefaultInfillGenerator.hpp
 	Plugins/Infill/LegacyInfillPatterns.cpp

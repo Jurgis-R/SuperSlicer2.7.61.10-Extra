@@ -168,6 +168,7 @@ CLASS_NAME_OVERRIDES = {
     "c_surface": "CSurface",
     "c_flow": "CFlow",
     "c_medial_axis_extrusion_params": "CMedialAxisExtrusionParams",
+    "c_thick_polyline_extrusion_params": "CThickPolylineExtrusionParams",
     "c_extrusion_segment": "CExtrusionSegment",
     "c_extrusion_flow": "CExtrusionFlow",
     "c_extrusion_property_attributes": "CExtrusionPropertyAttributes",

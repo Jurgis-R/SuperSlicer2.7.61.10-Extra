@@ -11,7 +11,12 @@
 #include "BeadingStrategy/BeadingStrategyFactory.hpp"
 #include "utils/ExtrusionLine.hpp"
 #include "libslic3r/Polygon.hpp"
-#include "libslic3r/Config/FFFPrintConfig.hpp"
+
+namespace Slic3r
+{
+class PrintConfig;
+class PrintRegionConfig;
+}
 
 namespace Slic3r::Arachne
 {
@@ -20,6 +25,28 @@ constexpr bool    fill_outline_gaps                        = true;
 constexpr coord_t meshfix_maximum_resolution               = scale_i(0.5);
 constexpr coord_t meshfix_maximum_deviation                = scale_i(0.025);
 constexpr coord_t meshfix_maximum_extrusion_area_deviation = scale_i(2.);
+
+/*!
+ * The print settings read by WallToolPaths, already resolved: percentages of
+ * the smallest nozzle diameter are converted to scaled lengths. Callers without
+ * the print configuration objects, such as plugins, fill it themselves.
+ */
+struct WallToolPathsSettings
+{
+    coord_t min_feature_size = 0;
+    coord_t min_bead_width = 0;
+    coord_t wall_transition_filter_deviation = 0;
+    coord_t wall_transition_length = 0;
+    // In degrees.
+    double wall_transition_angle = 0.;
+    int wall_distribution_count = 1;
+    float min_nozzle_diameter = 0.f;
+};
+
+/*!
+ * Resolve the WallToolPaths settings from the region and the print settings.
+ */
+WallToolPathsSettings wall_tool_paths_settings(const PrintRegionConfig &print_region_config, const PrintConfig &print_config);
 
 class WallToolPaths
 {
@@ -32,6 +59,14 @@ public:
      * \param inset_count The maximum number of parallel extrusion lines that make up the wall
      * \param wall_0_inset How far to inset the outer wall, to make it adhere better to other walls.
      */
+    WallToolPaths(const Polygons& outline,
+        coord_t bead_spacing_0,
+        coord_t bead_width_0,
+        coord_t bead_spacing_x,
+        coord_t bead_width_x,
+        size_t inset_count, coord_t wall_0_inset, coordf_t layer_height, const WallToolPathsSettings &settings);
+
+    // Same, with the settings resolved from the region and the print settings.
     WallToolPaths(const Polygons& outline,
         coord_t bead_spacing_0,
         coord_t bead_width_0,
@@ -126,11 +161,12 @@ private:
     double small_area_length; //<! The length of the small features which are to be filtered out, this is squared into a surface
     coord_t wall_transition_filter_deviation; //!< The allowed line width deviation induced by filtering
     coord_t wall_transition_length;
+    double wall_transition_angle; //!< In degrees.
+    int wall_distribution_count;
     float min_nozzle_diameter;
     bool toolpaths_generated; //<! Are the toolpaths generated
     std::vector<VariableWidthLines> toolpaths; //<! The generated toolpaths
     Polygons inner_contour;  //<! The inner contour of the generated toolpaths
-    const PrintRegionConfig &print_region_config;
 };
 
 } // namespace Slic3r::Arachne
