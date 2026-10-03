@@ -7,6 +7,7 @@
 #define plugins_infill_simpleinfillpatterns_hpp_
 
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
+#include "libslic3r/Api/plugin/c/steps/slic3r_step_infill.h"
 
 /*
 Simple infill pattern plugins
@@ -19,6 +20,9 @@ legacy Fill classes to standalone plugins. Each implementation lives in its own
 
 namespace slic3r_api { namespace Infill {
 
+void register_line_pattern_plugin(orchestrator_handle *orch);
+// Fill one surface with the line pattern; exposed for the parity tests.
+void fill_line_surface(const run_ctx_infill_pattern &ctx, storage_handle *storage, const plugin_run_context *run_ctx);
 void register_honeycomb_pattern_plugin(orchestrator_handle *orch);
 void register_honeycomb_3d_pattern_plugin(orchestrator_handle *orch);
 void register_hilbert_curve_pattern_plugin(orchestrator_handle *orch);

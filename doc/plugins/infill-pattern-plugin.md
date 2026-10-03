@@ -210,6 +210,27 @@ The legacy pattern adapters (`LegacyInfillPatterns.cpp`), brim, support and the
 wipe tower still instantiate the legacy core `Fill` classes. Dense infill uses
 recipe modifiers and post-infill plugins instead of those core fillers.
 
+## Line
+
+`line` is a standalone `INFILL_PATTERN` provider (`LinePattern.cpp`) with
+priority 7 and membership only in `fill_pattern`. It ports `FillLine`: odd lines
+are tilted by the line spacing minus the extrusion spacing, and consecutive lines
+are joined when the connecting segment stays inside the island grown by half a
+spacing. `max_sparse_infill_spacing` is ignored, as before. On a full surface
+without `C_INFILL_FLAG_DONT_ADJUST`, the line spacing is stretched (at most 20%)
+to the object width. As in the legacy filler (which never initialized
+`Fill::spacing_priv`), the half-spacing surface shrink is zero unless the spacing
+was stretched; each island is then inset by 0.7 spacing when that keeps it whole.
+
+`layer_id` is the index of the (combined) layer being filled, so the layer
+alternation uses it directly. The current pipeline does not combine infill layers
+(`thickness_layers` is always 1); a future combination step must store the
+combined index there instead of changing each pattern.
+
+Intentional difference: with `infill_connection` set to "not connected" the
+legacy filler emitted no line at all; the plugin emits the chained lines without
+joining them.
+
 ## Adaptive and Support Cubic
 
 `adaptivecubic` and `supportcubic` are `INFILL_PATTERN` providers with priorities

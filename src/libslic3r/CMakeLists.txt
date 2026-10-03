@@ -319,6 +319,7 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/HoneycombPattern.cpp
 	Plugins/Infill/LegacyInfillPatterns.cpp
 	Plugins/Infill/LegacyInfillPatterns.hpp
+	Plugins/Infill/LinePattern.cpp
 	Plugins/Infill/OctagramSpiralPattern.cpp
 	Plugins/Infill/PatternPluginHelpers.hpp
 	Plugins/Infill/PostFullFillVolume.cpp

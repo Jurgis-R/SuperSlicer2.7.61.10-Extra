@@ -297,7 +297,7 @@ TEST_CASE("Simple infill pattern plugins register as infill pattern providers",
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
 
-    for (const char *plugin_id : { "honeycomb", "3dhoneycomb", "hilbertcurve", "archimedeanchords",
+    for (const char *plugin_id : { "line", "honeycomb", "3dhoneycomb", "hilbertcurve", "archimedeanchords",
                                    "octagramspiral", "rectilinear", "alignedrectilinear", "monotonic",
                                    "monotoniclines", "grid", "triangles", "stars", "cubic",
                                    "scatteredrectilinear", "supportbase" }) {
@@ -340,7 +340,7 @@ TEST_CASE("Simple infill patterns generate extrusion through STEP_INFILL",
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
-    const char *pattern_id = GENERATE("grid");
+    const char *pattern_id = GENERATE("grid", "line");
     INFO(pattern_id);
 
     PreparedPerimeterPrint prepared;
@@ -364,7 +364,7 @@ TEST_CASE("Simple infill patterns never extrude across a surface hole",
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
-    const char *pattern_id = GENERATE("gyroid", "hilbertcurve", "honeycomb", "rectilinear", "monotonic");
+    const char *pattern_id = GENERATE("gyroid", "hilbertcurve", "honeycomb", "rectilinear", "monotonic", "line");
     INFO(pattern_id);
 
     PreparedPerimeterPrint prepared;

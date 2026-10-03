@@ -44,6 +44,7 @@ add_executable(${_TEST_NAME}_tests
     test_seam_placer_fixed_direction.cpp
     test_seam_placer_service.cpp
     test_simple_infill_patterns.cpp
+    test_line_pattern.cpp
     test_arachne_infill.cpp
     test_post_full_fill_volume.cpp
     test_rectilinear_edge_grid.cpp
