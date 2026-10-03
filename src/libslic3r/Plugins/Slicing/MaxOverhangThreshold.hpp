@@ -3,8 +3,8 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
-#ifndef plugins_maxoverhangthreshold_hpp_
-#define plugins_maxoverhangthreshold_hpp_
+#ifndef plugins_slicing_maxoverhangthreshold_hpp_
+#define plugins_slicing_maxoverhangthreshold_hpp_
 
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 
@@ -41,4 +41,4 @@ void register_max_overhang_threshold_plugin(orchestrator_handle *orch);
 
 }} // namespace slic3r_api::MaxOverhangThresholdPlugin
 
-#endif // plugins_maxoverhangthreshold_hpp_
+#endif // plugins_slicing_maxoverhangthreshold_hpp_

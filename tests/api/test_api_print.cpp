@@ -13,11 +13,11 @@
 #include <libslic3r/Api/plugin/c/slic3r_orchestrator.h>
 #include <libslic3r/Api/plugin/c/slic3r_plugin.h>
 #include <libslic3r/Plugins/GuiRulesExample.hpp>
-#include <libslic3r/Plugins/MaxOverhangThreshold.hpp>
 #include <libslic3r/Plugins/PluginLoader.hpp>
 #include <libslic3r/Plugins/SkirtBrim/DefaultBrimGenerator.hpp>
-#include <libslic3r/Plugins/SliceVolume.hpp>
-#include <libslic3r/Plugins/StandardLayerHeightGenerator.hpp>
+#include <libslic3r/Plugins/Slicing/MaxOverhangThreshold.hpp>
+#include <libslic3r/Plugins/Slicing/SliceVolume.hpp>
+#include <libslic3r/Plugins/Slicing/StandardLayerHeightGenerator.hpp>
 #include <libslic3r/Plugins/Support/SupportDemandBridgeRemoval.hpp>
 #include <libslic3r/Plugins/Perimeter/ClassicPerimeterGenerator.hpp>
 #include <libslic3r/Plugins/Perimeter/OnlyOnePerimeterOnTop.hpp>
