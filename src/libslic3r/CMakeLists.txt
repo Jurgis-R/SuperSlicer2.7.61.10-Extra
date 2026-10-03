@@ -281,15 +281,21 @@ set(SLIC3R_SOURCES
 	Plugins/GuiRulesExample.hpp
 	Plugins/Infill/ArachneInfill.cpp
 	Plugins/Infill/ArachneInfill.hpp
+	Plugins/Infill/ArchimedeanChordsPattern.cpp
 	Plugins/Infill/DefaultInfillGenerator.cpp
 	Plugins/Infill/DefaultInfillGenerator.hpp
 	Plugins/Infill/GyroidPattern.cpp
 	Plugins/Infill/GyroidPattern.hpp
+	Plugins/Infill/HilbertCurvePattern.cpp
+	Plugins/Infill/Honeycomb3DPattern.cpp
+	Plugins/Infill/HoneycombPattern.cpp
 	Plugins/Infill/LegacyInfillPatterns.cpp
 	Plugins/Infill/LegacyInfillPatterns.hpp
+	Plugins/Infill/OctagramSpiralPattern.cpp
 	Plugins/Infill/PatternPluginHelpers.hpp
 	Plugins/Infill/PostInfillGapFill.cpp
 	Plugins/Infill/PostInfillGapFill.hpp
+	Plugins/Infill/SimpleInfillPatterns.hpp
 	Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.cpp
 	Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp
 	Plugins/LayerExtrusionEdit/CreateRetraction.cpp

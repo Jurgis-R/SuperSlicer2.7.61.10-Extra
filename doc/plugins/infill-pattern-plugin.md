@@ -5,7 +5,18 @@ generator asks the host to run one pattern plugin per fill surface, and the
 plugin writes its extrusion into the output entity it receives. A pattern
 plugin only needs the public C ABI and the C++ view helpers; the gyroid pattern
 in `src/libslic3r/Plugins/Infill/GyroidPattern.cpp` is the reference
-implementation.
+implementation. Honeycomb, 3D honeycomb, Hilbert curve, Archimedean chords and
+octagram spiral live in the same directory as separate plugins built on the
+shared `PatternPluginHelpers.hpp` utilities.
+
+## Initialization
+
+Before the first run, the generator performs a discovery pass and reports the
+work groups of every pattern through `report_pattern_assignments()`. The host
+aggregates them and calls `setup()` once per used pattern with a
+`run_ctx_infill_pattern_init` payload listing the objects and their groups. Use
+it to precompute per-object state (grids, bounding boxes, synchronization); the
+payload stays valid until the run for the same object completes.
 
 ## Step contract
 
@@ -25,31 +36,47 @@ const slic3r_api::ExPolygon area = surface.expolygon();
 `params` is the complete per-surface recipe: role, flow, density, spacing,
 angle, overlap and gap-fill flags. Distances stored as `coord_t` are scaled
 integers; `double` fields are unscaled millimetres unless documented otherwise.
+`params.object_bounding_box` is the scaled bounding box of the whole object,
+used by patterns that align across layers.
+
 The boolean recipe options are grouped in `params.infill_flags`, a bitmask of
 `c_infill_flag` values (`steps/slic3r_step_infill.h`). This changed the layout of
 `raw_infill_pattern_params`, so `steps/slic3r_step_infill.h` moved to MAJOR 2:
 packages built against MAJOR 1 must be recompiled against the current headers.
 
+Built-in plugins can use the helpers in
+`src/libslic3r/Plugins/Infill/PatternPluginHelpers.hpp` instead of repeating the
+legacy `Fill` frame handling: `infill_angle()`, `shrink_for_fill()`,
+`append_clipped_pieces()`, `order_pieces()`, `append_polyline()`,
+`publish_infill_paths()` and `add_self_to_pattern_list()`. The helpers use the
+public plugin API and the ordering engine interface, so they are also a readable
+reference for external plugins.
 
 ## Declaring membership
 
 The pattern list settings (`fill_pattern`, `top_fill_pattern`, ...) are
 plugin-defined enums of plugin ids. A pattern declares the lists it belongs to
 during initialization; the host keeps the contribution even when the list is
-created later:
+created later. Built-in plugins call `add_self_to_pattern_list()`:
 
 ```cpp
 void inilialize_impl(storage_handle *) const override
 {
-    key_value_string_pair_t entry = { id_impl(), name_impl() };
-    key_value_string_pair_array_t entries = { &entry, 1 };
-
-    raw_option_def_patch patch = raw_option_def_patch_init();
-    patch.kind = RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES;
-    patch.opt_key = "fill_pattern";
-    patch.enum_values = entries;
-    orchestrator_modify_option_def(m_orchestrator, &patch);
+    add_self_to_pattern_list(m_orchestrator, k_id, "Honeycomb", { "fill_pattern" });
 }
+```
+
+The underlying patch is the generic option-definition API:
+
+```cpp
+key_value_string_pair_t entry = { id_impl(), name_impl() };
+key_value_string_pair_array_t entries = { &entry, 1 };
+
+raw_option_def_patch patch = raw_option_def_patch_init();
+patch.kind = RAW_OPTION_DEF_PATCH_ADD_ENUM_VALUES;
+patch.opt_key = "fill_pattern";
+patch.enum_values = entries;
+orchestrator_modify_option_def(m_orchestrator, &patch);
 ```
 
 Inactive plugins are pruned from the lists during finalization.
@@ -64,7 +91,17 @@ Use the view helpers instead of internal slicer types:
   `clipper_intersection_polyline_expolygons()` from `ClipperViews.hpp` for
   clipping and offsetting;
 - `scale_i()`, `scale_d()` and `unscaled()` from `slic3r_def.h` for unit
-  conversion.
+  conversion;
+- the `c_bounding_box` helpers from `GeometryViews.hpp` (`bounding_box_empty()`,
+  `bounding_box_rotate()`, `bounding_box_merge_rotated()`,
+  `bounding_box_merge_aligned()`, ...) to build a pattern frame.
+
+A pattern that generates its lines from `box.min` must anchor the lattice to the
+world frame, otherwise the pattern shifts with the cross-section of every layer:
+call `bounding_box_merge_aligned(box, {module_x, module_y})` before generating,
+like the legacy `Fill` implementations did. The honeycomb, 3D honeycomb, gyroid
+and plane-path patterns do this; sparse plane-path and gyroid frames stay tight
+to the surface, and only their minimum corner is snapped.
 
 `run_ctx->plugin_storage` owns every temporary `Stored*` object. The gyroid
 plugin, for example, shrinks the surface by half the line spacing, clips each
@@ -92,7 +129,8 @@ into it. Set the printable attributes on each leaf:
 slic3r_api::StoredExtrusionEntity group(run_ctx->plugin_storage);
 group.set_flags(group.flags() | RAW_EXTRUSION_FLAG_SORTABLE | RAW_EXTRUSION_FLAG_REVERSIBLE);
 
-slic3r_api::StoredExtrusionEntity path(run_ctx->plugin_storage, points);
+slic3r_api::StoredExtrusionEntity path(run_ctx->plugin_storage);
+path.set_polyline(piece);   // piece is a Polyline view, transferred without a point copy
 path.get_or_add(slic3r_api::EPropertyAttributes::key)
     .extrusion_role(int32_t(params.extrusion_role))
     .mm3_per_mm(params.flow.mm3_per_mm * double(params.flow_mult))
@@ -103,6 +141,10 @@ group.append_child_move(path.mutable_view());
 slic3r_api::MutableExtrusionEntity output(ctx->output);
 output.append_child_move(group.mutable_view());
 ```
+
+`set_polyline()` borrows the point array from another API polyline view instead
+of building a `std::vector<c_point>`, which is what the helpers use to publish a
+`StoredPolylineCollection` directly.
 
 Mark the parent `SORTABLE`/`REVERSIBLE` when the order and direction of the
 paths may be changed by `STEP_ORDERING`. A pattern that produces one fixed path
@@ -122,5 +164,9 @@ supplied engine (for example
 `connect_infill(pieces, NearestNeighborOrderingEngine{})`) but it never joins
 two polylines. That is a hard requirement: clipping splits a path wherever it
 leaves the surface, so a joined path would extrude a straight segment across the
-hole or void between the pieces. The gyroid plugin uses it to order its clipped
-waves before publication.
+hole or void between the pieces.
+
+Plane-path patterns (`hilbertcurve`, `archimedeanchords`, `octagramspiral`)
+reproduce the legacy frame handling in `fill_plane_path_surface()`: they
+generate in a rotated grid, use `params.object_bounding_box` to align sparse
+infill across layers, then clip and order in the surface frame.

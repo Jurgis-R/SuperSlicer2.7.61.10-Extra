@@ -182,8 +182,11 @@ void create_pattern_option(orchestrator_handle *orchestrator,
 
 void create_infill_pattern_options(orchestrator_handle *orchestrator)
 {
-    // Base lists of pattern plugin ids. The legacy "(filled)" variants are gone:
-    // gap fill is owned by infill.post_process.gap_fill.
+    // Base lists of pattern plugin ids. Patterns moved to their own plugins
+    // (gyroid, honeycomb, 3dhoneycomb, hilbertcurve, archimedeanchords,
+    // octagramspiral) contribute themselves through
+    // orchestrator_modify_option_def(). The legacy "(filled)" variants are
+    // gone: gap fill is owned by infill.post_process.gap_fill.
     static const key_value_string_pair_t k_sparse_patterns[] = {
         { "rectilinear",         "Rectilinear" },
         { "alignedrectilinear",  "Aligned Rectilinear" },
@@ -194,11 +197,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
         { "cubic",               "Cubic" },
         { "line",                "Line" },
         { "concentric",          "Concentric" },
-        { "honeycomb",           "Honeycomb" },
-        { "3dhoneycomb",         "3D Honeycomb" },
-        { "hilbertcurve",        "Hilbert Curve" },
-        { "archimedeanchords",   "Archimedean Chords" },
-        { "octagramspiral",      "Octagram Spiral" },
         { "scatteredrectilinear","Scattered Rectilinear" },
         { "adaptivecubic",       "Adaptive Cubic" },
         { "supportcubic",        "Support Cubic" },
@@ -210,9 +208,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
         { "monotoniclines",      "Monotonic Lines" },
         { "alignedrectilinear",  "Aligned Rectilinear" },
         { "concentric",          "Concentric" },
-        { "hilbertcurve",        "Hilbert Curve" },
-        { "archimedeanchords",   "Archimedean Chords" },
-        { "octagramspiral",      "Octagram Spiral" },
         { "sawtooth",            "Sawtooth" },
         { "smooth",              "Ironing" },
     };
@@ -222,9 +217,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
         { "monotoniclines",      "Monotonic Lines" },
         { "alignedrectilinear",  "Aligned Rectilinear" },
         { "concentric",          "Concentric" },
-        { "hilbertcurve",        "Hilbert Curve" },
-        { "archimedeanchords",   "Archimedean Chords" },
-        { "octagramspiral",      "Octagram Spiral" },
         { "smooth",              "Ironing" },
     };
     static const key_value_string_pair_t k_solid_patterns[] = {
@@ -234,9 +226,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
         { "monotoniclines",      "Monotonic Lines" },
         { "alignedrectilinear",  "Aligned Rectilinear" },
         { "concentric",          "Concentric" },
-        { "hilbertcurve",        "Hilbert Curve" },
-        { "archimedeanchords",   "Archimedean Chords" },
-        { "octagramspiral",      "Octagram Spiral" },
         { "smooth",              "Ironing" },
     };
     static const key_value_string_pair_t k_bridge_patterns[] = {

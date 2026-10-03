@@ -97,6 +97,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
+#include "libslic3r/Plugins/Infill/SimpleInfillPatterns.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetractionLift.hpp"
@@ -687,6 +688,16 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins);
     register_builtin_plugin(orchestrator, "gyroid",
         slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin);
+    register_builtin_plugin(orchestrator, "honeycomb",
+        slic3r_api::Infill::register_honeycomb_pattern_plugin);
+    register_builtin_plugin(orchestrator, "3dhoneycomb",
+        slic3r_api::Infill::register_honeycomb_3d_pattern_plugin);
+    register_builtin_plugin(orchestrator, "hilbertcurve",
+        slic3r_api::Infill::register_hilbert_curve_pattern_plugin);
+    register_builtin_plugin(orchestrator, "archimedeanchords",
+        slic3r_api::Infill::register_archimedean_chords_pattern_plugin);
+    register_builtin_plugin(orchestrator, "octagramspiral",
+        slic3r_api::Infill::register_octagram_spiral_pattern_plugin);
     register_builtin_plugin(orchestrator, "infill.post_process.gap_fill",
         slic3r_api::Infill::PostInfillGapFillPlugin::register_post_infill_gap_fill_plugin);
     register_builtin_plugin(orchestrator, "ordering.default",

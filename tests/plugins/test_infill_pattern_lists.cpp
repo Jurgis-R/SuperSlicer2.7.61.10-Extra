@@ -71,6 +71,22 @@ TEST_CASE("Infill pattern lists are plugin-defined enums", "[plugins][infill][op
     CHECK(has_value(sparse, "gyroid"));
     CHECK_FALSE(has_value(sparse, "ensuring"));
 
+    // Patterns provided by standalone plugins still join the lists they belong
+    // to. The generator no longer declares them in its base lists.
+    CHECK(has_value(sparse, "honeycomb"));
+    CHECK(has_value(sparse, "3dhoneycomb"));
+    CHECK(has_value(sparse, "hilbertcurve"));
+    CHECK(has_value(sparse, "archimedeanchords"));
+    CHECK(has_value(sparse, "octagramspiral"));
+    CHECK(has_value(option_values("top_fill_pattern"), "hilbertcurve"));
+    CHECK(has_value(option_values("bottom_fill_pattern"), "archimedeanchords"));
+    CHECK(has_value(option_values("solid_fill_pattern"), "octagramspiral"));
+
+    // Each contribution is applied once even when several plugins contribute
+    // to the same list.
+    CHECK(std::count(sparse.begin(), sparse.end(), "honeycomb") == 1);
+    CHECK(std::count(sparse.begin(), sparse.end(), "gyroid") == 1);
+
     // Each slot keeps its own subset instead of sharing one merged list.
     CHECK(has_value(option_values("top_fill_pattern"), "sawtooth"));
     CHECK_FALSE(has_value(option_values("bottom_fill_pattern"), "sawtooth"));

@@ -75,34 +75,34 @@ struct LegacyPatternDefinition
     const char *name;
     const char *description;
     Slic3r::InfillPattern pattern;
+    int32_t priority;
 };
 
-const std::array<LegacyPatternDefinition, 25> k_legacy_patterns = {{
-    {"rectilinear", "Rectilinear", "Classic rectilinear infill pattern.", Slic3r::ipRectilinear},
-    {"monotonic", "Monotonic", "Monotonic solid infill pattern.", Slic3r::ipMonotonic},
-    {"alignedrectilinear", "Aligned Rectilinear", "Rectilinear infill aligned across layers.", Slic3r::ipAlignedRectilinear},
-    {"grid", "Grid", "Grid infill pattern.", Slic3r::ipGrid},
-    {"triangles", "Triangles", "Triangular infill pattern.", Slic3r::ipTriangles},
-    {"stars", "Stars", "Star-shaped triangular infill pattern.", Slic3r::ipStars},
-    {"cubic", "Cubic", "Cubic infill pattern.", Slic3r::ipCubic},
-    {"line", "Line", "Simple alternating line infill pattern.", Slic3r::ipLine},
-    {"monotoniclines", "Monotonic Lines", "Monotonic line infill pattern.", Slic3r::ipMonotonicLines},
-    {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric},
-    {"honeycomb", "Honeycomb", "Honeycomb infill pattern.", Slic3r::ipHoneycomb},
-    {"3dhoneycomb", "3D Honeycomb", "3D honeycomb infill pattern.", Slic3r::ip3DHoneycomb},
-    {"hilbertcurve", "Hilbert Curve", "Hilbert curve infill pattern.", Slic3r::ipHilbertCurve},
-    {"archimedeanchords", "Archimedean Chords", "Archimedean chords infill pattern.", Slic3r::ipArchimedeanChords},
-    {"octagramspiral", "Octagram Spiral", "Octagram spiral infill pattern.", Slic3r::ipOctagramSpiral},
-    {"adaptivecubic", "Adaptive Cubic", "Adaptive cubic infill pattern.", Slic3r::ipAdaptiveCubic},
-    {"supportcubic", "Support Cubic", "Support cubic infill pattern.", Slic3r::ipSupportCubic},
-    {"smooth", "Ironing", "Ironing-style smooth infill pattern.", Slic3r::ipSmooth},
-    {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert},
-    {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple},
-    {"rectiwithperimeter", "Rectilinear with Perimeter", "Rectilinear infill with perimeter-aware filling.", Slic3r::ipRectiWithPerimeter},
-    {"scatteredrectilinear", "Scattered Rectilinear", "Scattered rectilinear infill pattern.", Slic3r::ipScatteredRectilinear},
-    {"sawtooth", "Sawtooth", "Sawtooth rectilinear infill pattern.", Slic3r::ipSawtooth},
-    {"lightning", "Lightning", "Lightning infill pattern.", Slic3r::ipLightning},
-    {"ensuring", "Ensuring", "Solid infill pattern that improves coverage in narrow areas.", Slic3r::ipEnsuring},
+// Declaration order defines the familiar config UI order. The explicit
+// priority keeps the order stable while patterns move to standalone plugins:
+// honeycomb, 3dhoneycomb, hilbertcurve, archimedeanchords and octagramspiral
+// left gaps 10..14 and are now provided by their own plugins.
+const std::array<LegacyPatternDefinition, 20> k_legacy_patterns = {{
+    {"rectilinear", "Rectilinear", "Classic rectilinear infill pattern.", Slic3r::ipRectilinear, 0},
+    {"monotonic", "Monotonic", "Monotonic solid infill pattern.", Slic3r::ipMonotonic, 1},
+    {"alignedrectilinear", "Aligned Rectilinear", "Rectilinear infill aligned across layers.", Slic3r::ipAlignedRectilinear, 2},
+    {"grid", "Grid", "Grid infill pattern.", Slic3r::ipGrid, 3},
+    {"triangles", "Triangles", "Triangular infill pattern.", Slic3r::ipTriangles, 4},
+    {"stars", "Stars", "Star-shaped triangular infill pattern.", Slic3r::ipStars, 5},
+    {"cubic", "Cubic", "Cubic infill pattern.", Slic3r::ipCubic, 6},
+    {"line", "Line", "Simple alternating line infill pattern.", Slic3r::ipLine, 7},
+    {"monotoniclines", "Monotonic Lines", "Monotonic line infill pattern.", Slic3r::ipMonotonicLines, 8},
+    {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric, 9},
+    {"adaptivecubic", "Adaptive Cubic", "Adaptive cubic infill pattern.", Slic3r::ipAdaptiveCubic, 15},
+    {"supportcubic", "Support Cubic", "Support cubic infill pattern.", Slic3r::ipSupportCubic, 16},
+    {"smooth", "Ironing", "Ironing-style smooth infill pattern.", Slic3r::ipSmooth, 17},
+    {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
+    {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
+    {"rectiwithperimeter", "Rectilinear with Perimeter", "Rectilinear infill with perimeter-aware filling.", Slic3r::ipRectiWithPerimeter, 20},
+    {"scatteredrectilinear", "Scattered Rectilinear", "Scattered rectilinear infill pattern.", Slic3r::ipScatteredRectilinear, 21},
+    {"sawtooth", "Sawtooth", "Sawtooth rectilinear infill pattern.", Slic3r::ipSawtooth, 22},
+    {"lightning", "Lightning", "Lightning infill pattern.", Slic3r::ipLightning, 23},
+    {"ensuring", "Ensuring", "Solid infill pattern that improves coverage in narrow areas.", Slic3r::ipEnsuring, 24},
 }};
 
 bool requires_unmigrated_object_state(Slic3r::InfillPattern pattern)
@@ -141,9 +141,6 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
         return k_all_five;
     case Slic3r::ipAlignedRectilinear:
     case Slic3r::ipConcentric:
-    case Slic3r::ipHilbertCurve:
-    case Slic3r::ipArchimedeanChords:
-    case Slic3r::ipOctagramSpiral:
         return k_sparse_top_bottom_solid;
     case Slic3r::ipMonotonicLines:
     case Slic3r::ipSmooth:
@@ -153,8 +150,6 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
     case Slic3r::ipStars:
     case Slic3r::ipCubic:
     case Slic3r::ipLine:
-    case Slic3r::ipHoneycomb:
-    case Slic3r::ip3DHoneycomb:
     case Slic3r::ipAdaptiveCubic:
     case Slic3r::ipSupportCubic:
     case Slic3r::ipScatteredRectilinear:
@@ -330,11 +325,12 @@ std::vector<std::unique_ptr<LegacyInfillPattern>> &legacy_instances(orchestrator
         plugins.reserve(k_legacy_patterns.size());
         for (size_t idx = 0; idx < k_legacy_patterns.size(); ++idx) {
             const LegacyPatternDefinition &def = k_legacy_patterns[idx];
-            // Use declaration order as priority. The dynamic enum builder keeps
-            // active INFILL_PATTERN plugins sorted by plugin priority, so this
-            // preserves the familiar order from the legacy config UI.
+            // Use the explicit declaration priority. The dynamic enum builder
+            // keeps active INFILL_PATTERN plugins sorted by plugin priority, so
+            // this preserves the familiar order from the legacy config UI even
+            // though other patterns are provided by their own plugins.
             plugins.emplace_back(
-                new LegacyInfillPattern(orch, def.id, def.name, def.description, def.pattern, int32_t(idx)));
+                new LegacyInfillPattern(orch, def.id, def.name, def.description, def.pattern, def.priority));
         }
     }
     return plugins;
