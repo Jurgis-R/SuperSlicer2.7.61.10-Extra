@@ -129,6 +129,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/RandomSeamPlacer.hpp"
 #include "libslic3r/Plugins/Slicing/MaxOverhangThreshold.hpp"
+#include "libslic3r/Plugins/Slicing/OverhangSlopeFill.hpp"
 #include "libslic3r/Plugins/Slicing/SliceVolume.hpp"
 #include "libslic3r/Plugins/Slicing/StandardLayerHeightGenerator.hpp"
 #include "libslic3r/Plugins/Slicing/VaseMultiIslandConnector.hpp"
@@ -656,6 +657,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::StandardLayerHeightGeneratorPlugin::register_standard_layer_height_generator_plugin);
     register_builtin_plugin(orchestrator, "slice_volume",
         slic3r_api::SliceVolumePlugin::register_slice_volume_plugin);
+    register_builtin_plugin(orchestrator, "overhang_slope_fill",
+        slic3r_api::OverhangSlopeFillPlugin::register_overhang_slope_fill_plugin);
     register_builtin_plugin(orchestrator, "max_overhang_threshold",
         slic3r_api::MaxOverhangThresholdPlugin::register_max_overhang_threshold_plugin);
     register_builtin_plugin(orchestrator, "vase.multi_island_connector",

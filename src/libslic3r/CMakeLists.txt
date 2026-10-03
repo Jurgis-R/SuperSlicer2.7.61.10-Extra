@@ -373,6 +373,8 @@ set(SLIC3R_SOURCES
 	Plugins/SkirtBrim/DefaultSkirtGenerator.hpp
 	Plugins/Slicing/MaxOverhangThreshold.cpp
 	Plugins/Slicing/MaxOverhangThreshold.hpp
+	Plugins/Slicing/OverhangSlopeFill.cpp
+	Plugins/Slicing/OverhangSlopeFill.hpp
 	Plugins/Slicing/SliceVolume.cpp
 	Plugins/Slicing/SliceVolume.hpp
 	Plugins/Slicing/StandardLayerHeightGenerator.cpp
