@@ -45,6 +45,9 @@ add_executable(${_TEST_NAME}_tests
     test_simple_infill_patterns.cpp
     test_arachne_infill.cpp
     test_post_full_fill_volume.cpp
+    test_rectilinear_edge_grid.cpp
+    test_rectilinear_clipper.cpp
+    test_rectilinear_work_buffers.cpp
     test_gcode_default_firmware_session.cpp
     test_gcode_custom_gcode_per_print_z.cpp
     test_gcode_feature_gcode.cpp

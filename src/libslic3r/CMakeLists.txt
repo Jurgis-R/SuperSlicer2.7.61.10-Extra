@@ -282,6 +282,9 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/ArachneInfill.cpp
 	Plugins/Infill/ArachneInfill.hpp
 	Plugins/Infill/ArchimedeanChordsPattern.cpp
+	Plugins/Infill/InfillChaining.cpp
+	Plugins/Infill/InfillPaths.hpp
+	Plugins/Infill/InfillWorkBuffers.hpp
 	Plugins/Infill/DefaultInfillGenerator.cpp
 	Plugins/Infill/DefaultInfillGenerator.hpp
 	Plugins/Infill/GyroidPattern.cpp
@@ -295,6 +298,10 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/PatternPluginHelpers.hpp
 	Plugins/Infill/PostFullFillVolume.cpp
 	Plugins/Infill/PostFullFillVolume.hpp
+	Plugins/Infill/Rectilinear/RectilinearEdgeGrid.cpp
+	Plugins/Infill/Rectilinear/RectilinearClipper.hpp
+	Plugins/Infill/Rectilinear/RectilinearEdgeGrid.hpp
+	Plugins/Infill/Rectilinear/RectilinearWorkBuffers.hpp
 	Plugins/Infill/PostInfillGapFill.cpp
 	Plugins/Infill/PostInfillGapFill.hpp
 	Plugins/Infill/SimpleInfillPatterns.hpp
