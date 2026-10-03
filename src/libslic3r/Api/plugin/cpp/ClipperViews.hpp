@@ -68,6 +68,8 @@ clipper_offset(subject, delta) grows closed polygons for positive delta and
 shrinks them for negative delta. clipper_offset2(subject, delta1, delta2) is the
 two-stage offset helper used by many slicer algorithms to remove narrow features
 or build rings. For open polylines, pass the appropriate CLIPPER_END_* type.
+Rings meeting exactly along an edge after the offset are split as the native
+per-ring offset_ex() splits them, without zero-width bridges.
 
 Choosing output form
 --------------------

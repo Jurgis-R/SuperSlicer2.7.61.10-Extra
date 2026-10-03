@@ -166,6 +166,9 @@ negative shrinks them. For open paths, pass an open end type.
 
 miter_limit is used as MiterLimit for square/miter joins and as ArcTolerance for
 round joins, following the convention already used by ClipperUtils.
+
+Rings meeting exactly along an edge after the offset are split as the native
+per-ring offset_ex() splits them: the result has no zero-width bridge.
 */
 SLIC3R_HOST_API clipper_shapes_handle *clipper_offset(storage_handle *storage,
                                                       const clipper_shapes_handle *subject,

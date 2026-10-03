@@ -16,6 +16,9 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_queries.cpp
     test_public_kdtree.cpp
     test_clipper_views.cpp
+    test_clipper_offset_contacts.cpp
+    test_clipper_offset_parity.cpp
+
     test_deferred_callback_exception.cpp
     test_extrusion_continuity.cpp
     test_extrusion_ordered_leaf.cpp

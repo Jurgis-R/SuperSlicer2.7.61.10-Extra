@@ -2,10 +2,14 @@
 ///|/
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <numeric>
+#include <tuple>
+#include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_clipper.h"
 #include "libslic3r/BoundingBox.hpp"
@@ -21,6 +25,26 @@ namespace Slic3r {
 
 // Borrowed subject collections remain read-only while core clipping owns its temporary paths.
 static const Polylines *to_polylines(const polyline_collection_handle *handle);
+
+// One offset edge placed on its support line: the reduced direction and the
+// line offset identify the line, the projections bound the edge along it.
+struct LineEdge {
+    int64_t direction_x;
+    int64_t direction_y;
+    int64_t offset;
+    int64_t begin;
+    int64_t end;
+};
+
+// Whether two edges of the offset result overlap along a positive length.
+static bool has_overlapping_edges(const ClipperLib::PolyTree &tree);
+
+// Append the edges of a node contour and of all its descendants.
+static void collect_line_edges(const ClipperLib::PolyNode &node, std::vector<LineEdge> &edges);
+
+// Unite the rings of an offset result with a non-zero fill.
+static ClipperLib::PolyTree united_polytree(ClipperLib::PolyTree tree);
+
 
 /* ---- ABI handle casts ------------------------------------------------
 The public headers expose opaque C handles. Internally they are pointers to the
@@ -158,6 +182,79 @@ static ClipperLib::Paths safety_offset_paths(const ApiClipper::ClipperShapes &cl
     ClipperLib::Paths out;
     offsetter.Execute(out, ClipperSafetyOffset);
     return out;
+}
+
+/* ---- Offset clean-up -------------------------------------------------
+ClipperOffset unites all its raw offset rings in one pass. When a contour and a
+hole, or two holes, meet exactly along an edge, that union keeps the contact as
+a zero-width bridge: an edge walked twice in opposite directions, or a hole
+sharing an edge with its contour. A second union of the result splits it like
+the native per-ring offset_ex() does. A bridge always shows as two collinear
+edges overlapping along a positive length, so the edges are sorted along their
+support lines and the second union only runs when such an overlap exists.
+*/
+
+static bool has_overlapping_edges(const ClipperLib::PolyTree &tree)
+{
+    std::vector<LineEdge> edges;
+    for (const ClipperLib::PolyNode *child : tree.Childs)
+        collect_line_edges(*child, edges);
+    std::sort(edges.begin(), edges.end(), [](const LineEdge &first, const LineEdge &second) {
+        return std::tie(first.direction_x, first.direction_y, first.offset, first.begin) <
+               std::tie(second.direction_x, second.direction_y, second.offset, second.begin);
+    });
+
+    // Edges of one line are sorted by their start: one overlaps an earlier edge
+    // when it starts before the furthest end reached so far on that line.
+    int64_t furthest_end = 0;
+    for (size_t index = 0; index < edges.size(); ++index) {
+        const LineEdge &current = edges[index];
+        const bool same_line = index > 0 && current.direction_x == edges[index - 1].direction_x &&
+                               current.direction_y == edges[index - 1].direction_y &&
+                               current.offset == edges[index - 1].offset;
+        if (same_line && current.begin < furthest_end)
+            return true;
+        furthest_end = same_line ? std::max(furthest_end, current.end) : current.end;
+    }
+    return false;
+}
+
+static void collect_line_edges(const ClipperLib::PolyNode &node, std::vector<LineEdge> &edges)
+{
+    const ClipperLib::Path &contour = node.Contour;
+    for (size_t index = 0; index < contour.size(); ++index) {
+        const ClipperLib::IntPoint &a = contour[index];
+        const ClipperLib::IntPoint &b = contour[(index + 1) % contour.size()];
+        int64_t direction_x = b.x() - a.x();
+        int64_t direction_y = b.y() - a.y();
+        const int64_t divisor = std::gcd(direction_x, direction_y);
+        if (divisor == 0)
+            continue;
+        // Orient every direction the same way so opposite edges share a line.
+        direction_x /= divisor;
+        direction_y /= divisor;
+        if (direction_x < 0 || (direction_x == 0 && direction_y < 0)) {
+            direction_x = -direction_x;
+            direction_y = -direction_y;
+        }
+        const int64_t projection_a = direction_x * a.x() + direction_y * a.y();
+        const int64_t projection_b = direction_x * b.x() + direction_y * b.y();
+        edges.push_back({direction_x, direction_y, direction_x * a.y() - direction_y * a.x(),
+                         std::min(projection_a, projection_b), std::max(projection_a, projection_b)});
+    }
+    for (const ClipperLib::PolyNode *child : node.Childs)
+        collect_line_edges(*child, edges);
+}
+
+static ClipperLib::PolyTree united_polytree(ClipperLib::PolyTree tree)
+{
+    ClipperLib::Paths rings;
+    ClipperLib::PolyTreeToPaths(std::move(tree), rings);
+    ClipperLib::Clipper clipper;
+    clipper.AddPaths(rings, ClipperLib::ptSubject, true);
+    ClipperLib::PolyTree united;
+    clipper.Execute(ClipperLib::ctUnion, united, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    return united;
 }
 } // namespace Slic3r
 
@@ -387,10 +484,14 @@ clipper_shapes_handle *clipper_offset(storage_handle *storage,
         offsetter.MiterLimit = miter_limit;
     // Keep the same shortest-edge heuristic as ClipperUtils offsets.
     offsetter.ShortestEdgeLength = std::abs(delta * Slic3r::ClipperOffsetShortestEdgeFactor);
+    // Same area as the bounding-rectangle clean-up of negative offsets, cheaper.
+    offsetter.ShrinkWithPositiveFill = true;
     offsetter.AddPaths(subject_shapes->to_paths(), Slic3r::to_join_type(join_type), Slic3r::to_end_type(end_type));
 
     Slic3r::ClipperLib::PolyTree result;
     offsetter.Execute(result, delta);
+    if (Slic3r::has_overlapping_edges(result))
+        result = Slic3r::united_polytree(std::move(result));
     return Slic3r::store_shape(storage, Slic3r::ApiClipper::make_polytree_shapes(std::move(result)));
 }
 
