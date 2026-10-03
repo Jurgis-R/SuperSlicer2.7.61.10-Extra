@@ -95,6 +95,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
 #include "libslic3r/Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp"
 #include "libslic3r/Plugins/Infill/Lightning/LightningPattern.hpp"
+#include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
 #include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"

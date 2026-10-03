@@ -11,7 +11,7 @@
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/Fill/FillBase.hpp"
-#include "libslic3r/Plugins/Infill/SimpleInfillPatterns.hpp"
+#include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
 #include "libslic3r/Surface.hpp"
 
 // The concentric group is not sortable: within a component, every ring is printed after the ring around it.
@@ -110,7 +110,7 @@ Paths api_paths(const ExPolygon &polygon, const raw_infill_pattern_params &raw)
     ctx.surface = reinterpret_cast<const surface_handle *>(&surface);
     ctx.params = &raw;
     ctx.output = output.mutable_handle();
-    slic3r_api::Infill::fill_concentric_surface(ctx, handle, nullptr);
+    slic3r_api::Infill::fill_concentric_surface(ctx, handle, nullptr, {});
     Paths result;
     collect(output.readonly(), result);
     return result;
@@ -286,7 +286,7 @@ TEST_CASE("Concentric groups keep order and classical loops under Arachne", "[pl
             ctx.surface = reinterpret_cast<const surface_handle *>(&surface);
             ctx.params = &raw;
             ctx.output = output.mutable_handle();
-            slic3r_api::Infill::fill_concentric_surface(ctx, handle, nullptr);
+            slic3r_api::Infill::fill_concentric_surface(ctx, handle, nullptr, {});
             REQUIRE_FALSE(output.empty());
             const slic3r_api::ExtrusionEntity group = *output.readonly().children().begin();
             CHECK_FALSE(group.sortable());
@@ -337,7 +337,7 @@ TEST_CASE("Concentric cancellation discards the completed unpublished group", "[
         }
         return 0;
     };
-    CHECK_THROWS_AS(slic3r_api::Infill::fill_concentric_surface(ctx, handle, &run), slic3r_api::PluginCancelled);
+    CHECK_THROWS_AS(slic3r_api::Infill::fill_concentric_surface(ctx, handle, &run, {}), slic3r_api::PluginCancelled);
     CHECK(probe.ready);
     CHECK(output.empty());
     CHECK(storage.size() == initial);

@@ -27,6 +27,7 @@
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Plugins/Infill/ArachneInfill.hpp"
+#include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Steps/StepGenerateInfill.hpp"
 #include "libslic3r/Steps/StepGeneratePerimeter.hpp"
@@ -40,12 +41,44 @@ Arachne infill plugin tests
 The host conversion of variable-width lines is compared with
 Geometry::thin_variable_width(), and the plugin settings with the settings the
 legacy WallToolPaths constructor resolves.
+
+The concentric plugin is compared with the native FillConcentric Arachne
+branch, entity by entity: the native collection may be sorted later, while the
+plugin keeps every component in the native wall order, so each component must
+appear as one run of native entities in their native order. The pipeline test
+checks that the Arachne perimeter generator setting selects the walls.
 */
 
 using namespace Slic3r;
 using namespace Slic3r::Test::PerimeterPluginTests;
 
 namespace {
+
+// Restrict the active plugin set for one pipeline run, then restore it.
+class ScopedActivePlugins
+{
+public:
+    explicit ScopedActivePlugins(std::initializer_list<const char *> plugin_ids) :
+        m_orchestrator(Orchestrator::instance())
+    {
+        for (Plugin *plugin : m_orchestrator.active_plugins())
+            m_previous_active_plugins.push_back(plugin);
+        m_orchestrator.clear_active_plugins();
+        for (const char *plugin_id : plugin_ids)
+            REQUIRE(m_orchestrator.set_plugin_active(plugin_id, true));
+    }
+
+    ~ScopedActivePlugins()
+    {
+        m_orchestrator.clear_active_plugins();
+        for (Plugin *plugin : m_previous_active_plugins)
+            m_orchestrator.set_plugin_active(plugin, true);
+    }
+
+private:
+    Orchestrator &m_orchestrator;
+    std::vector<Plugin *> m_previous_active_plugins;
+};
 
 // Region settings of one parity case, as option values.
 using Settings = std::vector<std::pair<std::string, std::string>>;
@@ -59,6 +92,18 @@ std::string leaf_text(const std::vector<std::pair<coord_t, coord_t>> &points, in
                       float width, float height);
 // A region configuration with some settings changed.
 PrintRegionConfig region_config(const Settings &settings);
+// The recipe of a full top surface, with the flow the legacy wrapper rebuilds from its spacing.
+raw_infill_pattern_params make_recipe(const ExPolygon &surface, float spacing_ratio, coord_t loop_clipping);
+// Run the native FillConcentric Arachne branch on one recipe.
+std::vector<std::string> native_entities(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                                         const PrintRegionConfig &region, const PrintConfig &print);
+// Run the plugin on one recipe and read the entities of its group.
+std::vector<std::string> plugin_entities(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                                         const Arachne::WallToolPathsSettings &settings);
+// Slice a thin slab with a concentric top surface and read the width of every top infill leaf.
+std::vector<float> top_infill_widths(const char *perimeter_generator);
+// Collect the widths of the leaves of one entity.
+void collect_widths(const ExtrusionEntity &entity, std::vector<float> &widths);
 
 std::string leaf_text(const std::vector<std::pair<coord_t, coord_t>> &points, int32_t role, double mm3_per_mm,
                       float width, float height)
@@ -117,6 +162,148 @@ PrintRegionConfig region_config(const Settings &settings)
     PrintRegionConfig region;
     region.apply(changes, true);
     return region;
+}
+
+raw_infill_pattern_params make_recipe(const ExPolygon &surface, float spacing_ratio, coord_t loop_clipping)
+{
+    const Flow requested = Flow::new_from_spacing(0.45f, 0.4f, 0.2f, spacing_ratio, false);
+    // FillParams of the legacy wrapper rebuild the flow from the scaled spacing.
+    const Flow flow = Flow::new_from_spacing(float(unscaled(requested.scaled_spacing())), 0.4f, 0.2f, spacing_ratio, false);
+    raw_infill_pattern_params raw = {};
+    raw.surface_type = RAW_SURFACE_TYPE_POS_TOP | RAW_SURFACE_TYPE_DENS_SOLID;
+    raw.extrusion_role = RAW_EXTRUSION_ROLE_TOP_SOLID_INFILL;
+    raw.flow.width = flow.scaled_width();
+    raw.flow.spacing = flow.scaled_spacing();
+    raw.flow.height = flow.scaled_height();
+    raw.flow.nozzle_diameter = scale_i(flow.nozzle_diameter());
+    raw.flow.spacing_ratio = flow.spacing_ratio();
+    raw.flow.mm3_per_mm = flow.mm3_per_mm();
+    raw.density = 1.f;
+    raw.flow_mult = 0.95f;
+    raw.infill_flags = C_INFILL_FLAG_USE_ARACHNE;
+    raw.spacing = flow.spacing();
+    raw.bridge_angle = -1.;
+    raw.layer_height = 0.2;
+    raw.loop_clipping = loop_clipping;
+    raw.fill_resolution = scale_i(0.0125);
+    const BoundingBox box = get_extents(surface);
+    raw.object_bounding_box = {{box.min.x(), box.min.y()}, {box.max.x(), box.max.y()}};
+    return raw;
+}
+
+std::vector<std::string> native_entities(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                                         const PrintRegionConfig &region, const PrintConfig &print)
+{
+    static const PrintObjectConfig object;
+    const std::unique_ptr<Fill> filler(Fill::new_from_type(ipConcentric));
+    filler->set_bounding_box(get_extents(polygon));
+    filler->angle = 0.f;
+    filler->layer_id = 0;
+    filler->loop_clipping = raw.loop_clipping;
+    filler->set_config(&print, &object);
+    FillParams params;
+    params.config = &region;
+    params.density = raw.density;
+    params.dont_adjust = false;
+    params.flow_mult = raw.flow_mult;
+    params.fill_resolution = raw.fill_resolution;
+    params.use_arachne = true;
+    params.layer_height = float(raw.layer_height);
+    params.role = ExtrusionRole(static_cast<ExtrusionRoleModifier>(raw.extrusion_role));
+    params.flow = Flow::new_from_spacing(float(unscaled(raw.flow.spacing)), float(unscaled(raw.flow.nozzle_diameter)),
+                                         float(unscaled(raw.flow.height)), raw.flow.spacing_ratio, false);
+    filler->init_spacing(raw.spacing, params);
+    const Surface surface(stPosTop | stDensSolid, polygon);
+    ExtrusionEntitiesPtr output;
+    filler->fill_surface_extrusion(&surface, params, output);
+    std::vector<std::string> entities;
+    REQUIRE(output.size() <= 1);
+    for (ExtrusionEntity *collection : output) {
+        CHECK(collection->can_sort());
+        for (size_t index = 0; index < collection->child_count(); ++index)
+            entities.push_back(snapshot(collection->child(index)));
+        delete collection;
+    }
+    return entities;
+}
+
+std::vector<std::string> plugin_entities(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                                         const Arachne::WallToolPathsSettings &settings)
+{
+    const Surface surface(stPosTop | stDensSolid, polygon);
+    PluginStorage storage;
+    storage_handle *handle = reinterpret_cast<storage_handle *>(&storage);
+    slic3r_api::StoredExtrusionEntity output(handle);
+    run_ctx_infill_pattern ctx = {};
+    ctx.surface = reinterpret_cast<const surface_handle *>(&surface);
+    ctx.params = &raw;
+    ctx.output = output.mutable_handle();
+    slic3r_api::Infill::fill_concentric_surface(ctx, handle, nullptr, settings);
+    std::vector<std::string> entities;
+    REQUIRE(output.child_count() <= 1);
+    for (const slic3r_api::ExtrusionEntity group : output.readonly().children()) {
+        CHECK_FALSE(group.sortable());
+        CHECK_FALSE(group.reversible());
+        for (const slic3r_api::ExtrusionEntity child : group.children())
+            entities.push_back(snapshot(child));
+    }
+    return entities;
+}
+
+std::vector<float> top_infill_widths(const char *perimeter_generator)
+{
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({
+        { "perimeter_generator", perimeter_generator },
+        { "fill_pattern", "rectilinear" },
+        { "top_fill_pattern", "concentric" },
+        { "fill_density", "20%" },
+        { "top_solid_layers", "0" },
+        { "bottom_solid_layers", "0" },
+        { "solid_infill_every_layers", "0" },
+        { "infill_every_layers", "1" }
+    }));
+    // A width that is not a multiple of the spacing makes Arachne vary its walls.
+    replace_all_layer_islands(prepared, rectangle_expolygon(-10., -6.65, 10., 6.65));
+    ScopedActivePlugins active({
+        SIMPLE_PERIMETER_GENERATOR,
+        INITIAL_TYPED_SURFACE_BUILDER,
+        "infill.generator.default",
+        "rectilinear",
+        "concentric"
+    });
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
+    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
+    Steps::StepGenerateInfill::clean_and_prepare(prepared.print);
+    Steps::StepGenerateInfill::run_step(orchestrator, prepared.print);
+
+    // The initial typed surface builder makes the last layer top-solid.
+    std::vector<float> widths;
+    for (const PrintObject &object : prepared.print.objects())
+        for (const Layer &layer : object.layers()) {
+            widths.clear();
+            for (const LayerSliceIsland &island : layer.islands())
+                for (const LayerRegionIsland &region_island : island.regions_islands())
+                    if (region_island.has_extrusion(LayerRegionIsland::INFILLS))
+                        for (const ExtrusionEntity *entity : region_island.extrusion(LayerRegionIsland::INFILLS).entities())
+                            collect_widths(*entity, widths);
+        }
+    return widths;
+}
+
+void collect_widths(const ExtrusionEntity &entity, std::vector<float> &widths)
+{
+    if (!entity.is_leaf()) {
+        for (const ExtrusionEntityUPtr &child : entity.children())
+            collect_widths(*child, widths);
+        return;
+    }
+    const ExtrusionAttributes *attributes = entity.get_property<ExtrusionAttributes>();
+    REQUIRE(attributes != nullptr);
+    widths.push_back(attributes->width);
 }
 
 } // namespace
@@ -207,4 +394,124 @@ TEST_CASE("Arachne infill settings match the WallToolPaths configuration", "[plu
         CHECK(actual.wall_transition_angle == expected.wall_transition_angle);
         CHECK(actual.wall_distribution_count == expected.wall_distribution_count);
     }
+}
+
+TEST_CASE("Concentric plugin matches the native Arachne walls", "[plugins][infill][concentric][arachne]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ExPolygons narrow = union_ex(ExPolygons{rectangle_expolygon(-10., -5., -4., 5.),
+        rectangle_expolygon(-4., -0.1, 4., 0.1), rectangle_expolygon(4., -5., 10., 5.)});
+    const ExPolygons dumbbell = union_ex(ExPolygons{rectangle_expolygon(-12., -5., -4., 5.),
+        rectangle_expolygon(-4., -1., 4., 1.), rectangle_expolygon(4., -5., 12., 5.)});
+    const ExPolygon lshape(Polygon{Point(0, 0), Point(scale_i(30.), 0), Point(scale_i(30.), scale_i(10.)),
+        Point(scale_i(10.), scale_i(10.)), Point(scale_i(10.), scale_i(25.)), Point(0, scale_i(25.))});
+    const ExPolygons nested = union_ex(ExPolygons{rectangle_with_hole_expolygon(), rectangle_expolygon(-2., -2., 2., 2.)});
+    REQUIRE(narrow.size() == 1);
+    REQUIRE(dumbbell.size() == 1);
+    REQUIRE(nested.size() == 2);
+    ExPolygons cases{rectangle_expolygon(-10., -6.65, 10., 6.65), rectangle_with_hole_expolygon(), lshape,
+                     narrow.front(), dumbbell.front()};
+    cases.insert(cases.end(), nested.begin(), nested.end());
+
+    PrintConfig print;
+    print.set_deserialize_strict("nozzle_diameter", "0.4");
+    const std::vector<Settings> settings_cases = {
+        {}, { { "min_bead_width", "60%" }, { "wall_transition_length", "0.8" }, { "wall_distribution_count", "2" } } };
+
+    for (const ExPolygon &polygon : cases)
+        for (const Settings &settings : settings_cases)
+            for (const float ratio : { 1.f, 0.8f })
+                for (const coord_t clipping : { coord_t(0), scale_i(0.15) }) {
+                    CAPTURE(polygon.holes.size(), polygon.area(), settings.size(), ratio, clipping);
+                    const PrintRegionConfig region = region_config(settings);
+                    const raw_infill_pattern_params raw = make_recipe(polygon, ratio, clipping);
+                    const std::vector<std::string> expected = native_entities(polygon, raw, region, print);
+                    const std::vector<std::string> actual =
+                        plugin_entities(polygon, raw, Arachne::wall_tool_paths_settings(region, print));
+                    REQUIRE_FALSE(expected.empty());
+                    REQUIRE(actual.size() == expected.size());
+                    // Each component is a run of native entities, in the native order; the narrow
+                    // shape splits in two components.
+                    std::vector<size_t> native_index;
+                    for (const std::string &entity : actual) {
+                        const std::vector<std::string>::const_iterator found =
+                            std::find(expected.begin(), expected.end(), entity);
+                        REQUIRE(found != expected.end());
+                        native_index.push_back(size_t(found - expected.begin()));
+                    }
+                    std::vector<size_t> sorted = native_index;
+                    std::sort(sorted.begin(), sorted.end());
+                    for (size_t index = 0; index < sorted.size(); ++index)
+                        CHECK(sorted[index] == index);
+                    size_t runs = 1;
+                    for (size_t index = 1; index < native_index.size(); ++index)
+                        if (native_index[index] != native_index[index - 1] + 1)
+                            ++runs;
+                    CHECK(runs <= 2);
+                }
+}
+
+TEST_CASE("Concentric plugin keeps classic loops for sparse Arachne recipes", "[plugins][infill][concentric][arachne]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ExPolygon polygon = rectangle_with_hole_expolygon();
+    raw_infill_pattern_params arachne = make_recipe(polygon, 1.f, 0);
+    for (const bool sparse : { true, false }) {
+        CAPTURE(sparse);
+        if (sparse)
+            arachne.density = 0.5f;
+        else
+            arachne.infill_flags |= C_INFILL_FLAG_DONT_ADJUST;
+        raw_infill_pattern_params classic = arachne;
+        classic.infill_flags &= uint16_t(~uint16_t(C_INFILL_FLAG_USE_ARACHNE));
+        CHECK(plugin_entities(polygon, arachne, {}) == plugin_entities(polygon, classic, {}));
+    }
+}
+
+TEST_CASE("Arachne concentric cancellation discards the unpublished group", "[plugins][infill][concentric][arachne][cancellation]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const Surface surface(stPosTop | stDensSolid, rectangle_with_hole_expolygon());
+    const raw_infill_pattern_params raw = make_recipe(surface.expolygon, 1.f, 0);
+    PrintConfig print;
+    print.set_deserialize_strict("nozzle_diameter", "0.4");
+    const Arachne::WallToolPathsSettings settings = Arachne::wall_tool_paths_settings(PrintRegionConfig(), print);
+    PluginStorage storage;
+    storage_handle *handle = reinterpret_cast<storage_handle *>(&storage);
+    slic3r_api::StoredExtrusionEntity output(handle);
+    const size_t initial = storage.size();
+    run_ctx_infill_pattern ctx = {};
+    ctx.surface = reinterpret_cast<const surface_handle *>(&surface);
+    ctx.params = &raw;
+    ctx.output = output.mutable_handle();
+    // Cancel once the group holds a wall; the walls of this shape are closed loops.
+    struct Probe { PluginStorage *storage; const extrusion_entity_handle *output; bool ready = false; } probe{&storage, output.handle()};
+    plugin_run_context run = {};
+    run.host_context = reinterpret_cast<plugin_host_context *>(&probe);
+    run.is_cancelled = [](plugin_host_context *host) {
+        Probe &probe = *reinterpret_cast<Probe *>(host);
+        for (const std::unique_ptr<ExtrusionEntity> &owned : probe.storage->extrusions) {
+            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned.get()));
+            if (entity.handle() != probe.output && !entity.is_leaf() && !entity.empty() && !entity.child(0).is_leaf()) {
+                probe.ready = true;
+                return 1;
+            }
+        }
+        return 0;
+    };
+    CHECK_THROWS_AS(slic3r_api::Infill::fill_concentric_surface(ctx, handle, &run, settings), slic3r_api::PluginCancelled);
+    CHECK(probe.ready);
+    CHECK(output.empty());
+    CHECK(storage.size() == initial);
+}
+
+TEST_CASE("The Arachne perimeter generator gives concentric infill variable widths", "[plugins][infill][concentric][arachne]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const std::vector<float> arachne = top_infill_widths("arachne");
+    const std::vector<float> classic = top_infill_widths("classic");
+    REQUIRE_FALSE(arachne.empty());
+    REQUIRE_FALSE(classic.empty());
+    CHECK(std::all_of(classic.begin(), classic.end(), [&classic](float width) { return width == classic.front(); }));
+    CHECK(std::any_of(arachne.begin(), arachne.end(), [&classic](float width) { return width != classic.front(); }));
 }

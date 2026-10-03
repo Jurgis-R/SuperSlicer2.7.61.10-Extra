@@ -2,10 +2,13 @@
 ///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník, Lukáš Hejl
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 
-// Keep classic onion offsets and seam ties synchronized with FillConcentric.cpp and Point.cpp.
-#include "SimpleInfillPatterns.hpp"
+// Keep classic onion offsets, Arachne walls and seam ties synchronized with FillConcentric.cpp and Point.cpp.
+#include "ConcentricPattern.hpp"
 
+#include <algorithm>
+#include <iterator>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -13,6 +16,7 @@
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/SurfaceViews.hpp"
+#include "libslic3r/Plugins/Infill/ArachneInfill.hpp"
 #include "libslic3r/Plugins/Infill/InfillPaths.hpp"
 #include "libslic3r/Plugins/Infill/PatternPluginHelpers.hpp"
 
@@ -36,6 +40,13 @@ struct NearestVertex {
 
 // Adjusted extrusion spacing also controls the initial half-spacing inset.
 Spacing concentric_spacing(const raw_infill_pattern_params &params);
+// Arachne recipes get variable-width walls on full surfaces whose spacing may be adjusted.
+bool uses_arachne(const raw_infill_pattern_params &params);
+// Fill one component with Arachne walls, outer walls first, and append them to the group.
+void fill_component_arachne(storage_handle *storage, const ExPolygon &component, const Spacing &spacing,
+                            const raw_infill_pattern_params &params,
+                            const Slic3r::Arachne::WallToolPathsSettings &settings, const plugin_run_context *run_ctx,
+                            StoredExtrusionEntity &group);
 // Build the onion of one component as a ring nesting tree, then print it outside-in.
 void fill_component(storage_handle *storage, const ExPolygon &component, const Spacing &spacing,
                     const raw_infill_pattern_params &params, const plugin_run_context *run_ctx, work::Polylines &out);
@@ -71,6 +82,52 @@ Spacing concentric_spacing(const raw_infill_pattern_params &params)
         spacing.distance = scale_i(spacing.extrusion);
     }
     return spacing;
+}
+
+bool uses_arachne(const raw_infill_pattern_params &params)
+{
+    return (params.infill_flags & C_INFILL_FLAG_USE_ARACHNE) != 0 && params.density > 0.9999f &&
+           (params.infill_flags & C_INFILL_FLAG_DONT_ADJUST) == 0;
+}
+
+/*
+Like FillConcentric::_fill_surface_single() with Arachne: the component is
+grown back to the surface, then Arachne lays as many walls as fit. The walls
+come inset by inset, outer first; each closed wall starts at its vertex nearest
+to the end of the previous one, before loop clipping.
+*/
+void fill_component_arachne(storage_handle *storage, const ExPolygon &component, const Spacing &spacing,
+                            const raw_infill_pattern_params &params,
+                            const Slic3r::Arachne::WallToolPathsSettings &settings, const plugin_run_context *run_ctx,
+                            StoredExtrusionEntity &group)
+{
+    const c_bounding_box box = component.contour().bounding_box();
+    const coord_t loops_count = std::max(box.max.x - box.min.x, box.max.y - box.min.y) / spacing.distance + 1;
+    const StoredExPolygonCollection outline =
+        clipper_offset(ClipperOperand(storage, component), double(float(spacing.distance) / 2.f)).to_expolygon_collection();
+    const Slic3r::Polygons polygons = ArachneInfill::to_polygons(outline.readonly());
+    throw_if_cancelled(run_ctx);
+    Slic3r::Arachne::WallToolPaths walls(polygons, spacing.distance, params.flow.width, spacing.distance,
+                                         params.flow.width, size_t(loops_count), 0, params.layer_height, settings);
+    const std::vector<Slic3r::Arachne::VariableWidthLines> &insets = walls.getToolPaths();
+    throw_if_cancelled(run_ctx);
+
+    Slic3r::Point last_position(0, 0);
+    for (const Slic3r::Arachne::VariableWidthLines &inset : insets)
+        for (const Slic3r::Arachne::ExtrusionLine &wall : inset) {
+            if (wall.empty())
+                continue;
+            Slic3r::ThickPolyline line = Slic3r::Arachne::to_thick_polyline(wall);
+            if (wall.is_closed)
+                line.start_at_index(int(ArachneInfill::nearest_point_index(line.points, last_position)));
+            last_position = line.back();
+            line.clip_end(params.loop_clipping);
+            if (!line.is_valid())
+                continue;
+            std::optional<StoredExtrusionEntity> path = ArachneInfill::to_extrusion(storage, line, params);
+            if (path.has_value())
+                group.append_child_move(path->mutable_view());
+        }
 }
 
 /*
@@ -252,6 +309,12 @@ class ConcentricPattern : public PluginBase
 {
 public:
     explicit ConcentricPattern(orchestrator_handle *orchestrator) : PluginBase(orchestrator) {}
+
+    int32_t used_config_keys(raw_used_config_key *keys) const noexcept override {
+        if (keys != nullptr)
+            std::copy(std::begin(ArachneInfill::k_settings_keys), std::end(ArachneInfill::k_settings_keys), keys);
+        return int32_t(ArachneInfill::k_settings_key_count);
+    }
 private:
     const char *id_impl() const noexcept override { return "concentric"; }
     const char *name_impl() const noexcept override { return "Concentric"; }
@@ -273,7 +336,9 @@ private:
         if (ctx == nullptr || ctx->surface == nullptr || ctx->params == nullptr || ctx->output == nullptr ||
             run_ctx->plugin_storage == nullptr)
             return;
-        fill_concentric_surface(*ctx, run_ctx->plugin_storage, run_ctx);
+        const Slic3r::Arachne::WallToolPathsSettings arachne_settings = uses_arachne(*ctx->params) ?
+            ArachneInfill::read_settings(*ctx) : Slic3r::Arachne::WallToolPathsSettings{};
+        fill_concentric_surface(*ctx, run_ctx->plugin_storage, run_ctx, arachne_settings);
         progress().increment();
     }
 };
@@ -285,18 +350,31 @@ ConcentricPattern &instance(orchestrator_handle *orchestrator)
 }
 } // namespace
 
-void fill_concentric_surface(const run_ctx_infill_pattern &ctx, storage_handle *storage, const plugin_run_context *run_ctx)
+void fill_concentric_surface(const run_ctx_infill_pattern &ctx, storage_handle *storage, const plugin_run_context *run_ctx,
+                             const Slic3r::Arachne::WallToolPathsSettings &arachne_settings)
 {
     throw_if_cancelled(run_ctx);
     const raw_infill_pattern_params &params = *ctx.params;
     if (params.density <= 0.f || params.spacing <= 0.)
         return;
-    // USE_ARACHNE intentionally keeps classic loops; variable-width walls and gap fill are outside this provider.
+    // Sparse or fixed-spacing Arachne recipes keep the classic loops; gap fill is outside this provider.
     const Spacing spacing = concentric_spacing(params);
     const ExPolygon surface = Surface(ctx.surface).expolygon();
     // The component order of the offset is unspecified; each component restarts its own seam reference.
     StoredExPolygonCollection components =
         clipper_offset(ClipperOperand(storage, surface), scale_d(-0.5 * spacing.extrusion)).to_expolygon_collection();
+    if (uses_arachne(params)) {
+        StoredExtrusionEntity group(storage);
+        for (const ExPolygon component : components) {
+            throw_if_cancelled(run_ctx);
+            fill_component_arachne(storage, component, spacing, params, arachne_settings, run_ctx, group);
+        }
+        group.set_flags(0);
+        throw_if_cancelled(run_ctx);
+        if (!group.empty())
+            MutableExtrusionEntity(ctx.output).append_child_move(group.mutable_view());
+        return;
+    }
     components.ensure_valid();
     work::Polylines lines;
     for (const ExPolygon component : components) {

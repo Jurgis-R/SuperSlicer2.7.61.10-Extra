@@ -263,10 +263,41 @@ whenever every ring is nested in the next one; seams are not compared, as loops
 are reversible and their seams are meant to change. Paths are reversible unless
 `MONOTONIC` is set, and paths closed by zero loop clipping remain extrusion loops.
 
-Intentional Arachne difference: `USE_ARACHNE` still produces classic constant-width
-loops, not variable-width wall paths. The flag remains in the recipe; variable
-width and the legacy gap-fill branch are not ported. Gap fill and full-fill
-volume correction belong to post-infill plugins.
+### Arachne walls
+
+The generator sets `USE_ARACHNE` on concentric recipes when the region uses the
+Arachne perimeter generator. On a full surface without `DONT_ADJUST`, the plugin
+then ports the `FillConcentric` Arachne branch: each component of the initial
+inset is grown back by half a spacing and given to `Arachne::WallToolPaths`
+with the adjusted spacing as bead spacing, the recipe flow width as bead width,
+and as many walls as fit in the component. The walls follow inset by inset,
+outer first; each closed wall starts at its vertex nearest to the end of the
+previous one, from the origin for each component, before loop clipping. Each
+wall goes through `thick_polyline_extrusion()`: its widths are spacings, the
+flow is rebuilt from the recipe spacing (ratio 1 when the recipe ratio is lower
+and the surface is not a bridge), and `flow_mult` is applied.
+
+`Plugins/Infill/ArachneInfill.hpp` holds the shared part: the seven settings
+`WallToolPaths` reads (`min_feature_size`, `min_bead_width`,
+`wall_transition_filter_deviation`, `wall_transition_length`,
+`wall_transition_angle`, `wall_distribution_count`, and the smallest
+`nozzle_diameter`), read from the region and print configurations into an
+`Arachne::WallToolPathsSettings` and declared in `used_config_keys()`; the copy
+of API expolygons into the Arachne outline; and the conversion of one wall.
+
+The walls of all components go in one group that is not sortable, like the
+classic loops. Tests compare every wall entity with the native one (points,
+roles, flows, flags) and check that each component keeps the native wall order.
+
+Intentional differences:
+
+- the native collection was sortable, so its walls could lose their
+  outside-in order;
+- sparse or `DONT_ADJUST` Arachne recipes keep the classic loops of this plugin
+  with the recipe flow; the native filler converted those loops with a flow
+  rebuilt at spacing ratio 1;
+- the legacy gap-fill branch is not ported. Gap fill and full-fill volume
+  correction belong to post-infill plugins.
 
 ## Smooth (Ironing)
 
