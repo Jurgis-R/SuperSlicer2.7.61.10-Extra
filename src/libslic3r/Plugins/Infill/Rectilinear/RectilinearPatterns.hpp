@@ -12,11 +12,11 @@
 Rectilinear infill pattern plugins
 ==================================
 
-Registration entry point for the nine rectilinear patterns ported from
+Registration entry point for the ten rectilinear patterns ported from
 FillRectilinear.cpp: rectilinear, alignedrectilinear, monotonic, monotoniclines,
-grid, triangles, stars, cubic and scatteredrectilinear. The algorithms live in
-RectilinearFills.cpp; this registration only wraps them with the INFILL_PATTERN
-plugin API.
+grid, triangles, stars, cubic, scatteredrectilinear and rectiwithperimeter. The
+algorithms live in RectilinearFills.cpp and RectilinearWithPerimeter.cpp; this
+registration only wraps them with the INFILL_PATTERN plugin API.
 */
 
 namespace slic3r_api { namespace Infill {

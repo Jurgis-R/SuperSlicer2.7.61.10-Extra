@@ -83,8 +83,9 @@ struct LegacyPatternDefinition
 // honeycomb, 3dhoneycomb, hilbertcurve, archimedeanchords and octagramspiral
 // left gaps 10..14, and the rectilinear family (rectilinear, aligned
 // rectilinear, monotonic, monotonic lines, grid, triangles, stars, cubic,
-// scattered rectilinear) is now provided by RectilinearPatterns.cpp.
-const std::array<LegacyPatternDefinition, 11> k_legacy_patterns = {{
+// scattered rectilinear and rectilinear with perimeter) is now provided by
+// RectilinearPatterns.cpp.
+const std::array<LegacyPatternDefinition, 10> k_legacy_patterns = {{
     {"line", "Line", "Simple alternating line infill pattern.", Slic3r::ipLine, 7},
     {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric, 9},
     {"adaptivecubic", "Adaptive Cubic", "Adaptive cubic infill pattern.", Slic3r::ipAdaptiveCubic, 15},
@@ -92,7 +93,6 @@ const std::array<LegacyPatternDefinition, 11> k_legacy_patterns = {{
     {"smooth", "Ironing", "Ironing-style smooth infill pattern.", Slic3r::ipSmooth, 17},
     {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
     {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
-    {"rectiwithperimeter", "Rectilinear with Perimeter", "Rectilinear infill with perimeter-aware filling.", Slic3r::ipRectiWithPerimeter, 20},
     {"sawtooth", "Sawtooth", "Sawtooth rectilinear infill pattern.", Slic3r::ipSawtooth, 22},
     {"lightning", "Lightning", "Lightning infill pattern.", Slic3r::ipLightning, 23},
     {"ensuring", "Ensuring", "Solid infill pattern that improves coverage in narrow areas.", Slic3r::ipEnsuring, 24},
