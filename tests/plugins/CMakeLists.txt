@@ -5,6 +5,7 @@ add_executable(${_TEST_NAME}_tests
     ../../src/plugins_cpp/DenseInfill/DenseInfill.cpp
     ../../src/plugins_cpp/ExtraPerimeterOverhangWave/ExtraPerimeterOverhangWave.cpp
     ../../src/plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.cpp
+    ../../src/plugins_cpp/NozzleCleaning/NozzleCleaning.cpp
     ../../src/plugins_cpp/Polyholes/Polyholes.cpp
     gcode_test_helpers.cpp
     perimeter_test_helpers.cpp
@@ -59,6 +60,7 @@ add_executable(${_TEST_NAME}_tests
     test_layer_extrusion_edit_travel_deceleration.cpp
     test_layer_extrusion_edit_speed.cpp
     test_flat_area_layer_height.cpp
+    test_nozzle_cleaning.cpp
     test_ordering_advanced_extrusion_tree.cpp
     test_ordering_engine.cpp
     test_ordering_printing_extrusion_presort.cpp
