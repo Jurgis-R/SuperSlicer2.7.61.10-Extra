@@ -54,8 +54,12 @@ TEST_CASE("Infill pattern lists are plugin-defined enums", "[plugins][infill][op
     Orchestrator &orchestrator = Orchestrator::instance();
     const Plugin *support_base = orchestrator.get_plugin("supportbase");
     const Plugin *support_cubic = orchestrator.get_plugin("supportcubic");
+    const Plugin *lightning = orchestrator.get_plugin("lightning");
     REQUIRE(support_base != nullptr);
     REQUIRE(support_cubic != nullptr);
+    REQUIRE(lightning != nullptr);
+    CHECK(lightning->get_step() == INFILL_PATTERN);
+    CHECK(lightning->get_priority() == 23);
     CHECK(support_base->get_step() == INFILL_PATTERN);
     CHECK(support_cubic->get_step() == INFILL_PATTERN);
 
@@ -77,6 +81,9 @@ TEST_CASE("Infill pattern lists are plugin-defined enums", "[plugins][infill][op
     CHECK(has_value(sparse, "stars"));
     CHECK(has_value(sparse, "gyroid"));
     CHECK(has_value(sparse, "supportcubic"));
+    CHECK(std::count(sparse.begin(), sparse.end(), "lightning") == 1);
+    for (const char *key : {"top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", "bridge_fill_pattern"})
+        CHECK_FALSE(has_value(option_values(key), "lightning"));
     CHECK_FALSE(has_value(sparse, "ensuring"));
 
     // Patterns provided by standalone plugins still join the lists they belong

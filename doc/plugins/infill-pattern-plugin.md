@@ -264,8 +264,64 @@ polylines without requiring their order within the output group to match.
 Adaptive parity covers both inputs without additional bridges and projected
 bridge surfaces with holes across the connection and anchor settings.
 
-Lightning is the only remaining legacy pattern blocked by missing object-level
-preparation. Adaptive and Support Cubic prepare their own caches in `setup()`.
+Adaptive, Support Cubic and Lightning prepare their own caches in `setup()`;
+none requires an additional pipeline preparation step.
+
+## Lightning
+
+`lightning` is a standalone `INFILL_PATTERN` provider with priority 23 and
+membership only in `fill_pattern`. It reads all current internal sparse/void
+surfaces of each assigned object, including non-Lightning regions, without
+changing any source surface. It neither reconstructs the model mesh nor creates
+internal bridge candidates.
+
+`setup()` builds independent object jobs in parallel using per-job scratch
+storage. Each object's trees are constructed from top to bottom: new branches,
+root reconnection, deep copying, pruning, straightening and boundary realignment.
+Only a fully successful generation is published. Caches own ordinary C++ memory
+and are discarded at the next setup; no temporary views or scratch handles are
+retained. Shared child nodes and weak parents allow rerooting without ownership
+cycles.
+
+The supporting radius uses unweighted mean widths and densities of configured
+Lightning regions with positive density. Width zero uses `1.125f * maximum_nozzle`;
+percent widths use that automatic width as their base. Selection through a recipe
+modifier without a configured positive-density Lightning region fails explicitly.
+Unlike the legacy first-region width and nominal-height calculation, wall support
+uses each layer's actual height, while pruning and straightening use the difference
+between consecutive print Z positions at the legacy 45-degree angles.
+
+Unsupported points are sampled on a shared grid and stably ordered by fixed
+distance bands, then the legacy point hash modulo 191. Contour intersection
+queries select the nearest hit to their destination. These rules include the
+separately tested corrections to the legacy comparison and intersection code.
+
+`run()` reads immutable trees and converts them with `slic3r_safe_rand()` from the
+host, without reseeding. Each inset surface component is clipped independently;
+API batch intersection preserves complete branch bends, and `InfillPaths` copies
+them into work buffers and chains paths, while the rectilinear connector handles
+requested boundary connections. Junction
+overlap, flow attributes and sortable/reversible publication follow the recipe.
+Tests pin only their own thread-local seed; production paths need not be identical
+under different random sequences or scheduling.
+
+Multi-component parity feeds the native connector the same offset traversal
+order as the API: the legacy offset can return the same regions in a different
+order, assigning different random branch choices to each region. A cancellation
+before final publication discards the whole surface group, including paths
+already constructed for earlier components.
+
+The mixed-region fixture uses unequal region areas, absolute and percent widths,
+a non-Lightning region and a zero-density Lightning region. It compares the
+whole-object outline union independently of the parameter means. A real height
+profile changes between 0.2, 0.1 and 0.3 mm in the object's middle; its physical
+deltas also drive analytic pruning and straightening checks on complete directed
+three-point branches. These revised parameter contracts use independent oracles,
+not legacy first-region or nominal-height behavior.
+
+The multi-object integration fixture serializes upstream slicing/surface builders
+that share mutable storage and restores concurrency before Lightning setup. This
+isolates that existing upstream race; the Lightning migration does not fix it.
 
 ## Limits
 

@@ -44,6 +44,10 @@ using namespace connect;
 struct SegmentedIntersectionLine;
 struct ExPolygonWithOffset;
 
+// A layer-wide sampling frame keeps points on separate components at least spacing apart.
+Points sample_grid_pattern(storage_handle *storage, const slic3r_api::ExPolygon &polygon,
+                           coord_t spacing, const BoundingBox &bounds);
+
 class FillRectilinear
 {
 public:

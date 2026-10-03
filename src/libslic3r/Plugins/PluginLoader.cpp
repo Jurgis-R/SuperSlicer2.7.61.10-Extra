@@ -94,6 +94,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
 #include "libslic3r/Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp"
+#include "libslic3r/Plugins/Infill/Lightning/LightningPattern.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
 #include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
@@ -691,6 +692,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_adaptive_cubic_pattern_plugin);
     register_builtin_plugin(orchestrator, "supportcubic",
         slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_support_cubic_pattern_plugin);
+    register_builtin_plugin(orchestrator, "lightning",
+        slic3r_api::Infill::Lightning::register_lightning_pattern_plugin);
     register_builtin_plugin(orchestrator, "legacy_infill_patterns",
         slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins);
     register_builtin_plugin(orchestrator, "gyroid",

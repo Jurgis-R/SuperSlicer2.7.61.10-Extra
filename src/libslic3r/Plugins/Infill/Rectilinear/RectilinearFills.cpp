@@ -3218,5 +3218,24 @@ std::vector<SegmentedIntersectionLine> FillScatteredRectilinear::_vert_lines_for
 }
 
 
+Points sample_grid_pattern(storage_handle *storage, const slic3r_api::ExPolygon &polygon,
+                           coord_t spacing, const BoundingBox &bounds)
+{
+    ExPolygonWithOffset offset(storage, polygon, 0.f, 0, 0);
+    std::vector<SegmentedIntersectionLine> lines = vert_lines_for_polygon(offset, bounds,
+        (bounds.max.x() - bounds.min.x() + spacing - 1) / spacing, bounds.min.x(), spacing);
+    slice_region_by_vertical_lines(nullptr, lines, offset);
+    Points points;
+    for (const SegmentedIntersectionLine &line : lines)
+        for (size_t index = 0; index < line.intersections.size(); index += 2) {
+            const coord_t begin = line.intersections[index].pos();
+            const coord_t end = line.intersections[index + 1].pos();
+            for (coord_t y = begin - (begin % spacing) - spacing; y < end; y += spacing)
+                if (y > begin)
+                    points.emplace_back(line.pos, y);
+        }
+    return points;
+}
+
 } // namespace fills
 }}} // namespace slic3r_api::Infill::RectilinearPatternsPlugin

@@ -47,20 +47,15 @@ The normal call flow is:
 
     LegacyInfillPattern::run_impl()
     `-- validate the INFILL_PATTERN context
-        |-- unsupported legacy object state?
-        |   `-- report that this pattern is not available in the new context
-        `-- otherwise
-            |-- fill_params_from_raw()
-            |   `-- rebuild Flow and FillParams
-            |-- Fill::new_from_type(m_pattern)
-            |-- configure bounds, layer, angle, clipping, and overlap
-            |-- Fill::init_spacing()
-            `-- Fill::fill_surface_extrusion()
+        |-- fill_params_from_raw()
+        |   `-- rebuild Flow and FillParams
+        |-- Fill::new_from_type(m_pattern)
+        |-- configure bounds, layer, angle, clipping, and overlap
+        |-- Fill::init_spacing()
+        `-- Fill::fill_surface_extrusion()
 
-The adapter deliberately preserves the old low-level geometry algorithms.
-Lightning still requires object-level precomputed data that the INFILL_PATTERN
-context does not expose; it fails explicitly instead of producing incomplete
-infill. Adaptive Cubic and Support Cubic use the setup-owned octree plugin.
+The remaining adapters preserve native low-level geometry algorithms without
+object-wide preparation. Cubic and Lightning providers own their caches in setup().
 */
 
 namespace slic3r_api { namespace Infill { namespace LegacyInfillPatternsPlugin {
@@ -84,24 +79,14 @@ struct LegacyPatternDefinition
 // rectilinear, monotonic, monotonic lines, grid, triangles, stars, cubic,
 // scattered rectilinear, sawtooth and rectilinear with perimeter) is now provided by
 // RectilinearPatterns.cpp.
-const std::array<LegacyPatternDefinition, 7> k_legacy_patterns = {{
+const std::array<LegacyPatternDefinition, 6> k_legacy_patterns = {{
     {"line", "Line", "Simple alternating line infill pattern.", Slic3r::ipLine, 7},
     {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric, 9},
     {"smooth", "Ironing", "Ironing-style smooth infill pattern.", Slic3r::ipSmooth, 17},
     {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
     {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
-    {"lightning", "Lightning", "Lightning infill pattern.", Slic3r::ipLightning, 23},
     {"ensuring", "Ensuring", "Solid infill pattern that improves coverage in narrow areas.", Slic3r::ipEnsuring, 24},
 }};
-
-bool requires_unmigrated_object_state(Slic3r::InfillPattern pattern)
-{
-    // These legacy algorithms depend on object-level data prepared by the old
-    // PrintObject::prepare_infill() path. They are still registered so presets
-    // and the dynamic enum know about them, but the wrapper fails cleanly until
-    // the new infill pipeline exposes their precomputed state.
-    return pattern == Slic3r::ipLightning;
-}
 
 // Option keys whose pattern list this plugin wants to join. Each pattern
 // declares the lists it is valid for; the host ignores unknown keys, so a
@@ -124,7 +109,6 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
     case Slic3r::ipSmooth:
         return k_top_bottom_solid;
     case Slic3r::ipLine:
-    case Slic3r::ipLightning:
         return k_sparse_only;
     case Slic3r::ipEnsuring:
         return k_solid_only;
@@ -242,12 +226,6 @@ private:
             reinterpret_cast<const Slic3r::ExPolygons *>(ctx->no_overlap_areas);
         if (surface == nullptr || output == nullptr || print == nullptr || object == nullptr || region == nullptr)
             return;
-
-        if (requires_unmigrated_object_state(m_pattern)) {
-            throw std::runtime_error(
-                std::string("Legacy infill pattern '") + m_id +
-                "' requires object-level precomputed data that is not exposed to INFILL_PATTERN plugins yet.");
-        }
 
         throw_if_cancelled(run_ctx);
         Slic3r::FillParams params = fill_params_from_raw(*ctx->params, region->region().config());

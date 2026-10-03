@@ -295,6 +295,21 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/InfillChaining.cpp
 	Plugins/Infill/InfillPaths.hpp
 	Plugins/Infill/InfillWorkBuffers.hpp
+	Plugins/Infill/Lightning/LightningDistanceField.cpp
+	Plugins/Infill/Lightning/LightningDistanceField.hpp
+	Plugins/Infill/Lightning/LightningFill.cpp
+	Plugins/Infill/Lightning/LightningFill.hpp
+	Plugins/Infill/Lightning/LightningGenerator.cpp
+	Plugins/Infill/Lightning/LightningGenerator.hpp
+	Plugins/Infill/Lightning/LightningGeometry.hpp
+	Plugins/Infill/Lightning/LightningLayer.cpp
+	Plugins/Infill/Lightning/LightningLayer.hpp
+	Plugins/Infill/Lightning/LightningPattern.cpp
+	Plugins/Infill/Lightning/LightningPattern.hpp
+	Plugins/Infill/Lightning/LightningPreparation.cpp
+	Plugins/Infill/Lightning/LightningPreparation.hpp
+	Plugins/Infill/Lightning/LightningTreeNode.cpp
+	Plugins/Infill/Lightning/LightningTreeNode.hpp
 	Plugins/Infill/DefaultInfillGenerator.cpp
 	Plugins/Infill/DefaultInfillGenerator.hpp
 	Plugins/Infill/GyroidPattern.cpp
