@@ -214,7 +214,9 @@ TEST_CASE("Simple infill pattern plugins register as infill pattern providers",
     Orchestrator &orchestrator = Orchestrator::instance();
 
     for (const char *plugin_id : { "honeycomb", "3dhoneycomb", "hilbertcurve", "archimedeanchords",
-                                   "octagramspiral" }) {
+                                   "octagramspiral", "rectilinear", "alignedrectilinear", "monotonic",
+                                   "monotoniclines", "grid", "triangles", "stars", "cubic",
+                                   "scatteredrectilinear" }) {
         INFO(plugin_id);
         const Plugin *plugin = orchestrator.get_plugin(plugin_id);
         REQUIRE(plugin != nullptr);
@@ -227,8 +229,7 @@ TEST_CASE("Simple infill patterns generate extrusion through STEP_INFILL",
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
-    const char *pattern_id = GENERATE("honeycomb", "3dhoneycomb", "hilbertcurve", "archimedeanchords",
-                                      "octagramspiral");
+    const char *pattern_id = GENERATE("grid");
     INFO(pattern_id);
 
     PreparedPerimeterPrint prepared;
@@ -238,7 +239,8 @@ TEST_CASE("Simple infill patterns generate extrusion through STEP_INFILL",
         SIMPLE_PERIMETER_GENERATOR,
         INITIAL_TYPED_SURFACE_BUILDER,
         "infill.generator.default",
-        pattern_id
+        pattern_id,
+        "rectilinear"
     });
     run_until_infill(prepared);
 
@@ -251,7 +253,7 @@ TEST_CASE("Simple infill patterns never extrude across a surface hole",
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 
-    const char *pattern_id = GENERATE("gyroid", "hilbertcurve", "honeycomb");
+    const char *pattern_id = GENERATE("gyroid", "hilbertcurve", "honeycomb", "rectilinear", "monotonic");
     INFO(pattern_id);
 
     PreparedPerimeterPrint prepared;
@@ -266,7 +268,8 @@ TEST_CASE("Simple infill patterns never extrude across a surface hole",
         SIMPLE_PERIMETER_GENERATOR,
         INITIAL_TYPED_SURFACE_BUILDER,
         "infill.generator.default",
-        pattern_id
+        pattern_id,
+        "rectilinear"
     });
     run_until_infill(prepared);
 
@@ -302,7 +305,8 @@ TEST_CASE("Honeycomb patterns keep their lattice aligned across layers",
             SIMPLE_PERIMETER_GENERATOR,
             INITIAL_TYPED_SURFACE_BUILDER,
             "infill.generator.default",
-            pattern_id
+            pattern_id,
+            "rectilinear"
         });
         run_until_infill(prepared);
         return interior_infill_points(prepared.print, 1);

@@ -171,12 +171,35 @@ The normalizer is a no-op with the default `solid_infill_overlap = 100%`; a
 reduced overlap stays an intentional void instead of being refilled by the
 correction.
 
+## Rectilinear family port
+
+`rectilinear`, `alignedrectilinear`, `monotonic`, `monotoniclines`, `grid`,
+`triangles`, `stars`, `cubic` and `scatteredrectilinear` are ported from
+`FillRectilinear.cpp` into `Plugins/Infill/Rectilinear`:
+
+- `RectilinearFills.cpp` implements the raster / multi-sweep algorithms on
+  private work buffers while receiving the boundary as an API `ExPolygon` view
+  and the fill recipe as raw plugin parameters.
+- `RectilinearConnect.hpp` links the generated lines along the surface boundary
+  (`PrusaSimpleConnect` / `FakePerimeterConnect`), so those patterns still
+  produce connected paths. It consumes borrowed `BoundaryContours` views and
+  materializes only contours that need cleanup or inserted junction points.
+- `RectilinearPatterns.cpp` passes the API geometry view, raw recipe, and
+  `plugin_storage` directly to the pattern implementation. The monotonic
+  patterns publish their group without `SORTABLE` / `REVERSIBLE` so the path
+  order and direction survive `STEP_ORDERING`; the other patterns stay
+  sortable.
+- Transient Clipper operations use the `plugin_storage` supplied by the host;
+  no private storage shim is required.
+
 ## Limits
 
 The plugin API does not expose a polygon-aware `connect_infill()` substitute:
 paths cannot be linked through the surface interior. A pattern therefore
 publishes independent sortable paths and lets `STEP_ORDERING` fix their order,
-direction and travels.
+direction and travels. The only exception so far is the self-contained connect
+port used by the rectilinear family, which brings its own boundary linking and
+is deliberately not part of the public API.
 
 `OrderingEngine.hpp` provides
 `connect_infill(StoredPolylineCollection&, const OrderingEngine&)` for the

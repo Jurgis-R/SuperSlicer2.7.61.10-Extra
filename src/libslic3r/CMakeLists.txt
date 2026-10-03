@@ -302,6 +302,10 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/Rectilinear/RectilinearClipper.hpp
 	Plugins/Infill/Rectilinear/RectilinearConnect.hpp
 	Plugins/Infill/Rectilinear/RectilinearEdgeGrid.hpp
+	Plugins/Infill/Rectilinear/RectilinearFills.cpp
+	Plugins/Infill/Rectilinear/RectilinearFills.hpp
+	Plugins/Infill/Rectilinear/RectilinearPatterns.cpp
+	Plugins/Infill/Rectilinear/RectilinearPatterns.hpp
 	Plugins/Infill/Rectilinear/RectilinearWorkBuffers.hpp
 	Plugins/Infill/PostInfillGapFill.cpp
 	Plugins/Infill/PostInfillGapFill.hpp

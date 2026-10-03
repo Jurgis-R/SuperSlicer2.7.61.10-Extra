@@ -98,6 +98,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/Infill/PostFullFillVolume.hpp"
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
+#include "libslic3r/Plugins/Infill/Rectilinear/RectilinearPatterns.hpp"
 #include "libslic3r/Plugins/Infill/SimpleInfillPatterns.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
@@ -699,6 +700,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::register_archimedean_chords_pattern_plugin);
     register_builtin_plugin(orchestrator, "octagramspiral",
         slic3r_api::Infill::register_octagram_spiral_pattern_plugin);
+    register_builtin_plugin(orchestrator, "rectilinear_patterns",
+        slic3r_api::Infill::register_rectilinear_pattern_plugins);
     register_builtin_plugin(orchestrator, "infill.post_process.gap_fill",
         slic3r_api::Infill::PostInfillGapFillPlugin::register_post_infill_gap_fill_plugin);
     register_builtin_plugin(orchestrator, "infill.post_process.full_fill_volume",

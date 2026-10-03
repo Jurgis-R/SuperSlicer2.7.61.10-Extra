@@ -599,6 +599,23 @@ TEST_CASE("Advanced ordering fixes reversible and nested trees",
         CHECK(tool.extrusions[0].root->last_point() == Point::new_scale(1.0, 0.0));
     }
 
+    SECTION("a fixed monotonic group preserves its child direction") {
+        Print print;
+        PrintingPlan &plan = print.mutable_printing_plan();
+        plan.groups.emplace_back();
+        PrintingToolGroup &tool = append_tool(append_layer(plan.groups.back()), 0);
+        ExtrusionEntity::Children children;
+        children.push_back(make_open_path(10.0, 0.0, 1.0, 0.0, false));
+        append_extrusion(tool, make_collection(std::move(children), false, false), 3);
+        publish_entry_points(tool.extrusions[0], mm_point(10.0, 0.0), mm_point(1.0, 0.0));
+
+        REQUIRE(run_advanced_ordering(print) == RAW_PLUGIN_EXECUTION_SUCCESS);
+        CHECK(tool.extrusions[0].root->first_point() == Point::new_scale(10.0, 0.0));
+        CHECK(tool.extrusions[0].root->last_point() == Point::new_scale(1.0, 0.0));
+        CHECK_FALSE(tool.extrusions[0].root->can_reverse());
+        CHECK_FALSE(tool.extrusions[0].root->child(0).can_reverse());
+    }
+
     SECTION("a fixed collection reverses as one unit") {
         Print print;
         PrintingPlan &plan = print.mutable_printing_plan();

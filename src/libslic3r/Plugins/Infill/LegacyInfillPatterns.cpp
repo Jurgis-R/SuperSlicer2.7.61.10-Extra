@@ -81,17 +81,11 @@ struct LegacyPatternDefinition
 // Declaration order defines the familiar config UI order. The explicit
 // priority keeps the order stable while patterns move to standalone plugins:
 // honeycomb, 3dhoneycomb, hilbertcurve, archimedeanchords and octagramspiral
-// left gaps 10..14 and are now provided by their own plugins.
-const std::array<LegacyPatternDefinition, 20> k_legacy_patterns = {{
-    {"rectilinear", "Rectilinear", "Classic rectilinear infill pattern.", Slic3r::ipRectilinear, 0},
-    {"monotonic", "Monotonic", "Monotonic solid infill pattern.", Slic3r::ipMonotonic, 1},
-    {"alignedrectilinear", "Aligned Rectilinear", "Rectilinear infill aligned across layers.", Slic3r::ipAlignedRectilinear, 2},
-    {"grid", "Grid", "Grid infill pattern.", Slic3r::ipGrid, 3},
-    {"triangles", "Triangles", "Triangular infill pattern.", Slic3r::ipTriangles, 4},
-    {"stars", "Stars", "Star-shaped triangular infill pattern.", Slic3r::ipStars, 5},
-    {"cubic", "Cubic", "Cubic infill pattern.", Slic3r::ipCubic, 6},
+// left gaps 10..14, and the rectilinear family (rectilinear, aligned
+// rectilinear, monotonic, monotonic lines, grid, triangles, stars, cubic,
+// scattered rectilinear) is now provided by RectilinearPatterns.cpp.
+const std::array<LegacyPatternDefinition, 11> k_legacy_patterns = {{
     {"line", "Line", "Simple alternating line infill pattern.", Slic3r::ipLine, 7},
-    {"monotoniclines", "Monotonic Lines", "Monotonic line infill pattern.", Slic3r::ipMonotonicLines, 8},
     {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric, 9},
     {"adaptivecubic", "Adaptive Cubic", "Adaptive cubic infill pattern.", Slic3r::ipAdaptiveCubic, 15},
     {"supportcubic", "Support Cubic", "Support cubic infill pattern.", Slic3r::ipSupportCubic, 16},
@@ -99,7 +93,6 @@ const std::array<LegacyPatternDefinition, 20> k_legacy_patterns = {{
     {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
     {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
     {"rectiwithperimeter", "Rectilinear with Perimeter", "Rectilinear infill with perimeter-aware filling.", Slic3r::ipRectiWithPerimeter, 20},
-    {"scatteredrectilinear", "Scattered Rectilinear", "Scattered rectilinear infill pattern.", Slic3r::ipScatteredRectilinear, 21},
     {"sawtooth", "Sawtooth", "Sawtooth rectilinear infill pattern.", Slic3r::ipSawtooth, 22},
     {"lightning", "Lightning", "Lightning infill pattern.", Slic3r::ipLightning, 23},
     {"ensuring", "Ensuring", "Solid infill pattern that improves coverage in narrow areas.", Slic3r::ipEnsuring, 24},
@@ -122,9 +115,6 @@ bool requires_unmigrated_object_state(Slic3r::InfillPattern pattern)
 const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
 {
     static const char *const k_none[] = { nullptr };
-    static const char *const k_all_five[] = {
-        "fill_pattern", "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", "bridge_fill_pattern", nullptr
-    };
     static const char *const k_sparse_top_bottom_solid[] = {
         "fill_pattern", "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
     };
@@ -136,23 +126,13 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
     static const char *const k_solid_only[] = { "solid_fill_pattern", nullptr };
 
     switch (pattern) {
-    case Slic3r::ipRectilinear:
-    case Slic3r::ipMonotonic:
-        return k_all_five;
-    case Slic3r::ipAlignedRectilinear:
     case Slic3r::ipConcentric:
         return k_sparse_top_bottom_solid;
-    case Slic3r::ipMonotonicLines:
     case Slic3r::ipSmooth:
         return k_top_bottom_solid;
-    case Slic3r::ipGrid:
-    case Slic3r::ipTriangles:
-    case Slic3r::ipStars:
-    case Slic3r::ipCubic:
     case Slic3r::ipLine:
     case Slic3r::ipAdaptiveCubic:
     case Slic3r::ipSupportCubic:
-    case Slic3r::ipScatteredRectilinear:
     case Slic3r::ipLightning:
         return k_sparse_only;
     case Slic3r::ipSawtooth:
