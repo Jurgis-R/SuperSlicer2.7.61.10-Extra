@@ -293,6 +293,8 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/LegacyInfillPatterns.hpp
 	Plugins/Infill/OctagramSpiralPattern.cpp
 	Plugins/Infill/PatternPluginHelpers.hpp
+	Plugins/Infill/PostFullFillVolume.cpp
+	Plugins/Infill/PostFullFillVolume.hpp
 	Plugins/Infill/PostInfillGapFill.cpp
 	Plugins/Infill/PostInfillGapFill.hpp
 	Plugins/Infill/SimpleInfillPatterns.hpp

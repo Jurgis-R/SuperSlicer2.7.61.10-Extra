@@ -150,6 +150,27 @@ Mark the parent `SORTABLE`/`REVERSIBLE` when the order and direction of the
 paths may be changed by `STEP_ORDERING`. A pattern that produces one fixed path
 should clear those flags instead.
 
+## Volume correction
+
+The host stamps `c_extrusion_property_infill` on the subtree root of every
+surface: `source_surface_id` identifies the surface and the other fields carry
+its raw fill recipe. `area_to_fill_mm2` is the free-of-perimeter-overlap area
+the surface expects when the recipe requests an enforced full fill
+(`enforce_full_fill_volume`); it is 0 otherwise. A pattern neither reads nor
+sets those fields.
+
+The correction itself is a `STEP_POST_INFILL` service
+(`infill.post_process.full_fill_volume`): it rebuilds the volume target and the
+legacy spacing/width normalization from the stamped recipe, then scales the
+`mm3_per_mm` and `width` of the leaves by the clamped ratio, exactly like the
+legacy `Fill::fill_surface_extrusion()` did. A pattern therefore only generates
+geometry and publishes `params.flow` scaled by `params.flow_mult`; it does not
+implement `fill_exactly` or 100% density handling itself.
+
+The normalizer is a no-op with the default `solid_infill_overlap = 100%`; a
+reduced overlap stays an intentional void instead of being refilled by the
+correction.
+
 ## Limits
 
 The plugin API does not expose a polygon-aware `connect_infill()` substitute:

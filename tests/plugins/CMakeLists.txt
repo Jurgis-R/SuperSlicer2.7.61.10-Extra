@@ -44,6 +44,7 @@ add_executable(${_TEST_NAME}_tests
     test_seam_placer_service.cpp
     test_simple_infill_patterns.cpp
     test_arachne_infill.cpp
+    test_post_full_fill_volume.cpp
     test_gcode_default_firmware_session.cpp
     test_gcode_custom_gcode_per_print_z.cpp
     test_gcode_feature_gcode.cpp
