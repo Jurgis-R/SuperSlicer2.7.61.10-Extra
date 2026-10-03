@@ -212,9 +212,11 @@ add or replace a stage on top of it:
   generator sets `C_INFILL_FLAG_DONT_ADJUST` for the sawtooth recipe so later
   flow normalization does not alter the generated profile.
 
-The legacy pattern adapters (`LegacyInfillPatterns.cpp`), brim, support and the
-wipe tower still instantiate the legacy core `Fill` classes. Dense infill uses
-recipe modifiers and post-infill plugins instead of those core fillers.
+Every infill pattern is now a standalone plugin; the legacy pattern adapters
+are gone, and the `smoothhilbert` and `smoothtriple` variants were removed (old
+projects load them as `smooth`). Brim, support and the wipe tower still
+instantiate the legacy core `Fill` classes. Dense infill uses recipe modifiers
+and post-infill plugins instead of those core fillers.
 
 ## Line
 
@@ -331,6 +333,40 @@ Intentional differences:
 - the native filler corrected the volume of each pass separately; the full-fill
   volume step scales the whole surface tree with one factor, which keeps the
   flow split between the passes.
+
+## Ensuring
+
+`ensuring` (`EnsuringPattern.cpp`) is a standalone `INFILL_PATTERN` provider
+with priority 24, available only in `solid_fill_pattern`, of which it is the
+default. It ports `FillEnsuring` and always runs Arachne, whatever
+`USE_ARACHNE` says:
+
+1. the surface is rotated so the fill direction (fill angle, quarter turn on odd
+   layers when the angle may cross, or the bridge angle) becomes vertical;
+2. the area wide enough for lines, the surface intersected with its opening by
+   two then three spacings, is shrunk by half a spacing minus the overlap;
+3. vertical lines one spacing apart are cut by that area into sections longer
+   than a spacing, and clusters of short sections that would make the nozzle
+   vibrate are removed;
+4. the area covered by the sections is traced back; `Arachne::WallToolPaths`
+   fills every gap left in the surface (grown by the overlap) with walls of one
+   spacing, and gap walls whose ends nearly meet in line are joined;
+5. the lines are ordered, lines touching an already printed one first, then the
+   nearest; consecutive lines whose ends are within two spacings are joined, and
+   everything is rotated back.
+
+Every line goes through `thick_polyline_extrusion()` like the concentric
+Arachne walls, into one group that is sortable and reversible unless the recipe
+is `MONOTONIC`, as the legacy collection was. The Clipper steps go through the
+API; the boundary queries of `AABBTreeLines` (sorted line intersections,
+inside test) and `Algorithm::sort_paths()` are ported in the plugin as linear
+scans with the same arithmetic, and the endpoint search uses the API
+`KDTreeIndirect` with the native tolerance. Tests compare the whole tree with
+the native one on several shapes, angles, overlaps and Arachne settings.
+
+A thin sliver can make the native filler, and thus this plugin, join gap walls
+into consecutive duplicate points, which `thin_variable_width()` rejects with an
+assertion in Debug builds; the tests leave that case out.
 
 ## Adaptive and Support Cubic
 

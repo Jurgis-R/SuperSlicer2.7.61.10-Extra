@@ -28,6 +28,7 @@
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Plugins/Infill/ArachneInfill.hpp"
 #include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
+#include "libslic3r/Plugins/Infill/EnsuringPattern.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Steps/StepGenerateInfill.hpp"
 #include "libslic3r/Steps/StepGeneratePerimeter.hpp"
@@ -47,6 +48,9 @@ branch, entity by entity: the native collection may be sorted later, while the
 plugin keeps every component in the native wall order, so each component must
 appear as one run of native entities in their native order. The pipeline test
 checks that the Arachne perimeter generator setting selects the walls.
+
+The ensuring plugin is compared with the native FillEnsuring tree as a whole:
+same group flags, same entities in the same order.
 */
 
 using namespace Slic3r;
@@ -100,6 +104,22 @@ std::vector<std::string> native_entities(const ExPolygon &polygon, const raw_inf
 // Run the plugin on one recipe and read the entities of its group.
 std::vector<std::string> plugin_entities(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
                                          const Arachne::WallToolPathsSettings &settings);
+// Layer frame of one ensuring case.
+struct Frame
+{
+    double angle;
+    uint32_t layer_id;
+    bool can_angle_cross;
+    double bridge_angle;
+};
+// The recipe of an internal solid surface for the ensuring pattern.
+raw_infill_pattern_params ensuring_recipe(const ExPolygon &surface, const Frame &frame, double overlap);
+// Run the native FillEnsuring on one recipe and read its whole tree.
+std::string native_ensuring(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                            const PrintRegionConfig &region, const PrintConfig &print);
+// Run the ensuring plugin on one recipe and read its whole tree.
+std::string plugin_ensuring(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                            const Arachne::WallToolPathsSettings &settings);
 // Slice a thin slab with a concentric top surface and read the width of every top infill leaf.
 std::vector<float> top_infill_widths(const char *perimeter_generator);
 // Collect the widths of the leaves of one entity.
@@ -248,6 +268,76 @@ std::vector<std::string> plugin_entities(const ExPolygon &polygon, const raw_inf
             entities.push_back(snapshot(child));
     }
     return entities;
+}
+
+raw_infill_pattern_params ensuring_recipe(const ExPolygon &surface, const Frame &frame, double overlap)
+{
+    raw_infill_pattern_params raw = make_recipe(surface, 1.f, 0);
+    raw.surface_type = RAW_SURFACE_TYPE_POS_INTERNAL | RAW_SURFACE_TYPE_DENS_SOLID;
+    raw.extrusion_role = RAW_EXTRUSION_ROLE_SOLID_INFILL;
+    raw.angle = frame.angle;
+    raw.layer_id = frame.layer_id;
+    raw.bridge_angle = frame.bridge_angle;
+    raw.infill_flags = C_INFILL_FLAG_USE_ARACHNE | (frame.can_angle_cross ? C_INFILL_FLAG_CAN_ANGLE_CROSS : 0);
+    raw.overlap = overlap;
+    return raw;
+}
+
+std::string native_ensuring(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                            const PrintRegionConfig &region, const PrintConfig &print)
+{
+    // Same configuration as the former legacy wrapper of this pattern.
+    static const PrintObjectConfig object;
+    const std::unique_ptr<Fill> filler(Fill::new_from_type(ipEnsuring));
+    filler->set_bounding_box(get_extents(polygon));
+    filler->layer_id = raw.layer_id;
+    filler->z = raw.z;
+    filler->angle = float(raw.angle);
+    filler->can_angle_cross = (raw.infill_flags & C_INFILL_FLAG_CAN_ANGLE_CROSS) != 0;
+    filler->overlap = raw.overlap;
+    filler->set_config(&print, &object);
+    FillParams params;
+    params.config = &region;
+    params.density = raw.density;
+    params.dont_adjust = false;
+    params.flow_mult = raw.flow_mult;
+    params.fill_resolution = raw.fill_resolution;
+    params.use_arachne = true;
+    params.layer_height = float(raw.layer_height);
+    params.role = ExtrusionRole(static_cast<ExtrusionRoleModifier>(raw.extrusion_role));
+    params.flow = Flow::new_from_spacing(float(unscaled(raw.flow.spacing)), float(unscaled(raw.flow.nozzle_diameter)),
+                                         float(unscaled(raw.flow.height)), raw.flow.spacing_ratio, false);
+    filler->init_spacing(raw.spacing, params);
+    Surface surface(stPosInternal | stDensSolid, polygon);
+    surface.bridge_angle = raw.bridge_angle;
+    ExtrusionEntitiesPtr output;
+    filler->fill_surface_extrusion(&surface, params, output);
+    REQUIRE(output.size() <= 1);
+    std::string tree;
+    for (ExtrusionEntity *collection : output) {
+        tree = snapshot(*collection);
+        delete collection;
+    }
+    return tree;
+}
+
+std::string plugin_ensuring(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
+                            const Arachne::WallToolPathsSettings &settings)
+{
+    const Surface surface(stPosInternal | stDensSolid, polygon);
+    PluginStorage storage;
+    storage_handle *handle = reinterpret_cast<storage_handle *>(&storage);
+    slic3r_api::StoredExtrusionEntity output(handle);
+    run_ctx_infill_pattern ctx = {};
+    ctx.surface = reinterpret_cast<const surface_handle *>(&surface);
+    ctx.params = &raw;
+    ctx.output = output.mutable_handle();
+    slic3r_api::Infill::fill_ensuring_surface(ctx, handle, nullptr, settings);
+    REQUIRE(output.child_count() <= 1);
+    std::string tree;
+    for (const slic3r_api::ExtrusionEntity group : output.readonly().children())
+        tree = snapshot(group);
+    return tree;
 }
 
 std::vector<float> top_infill_widths(const char *perimeter_generator)
@@ -514,4 +604,88 @@ TEST_CASE("The Arachne perimeter generator gives concentric infill variable widt
     REQUIRE_FALSE(classic.empty());
     CHECK(std::all_of(classic.begin(), classic.end(), [&classic](float width) { return width == classic.front(); }));
     CHECK(std::any_of(arachne.begin(), arachne.end(), [&classic](float width) { return width != classic.front(); }));
+}
+
+TEST_CASE("Ensuring plugin matches the native FillEnsuring tree", "[plugins][infill][ensuring][arachne]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ExPolygons narrow = union_ex(ExPolygons{rectangle_expolygon(-10., -5., -4., 5.),
+        rectangle_expolygon(-4., -0.3, 4., 0.3), rectangle_expolygon(4., -5., 10., 5.)});
+    const ExPolygon lshape(Polygon{Point(0, 0), Point(scale_i(30.), 0), Point(scale_i(30.), scale_i(10.)),
+        Point(scale_i(10.), scale_i(10.)), Point(scale_i(10.), scale_i(25.)), Point(0, scale_i(25.))});
+    // Sharp corners leave short sections and gaps for Arachne.
+    const ExPolygon sharp(Polygon{Point(-scale_i(35.), -scale_i(25.)), Point(scale_i(35.), -scale_i(25.)),
+        Point(scale_i(20.), scale_i(25.)), Point(-scale_i(15.), scale_i(15.)), Point(-scale_i(35.), scale_i(25.))});
+    REQUIRE(narrow.size() == 1);
+    // A thin sliver is left out: the native filler joins gap walls into duplicate points that
+    // thin_variable_width() rejects with an assertion in Debug builds.
+    const std::vector<ExPolygon> cases{rectangle_expolygon(-10., -6.65, 10., 6.65), rectangle_with_hole_expolygon(),
+                                       lshape, narrow.front(), sharp};
+    const std::vector<Frame> frames = {
+        { 0., 0, true, -1. }, { M_PI / 6., 3, true, -1. }, { -M_PI / 4., 3, false, -1. }, { 0.2, 2, true, 0.7 } };
+
+    PrintConfig print;
+    print.set_deserialize_strict("nozzle_diameter", "0.4");
+    const std::vector<Settings> settings_cases = {
+        {}, { { "min_bead_width", "60%" }, { "wall_transition_length", "0.8" }, { "wall_distribution_count", "2" } } };
+
+    for (const ExPolygon &polygon : cases)
+        for (const Frame &frame : frames)
+            for (const double overlap : { 0., 0.15 })
+                for (const Settings &settings : settings_cases) {
+                    CAPTURE(polygon.holes.size(), polygon.area(), frame.angle, frame.layer_id, frame.can_angle_cross,
+                            frame.bridge_angle, overlap, settings.size());
+                    const PrintRegionConfig region = region_config(settings);
+                    const raw_infill_pattern_params raw = ensuring_recipe(polygon, frame, overlap);
+                    const std::string expected = native_ensuring(polygon, raw, region, print);
+                    REQUIRE_FALSE(expected.empty());
+                    CHECK(plugin_ensuring(polygon, raw, Arachne::wall_tool_paths_settings(region, print)) == expected);
+                }
+}
+
+TEST_CASE("Ensuring cancellation discards the unpublished group", "[plugins][infill][ensuring][arachne][cancellation]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const Surface surface(stPosInternal | stDensSolid, rectangle_with_hole_expolygon());
+    const raw_infill_pattern_params raw = ensuring_recipe(surface.expolygon, { 0., 0, true, -1. }, 0.);
+    PrintConfig print;
+    print.set_deserialize_strict("nozzle_diameter", "0.4");
+    const Arachne::WallToolPathsSettings settings = Arachne::wall_tool_paths_settings(PrintRegionConfig(), print);
+    PluginStorage storage;
+    storage_handle *handle = reinterpret_cast<storage_handle *>(&storage);
+    slic3r_api::StoredExtrusionEntity output(handle);
+    const size_t initial = storage.size();
+    run_ctx_infill_pattern ctx = {};
+    ctx.surface = reinterpret_cast<const surface_handle *>(&surface);
+    ctx.params = &raw;
+    ctx.output = output.mutable_handle();
+    // Cancel once an unpublished collection holds an extrusion.
+    struct Probe { PluginStorage *storage; const extrusion_entity_handle *output; bool ready = false; } probe{&storage, output.handle()};
+    plugin_run_context run = {};
+    run.host_context = reinterpret_cast<plugin_host_context *>(&probe);
+    run.is_cancelled = [](plugin_host_context *host) {
+        Probe &probe = *reinterpret_cast<Probe *>(host);
+        for (const std::unique_ptr<ExtrusionEntity> &owned : probe.storage->extrusions) {
+            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned.get()));
+            if (entity.handle() != probe.output && !entity.is_leaf() && !entity.empty()) {
+                probe.ready = true;
+                return 1;
+            }
+        }
+        return 0;
+    };
+    CHECK_THROWS_AS(slic3r_api::Infill::fill_ensuring_surface(ctx, handle, &run, settings), slic3r_api::PluginCancelled);
+    CHECK(probe.ready);
+    CHECK(output.empty());
+    CHECK(storage.size() == initial);
+}
+
+TEST_CASE("Ensuring is a standalone plugin and the smooth variants are gone", "[plugins][infill][ensuring]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const Plugin *plugin = Orchestrator::instance().get_plugin("ensuring");
+    REQUIRE(plugin != nullptr);
+    CHECK(plugin->get_step() == INFILL_PATTERN);
+    CHECK(Orchestrator::instance().get_plugin("smoothhilbert") == nullptr);
+    CHECK(Orchestrator::instance().get_plugin("smoothtriple") == nullptr);
 }

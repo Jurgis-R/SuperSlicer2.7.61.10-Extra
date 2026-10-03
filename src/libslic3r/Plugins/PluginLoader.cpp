@@ -97,8 +97,8 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Infill/Lightning/LightningPattern.hpp"
 #include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
+#include "libslic3r/Plugins/Infill/EnsuringPattern.hpp"
 #include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
-#include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/Infill/PostFullFillVolume.hpp"
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
 #include "libslic3r/Plugins/Infill/Rectilinear/RectilinearPatterns.hpp"
@@ -696,13 +696,12 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_support_cubic_pattern_plugin);
     register_builtin_plugin(orchestrator, "lightning",
         slic3r_api::Infill::Lightning::register_lightning_pattern_plugin);
-    register_builtin_plugin(orchestrator, "legacy_infill_patterns",
-        slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins);
     register_builtin_plugin(orchestrator, "gyroid",
         slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin);
     register_builtin_plugin(orchestrator, "line", slic3r_api::Infill::register_line_pattern_plugin);
     register_builtin_plugin(orchestrator, "concentric", slic3r_api::Infill::register_concentric_pattern_plugin);
     register_builtin_plugin(orchestrator, "smooth", slic3r_api::Infill::register_smooth_pattern_plugin);
+    register_builtin_plugin(orchestrator, "ensuring", slic3r_api::Infill::register_ensuring_pattern_plugin);
     register_builtin_plugin(orchestrator, "honeycomb",
         slic3r_api::Infill::register_honeycomb_pattern_plugin);
     register_builtin_plugin(orchestrator, "3dhoneycomb",

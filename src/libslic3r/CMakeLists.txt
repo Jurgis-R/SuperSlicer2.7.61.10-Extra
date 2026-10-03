@@ -314,13 +314,13 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/Lightning/LightningTreeNode.hpp
 	Plugins/Infill/DefaultInfillGenerator.cpp
 	Plugins/Infill/DefaultInfillGenerator.hpp
+	Plugins/Infill/EnsuringPattern.cpp
+	Plugins/Infill/EnsuringPattern.hpp
 	Plugins/Infill/GyroidPattern.cpp
 	Plugins/Infill/GyroidPattern.hpp
 	Plugins/Infill/HilbertCurvePattern.cpp
 	Plugins/Infill/Honeycomb3DPattern.cpp
 	Plugins/Infill/HoneycombPattern.cpp
-	Plugins/Infill/LegacyInfillPatterns.cpp
-	Plugins/Infill/LegacyInfillPatterns.hpp
 	Plugins/Infill/LinePattern.cpp
 	Plugins/Infill/OctagramSpiralPattern.cpp
 	Plugins/Infill/PatternPluginHelpers.hpp
