@@ -516,6 +516,8 @@ SurfaceInfillRecipe make_surface_recipe(const run_ctx_generate_infill &ctx,
     uint16_t infill_flags = 0;
     if (pattern_id == "monotonic" || pattern_id == "monotoniclines")
         infill_flags |= C_INFILL_FLAG_MONOTONIC;
+    if (pattern_id == "sawtooth")
+        infill_flags |= C_INFILL_FLAG_DONT_ADJUST;
     if (region_config.enforce_full_fill_volume.get_bool())
         infill_flags |= C_INFILL_FLAG_FILL_EXACTLY;
     if ((region_config.perimeter_generator == Slic3r::PerimeterGeneratorType::Arachne &&

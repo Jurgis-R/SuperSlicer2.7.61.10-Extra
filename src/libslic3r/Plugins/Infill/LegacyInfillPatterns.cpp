@@ -83,9 +83,9 @@ struct LegacyPatternDefinition
 // honeycomb, 3dhoneycomb, hilbertcurve, archimedeanchords and octagramspiral
 // left gaps 10..14, and the rectilinear family (rectilinear, aligned
 // rectilinear, monotonic, monotonic lines, grid, triangles, stars, cubic,
-// scattered rectilinear and rectilinear with perimeter) is now provided by
+// scattered rectilinear, sawtooth and rectilinear with perimeter) is now provided by
 // RectilinearPatterns.cpp.
-const std::array<LegacyPatternDefinition, 10> k_legacy_patterns = {{
+const std::array<LegacyPatternDefinition, 9> k_legacy_patterns = {{
     {"line", "Line", "Simple alternating line infill pattern.", Slic3r::ipLine, 7},
     {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric, 9},
     {"adaptivecubic", "Adaptive Cubic", "Adaptive cubic infill pattern.", Slic3r::ipAdaptiveCubic, 15},
@@ -93,7 +93,6 @@ const std::array<LegacyPatternDefinition, 10> k_legacy_patterns = {{
     {"smooth", "Ironing", "Ironing-style smooth infill pattern.", Slic3r::ipSmooth, 17},
     {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
     {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
-    {"sawtooth", "Sawtooth", "Sawtooth rectilinear infill pattern.", Slic3r::ipSawtooth, 22},
     {"lightning", "Lightning", "Lightning infill pattern.", Slic3r::ipLightning, 23},
     {"ensuring", "Ensuring", "Solid infill pattern that improves coverage in narrow areas.", Slic3r::ipEnsuring, 24},
 }};
@@ -122,7 +121,6 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
         "top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", nullptr
     };
     static const char *const k_sparse_only[] = { "fill_pattern", nullptr };
-    static const char *const k_top_only[] = { "top_fill_pattern", nullptr };
     static const char *const k_solid_only[] = { "solid_fill_pattern", nullptr };
 
     switch (pattern) {
@@ -135,8 +133,6 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
     case Slic3r::ipSupportCubic:
     case Slic3r::ipLightning:
         return k_sparse_only;
-    case Slic3r::ipSawtooth:
-        return k_top_only;
     case Slic3r::ipEnsuring:
         return k_solid_only;
     default:
