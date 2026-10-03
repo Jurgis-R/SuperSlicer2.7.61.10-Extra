@@ -102,6 +102,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
 #include "libslic3r/Plugins/Infill/Rectilinear/RectilinearPatterns.hpp"
 #include "libslic3r/Plugins/Infill/SimpleInfillPatterns.hpp"
+#include "libslic3r/Plugins/Infill/SmoothPattern.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetractionLift.hpp"
@@ -700,6 +701,7 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin);
     register_builtin_plugin(orchestrator, "line", slic3r_api::Infill::register_line_pattern_plugin);
     register_builtin_plugin(orchestrator, "concentric", slic3r_api::Infill::register_concentric_pattern_plugin);
+    register_builtin_plugin(orchestrator, "smooth", slic3r_api::Infill::register_smooth_pattern_plugin);
     register_builtin_plugin(orchestrator, "honeycomb",
         slic3r_api::Infill::register_honeycomb_pattern_plugin);
     register_builtin_plugin(orchestrator, "3dhoneycomb",

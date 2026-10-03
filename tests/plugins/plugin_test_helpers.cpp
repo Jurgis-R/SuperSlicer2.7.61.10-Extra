@@ -47,6 +47,7 @@
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
 #include "libslic3r/Plugins/Infill/Rectilinear/RectilinearPatterns.hpp"
 #include "libslic3r/Plugins/Infill/SimpleInfillPatterns.hpp"
+#include "libslic3r/Plugins/Infill/SmoothPattern.hpp"
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
@@ -501,6 +502,7 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_line_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_concentric_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_smooth_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_honeycomb_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_honeycomb_3d_pattern_plugin(orchestrator_handle_value);
         slic3r_api::Infill::register_hilbert_curve_pattern_plugin(orchestrator_handle_value);

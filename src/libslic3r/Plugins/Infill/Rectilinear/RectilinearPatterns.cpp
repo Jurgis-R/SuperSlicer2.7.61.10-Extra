@@ -216,18 +216,8 @@ private:
         std::unique_ptr<rect_fills::FillRectilinear> pattern = make_pattern(m_definition.kind);
         if (pattern == nullptr)
             return;
-        pattern->layer_id = raw.layer_id;
-        pattern->z = raw.z;
-        pattern->angle = float(raw.angle);
-        pattern->can_angle_cross = (raw.infill_flags & C_INFILL_FLAG_CAN_ANGLE_CROSS) != 0;
-        pattern->link_max_length = raw.link_max_length;
-        pattern->loop_clipping = raw.loop_clipping;
-        pattern->overlap = raw.overlap;
-        pattern->plugin_storage = run_ctx->plugin_storage;
-        pattern->bounding_box.min = rect_work::Point(raw.object_bounding_box.min.x, raw.object_bounding_box.min.y);
-        pattern->bounding_box.max = rect_work::Point(raw.object_bounding_box.max.x, raw.object_bounding_box.max.y);
-        pattern->bounding_box.defined = true;
-        pattern->init_spacing(raw.spacing, raw);
+        rect_fills::configure_filler(*pattern, raw, run_ctx->plugin_storage);
+
 
         throw_if_cancelled(run_ctx);
         if (m_definition.kind == PatternKind::RectilinearWithPerimeter) {

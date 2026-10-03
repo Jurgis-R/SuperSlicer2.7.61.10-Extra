@@ -226,6 +226,10 @@ protected:
     coord_t _line_spacing_for_density(const raw_infill_pattern_params &params) const override;
 };
 
+// Copy the recipe frame (layer, angle, crossing, link and loop limits, overlap,
+// object bounds) and the plugin storage into a filler, then set its spacing.
+void configure_filler(FillRectilinear &filler, const raw_infill_pattern_params &params, storage_handle *storage);
+
 } // namespace fills
 }}} // namespace slic3r_api::Infill::RectilinearPatternsPlugin
 

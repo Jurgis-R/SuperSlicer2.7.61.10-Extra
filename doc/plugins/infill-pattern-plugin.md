@@ -196,8 +196,9 @@ add or replace a stage on top of it:
   (`PrusaSimpleConnect` / `FakePerimeterConnect`), so those patterns still
   produce connected paths. It consumes borrowed `BoundaryContours` views and
   materializes only contours that need cleanup or inserted junction points.
-- `RectilinearPatterns.cpp` passes the API geometry view, raw recipe, and
-  `plugin_storage` directly to the pattern implementation. The monotonic
+- `RectilinearPatterns.cpp` configures each filler from the recipe with
+  `fills::configure_filler()`, then passes the API geometry view, raw recipe,
+  and `plugin_storage` directly to the pattern implementation. The monotonic
   patterns publish their group without `SORTABLE` / `REVERSIBLE` so the path
   order and direction survive `STEP_ORDERING`; the other patterns stay
   sortable.
@@ -266,6 +267,39 @@ Intentional Arachne difference: `USE_ARACHNE` still produces classic constant-wi
 loops, not variable-width wall paths. The flag remains in the recipe; variable
 width and the legacy gap-fill branch are not ported. Gap fill and full-fill
 volume correction belong to post-infill plugins.
+
+## Smooth (Ironing)
+
+`smooth` (`SmoothPattern.cpp`, label "Ironing") is a standalone `INFILL_PATTERN`
+provider with priority 17, available in `top_fill_pattern`,
+`bottom_fill_pattern` and `solid_fill_pattern`. It ports `FillSmooth` with the
+ported rectilinear fillers, configured from the recipe by
+`fills::configure_filler()`:
+
+- the deposit pass is a monotonic fill at the recipe density with
+  `1 - fill_smooth_distribution` of the flow. When the surface has no-overlap
+  areas and is not a bridge, it only fills those areas grown by half the
+  overlap;
+- the ironing pass covers the whole surface, a quarter turn further when
+  `C_INFILL_FLAG_CAN_ANGLE_CROSS` is set, at the density divided by
+  `fill_smooth_width`, with `RAW_EXTRUSION_ROLE_IRONING_INFILL` and
+  `fill_smooth_distribution` of the flow. The line flow is divided by the same
+  factor, so each pass keeps its share of the volume.
+
+Both settings are read from the region of `primary_region` and declared in
+`used_config_keys()`. The root keeps the deposit before the ironing; every path
+is monotonic and not reversible. The direct test matches the native tree:
+collection flags, points, roles and flows.
+
+Intentional differences:
+
+- the native deposit pass forced its own gap fill; gap fill belongs to the
+  post-infill step;
+- the native sub-fillers always rotated on odd layers; the plugin fillers follow
+  `C_INFILL_FLAG_CAN_ANGLE_CROSS` (`fill_angle_cross`);
+- the native filler corrected the volume of each pass separately; the full-fill
+  volume step scales the whole surface tree with one factor, which keeps the
+  flow split between the passes.
 
 ## Adaptive and Support Cubic
 

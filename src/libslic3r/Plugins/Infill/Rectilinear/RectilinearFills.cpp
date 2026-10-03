@@ -781,6 +781,23 @@ FillRectilinear::init_spacing(coordf_t spacing, const raw_infill_pattern_params&
     spacing_priv = spacing;
 }
 
+void configure_filler(FillRectilinear &filler, const raw_infill_pattern_params &params, storage_handle *storage)
+{
+    filler.layer_id = params.layer_id;
+    filler.z = params.z;
+    filler.angle = float(params.angle);
+    filler.can_angle_cross = (params.infill_flags & C_INFILL_FLAG_CAN_ANGLE_CROSS) != 0;
+    filler.link_max_length = params.link_max_length;
+    filler.loop_clipping = params.loop_clipping;
+    filler.overlap = params.overlap;
+    filler.plugin_storage = storage;
+    filler.bounding_box.min = Point(params.object_bounding_box.min.x, params.object_bounding_box.min.y);
+    filler.bounding_box.max = Point(params.object_bounding_box.max.x, params.object_bounding_box.max.y);
+    filler.bounding_box.defined = true;
+    filler.init_spacing(params.spacing, params);
+}
+
+
 enum DirectionMask
 {
     DIR_FORWARD  = 1,

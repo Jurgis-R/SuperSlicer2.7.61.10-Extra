@@ -341,6 +341,8 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/PostInfillGapFill.cpp
 	Plugins/Infill/PostInfillGapFill.hpp
 	Plugins/Infill/SimpleInfillPatterns.hpp
+	Plugins/Infill/SmoothPattern.cpp
+	Plugins/Infill/SmoothPattern.hpp
 	Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.cpp
 	Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp
 	Plugins/LayerExtrusionEdit/CreateRetraction.cpp
