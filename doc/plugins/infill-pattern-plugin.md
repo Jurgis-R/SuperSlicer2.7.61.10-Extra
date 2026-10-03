@@ -119,8 +119,9 @@ empty result; an empty mask produces an empty intersection or a copy of the
 subjects for difference. The C entry points also accept a null mask with those
 same semantics and return null for a null storage or subject. Collection order
 and correspondence between output and source indices are unspecified; paths
-remain open and retain their bends. These calls do not use or replace the
-private Cubic/Lightning clipping implementation.
+remain open and retain their bends. Cubic and Lightning use batch intersection
+once per inset component, then copy the results into their mutable connector
+buffers; they do not embed a separate Clipper implementation.
 
 ## Publishing extrusion
 
@@ -209,14 +210,71 @@ The legacy pattern adapters (`LegacyInfillPatterns.cpp`), brim, support and the
 wipe tower still instantiate the legacy core `Fill` classes. Dense infill uses
 recipe modifiers and post-infill plugins instead of those core fillers.
 
+## Adaptive and Support Cubic
+
+`adaptivecubic` and `supportcubic` are `INFILL_PATTERN` providers with priorities
+15 and 16, respectively. Both belong only to `fill_pattern` and share the
+implementation in `Plugins/Infill/AdaptiveCubic`, while retaining separate
+per-instance caches and progress state.
+
+Each plugin's `setup()` prepares one owned octree per assigned object, then
+publishes the complete cache only after preparation succeeds. Repeated surfaces
+for that object share the mode-specific immutable octree. The next `setup()`
+starts a new generation and discards the previous caches; object handles are
+generation-local lookup keys, not persistent cache identities. There is no
+preparatory pipeline step or global cache registry.
+
+Preparation reads model-part meshes, transforms, configuration and surfaces
+through public views. Object-wide cell spacing is computed independently for
+each mode and remains separate from per-surface flow spacing. It uses unweighted
+mean widths and positive densities of configured regions matching that mode and
+having nonempty fill surfaces. Width zero uses `1.125f * maximum_nozzle`; percent
+widths use the maximum nozzle diameter as their base. An assigned object without
+an eligible region fails explicitly, even if its first surface recipe requests
+that pattern with positive density; there is no recipe-based spacing fallback.
+Existing surfaces carrying `MOD_BRIDGE` contribute triangles at their layer's bottom Z;
+`MOD_OVERBRIDGE` alone does not. No new bridge candidates are inferred, and
+source surfaces and their metadata are never modified. This differs intentionally
+from the legacy pre-bridge candidate filter.
+
+Adaptive mode refines the octree with every model triangle. Support mode uses the
+same complete mesh bounds and level spacing, but refines it only with faces whose
+normal points upward by more than the legacy 0.707 threshold in octree coordinates.
+The volume and object transform handedness are applied to triangle winding before
+that test. Marked bridge triangles bypass the normal filter in both modes.
+
+Private glu-libtess triangulates contours with holes without interpreting native
+handles. API batch intersection delegates open-path coordinate preparation and
+restoration to the host; Boost.Geometry indexes hook collisions. The host uses
+its existing filtered determinant predicate with an exact 128-bit fallback.
+
+`InfillWorkBuffers.hpp` owns the shared mutable points, double vectors, bounding
+boxes and polylines, including core-compatible rounding and Douglas-Peucker
+simplification. `InfillPaths` consumes these neutral buffers directly; polygon
+containers, borrowed contour views and rectilinear geometry helpers remain in
+the rectilinear module. `InfillPaths` converts between API-owned collections and
+the private buffers without reinterpreting their layouts; the copies retain
+all points and check cancellation while moving temporary stored payloads.
+
+Surface generation applies the half-spacing inset once per surface, processes
+each resulting component independently, builds Adaptive hooks, then chains or
+connects paths using the selected connection and anchor settings. Publication
+keeps paths sortable and reversible. Parity tests compare complete directed
+polylines without requiring their order within the output group to match.
+Adaptive parity covers both inputs without additional bridges and projected
+bridge surfaces with holes across the connection and anchor settings.
+
+Lightning is the only remaining legacy pattern blocked by missing object-level
+preparation. Adaptive and Support Cubic prepare their own caches in `setup()`.
+
 ## Limits
 
 The plugin API does not expose a polygon-aware `connect_infill()` substitute:
 paths cannot be linked through the surface interior. A pattern therefore
 publishes independent sortable paths and lets `STEP_ORDERING` fix their order,
-direction and travels. The only exception so far is the self-contained connect
-port used by the rectilinear family, which brings its own boundary linking and
-is deliberately not part of the public API.
+direction and travels. The self-contained connect port used by the rectilinear
+family and Adaptive Cubic supplies boundary linking without becoming part of
+the public API.
 
 `OrderingEngine.hpp` provides
 `connect_infill(StoredPolylineCollection&, const OrderingEngine&)` for the

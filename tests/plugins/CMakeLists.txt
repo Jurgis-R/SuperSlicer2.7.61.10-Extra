@@ -10,6 +10,7 @@ add_executable(${_TEST_NAME}_tests
     gcode_test_helpers.cpp
     perimeter_test_helpers.cpp
     plugin_test_helpers.cpp
+    test_adaptive_cubic_pattern.cpp
     test_lightning_pattern.cpp
     test_auxiliary_layer_helpers.cpp
     test_bridge_detector_cancellation.cpp

@@ -58,10 +58,9 @@ The normal call flow is:
             `-- Fill::fill_surface_extrusion()
 
 The adapter deliberately preserves the old low-level geometry algorithms.
-`ipAdaptiveCubic`, `ipSupportCubic`, and `ipLightning` remain selectable in
-the registry, but currently require object-level precomputed data that the
-INFILL_PATTERN context does not expose; they fail explicitly instead of
-producing incomplete infill.
+Lightning still requires object-level precomputed data that the INFILL_PATTERN
+context does not expose; it fails explicitly instead of producing incomplete
+infill. Adaptive Cubic and Support Cubic use the setup-owned octree plugin.
 */
 
 namespace slic3r_api { namespace Infill { namespace LegacyInfillPatternsPlugin {
@@ -85,11 +84,9 @@ struct LegacyPatternDefinition
 // rectilinear, monotonic, monotonic lines, grid, triangles, stars, cubic,
 // scattered rectilinear, sawtooth and rectilinear with perimeter) is now provided by
 // RectilinearPatterns.cpp.
-const std::array<LegacyPatternDefinition, 9> k_legacy_patterns = {{
+const std::array<LegacyPatternDefinition, 7> k_legacy_patterns = {{
     {"line", "Line", "Simple alternating line infill pattern.", Slic3r::ipLine, 7},
     {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric, 9},
-    {"adaptivecubic", "Adaptive Cubic", "Adaptive cubic infill pattern.", Slic3r::ipAdaptiveCubic, 15},
-    {"supportcubic", "Support Cubic", "Support cubic infill pattern.", Slic3r::ipSupportCubic, 16},
     {"smooth", "Ironing", "Ironing-style smooth infill pattern.", Slic3r::ipSmooth, 17},
     {"smoothhilbert", "Smooth Hilbert", "Hilbert-based smooth infill pattern.", Slic3r::ipSmoothHilbert, 18},
     {"smoothtriple", "Smooth Triple", "Triple-pass smooth infill pattern.", Slic3r::ipSmoothTriple, 19},
@@ -103,9 +100,7 @@ bool requires_unmigrated_object_state(Slic3r::InfillPattern pattern)
     // PrintObject::prepare_infill() path. They are still registered so presets
     // and the dynamic enum know about them, but the wrapper fails cleanly until
     // the new infill pipeline exposes their precomputed state.
-    return pattern == Slic3r::ipAdaptiveCubic ||
-           pattern == Slic3r::ipSupportCubic ||
-           pattern == Slic3r::ipLightning;
+    return pattern == Slic3r::ipLightning;
 }
 
 // Option keys whose pattern list this plugin wants to join. Each pattern
@@ -129,8 +124,6 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
     case Slic3r::ipSmooth:
         return k_top_bottom_solid;
     case Slic3r::ipLine:
-    case Slic3r::ipAdaptiveCubic:
-    case Slic3r::ipSupportCubic:
     case Slic3r::ipLightning:
         return k_sparse_only;
     case Slic3r::ipEnsuring:

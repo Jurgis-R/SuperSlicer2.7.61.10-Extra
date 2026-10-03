@@ -279,6 +279,16 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/SettingsGCodeScripts.hpp
 	Plugins/GuiRulesExample.cpp
 	Plugins/GuiRulesExample.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveFill.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveFill.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveHooks.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveOctree.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveOctree.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptivePaths.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptivePreparation.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptivePreparation.hpp
 	Plugins/Infill/ArachneInfill.cpp
 	Plugins/Infill/ArachneInfill.hpp
 	Plugins/Infill/ArchimedeanChordsPattern.cpp

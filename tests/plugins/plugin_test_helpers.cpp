@@ -39,6 +39,7 @@
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
+#include "libslic3r/Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
 #include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
 #include "libslic3r/Plugins/Infill/PostFullFillVolume.hpp"
@@ -488,6 +489,10 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::FlatAreaLayerHeightPlugin::register_flat_area_layer_height_plugin(orchestrator_handle_value);
         slic3r_api::Infill::DefaultInfillGeneratorPlugin::register_default_infill_generator_plugin(
+            orchestrator_handle_value);
+        slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_adaptive_cubic_pattern_plugin(
+            orchestrator_handle_value);
+        slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_support_cubic_pattern_plugin(
             orchestrator_handle_value);
         slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins(
             orchestrator_handle_value);
