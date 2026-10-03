@@ -48,6 +48,7 @@ add_executable(${_TEST_NAME}_tests
     test_rectilinear_edge_grid.cpp
     test_rectilinear_clipper.cpp
     test_rectilinear_work_buffers.cpp
+    test_rectilinear_connect.cpp
     test_gcode_default_firmware_session.cpp
     test_gcode_custom_gcode_per_print_z.cpp
     test_gcode_feature_gcode.cpp
