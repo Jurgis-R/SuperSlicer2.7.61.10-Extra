@@ -211,6 +211,22 @@ inline GuiCondition vector_empty(std::string key, int32_t index = RAW_GUI_RULE_I
 inline GuiCondition string_equals(std::string key, std::string value, int32_t index = RAW_GUI_RULE_INDEX_ALL)
     { return GuiCondition::string_equals(std::move(key), std::move(value), index); }
 
+// Named conditions for the built-in enum selectors used by activation rules.
+// Plugins must not include the host configuration headers to read those enums,
+// so the selector values are mirrored here and the host keeps them in sync with
+// static assertions in GuiRulesCore.cpp.
+// Perimeter generator selector: 0 = classic, 1 = arachne.
+inline GuiCondition perimeter_generator_is_classic()
+    { return int_equals("perimeter_generator", 0); }
+inline GuiCondition perimeter_generator_is_arachne()
+    { return int_equals("perimeter_generator", 1); }
+inline GuiCondition perimeter_generator_is_not_arachne()
+    { return int_not_equals("perimeter_generator", 1); }
+// Fill pattern selectors: the smooth pattern value is shared by the top,
+// bottom and solid fill selectors.
+inline GuiCondition fill_pattern_is_smooth(std::string key)
+    { return int_equals(std::move(key), 18); }
+
 class GuiRule
 {
 public:

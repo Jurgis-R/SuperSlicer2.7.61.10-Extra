@@ -162,9 +162,9 @@ void validate_tree(const MutableExtrusionEntity &entity,
 }
 
 ExtrusionSettingsContext validated_settings_context(const Print &print,
-                                                    const PrintingToolGroup &tool_group,
-                                                    const PrintingExtrusion &extrusion,
-                                                    bool require_volumetric_flow)
+                                                     const PrintingToolGroup &tool_group,
+                                                     PrintingExtrusion extrusion,
+                                                     bool require_volumetric_flow)
 {
     // Validate both tree properties and source links before returning a context
     // that a plugin may safely use for mutation.

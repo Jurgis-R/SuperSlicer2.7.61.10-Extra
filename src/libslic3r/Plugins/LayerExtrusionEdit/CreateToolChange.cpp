@@ -3,16 +3,30 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+CreateToolChange.cpp
+====================
+
+Implements the built-in tool-selection producer declared in CreateToolChange.hpp:
+the toolchange_gcode option definition and its activation rule, the provider
+callbacks, and the registration entry point. The setup scan and the per-layer
+run that materialize every real tool change in the ordered PrintingPlan are
+documented in the header.
+*/
+
 #include "CreateToolChange.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
@@ -45,6 +59,40 @@ namespace {
 
 const char *const k_no_dependencies[] = {nullptr};
 
+const char *const k_defined_config_keys[] = {
+    "toolchange_gcode"
+};
+
+void initialize_create_tool_change_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definition owned by this module. It fixes the option type, override
+    scope, default and GUI metadata; the defined key is published in the print
+    presets, so profiles read and write it by name like any built-in setting.
+    Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "toolchange_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "Tool change G-code";
+    def.tooltip = "This custom code is inserted at every extruder change. If you don't leave this empty, you are "
+        "expected to take care of the toolchange yourself - Slic3r will not output any other G-code to "
+        "change the filament. You can use placeholder variables for all Slic3r settings as well as {toolchange_z}, {layer_z}, {layer_num}, {max_layer_z}, {previous_extruder} "
+        "and {next_extruder}, so e.g. the standard toolchange command can be scripted as T{next_extruder}."
+        "!! Warning !!: if any character is written here, Slic3r won't output any toolchange command by itself.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 5;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
 /* Immutable prefix facts consumed by one parallel layer run. */
 struct LayerToolState
 {
@@ -67,7 +115,7 @@ void set_float_argument(MutableConfig &config, const char *key, double value);
 
 /* Append a configured script or semantic fallback to one target tool visit. */
 void append_tool_change_event(storage_handle *storage,
-                              const PrintingToolGroup &tool_group,
+                              PrintingToolGroup tool_group,
                               const std::string &script,
                               int32_t layer_number,
                               coord_t layer_z,
@@ -97,6 +145,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
 
     /* Prefix-scan tool visits without traversing any extrusion tree. */
@@ -124,9 +174,9 @@ private:
 extruder_index_t initial_plan_extruder(const PrintingPlan &plan)
 {
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 const extruder_index_t tool = layer.tool_group(tool_idx).extruder_id();
                 if (tool != EXTRUDER_ID_UNKNOWN)
@@ -153,7 +203,7 @@ void set_float_argument(MutableConfig &config, const char *key, const double val
 }
 
 void append_tool_change_event(storage_handle *storage,
-                              const PrintingToolGroup &tool_group,
+                              PrintingToolGroup tool_group,
                               const std::string &script,
                               const int32_t layer_number,
                               const coord_t layer_z,
@@ -257,6 +307,19 @@ int32_t CreateToolChange::used_config_keys(
     return 1;
 }
 
+int32_t CreateToolChange::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void CreateToolChange::inilialize_impl(storage_handle *) const
+{
+    initialize_create_tool_change_settings(m_orchestrator);
+}
+
 const char *CreateToolChange::progress_message_format_impl() const noexcept
 {
     return "Creating tool changes: %u / %u layers";
@@ -274,7 +337,7 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
     if (ctx == nullptr || ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     m_layer_states.resize(plan.group_count());
     extruder_index_t current_extruder = initial_plan_extruder(plan);
     int32_t layer_number = 0;
@@ -284,12 +347,12 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
     // visits deliberately update current_extruder because the file writer will
     // still enter their tool-group and therefore change the selection history.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         std::vector<LayerToolState> &group_states = m_layer_states[group_idx];
         group_states.reserve(group.layer_group_count());
         for (uint32_t layer_idx = 0;
              layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             group_states.push_back(
                 LayerToolState{layer_number++, current_extruder, layer.print_z()});
             m_max_layer_z = std::max(m_max_layer_z, layer.print_z());
@@ -297,7 +360,7 @@ void CreateToolChange::setup_impl(const plugin_run_context *run_ctx,
 
             for (uint32_t tool_idx = 0;
                  tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 const extruder_index_t tool = tool_group.extruder_id();
                 if (tool == EXTRUDER_ID_UNKNOWN)
                     tool_group.set_extruder_id(current_extruder);
@@ -339,7 +402,7 @@ void CreateToolChange::run_impl(const plugin_run_context *run_ctx) const
 
     const LayerToolState &state =
         m_layer_states[ctx->group_idx][ctx->layer_group_idx];
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingLayerGroup layer(ctx->layer_group);
     const std::string script = Print(ctx->print).config().string_or_default(
         "toolchange_gcode", std::string());
     extruder_index_t current_extruder = state.incoming_extruder;
@@ -348,7 +411,7 @@ void CreateToolChange::run_impl(const plugin_run_context *run_ctx) const
     // repeated visits need no explicit event; every actual transition is added
     // before entering its target group.
     for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-        const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+        PrintingToolGroup tool_group = layer.tool_group(tool_idx);
         const extruder_index_t target_extruder = tool_group.extruder_id();
         if (target_extruder == EXTRUDER_ID_UNKNOWN)
             throw std::runtime_error(

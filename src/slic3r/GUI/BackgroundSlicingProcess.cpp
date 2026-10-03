@@ -34,6 +34,7 @@
 #include "libslic3r/GCode/PostProcessor.hpp"
 #include "libslic3r/Format/SL1.hpp"
 #include "libslic3r/Thread.hpp"
+#include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/libslic3r.h"
 
 #include <cassert>
@@ -173,7 +174,7 @@ void BackgroundSlicingProcess::process_fff()
 	wxCommandEvent evt(m_event_slicing_completed_id);
 	// Post the Slicing Finished message for the G-code viewer to update.
 	// Passing the timestamp 
-	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(psSlicingFinished).timestamp));
+	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(STEP_FINALIZE_SLICING).timestamp));
 	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
 	Orchestrator::instance().export_gcode(*m_fff_print, m_temp_output_path, m_gcode_result, [this](const ThumbnailsParams& params) { return this->render_thumbnails(params); });
 	if (this->set_step_started(bspsGCodeFinalize)) {
@@ -188,7 +189,7 @@ void BackgroundSlicingProcess::process_fff()
 	    }
 		this->set_step_done(bspsGCodeFinalize);
 	}
-	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(psGCodeExport).timestamp));
+	evt.SetInt((int)(m_fff_print->step_state_with_timestamp(STEP_GCODE).timestamp));
 	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
 }
 
@@ -265,9 +266,8 @@ void BackgroundSlicingProcess::thread_proc()
 				(m_state == STATE_CANCELED) ? SlicingProcessCompletedEvent::Cancelled :
 				exception ? SlicingProcessCompletedEvent::Error : SlicingProcessCompletedEvent::Finished, exception);
         	wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, evt.Clone());
-        	// Cancelled by the user, not internally, thus cleanup() was not called yet.
-        	// Otherwise cleanup() is called from Print::apply()
-        	m_print->cleanup();
+        	// Cancelled by the user, not internally. The FFF Print keeps the partial
+        	// outputs until the next run removes them before resuming.
         }
 	    m_print->restart();
 		lck.unlock();
@@ -449,6 +449,15 @@ bool BackgroundSlicingProcess::start()
 		// The print is empty (no object in Model, or all objects are out of the print bed).
 		return false;
 
+	// Read the preference on the UI thread, then apply it only while the worker is
+	// idle under m_mutex. The core pipeline stores the policy on Print so it never
+	// accesses GUI configuration from the background thread.
+	const bool has_ordering_checkpoint_preference =
+		m_print == m_fff_print && m_fff_print != nullptr &&
+		GUI::wxGetApp().app_config != nullptr;
+	const bool keep_ordering_checkpoint = has_ordering_checkpoint_preference &&
+		GUI::wxGetApp().app_config->get_bool("keep_ordering_checkpoint");
+
 	std::unique_lock<std::mutex> lck(m_mutex);
 	if (m_state == STATE_INITIAL) {
 		// The worker thread is not running yet. Start it.
@@ -469,6 +478,8 @@ bool BackgroundSlicingProcess::start()
 		return false;
 	if (! this->idle())
 		throw Slic3r::RuntimeError("Cannot start a background task, the worker thread is not idle.");
+	if (has_ordering_checkpoint_preference)
+		m_fff_print->set_keep_ordering_checkpoint(keep_ordering_checkpoint);
 	m_state = STATE_STARTED;
 	m_print->set_cancel_callback([this](){ this->stop_internal(); });
 	lck.unlock();
@@ -618,16 +629,19 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model &model, const Dyn
 	Print::ApplyStatus invalidated = m_print->apply(model, config);
     if (physical_printer_config && 
         (m_print->physical_printer_config().diff(*physical_printer_config).size() != 0 || m_print->physical_printer_config().keys() != physical_printer_config->keys()) ) {
+        // Export may read these options; stop the worker before replacing their storage.
+        std::scoped_lock<std::mutex> lock(m_print->state_mutex());
+        if (m_print->technology() == ptFFF)
+            m_fff_print->request_replay_from(Steps::Checkpoint::Plan);
+        else
+            m_print->call_cancel_callback();
         m_print->physical_printer_config().clear();
         m_print->physical_printer_config().apply(*physical_printer_config);
         if (!invalidated)
             invalidated = PrintBase::APPLY_STATUS_INVALIDATED;
-        if (m_print->technology() == ptFFF && this->m_fff_print->is_step_done(psGCodeExport)) {
-            this->m_fff_print->invalidate_step(psGCodeExport);
-        }
     }
 	if ((invalidated & PrintBase::APPLY_STATUS_INVALIDATED) != 0 && m_print->technology() == ptFFF &&
-		!m_fff_print->is_step_done(psGCodeExport)) {
+		!m_fff_print->is_step_done(STEP_GCODE)) {
 		// Some FFF status was invalidated, and the G-code was not exported yet.
 		// Let the G-code preview UI know that the final G-code preview is not valid.
 		// In addition, this early memory deallocation reduces memory footprint.

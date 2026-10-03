@@ -329,6 +329,17 @@ final plan match the normal by-layer printing order.
 */
 void sort_layer_groups_by_print_z(PrintingGroup &group);
 
+/* Copy each already-ordered event child into a fixed scope root. Appending by
+   const reference deep-clones extrusion properties and owned script data. */
+void copy_scope_events(const PrintingScopeEvents &source,
+                       PrintingScopeEvents &destination)
+{
+    for (size_t event_idx = 0; event_idx < source.before().child_count(); ++event_idx)
+        destination.append_before(source.before().child(event_idx));
+    for (size_t event_idx = 0; event_idx < source.after().child_count(); ++event_idx)
+        destination.append_after(source.after().child(event_idx));
+}
+
 } // namespace
 
 PrintingScopeEvents::PrintingScopeEvents()
@@ -456,6 +467,62 @@ void PrintingScopeEvents::clear()
     // non-sortable/non-reversible flags for the next step execution.
     m_before.clear_content();
     m_after.clear_content();
+}
+
+std::unique_ptr<PrintingPlan> PrintingPlan::clone() const
+{
+    // The cloned plan owns new extrusion trees and event roots. Source objects,
+    // layers and region-islands remain borrowed from the same live Print.
+    std::unique_ptr<PrintingPlan> copy = std::make_unique<PrintingPlan>();
+    const PrintingPlanIdentity *copy_identity = copy->identity_token();
+
+    copy->properties = properties;
+    copy->object_instances = object_instances;
+    copy_scope_events(events, copy->events);
+    copy->groups.reserve(groups.size());
+
+    for (const PrintingGroup &source_group : groups) {
+        PrintingGroup group_copy;
+        group_copy.plan_identity = copy_identity;
+        group_copy.properties = source_group.properties;
+        group_copy.printing_catalog_ids = source_group.printing_catalog_ids;
+        copy_scope_events(source_group.events, group_copy.events);
+        group_copy.layers.reserve(source_group.layers.size());
+
+        for (const PrintingLayerGroup &source_layer : source_group.layers) {
+            PrintingLayerGroup layer_copy;
+            layer_copy.plan_identity = copy_identity;
+            layer_copy.properties = source_layer.properties;
+            layer_copy.print_z = source_layer.print_z;
+            layer_copy.layers = source_layer.layers;
+            copy_scope_events(source_layer.events, layer_copy.events);
+            layer_copy.tool_groups.reserve(source_layer.tool_groups.size());
+
+            for (const PrintingToolGroup &source_tool : source_layer.tool_groups) {
+                PrintingToolGroup tool_copy;
+                tool_copy.plan_identity = copy_identity;
+                tool_copy.properties = source_tool.properties;
+                tool_copy.extruder_id = source_tool.extruder_id;
+                tool_copy.region_islands = source_tool.region_islands;
+                copy_scope_events(source_tool.events, tool_copy.events);
+                tool_copy.extrusions.reserve(source_tool.extrusions.size());
+
+                for (const PrintingExtrusion &source_extrusion : source_tool.extrusions) {
+                    PrintingExtrusion extrusion_copy;
+                    extrusion_copy.region_island = source_extrusion.region_island;
+                    extrusion_copy.sregion_island_role = source_extrusion.sregion_island_role;
+                    extrusion_copy.printing_catalog_id = source_extrusion.printing_catalog_id;
+                    if (source_extrusion.root != nullptr)
+                        extrusion_copy.root.reset(source_extrusion.root->clone());
+                    tool_copy.extrusions.emplace_back(std::move(extrusion_copy));
+                }
+                layer_copy.tool_groups.emplace_back(std::move(tool_copy));
+            }
+            group_copy.layers.emplace_back(std::move(layer_copy));
+        }
+        copy->groups.emplace_back(std::move(group_copy));
+    }
+    return copy;
 }
 
 PrintingExtrusion::PrintingExtrusion(const LayerRegionIsland &source,

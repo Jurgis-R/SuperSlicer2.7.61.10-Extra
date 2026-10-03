@@ -3072,7 +3072,7 @@ void GCodeViewer::load_shells(const Print& print)
 
 void GCodeViewer::load_wipetower_shell(const Print& print)
 {
-    if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() == ptFFF && print.is_step_done(psWipeTower)) {
+    if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() == ptFFF && print.is_step_done(STEP_WIPETOWER)) {
         // adds wipe tower's volume
         const double max_z = print.object(0).model_object()->get_model()->max_z();
         const PrintConfig& print_config = print.config();

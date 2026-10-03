@@ -114,6 +114,10 @@ void AppConfig::set_defaults()
         // Disable background processing by default as it is not stable.
         if (get("background_processing").empty())
             set("background_processing", "0");
+        // Retain the ordered PrintingPlan so downstream plan-edit invalidation
+        // can replay from it instead of rebuilding ordering and slicing data.
+        if (get("keep_ordering_checkpoint").empty())
+            set("keep_ordering_checkpoint", "1");
         // Disable support issues alerts by default
         if (get("alert_when_supports_needed").empty())
             set("alert_when_supports_needed", "0");
@@ -330,6 +334,9 @@ void AppConfig::set_defaults()
 
         if (get("use_rich_tooltip").empty())
             set("use_rich_tooltip", "0");
+
+        if (get("use_option_labels_in_disabled_tooltip").empty())
+            set("use_option_labels_in_disabled_tooltip", "0");
 
         if (get("hide_slice_tooltip").empty())
 #ifdef _WIN32

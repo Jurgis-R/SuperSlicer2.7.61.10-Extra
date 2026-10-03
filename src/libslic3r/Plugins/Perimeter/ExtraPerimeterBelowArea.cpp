@@ -3,16 +3,32 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+ExtraPerimeterBelowArea.cpp
+===========================
+
+Implementation of the extra perimeter below area module declared in
+ExtraPerimeterBelowArea.hpp.
+
+The file holds the plugin metadata, the owned option definition and activation
+rule, the module callbacks (start, after, end) and the registration entry point.
+start() captures the region settings; after() compares each child area with the
+threshold and requests the extra perimeter passes through the node view.
+*/
+
 #include "ExtraPerimeterBelowArea.hpp"
 
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <set>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
 
 /*
@@ -60,6 +76,37 @@ const char *k_no_dependencies[] = { nullptr };
 const raw_used_config_key k_used_config_keys[] = {
     { "extra_perimeters_below_area", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "extra_perimeters_below_area"
+};
+
+void initialize_extra_perimeter_below_area_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- extra_perimeters_below_area | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "extra_perimeters_below_area";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Extra perimeters on small areas";
+    def.tooltip = "After laying all the perimeters, if there is an area smaller (in mm²) than this value, then fill it with more perimeters.\nUseful if you want to fortify a small cylinder while not messing with the larger main object.\nCan be a percentage of the perimeter width (squared).\nSet zero to disable.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 const char *k_extra_perimeter_below_area_key = "extra_perimeters_below_area";
 // This module does not know how many extra rings will be needed to consume the
 // small area. Instead it asks the host loop to keep trying until the generator
@@ -71,8 +118,8 @@ double threshold_area_scaled(const PerimeterGenerationContextView &context, cons
 {
     // extra_perimeters_below_area is expressed as an area in mm2, with support
     // for the same "effective value" rules as normal config options. The
-    // reference area is one perimeter width squared, matching the old setting
-    // semantics where percentages are relative to the extrusion footprint.
+    // reference area is one perimeter width squared, so a percentage is
+    // relative to the extrusion footprint.
     const c_flow flow = context.perimeter_flow();
     const double perimeter_width_mm = unscaled(flow.width);
     const double reference_area_mm2 = perimeter_width_mm * perimeter_width_mm;
@@ -264,6 +311,14 @@ ExtraPerimeterBelowArea::instance(orchestrator_handle *orch)
     return s_instance;
 }
 
+void add_extra_perimeter_below_area_gui_rules(orchestrator_handle *orchestrator)
+{
+    // The area threshold only applies when perimeters are generated.
+    GuiRule::activate({ "extra_perimeters_below_area" })
+        .when(non_zero("perimeters"))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const char *ExtraPerimeterBelowArea::id_impl() const noexcept
 {
     return k_extra_perimeter_below_area_id;
@@ -289,6 +344,20 @@ int32_t ExtraPerimeterBelowArea::used_config_keys(raw_used_config_key *keys) con
     if (keys != nullptr)
         keys[0] = k_used_config_keys[0];
     return 1;
+}
+
+int32_t ExtraPerimeterBelowArea::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void ExtraPerimeterBelowArea::inilialize_impl(storage_handle *) const
+{
+    initialize_extra_perimeter_below_area_settings(m_orchestrator);
+    add_extra_perimeter_below_area_gui_rules(m_orchestrator);
 }
 
 const char *ExtraPerimeterBelowArea::progress_message_format_impl() const noexcept

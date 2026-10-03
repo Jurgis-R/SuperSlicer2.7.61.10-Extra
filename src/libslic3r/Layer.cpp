@@ -869,13 +869,31 @@ ExPolygons Layer::merged(coordf_t offset_scaled) const
     return expolygons;
 }
 
+// Compare one option of two region configs. A plugin-owned option that is absent
+// on both sides compares equal; present on one side only compares unequal.
+static bool region_config_option_equal(const PrintRegionConfig &lhs, const PrintRegionConfig &rhs, const char *key)
+{
+    const ConfigOption *lhs_option = lhs.option(key);
+    const ConfigOption *rhs_option = rhs.option(key);
+    return lhs_option == nullptr || rhs_option == nullptr ?
+        lhs_option == rhs_option : *lhs_option == *rhs_option;
+}
+
+// Whether one optional region option reads as false; an absent plugin-owned
+// option counts as disabled.
+static bool region_config_option_false(const PrintRegionConfig &config, const char *key)
+{
+    const ConfigOption *option = config.option(key);
+    return option == nullptr || !option->get_bool();
+}
+
 bool config_compatible_for_perimeter(const PrintRegionConfig &config, const PrintRegionConfig &other_config, bool is_first_layer) {
     if (config.perimeter_extruder             == other_config.perimeter_extruder
         && config.perimeters                  == other_config.perimeters
-        && config.external_perimeter_acceleration == other_config.external_perimeter_acceleration
+        && region_config_option_equal(config, other_config, "external_perimeter_acceleration")
         && config.external_perimeter_extrusion_width == other_config.external_perimeter_extrusion_width
         && config.external_perimeter_overlap == other_config.external_perimeter_overlap
-        && config.external_perimeter_speed == other_config.external_perimeter_speed // it os mandatory? can't this be set at gcode.cpp?
+        && region_config_option_equal(config, other_config, "external_perimeter_speed") // it os mandatory? can't this be set at gcode.cpp?
         && config.external_perimeters_first == other_config.external_perimeters_first
         && config.external_perimeters_first_force == other_config.external_perimeters_first_force
         && config.external_perimeters_hole  == other_config.external_perimeters_hole
@@ -888,27 +906,27 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         //&& config.extra_perimeters_odd_layers == other_config.extra_perimeters_odd_layers // can be used in modifiers
         //&& config.extra_perimeters_on_overhangs == other_config.extra_perimeters_on_overhangs // can be used in modifiers
         //&& config.gap_fill_enabled          == other_config.gap_fill_enabled
-        && ((config.gap_fill_speed          == other_config.gap_fill_speed) || (!config.gap_fill_enabled && !other_config.gap_fill_enabled))
-        && config.gap_fill_acceleration     == other_config.gap_fill_acceleration
-        && config.gap_fill_last             == other_config.gap_fill_last
+        && ((region_config_option_equal(config, other_config, "gap_fill_speed")) || (region_config_option_false(config, "gap_fill_enabled") && region_config_option_false(other_config, "gap_fill_enabled")))
+        && region_config_option_equal(config, other_config, "gap_fill_acceleration")
+        && region_config_option_equal(config, other_config, "gap_fill_last")
         && config.gap_fill_flow_match_perimeter == other_config.gap_fill_flow_match_perimeter
-        && config.gap_fill_extension         == other_config.gap_fill_extension
-        && config.gap_fill_max_width         == other_config.gap_fill_max_width
-        && config.gap_fill_min_area         == other_config.gap_fill_min_area
-        && config.gap_fill_min_length         == other_config.gap_fill_min_length
-        && config.gap_fill_min_width         == other_config.gap_fill_min_width
+        && region_config_option_equal(config, other_config, "gap_fill_extension")
+        && region_config_option_equal(config, other_config, "gap_fill_max_width")
+        && region_config_option_equal(config, other_config, "gap_fill_min_area")
+        && region_config_option_equal(config, other_config, "gap_fill_min_length")
+        && region_config_option_equal(config, other_config, "gap_fill_min_width")
         // && config.gap_fill_no_overhang         == other_config.gap_fill_no_overhang
-        && config.gap_fill_overlap          == other_config.gap_fill_overlap
+        && region_config_option_equal(config, other_config, "gap_fill_overlap")
         && config.gap_fill_perimeter          == other_config.gap_fill_perimeter
         && config.infill_dense              == other_config.infill_dense
         && config.infill_dense_algo         == other_config.infill_dense_algo
         && config.infill_overlap            == other_config.infill_overlap
         && config.no_perimeter_unsupported_algo == other_config.no_perimeter_unsupported_algo
         //&& config.min_width_top_surface == other_config.min_width_top_surface // can be used in modifiers with only_one_perimeter_top
-        && (!is_first_layer || config.only_one_perimeter_first_layer == other_config.only_one_perimeter_first_layer)
+        && (!is_first_layer || region_config_option_equal(config, other_config, "only_one_perimeter_first_layer"))
         //&& config.only_one_perimeter_top    == other_config.only_one_perimeter_top // can be used in modifiers
         //&& config.only_one_perimeter_top_other_algo == other_config.only_one_perimeter_top_other_algo // can be used in modifiers with only_one_perimeter_top
-        && config.overhangs_acceleration    == other_config.overhangs_acceleration
+        && region_config_option_equal(config, other_config, "overhangs_acceleration")
         // && config.overhang   == other_config.overhangs
         && config.overhangs_dynamic_speed   == other_config.overhangs_dynamic_speed // need regionSettings in gcode
         && config.overhangs_extrusion_spacing == other_config.overhangs_extrusion_spacing
@@ -927,13 +945,13 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && config.perimeter_loop            == other_config.perimeter_loop
         && config.perimeter_loop_seam       == other_config.perimeter_loop_seam
         && config.perimeter_overlap         == other_config.perimeter_overlap
-        && config.perimeter_reverse         == other_config.perimeter_reverse
-        && config.perimeter_speed           == other_config.perimeter_speed // it is mandatory? can't this be set at gcode.cpp?
+        && region_config_option_equal(config, other_config, "perimeter_reverse")
+        && region_config_option_equal(config, other_config, "perimeter_speed") // it is mandatory? can't this be set at gcode.cpp?
         // print -modifier, because region are fused in gode wiew if not.
         && config.print_extrusion_multiplier        == other_config.print_extrusion_multiplier
         && config.print_first_layer_temperature     == other_config.print_first_layer_temperature
-        && config.print_retract_length              == other_config.print_retract_length
-        && config.print_retract_lift                == other_config.print_retract_lift
+        && region_config_option_equal(config, other_config, "print_retract_length")
+        && region_config_option_equal(config, other_config, "print_retract_lift")
         && config.print_temperature                 == other_config.print_temperature
         // end print modifier
         && config.region_gcode              == other_config.region_gcode
@@ -941,12 +959,12 @@ bool config_compatible_for_perimeter(const PrintRegionConfig &config, const Prin
         && config.small_perimeter_min_length == other_config.small_perimeter_min_length
         && config.small_perimeter_max_length == other_config.small_perimeter_max_length
         //&& config.thin_walls                == other_config.thin_walls // can be used in modifiers
-        && config.thin_walls_acceleration   == other_config.thin_walls_acceleration
+        && region_config_option_equal(config, other_config, "thin_walls_acceleration")
         //&& config.thin_walls_min_width      == other_config.thin_walls_min_width // can be used in modifiers with thin_walls
         //&& config.thin_walls_overlap        == other_config.thin_walls_overlap // can be used in modifiers with thin_walls
-        && config.thin_perimeters           == other_config.thin_perimeters
-        && config.thin_perimeters_all       == other_config.thin_perimeters_all
-        && config.thin_walls_speed          == other_config.thin_walls_speed
+        && region_config_option_equal(config, other_config, "thin_perimeters")
+        && region_config_option_equal(config, other_config, "thin_perimeters_all")
+        && region_config_option_equal(config, other_config, "thin_walls_speed")
         && config.fuzzy_skin                == other_config.fuzzy_skin
         && config.fuzzy_skin_thickness      == other_config.fuzzy_skin_thickness
         && config.fuzzy_skin_point_dist     == other_config.fuzzy_skin_point_dist)

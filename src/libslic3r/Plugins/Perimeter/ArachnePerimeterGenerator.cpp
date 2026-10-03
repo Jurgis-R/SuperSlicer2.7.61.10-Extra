@@ -3,6 +3,20 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+ArachnePerimeterGenerator.cpp
+=============================
+
+Implementation of the Arachne perimeter generator declared in
+ArachnePerimeterGenerator.hpp.
+
+The file holds the plugin metadata, the owned option definition and activation
+rule, the Arachne-to-host conversion helpers, the run callbacks and the
+registration entry point. run() converts host nodes into Arachne wall passes and
+publishes the closed and open extrusion entities back into the node property
+collections.
+*/
+
 #include "ArachnePerimeterGenerator.hpp"
 
 #include <algorithm>
@@ -14,9 +28,11 @@
 #include <vector>
 
 #include "libslic3r/Arachne/WallToolPaths.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
@@ -83,6 +99,56 @@ namespace {
 const char *k_arachne_perimeter_generator_id = "perimeter.generator.arachne";
 const char *k_no_dependencies[] = { nullptr };
 
+const char *k_perimeters_key = "perimeters";
+
+// used_config_keys is the plugin declaration: the host activates these settings
+// while this implementation is selected and invalidates its caches when they
+// change. Arachne reads the wall count directly; the other generator settings
+// are shared with the core or with the other perimeter implementations.
+const raw_used_config_key k_used_config_keys[] = {
+    { k_perimeters_key, RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
+    { "perimeter_reverse", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
+};
+
+const char *const k_defined_config_keys[] = {
+    "perimeter_reverse"
+};
+
+void initialize_arachne_perimeter_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- perimeter_reverse | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "perimeter_reverse";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Perimeter reversal on even layers";
+    def.tooltip = "On even layers, all perimeter loops are reversed (it disables the overhang reversal, so it doesn't double-reverse).That setting will likely create defects on the perimeters, so it's only useful is for materials that have some direction-dependent properties (stress lines).";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
+void add_arachne_perimeter_gui_rules(orchestrator_handle *orchestrator)
+{
+    // Perimeter reversal needs the Arachne generator and a non-zero perimeter count.
+    GuiRule::activate({ "perimeter_reverse" })
+        .when(non_zero("perimeters"))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const Slic3r::Layer *to_layer(const layer_handle *handle)
 {
     return reinterpret_cast<const Slic3r::Layer *>(handle);
@@ -229,7 +295,8 @@ void append_arachne_line(Slic3r::ExtrusionEntityCollection &dst,
                                  region_config.perimeter_direction.value == Slic3r::PerimeterDirection::pdCCW_CCW;
         const bool ccw_hole = region_config.perimeter_direction.value == Slic3r::PerimeterDirection::pdCW_CCW ||
                               region_config.perimeter_direction.value == Slic3r::PerimeterDirection::pdCCW_CCW;
-        const bool need_ccw = ((region_config.perimeter_reverse.value && layer.id() % 2 == 1) ==
+        const Slic3r::ConfigOption *perimeter_reverse_opt = region_config.option("perimeter_reverse");
+        const bool need_ccw = ((perimeter_reverse_opt != nullptr && perimeter_reverse_opt->get_bool() && layer.id() % 2 == 1) ==
                                (is_contour ? ccw_contour : ccw_hole));
         if (need_ccw != loop.is_clockwise())
             loop.reverse();
@@ -386,6 +453,28 @@ const char *const *ArachnePerimeterGenerator::dependencies_impl() const noexcept
 int32_t ArachnePerimeterGenerator::priority_impl() const noexcept
 {
     return 10;
+}
+
+int32_t ArachnePerimeterGenerator::used_config_keys(raw_used_config_key *keys) const noexcept
+{
+    if (keys != nullptr)
+        for (uint32_t idx = 0; idx < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++idx)
+            keys[idx] = k_used_config_keys[idx];
+    return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
+}
+
+int32_t ArachnePerimeterGenerator::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void ArachnePerimeterGenerator::inilialize_impl(storage_handle *) const
+{
+    initialize_arachne_perimeter_settings(m_orchestrator);
+    add_arachne_perimeter_gui_rules(m_orchestrator);
 }
 
 const char *ArachnePerimeterGenerator::progress_message_format_impl() const noexcept

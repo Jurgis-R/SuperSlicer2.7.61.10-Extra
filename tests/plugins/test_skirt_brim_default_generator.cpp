@@ -9,6 +9,7 @@
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Api/plugin/c/steps/slic3r_step_support.h"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Exception.hpp"
@@ -51,6 +52,7 @@ const char *const DEFAULT_BRIM_GENERATOR = "skirt_brim.brim.default";
 const char *const DEFAULT_SKIRT_GENERATOR = "skirt_brim.skirt.default";
 const char *const DEFAULT_BRIM_SKIRT_TRIM = "skirt_brim.brim_skirt_trim.default";
 const char *const FAILING_SKIRT_BRIM_PLUGIN = "skirt_brim.test.report_error";
+const char *const BRIM_SEPARATION_READER = "skirt_brim.test.brim_separation_reader";
 
 enum class FailingPluginPhase
 {
@@ -118,6 +120,38 @@ void register_failing_skirt_brim_plugin()
     if (orchestrator.get_plugin(FAILING_SKIRT_BRIM_PLUGIN) == nullptr)
         REQUIRE(orchestrator.register_plugin(failing_skirt_brim_plugin().c_instance()));
 }
+
+// Reads brim_separation from a step that runs before support. The plugin is
+// registered only after the test runtime finalized the option definitions, so
+// it would move the setting's invalidation step only if plugin initialization
+// still edited definitions.
+class BrimSeparationReader final : public slic3r_api::PluginBase
+{
+public:
+    explicit BrimSeparationReader(orchestrator_handle *orchestrator)
+        : PluginBase(orchestrator)
+    {}
+
+private:
+    const char *id_impl() const noexcept override { return BRIM_SEPARATION_READER; }
+    slicing_step_t step_impl() const noexcept override { return STEP_POST_PERIMETER; }
+    const char *const *dependencies_impl() const noexcept override
+    {
+        static const char *dependencies[] = {nullptr};
+        return dependencies;
+    }
+    int32_t priority_impl() const noexcept override { return 0; }
+
+    int32_t used_config_keys(raw_used_config_key *keys) const noexcept override
+    {
+        if (keys != nullptr)
+            keys[0] = raw_used_config_key{
+                "brim_separation", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_OBJECT, RAW_PRESET_TYPE_FFF_PRINT};
+        return 1;
+    }
+
+    void run_impl(const plugin_run_context *) const override {}
+};
 
 class ScopedActivePlugins
 {
@@ -424,11 +458,13 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     const ConfigOptionDef *max_angle = PrintConfigDef::instance().get("brim_ears_max_angle");
     const ConfigOptionDef *detection_length = PrintConfigDef::instance().get("brim_ears_detection_length");
     const ConfigOptionDef *pattern = PrintConfigDef::instance().get("brim_ears_pattern");
+    const ConfigOptionDef *separation = PrintConfigDef::instance().get("brim_separation");
     REQUIRE(inside_holes != nullptr);
     REQUIRE(ears != nullptr);
     REQUIRE(max_angle != nullptr);
     REQUIRE(detection_length != nullptr);
     REQUIRE(pattern != nullptr);
+    REQUIRE(separation != nullptr);
 
     /*
     Leaving invalidates_step at STEP_NONE in the raw definitions asks the
@@ -457,6 +493,31 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     CHECK(pattern->has_enum_value("rectilinear"));
     CHECK_FALSE(pattern->has_enum_value("grid"));
     CHECK(pattern->default_value->serialize() == "concentric");
+    CHECK(separation->type == coFloat);
+    CHECK(separation->container_type == ConfigOptionContainerType::Object);
+    CHECK(separation->option_preset_type == RAW_PRESET_TYPE_FFF_PRINT);
+    // Support material also reads this option and executes before skirt/brim,
+    // so finalizing the plugin definitions tightens the replay point by
+    // execution_order().
+    CHECK(separation->invalidates_step == STEP_SUPPORT);
+    CHECK(separation->sidetext == "mm");
+    CHECK(separation->default_value->serialize() == "0");
+    REQUIRE(separation->aliases.size() == 1);
+    CHECK(separation->aliases.front() == "brim_offset");
+
+    /*
+    brim_separation is editable while a brim is requested on either shell, in
+    the print scope: one reason per accepted case.
+    */
+    Orchestrator &orchestrator = Orchestrator::instance();
+    size_t separation_rules = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != DEFAULT_BRIM_GENERATOR || rule.target_key != "brim_separation")
+            continue;
+        ++separation_rules;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+    }
+    CHECK(separation_rules == 2);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     config.set_deserialize_strict({
@@ -471,6 +532,60 @@ TEST_CASE("Default brim generator owns its serialized geometry options", "[plugi
     CHECK(config.option("brim_ears_max_angle")->serialize() == "73.5");
     CHECK(config.option("brim_ears_detection_length")->serialize() == "2.25");
     CHECK(config.option("brim_ears_pattern")->serialize() == "rectilinear");
+}
+
+TEST_CASE("Re-running plugin initialization leaves finalized invalidation steps unchanged",
+          "[plugins][skirt-brim][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    static BrimSeparationReader reader(reinterpret_cast<orchestrator_handle *>(&orchestrator));
+    if (orchestrator.get_plugin(BRIM_SEPARATION_READER) == nullptr)
+        REQUIRE(orchestrator.register_plugin(reader.c_instance()));
+
+    const ConfigOptionDef *separation = PrintConfigDef::instance().get("brim_separation");
+    REQUIRE(separation != nullptr);
+    REQUIRE(separation->invalidates_step == STEP_SUPPORT);
+
+    {
+        // Validation accepts the reader, whose step runs before support.
+        // Tightening happens only in finalize_plugin_option_defs(), which the
+        // finalized runtime never runs again.
+        ScopedActivePlugins active({BRIM_SEPARATION_READER});
+        orchestrator.initialize_plugins();
+        CHECK(orchestrator.is_plugin_active(BRIM_SEPARATION_READER));
+    }
+    CHECK(separation->invalidates_step == STEP_SUPPORT);
+}
+
+TEST_CASE("Default skirt generator owns its serialized option and activation rules",
+          "[plugins][skirt-brim][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    const ConfigOptionDef *one_skirt = PrintConfigDef::instance().get("complete_objects_one_skirt");
+    REQUIRE(one_skirt != nullptr);
+
+    CHECK(one_skirt->container_type == ConfigOptionContainerType::Plater);
+    CHECK(one_skirt->option_preset_type == RAW_PRESET_TYPE_FFF_PRINT);
+    CHECK(one_skirt->invalidates_step == STEP_SKIRT_BRIM);
+    CHECK(one_skirt->type == coBool);
+    CHECK(one_skirt->default_value->serialize() == "0");
+    CHECK(PrintConfig::defaults().option("complete_objects_one_skirt") != nullptr);
+
+    /*
+    The plugin owns one activation reason per accepted case, in the print scope:
+    sequential printing or the parallel-objects stepping both need one skirt.
+    */
+    Orchestrator &orchestrator = Orchestrator::instance();
+    size_t rule_count = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != DEFAULT_SKIRT_GENERATOR || rule.target_key != "complete_objects_one_skirt")
+            continue;
+        ++rule_count;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+    }
+    CHECK(rule_count == 2);
 }
 
 TEST_CASE("Default skirt/brim plugins are active by default for plugin tests", "[plugins][skirt-brim]")
@@ -607,7 +722,7 @@ TEST_CASE("Default brim generator can publish object-owned brim", "[plugins][ski
     REQUIRE(region_island.has_extrusion(LayerRegionIsland::PERIMETERS));
     CHECK_FALSE(region_island.extrusion(LayerRegionIsland::PERIMETERS).empty());
 
-    Steps::StepSkirtBrim::clean_and_prepare(prepared.print);
+    Steps::StepSkirtBrim::clear(prepared.print);
     CHECK(object.brim().empty());
     CHECK(object_brim_auxiliary_layers(object).empty());
 }

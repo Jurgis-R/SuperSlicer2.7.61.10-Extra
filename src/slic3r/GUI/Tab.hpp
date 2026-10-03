@@ -501,6 +501,10 @@ public:
 	PresetCollection*	get_presets() { return m_presets; }
 	const PresetCollection* get_presets() const { return m_presets; }
 
+    // Explanation appended to the tooltip of a setting disabled by the GUI
+    // activation rules. Empty when no rule applies to the tab or the setting.
+    virtual wxString disabled_reason(const OptionKeyIdx &opt_key_idx) const { return wxString(); }
+
     bool            set_value(const OptionKeyIdx& opt_key_idx, const boost::any& value, bool enabled);
     void            on_value_change(const OptionKeyIdx &opt_key_idx, const boost::any &value);
 
@@ -588,6 +592,7 @@ public:
 	void		update() override;
 	void		clear_pages() override;
 	PrinterTechnology get_printer_technology() const override { return ptFFF; }
+	wxString	disabled_reason(const OptionKeyIdx &opt_key_idx) const override;
 	wxSizer*	create_manage_substitution_widget(wxWindow* parent);
 	wxSizer*	create_substitutions_widget(wxWindow* parent);
 
@@ -700,6 +705,8 @@ public:
         Tab(parent, _L("Printer Settings"), Slic3r::Preset::TYPE_PRINTER) {}
 	~TabPrinter() {}
 	
+	wxString	disabled_reason(const OptionKeyIdx &opt_key_idx) const override;
+
 	void		init() override;
 	void		build() override;
     void		build_fff();
@@ -775,6 +782,7 @@ public:
     void		update() override;
 	void		clear_pages() override;
 	PrinterTechnology get_printer_technology() const override { return ptSLA; }
+	wxString	disabled_reason(const OptionKeyIdx &opt_key_idx) const override;
 };
 
 } // GUI

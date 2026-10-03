@@ -354,13 +354,19 @@ const printing_scope_events_handle *printing_plan_get_events(const printing_plan
                nullptr : reinterpret_cast<const printing_scope_events_handle *>(&Slic3r::to_plan(me)->events);
 }
 
-plugin_property_container_handle *printing_plan_get_properties(const printing_plan_handle *me)
+const plugin_property_container_handle *printing_plan_get_properties(
+    const printing_plan_handle *me)
 {
-    if (me == nullptr)
-        return nullptr;
-    Slic3r::Printing::PrintingPlan *plan =
-        const_cast<Slic3r::Printing::PrintingPlan *>(Slic3r::to_plan(me));
-    return reinterpret_cast<plugin_property_container_handle *>(&plan->properties);
+    return me == nullptr ? nullptr :
+        reinterpret_cast<const plugin_property_container_handle *>(
+            &Slic3r::to_plan(me)->properties);
+}
+
+plugin_property_container_handle *printing_plan_get_properties_mutable(printing_plan_handle *me)
+{
+    return me == nullptr ? nullptr :
+        reinterpret_cast<plugin_property_container_handle *>(
+            &Slic3r::to_plan(me)->properties);
 }
 
 uint32_t printing_plan_register_object_instance(
@@ -484,13 +490,19 @@ const printing_scope_events_handle *printing_group_get_events(const printing_gro
                nullptr : reinterpret_cast<const printing_scope_events_handle *>(&Slic3r::to_group(me)->events);
 }
 
-plugin_property_container_handle *printing_group_get_properties(const printing_group_handle *me)
+const plugin_property_container_handle *printing_group_get_properties(
+    const printing_group_handle *me)
 {
-    if (me == nullptr)
-        return nullptr;
-    Slic3r::Printing::PrintingGroup *group =
-        const_cast<Slic3r::Printing::PrintingGroup *>(Slic3r::to_group(me));
-    return reinterpret_cast<plugin_property_container_handle *>(&group->properties);
+    return me == nullptr ? nullptr :
+        reinterpret_cast<const plugin_property_container_handle *>(
+            &Slic3r::to_group(me)->properties);
+}
+
+plugin_property_container_handle *printing_group_get_properties_mutable(printing_group_handle *me)
+{
+    return me == nullptr ? nullptr :
+        reinterpret_cast<plugin_property_container_handle *>(
+            &Slic3r::to_group(me)->properties);
 }
 
 uint32_t printing_group_count_object_instance(const printing_group_handle *me)
@@ -562,13 +574,20 @@ const printing_scope_events_handle *printing_layer_group_get_events(const printi
                nullptr : reinterpret_cast<const printing_scope_events_handle *>(&Slic3r::to_layer_group(me)->events);
 }
 
-plugin_property_container_handle *printing_layer_group_get_properties(const printing_layer_group_handle *me)
+const plugin_property_container_handle *printing_layer_group_get_properties(
+    const printing_layer_group_handle *me)
 {
-    if (me == nullptr)
-        return nullptr;
-    Slic3r::Printing::PrintingLayerGroup *layer_group =
-        const_cast<Slic3r::Printing::PrintingLayerGroup *>(Slic3r::to_layer_group(me));
-    return reinterpret_cast<plugin_property_container_handle *>(&layer_group->properties);
+    return me == nullptr ? nullptr :
+        reinterpret_cast<const plugin_property_container_handle *>(
+            &Slic3r::to_layer_group(me)->properties);
+}
+
+plugin_property_container_handle *printing_layer_group_get_properties_mutable(
+    printing_layer_group_handle *me)
+{
+    return me == nullptr ? nullptr :
+        reinterpret_cast<plugin_property_container_handle *>(
+            &Slic3r::to_layer_group(me)->properties);
 }
 
 coord_t printing_layer_group_get_print_z(const printing_layer_group_handle *me)
@@ -664,13 +683,20 @@ const printing_scope_events_handle *printing_tool_group_get_events(const printin
                nullptr : reinterpret_cast<const printing_scope_events_handle *>(&Slic3r::to_tool_group(me)->events);
 }
 
-plugin_property_container_handle *printing_tool_group_get_properties(const printing_tool_group_handle *me)
+const plugin_property_container_handle *printing_tool_group_get_properties(
+    const printing_tool_group_handle *me)
 {
-    if (me == nullptr)
-        return nullptr;
-    Slic3r::Printing::PrintingToolGroup *tool_group =
-        const_cast<Slic3r::Printing::PrintingToolGroup *>(Slic3r::to_tool_group(me));
-    return reinterpret_cast<plugin_property_container_handle *>(&tool_group->properties);
+    return me == nullptr ? nullptr :
+        reinterpret_cast<const plugin_property_container_handle *>(
+            &Slic3r::to_tool_group(me)->properties);
+}
+
+plugin_property_container_handle *printing_tool_group_get_properties_mutable(
+    printing_tool_group_handle *me)
+{
+    return me == nullptr ? nullptr :
+        reinterpret_cast<plugin_property_container_handle *>(
+            &Slic3r::to_tool_group(me)->properties);
 }
 
 extruder_index_t printing_tool_group_get_extruder_id(const printing_tool_group_handle *me)

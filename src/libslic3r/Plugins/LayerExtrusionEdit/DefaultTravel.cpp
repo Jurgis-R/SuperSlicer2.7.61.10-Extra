@@ -137,7 +137,8 @@ void DefaultTravel::setup_run_impl(const plugin_run_context *run_ctx) const
     if (ctx == nullptr || ctx->layer_group == nullptr)
         return;
 
-    m_connector.setup_run(PrintingLayerGroup(ctx->layer_group),
+    PrintingLayerGroup layer_group(ctx->layer_group);
+    m_connector.setup_run(layer_group,
                           ctx->group_idx, ctx->layer_group_idx, progress());
 }
 
@@ -149,7 +150,8 @@ void DefaultTravel::run_impl(const plugin_run_context *run_ctx) const
     if (ctx == nullptr || ctx->layer_group == nullptr)
         return;
 
-    m_connector.run(PrintingLayerGroup(ctx->layer_group),
+    PrintingLayerGroup layer_group(ctx->layer_group);
+    m_connector.run(layer_group,
                     ctx->group_idx, ctx->layer_group_idx,
                     straight_path, progress());
 }

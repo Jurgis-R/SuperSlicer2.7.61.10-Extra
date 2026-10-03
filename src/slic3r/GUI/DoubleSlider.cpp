@@ -67,7 +67,10 @@ static std::string gcode(Type type)
     switch (type) {
     case ColorChange: return Slic3r::GCodeWriter::get_default_color_change_gcode(config);
     case PausePrint: return Slic3r::GCodeWriter::get_default_pause_gcode(config);
-    case Template:    return config.template_custom_gcode;
+    case Template: {
+        const ConfigOptionString *templ = config.option<ConfigOptionString>("template_custom_gcode");
+        return templ != nullptr ? templ->value : std::string();
+    }
     default:          return "";
     }
 }

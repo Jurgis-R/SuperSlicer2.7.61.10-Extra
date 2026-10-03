@@ -350,7 +350,7 @@ void run_file_writer_with_firmware(Print &print,
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
     run_ctx_generate_gcode payload = {};
     payload.print = reinterpret_cast<const print_handle *>(&print);
-    payload.plan = reinterpret_cast<printing_plan_handle *>(&plan);
+    payload.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
     payload.firmware = &firmware;
 
     // Keep path storage alive while the plugin consumes the borrowed C string.

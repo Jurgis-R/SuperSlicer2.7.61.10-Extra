@@ -195,24 +195,90 @@ uint16_t tool_id_from_extruder(const extruder_index_t extruder_id)
         return ok;
     }
 
+    // Resolve one optional acceleration. Plugin-owned settings are absent when
+    // their provider is disabled, which reads as zero.
+    double computed_acceleration(const ConfigBase &config, const char *key) {
+        return config.has(key) ? config.get_computed_value(key) : 0.;
+    }
+
+    // Read the first value of one optional machine limit; an absent setting
+    // reads as zero.
+    double machine_limit_value(const ConfigBase &config, const char *key) {
+        const ConfigOptionFloats *option = config.option<ConfigOptionFloats>(key);
+        return option != nullptr ? option->get_at(0) : 0.;
+    }
+
+    // Read the raw value of one optional setting; an absent plugin-owned setting
+    // reads as zero.
+    double config_value(const ConfigBase &config, const char *key) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr ? option->get_float() : 0.;
+    }
+
+    // Read one extruder-indexed optional setting; an absent setting reads as zero.
+    double config_value_at(const ConfigBase &config, const char *key, size_t idx) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr ? option->get_float(idx) : 0.;
+    }
+
+    // Resolve one optional float-or-percent setting against a fallback value.
+    double config_effective_value(const ConfigBase &config, const char *key, double fallback) {
+        const ConfigOptionFloatOrPercent *option = config.option<ConfigOptionFloatOrPercent>(key);
+        return option != nullptr ? option->get_effective_value(fallback) : fallback;
+    }
+
+    // Whether one optional setting exists and is enabled.
+    bool config_is_enabled(const ConfigBase &config, const char *key) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr && option->is_enabled();
+    }
+
+    // Read one optional script string; an absent plugin-owned setting reads as
+    // an empty script.
+    std::string config_string(const ConfigBase &config, const char *key) {
+        const ConfigOptionString *option = config.option<ConfigOptionString>(key);
+        return option != nullptr ? option->value : std::string();
+    }
+
+    // Read every value of one optional script list; an absent setting reads as
+    // an empty list.
+    std::vector<std::string> config_string_list(const ConfigBase &config, const char *key) {
+        const ConfigOptionStrings *option = config.option<ConfigOptionStrings>(key);
+        return option != nullptr ? option->get_values() : std::vector<std::string>();
+    }
+
+    // Read one extruder value of an optional script list; an absent setting
+    // reads as an empty script.
+    std::string config_string_at(const ConfigBase &config, const char *key, size_t idx) {
+        const ConfigOptionStrings *option = config.option<ConfigOptionStrings>(key);
+        return option != nullptr ? option->get_at(idx) : std::string();
+    }
+
+    // Whether one optional switch exists and is set; an absent setting reads as
+    // false.
+    bool config_truthy(const ConfigBase &config, const char *key) {
+        const ConfigOption *option = config.option(key);
+        return option != nullptr && option->get_bool();
+    }
+
     double get_default_acceleration(PrintConfig& config) {
         double max = 0;
-        max = config.machine_max_acceleration_extruding.get_at(0);
+        max = machine_limit_value(config, "machine_max_acceleration_extruding");
         // on 2.3, check for enable/disable if(config.machine_limits_usage)
         if (config.machine_limits_usage <= MachineLimitsUsage::Limits)
-            return std::min(config.get_computed_value("default_acceleration"), max);
+            return std::min(computed_acceleration(config, "default_acceleration"), max);
         else
-            return config.get_computed_value("default_acceleration");
+            return computed_acceleration(config, "default_acceleration");
     }
 
     double get_travel_acceleration(PrintConfig& config) {
         double max = 0;
-        max = config.machine_max_acceleration_travel.get_at(0);
+        max = machine_limit_value(config, "machine_max_acceleration_travel");
         // on 2.3, check for enable/disable if(config.machine_limits_usage)
         if (config.machine_limits_usage <= MachineLimitsUsage::Limits)
-            return std::min(config.get_computed_value("travel_acceleration"), max);
+            return std::min(computed_acceleration(config, "travel_acceleration"), max);
         else
-            return config.get_computed_value("travel_acceleration");
+            return computed_acceleration(config, "travel_acceleration");
     }
 
     std::string OozePrevention::pre_toolchange(GCodeGenerator& gcodegen)
@@ -291,7 +357,8 @@ uint16_t tool_id_from_extruder(const extruder_index_t extruder_id)
 
     const std::vector<std::string> ColorPrintColors::Colors = { "#C0392B", "#E67E22", "#F1C40F", "#27AE60", "#1ABC9C", "#2980B9", "#9B59B6" };
 
-#define EXTRUDER_CONFIG_WITH_DEFAULT(OPT,DEF) (m_writer.tool_is_extruder()?m_config.OPT.get_at(m_writer.tool()->id()):DEF)
+#define EXTRUDER_CONFIG_WITH_DEFAULT(OPT,DEF) (m_writer.tool_is_extruder() && m_config.option(#OPT) != nullptr ? m_config.option(#OPT)->get_float(m_writer.tool()->id()) : double(DEF))
+#define STRING_EXTRUDER_CONFIG_WITH_DEFAULT(OPT,DEF) (m_writer.tool_is_extruder() && m_config.option<ConfigOptionStrings>(#OPT) != nullptr ? m_config.option<ConfigOptionStrings>(#OPT)->get_at(m_writer.tool()->id()) : std::string(DEF))
 #define BOOL_EXTRUDER_CONFIG(OPT) (m_writer.tool_is_extruder() && m_config.OPT.get_at(m_writer.tool()->id()))
 
 struct GCodeGenerator::PlaceholderParserIntegration {
@@ -1349,25 +1416,30 @@ namespace DoExport {
         };
 
         const GCodeConfig& config = print.config();
-        check(_u8L("Start G-code"), config.start_gcode.value);
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("End G-code"), config.end_gcode.value);
+        check(_u8L("Start G-code"), config_string(config, "start_gcode"));
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("End G-code"), config_string(config, "end_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Before layer change G-code"), config.before_layer_gcode.value);
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("After layer change G-code"), config.layer_gcode.value);
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Extrusion type change G-code"), config.feature_gcode.value);
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Tool change G-code"), config.toolchange_gcode.value);
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Between objects G-code (for sequential printing"), config.between_objects_gcode.value);
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Extrusion type change G-code"), config_string(config, "feature_gcode"));
+        if (ret.size() < MAX_TAGS_COUNT) {
+            const ConfigOptionString *toolchange_gcode_opt =
+                print.config().opt<ConfigOptionString>("toolchange_gcode");
+            if (toolchange_gcode_opt != nullptr)
+                check(_u8L("Tool change G-code"), toolchange_gcode_opt->value);
+        }
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Between objects G-code (for sequential printing"), config_string(config, "between_objects_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Color Change G-code"), GCodeWriter::get_default_color_change_gcode(config));
         if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Pause Print G-code"), GCodeWriter::get_default_pause_gcode(config));
-        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Template Custom G-code"), config.template_custom_gcode.value);
+        if (ret.size() < MAX_TAGS_COUNT) check(_u8L("Template Custom G-code"), config_string(config, "template_custom_gcode"));
         if (ret.size() < MAX_TAGS_COUNT) {
-            for (const std::string& value : config.start_filament_gcode.get_values()) {
+            for (const std::string& value : config_string_list(config, "start_filament_gcode")) {
                 check(_u8L("Filament Start G-code"), value);
                 if (ret.size() == MAX_TAGS_COUNT)
                     break;
             }
         }
         if (ret.size() < MAX_TAGS_COUNT) {
-            for (const std::string& value : config.end_filament_gcode.get_values()) {
+            for (const std::string& value : config_string_list(config, "end_filament_gcode")) {
                 check(_u8L("Filament End G-code"), value);
                 if (ret.size() == MAX_TAGS_COUNT)
                     break;
@@ -1474,16 +1546,6 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
 
     CNumericLocalesSetter locales_setter;
 
-    // Does the file exist? If so, we hope that it is still valid.
-    {
-        PrintStateBase::StateWithTimeStamp state = print->step_state_with_timestamp(psGCodeExport);
-        if (! state.enabled || (state.is_done() && boost::filesystem::exists(boost::filesystem::path(path))))
-            return;
-    }
-    
-    // Enabled and either not done, or marked as done while the output file is missing.
-    monitor.set_started(psGCodeExport);
-
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
     std::vector<std::pair<std::string, std::string>> validation_res = DoExport::validate_custom_gcode(*print);
@@ -1581,7 +1643,6 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     }
 
     BOOST_LOG_TRIVIAL(info) << "Exporting G-code finished" << log_memory_info();
-    monitor.set_done(psGCodeExport);
     //notify gui that the gcode is ready to be drawed
     print->set_status(100, "", PrintBase::SlicingStatus::DEFAULT | PrintBase::SlicingStatus::SECONDARY_STATE);
     print->set_status(100, L("Gcode done"), PrintBase::SlicingStatus::FlagBits::GCODE_ENDED);
@@ -1673,7 +1734,7 @@ namespace DoExport {
     static std::vector<double> autospeed_volumetric_limit(const Print &print, const ToolOrdering& tool_ordering) {
         std::vector<double> ret;
         ret.resize(print.config().nozzle_diameter.size(), 0.);
-        if (print.config().max_volumetric_speed.value <= 0) {
+        if (config_value(print.config(), "max_volumetric_speed") <= 0) {
             return ret;
         }
         const double max_print_speed = print.config().get_computed_value("max_print_speed");
@@ -1683,14 +1744,14 @@ namespace DoExport {
         for (size_t extruder_idx = 0; extruder_idx < print.config().nozzle_diameter.size(); ++extruder_idx) {
             const extruder_index_t extruder_id = checked_extruder_index(extruder_idx);
             double min_mm3_per_mm = 0;
-            if (print.config().autospeed_min_thin_flow.is_enabled()) {
-                if (print.config().autospeed_min_thin_flow > 0) {
-                    double min_mm3_per_s = print.config().max_volumetric_speed.value;
-                    if (print.config().filament_max_volumetric_speed.get_at(extruder_id) > 0) {
-                        min_mm3_per_s = std::min(min_mm3_per_s, print.config().filament_max_volumetric_speed.get_at(extruder_id));
+            if (config_is_enabled(print.config(), "autospeed_min_thin_flow")) {
+                if (config_value(print.config(), "autospeed_min_thin_flow") > 0) {
+                    double min_mm3_per_s = config_value(print.config(), "max_volumetric_speed");
+                    if (config_value_at(print.config(), "filament_max_volumetric_speed", extruder_id) > 0) {
+                        min_mm3_per_s = std::min(min_mm3_per_s, config_value_at(print.config(), "filament_max_volumetric_speed", extruder_id));
                     }
                     min_mm3_per_mm = std::max(min_mm3_per_mm,
-                                              print.config().autospeed_min_thin_flow.get_effective_value(min_mm3_per_s) /
+                                              config_effective_value(print.config(), "autospeed_min_thin_flow", min_mm3_per_s) /
                                                   max_print_speed);
                 }
             }
@@ -1793,9 +1854,9 @@ namespace DoExport {
                 // will need slower feedrates.
                 double volumetric_speed_mm3_per_s = min_mm3_per_mm * max_print_speed;
                 // limit such volumetric speed with max_volumetric_speed if set
-                if (print.config().max_volumetric_speed.value > 0)
+                if (config_value(print.config(), "max_volumetric_speed") > 0)
                     volumetric_speed_mm3_per_s = std::min(volumetric_speed_mm3_per_s,
-                                                          print.config().max_volumetric_speed.value);
+                                                          config_value(print.config(), "max_volumetric_speed"));
                 ret[extruder_idx] = volumetric_speed_mm3_per_s;
             }
         }
@@ -2449,16 +2510,16 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     {
         DynamicConfig config;
         config.set_key_value("start_gcode_bed_temperature", new ConfigOptionInt(print.first_layer_bed_temperature()));
-        start_gcode = this->placeholder_parser_process("start_gcode", print.config().start_gcode.value, initial_extruder_id, &config);
+        start_gcode = this->placeholder_parser_process("start_gcode", config_string(print.config(), "start_gcode"), initial_extruder_id, &config);
     }
     // get the start_filament_gcode to check if M109 or others are inside it
     std::string start_filament_gcode;
-    if (!m_config.start_filament_gcode.get_at(initial_extruder_id).empty()) {
+    if (!config_string_at(m_config, "start_filament_gcode", size_t(initial_extruder_id)).empty()) {
         DynamicConfig config;
         config.set_key_value("previous_extruder", new ConfigOptionInt(-1));
         config.set_key_value("next_extruder", new ConfigOptionInt((int)initial_extruder_id));
         config.set_key_value("filament_extruder_id", new ConfigOptionInt((int)initial_extruder_id));
-        start_filament_gcode = this->placeholder_parser_process("start_filament_gcode", m_config.start_filament_gcode.get_at(initial_extruder_id), initial_extruder_id, &config);
+        start_filament_gcode = this->placeholder_parser_process("start_filament_gcode", config_string_at(m_config, "start_filament_gcode", size_t(initial_extruder_id)), initial_extruder_id, &config);
     }
     std::string start_all_gcode = start_gcode + "\"n" + start_filament_gcode;
 
@@ -2477,7 +2538,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     }
 
     // Set extruder(s) temperature before and after start G-code.
-    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && (this->config().gcode_flavor != gcfKlipper || print.config().start_gcode.value.empty()) && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && (this->config().gcode_flavor != gcfKlipper || config_string(print.config(), "start_gcode").empty()) && print.config().first_layer_temperature.get_at(initial_extruder_id) != 0)
         this->_print_first_layer_extruder_temperatures(preamble_to_put_start_layer, print, start_all_gcode, initial_extruder_id, false);
 
     // adds tag for processor
@@ -2490,7 +2551,10 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
 
 
     // Disable fan.
-    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual && print.config().disable_fan_first_layers.get_at(initial_extruder_id)) {
+    const ConfigOptionInts *disable_fan_first_layers_opt =
+        print.config().opt<ConfigOptionInts>("disable_fan_first_layers");
+    if (initial_extruder_id != EXTRUDER_ID_UNKNOWN && !this->config().start_gcode_manual &&
+        disable_fan_first_layers_opt != nullptr && disable_fan_first_layers_opt->get_at(initial_extruder_id)) {
         preamble_to_put_start_layer.append(m_writer.set_fan(uint8_t(0), initial_extruder_id));
     }
 
@@ -2595,7 +2659,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                 this->m_throw_if_canceled();
                 this->set_origin(unscale_p((*print_object_instance_sequential_active)->shift));
                 if (finished_objects > 0) {
-                    if (!this->config().between_objects_gcode_before_move.value) {
+                    if (!config_truthy(this->config(), "between_objects_gcode_before_move")) {
                         _move_to_print_object(preamble_to_put_start_layer, print, finished_objects,
                                               initial_extruder_id);
                     } else {
@@ -2610,7 +2674,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                     config.set_key_value("next_object_name", new ConfigOptionString(m_label_objects->get_object_name(object)));
                     std::string between_objects_gcode =
                         this->placeholder_parser_process("between_objects_gcode",
-                                                         print.config().between_objects_gcode.value,
+                                                         config_string(print.config(), "between_objects_gcode"),
                                                          initial_extruder_id, &config);
                     // Set first layer extruder temperatures, don't wait for it to reach the temperature.
                     // don't change the bed temp for each object, it can lead to auto-removel
@@ -2618,7 +2682,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                     this->_print_first_layer_extruder_temperatures(set_temperature, print, between_objects_gcode, initial_extruder_id, false);
                     preamble_to_put_start_layer.append(set_temperature).append("\n");
                     preamble_to_put_start_layer.append(between_objects_gcode).append("\n");
-                    if (this->config().between_objects_gcode_before_move.value) {
+                    if (config_truthy(this->config(), "between_objects_gcode_before_move")) {
                         _move_to_print_object(preamble_to_put_start_layer, print, finished_objects,
                                               initial_extruder_id);
                     }
@@ -3220,7 +3284,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
             if (m_writer.tool_is_extruder()) {
                 // Process the end_filament_gcode for the active filament only.
                 file.writeln(this->placeholder_parser_process("end_filament_gcode",
-                                                              print.config().end_filament_gcode.get_at(current_extruder_id),
+                                                              config_string_at(print.config(), "end_filament_gcode", size_t(current_extruder_id)),
                                                               current_extruder_id, &config));
             }
         } else {
@@ -3231,7 +3295,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
                 auto extr_ids = m_writer.extruder_ids();
                     if (std::find(extr_ids.begin(), extr_ids.end(), extruder_id) != extr_ids.end()) {
                         // write end flament gcode.
-                        const std::string &end_gcode = print.config().end_filament_gcode.get_at(extruder_id);
+                        const std::string end_gcode = config_string_at(print.config(), "end_filament_gcode", size_t(extruder_id));
                     config.set_key_value("filament_extruder_id", new ConfigOptionInt(extruder_id));
                     config.set_key_value("previous_extruder", new ConfigOptionInt(current_extruder_id));
                         file.writeln(
@@ -3240,7 +3304,7 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
             }
         }
         }
-        file.writeln(this->placeholder_parser_process("end_gcode", print.config().end_gcode, m_writer.tool()->id(), &config));
+        file.writeln(this->placeholder_parser_process("end_gcode", config_string(print.config(), "end_gcode"), m_writer.tool()->id(), &config));
     } else {
         assert(false); // what is the use-case?
     }
@@ -3930,8 +3994,8 @@ void GCodeGenerator::print_machine_envelope(GCodeOutputStream &file, const Print
                 int(print.config().machine_max_acceleration_e.get_at(0) + 0.5));
         if (std::set<uint8_t>{gcfRepetier}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M202 X%d Y%d ; sets maximum travel acceleration\n",
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5),
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5));
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5));
         if (std::set<uint8_t>{gcfMarlinLegacy, gcfMarlinFirmware, gcfRepetier, gcfSmoothie, gcfSprinter}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M203 X%d Y%d Z%d E%d ; sets maximum feedrates, %s\n",
                 int(print.config().machine_max_feedrate_x.get_at(0) * factor + 0.5),
@@ -3955,18 +4019,18 @@ void GCodeGenerator::print_machine_envelope(GCodeOutputStream &file, const Print
         if (gcfMarlinLegacy == print.config().gcode_flavor)
             // Legacy Marlin uses M204 S[print] T[retract]
             file.write_format("M204 S%d T%d ; sets acceleration (S) and retract acceleration (R), mm/sec^2\n",
-                int(print.config().machine_max_acceleration_extruding.get_at(0) + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_extruding") + 0.5),
                 int(print.config().machine_max_acceleration_retracting.get_at(0) + 0.5));
         else if (std::set<uint8_t>{gcfMarlinFirmware}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M204 P%d R%d T%d ; sets acceleration (P, T) and retract acceleration (R), mm/sec^2\n",
-                int(print.config().machine_max_acceleration_extruding.get_at(0) + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_extruding") + 0.5),
                 int(print.config().machine_max_acceleration_retracting.get_at(0) + 0.5),
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5));
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5));
         else if (std::set<uint8_t>{gcfRepRap, gcfKlipper, gcfSprinter}.count(print.config().gcode_flavor.value) > 0)
             // Uses M204 P[print] T[travel]
             file.write_format("M204 P%d T%d ; sets acceleration (P, T), mm/sec^2\n",
-                int(print.config().machine_max_acceleration_extruding.get_at(0) + 0.5),
-                int(print.config().machine_max_acceleration_travel.get_at(0) + 0.5));
+                int(machine_limit_value(print.config(), "machine_max_acceleration_extruding") + 0.5),
+                int(machine_limit_value(print.config(), "machine_max_acceleration_travel") + 0.5));
         // jerk
         if (std::set<uint8_t>{gcfRepRap}.count(print.config().gcode_flavor.value) > 0)
             file.write_format("M566 X%.2lf Y%.2lf Z%.2lf E%.2lf ; sets the jerk limits, mm/min\n",
@@ -4295,7 +4359,7 @@ namespace ProcessLayer
                 gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Custom_Code) + "\n";
                 if (gcode_type == CustomGCode::Template)    // Template Custom Gcode
                     gcode += gcodegen.placeholder_parser_process("template_custom_gcode",
-                                                                 print.config().template_custom_gcode,
+                                                                 config_string(print.config(), "template_custom_gcode"),
                                                                  current_extruder_id);
                 else                                        // custom Gcode
                     gcode += custom_gcode.extra;
@@ -7613,7 +7677,7 @@ void GCodeGenerator::apply_property(const ExtrusionPropertySpecialCommand& comma
     }
     case ExtrusionPropertySpecialCommand::Code::PAUSE: // pause (G4) for extra_data miliseconds (int)
         visitor_gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\n";
-        if (config().pause_print_gcode.value.empty()) {
+        if (config_string(config(), "pause_print_gcode").empty()) {
             visitor_gcode += "G4 P";
             visitor_gcode += std::to_string(int(command.extra_data));
 
@@ -7714,8 +7778,10 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     }
 
     // if the path is too small to be printed, put in the queue to be merge with the next one.
-    const distf_t scaled_min_length = this->config().gcode_min_length.is_enabled() ?
-        scale_d(this->config().gcode_min_length.get_effective_value(m_current_perimeter_extrusion_width)) :
+    const ConfigOptionFloatOrPercent *gcode_min_length_opt =
+        this->config().opt<ConfigOptionFloatOrPercent>("gcode_min_length");
+    const distf_t scaled_min_length = (gcode_min_length_opt != nullptr && gcode_min_length_opt->is_enabled()) ?
+        scale_d(gcode_min_length_opt->get_effective_value(m_current_perimeter_extrusion_width)) :
         0;
     if (scaled_min_length > 0 && simplifed_path.length() < scaled_min_length) {
         m_last_too_small = simplifed_path;
@@ -8413,7 +8479,7 @@ double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path) {
     }
     // first layer mult
     if (this->m_layer->scaled_bottom_z() <= 0) {
-        e_per_mm *= this->config().first_layer_flow_ratio.get_effective_value(1);
+        e_per_mm *= config_effective_value(this->config(), "first_layer_flow_ratio", 1);
         e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_first_layer_flow_ratio, 100) * 0.01;
     }
     return e_per_mm;
@@ -8439,7 +8505,7 @@ std::string GCodeGenerator::_extrude(ExtrusionPath &path, const std::string_view
         Flow flow = Flow::new_from_width(nozzle_diameter, nozzle_diameter, path.attributes().height, 1);
         ExtrusionPath fake_path(ExtrusionAttributes{ExtrusionRole::ExternalPerimeter, flow}, nullptr);
         double my_e_per_mm = _compute_e_per_mm(fake_path);
-        my_e_per_mm *= this->config().first_layer_flow_ratio.get_effective_value(1);
+        my_e_per_mm *= config_effective_value(this->config(), "first_layer_flow_ratio", 1);
         my_e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_first_layer_flow_ratio, 100) * 0.01;
         double e_value = my_e_per_mm * config().first_layer_strong_start.get_effective_value(nozzle_diameter);
         // Dicretize the path to have aonly small segments (at the start), to absorb the alsck of extrusion.
@@ -8702,37 +8768,37 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
         // respect the % hierarchy
         if ((path.role().is_overhang() && m_config.overhangs) ||
             (path.overhang_attributes() && path.overhang_attributes()->has_full_overhangs_speed)) {
-            speed = m_config.overhangs_speed.get_effective_value(m_config.bridge_speed.get_effective_value(vol_speed));
+            speed = m_config.overhangs_speed.get_effective_value(config_effective_value(m_config, "bridge_speed", vol_speed));
             if(comment) *comment = std::string("overhangs_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::Perimeter) {
-            speed = m_config.perimeter_speed.get_effective_value(vol_speed);
+            speed = config_effective_value(m_config, "perimeter_speed", vol_speed);
             if(comment) *comment = std::string("perimeter_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::ExternalPerimeter) {
-            speed = m_config.external_perimeter_speed.get_effective_value(m_config.perimeter_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "external_perimeter_speed", config_effective_value(m_config, "perimeter_speed", vol_speed));
             if(comment) *comment = std::string("external_perimeter_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::BridgeInfill) {
-            speed = m_config.bridge_speed.get_effective_value(vol_speed);
+            speed = config_effective_value(m_config, "bridge_speed", vol_speed);
             if(comment) *comment = std::string("bridge_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::InternalBridgeInfill) {
-            speed = m_config.internal_bridge_speed.get_effective_value(m_config.bridge_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "internal_bridge_speed", config_effective_value(m_config, "bridge_speed", vol_speed));
             if(comment) *comment = std::string("internal_bridge_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::InternalInfill) {
-            speed = m_config.infill_speed.get_effective_value(m_config.solid_infill_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "infill_speed", config_effective_value(m_config, "solid_infill_speed", vol_speed));
             if(comment) *comment = std::string("infill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::SolidInfill) {
-            speed = m_config.solid_infill_speed.get_effective_value(vol_speed);
+            speed = config_effective_value(m_config, "solid_infill_speed", vol_speed);
             if(comment) *comment = std::string("solid_infill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::TopSolidInfill) {
-            speed = m_config.top_solid_infill_speed.get_effective_value(m_config.solid_infill_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "top_solid_infill_speed", config_effective_value(m_config, "solid_infill_speed", vol_speed));
             if(comment) *comment = std::string("top_solid_infill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::ThinWall) {
-            speed = m_config.thin_walls_speed.get_effective_value(m_config.external_perimeter_speed.get_effective_value(m_config.perimeter_speed.get_effective_value(vol_speed)));
+            speed = config_effective_value(m_config, "thin_walls_speed", config_effective_value(m_config, "external_perimeter_speed", config_effective_value(m_config, "perimeter_speed", vol_speed)));
             if(comment) *comment = std::string("thin_walls_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::GapFill) {
-            speed = m_config.gap_fill_speed.get_effective_value(m_config.perimeter_speed.get_effective_value(vol_speed));
+            speed = config_effective_value(m_config, "gap_fill_speed", config_effective_value(m_config, "perimeter_speed", vol_speed));
             if(comment) *comment = std::string("gap_fill_speed ") + *comment;
         } else if (path.role() == ExtrusionRole::Ironing) {
-            speed = m_config.ironing_speed.get_effective_value(m_config.top_solid_infill_speed.get_effective_value(m_config.solid_infill_speed.get_effective_value(vol_speed)));
+            speed = config_effective_value(m_config, "ironing_speed", config_effective_value(m_config, "top_solid_infill_speed", config_effective_value(m_config, "solid_infill_speed", vol_speed)));
             if(comment) *comment = std::string("ironing_speed ") + *comment;
         }
         if (speed == 0) {
@@ -8775,9 +8841,9 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
                     vol_speed = max_print_speed;
                 }
                 if (path.role() == ExtrusionRole::OverhangExternalPerimeter) {
-                    other_speed = m_config.external_perimeter_speed.get_effective_value(vol_speed);
+                    other_speed = config_effective_value(m_config, "external_perimeter_speed", vol_speed);
                 } else {
-                    other_speed = m_config.perimeter_speed.get_effective_value(vol_speed);
+                    other_speed = config_effective_value(m_config, "perimeter_speed", vol_speed);
                 }
                 if (other_speed == 0) {
                     other_speed = vol_speed;
@@ -8801,7 +8867,7 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
 
 
     if (speed == 0) { // if you don't have a m_volumetric_speed
-        speed = m_config.max_print_speed.value;
+        speed = config_value(m_config, "max_print_speed");
         if(comment) *comment = "max_print_speed";
     }
     // Apply small perimeter 'modifier
@@ -8819,9 +8885,9 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
     // Apply first layer modifier
     if (this->on_first_layer()) {
         const double base_speed = speed;
-        double first_layer_speed = m_config.first_layer_speed.get_effective_value(base_speed);
+        double first_layer_speed = config_effective_value(m_config, "first_layer_speed", base_speed);
         if (path.role() == ExtrusionRole::InternalInfill || path.role() == ExtrusionRole::SolidInfill) {
-            double first_layer_infill_speed = m_config.first_layer_infill_speed.get_effective_value(base_speed);
+            double first_layer_infill_speed = config_effective_value(m_config, "first_layer_infill_speed", base_speed);
             if (first_layer_infill_speed > 0) {
                 if (first_layer_infill_speed < speed) {
                     speed = first_layer_infill_speed;
@@ -8839,7 +8905,7 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
                 if(comment) *comment += ", reduced to first_layer_speed";
             }
         }
-        double first_layer_min_speed = m_config.first_layer_min_speed.value;
+        double first_layer_min_speed = config_value(m_config, "first_layer_min_speed");
         if (first_layer_min_speed > speed) {
             speed = first_layer_min_speed;
             if(comment) *comment += ", increased to first_layer_min_speed";
@@ -8856,11 +8922,11 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
     // the first_layer_flow_ratio is added at the last time to take into account everything. So do the compute like it's here.
     double path_mm3_per_mm = path.mm3_per_mm();
     if (m_layer->scaled_bottom_z() <= 0) {
-        path_mm3_per_mm *= this->config().first_layer_flow_ratio.get_effective_value(1);
+        path_mm3_per_mm *= config_effective_value(this->config(), "first_layer_flow_ratio", 1);
     }
     // cap speed with max_volumetric_speed anyway (even if user is not using autospeed)
-    if (m_config.max_volumetric_speed.value > 0 && path_mm3_per_mm > 0 && m_config.max_volumetric_speed.value / path_mm3_per_mm < speed) {
-        speed = m_config.max_volumetric_speed.value / path_mm3_per_mm;
+    if (config_value(m_config, "max_volumetric_speed") > 0 && path_mm3_per_mm > 0 && config_value(m_config, "max_volumetric_speed") / path_mm3_per_mm < speed) {
+        speed = config_value(m_config, "max_volumetric_speed") / path_mm3_per_mm;
         if(comment) *comment += ", reduced by max_volumetric_speed";
     }
     // filament cap (volumetric & raw speed)
@@ -8889,7 +8955,7 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
     double max_acceleration = std::numeric_limits<double>::max();
     // on 2.3, check for enable/disable if(config.machine_limits_usage)
     if (m_config.machine_limits_usage <= MachineLimitsUsage::Limits)
-        max_acceleration = m_config.machine_max_acceleration_extruding.get_at(0);
+        max_acceleration = machine_limit_value(m_config, "machine_max_acceleration_extruding");
     double travel_acceleration = get_travel_acceleration(m_config);
     if (acceleration > 0) {
         switch (extrusion_role_to_gcode_extrusion_role(path.role())){
@@ -8903,8 +8969,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 break;
             case GCodeExtrusionRole::ExternalPerimeter:
             accel_externalPerimeter:
-                if (m_config.external_perimeter_acceleration.value > 0) {
-                    double external_perimeter_acceleration = m_config.get_computed_value("external_perimeter_acceleration");
+                if (computed_acceleration(m_config, "external_perimeter_acceleration") > 0) {
+                    double external_perimeter_acceleration = computed_acceleration(m_config, "external_perimeter_acceleration");
                     if (external_perimeter_acceleration > 0) {
                         acceleration = external_perimeter_acceleration;
                         break;
@@ -8913,16 +8979,16 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_perimeter;
             case GCodeExtrusionRole::SolidInfill:
             accel_solidInfill:
-                if (m_config.solid_infill_acceleration.value > 0) {
-                    double solid_infill_acceleration = m_config.get_computed_value("solid_infill_acceleration");
+                if (computed_acceleration(m_config, "solid_infill_acceleration") > 0) {
+                    double solid_infill_acceleration = computed_acceleration(m_config, "solid_infill_acceleration");
                     if (solid_infill_acceleration > 0)
                         acceleration = solid_infill_acceleration;
                 }
                 break;
             case GCodeExtrusionRole::InternalInfill:
             //internalInfill:
-                if (m_config.infill_acceleration.value > 0) {
-                    double infill_acceleration = m_config.get_computed_value("infill_acceleration");
+                if (computed_acceleration(m_config, "infill_acceleration") > 0) {
+                    double infill_acceleration = computed_acceleration(m_config, "infill_acceleration");
                     if (infill_acceleration > 0) {
                         acceleration = infill_acceleration;
                         break;
@@ -8931,8 +8997,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_solidInfill;
             case GCodeExtrusionRole::TopSolidInfill:
             accel_topSolidInfill:
-                if (m_config.top_solid_infill_acceleration.value > 0) {
-                    double top_solid_infill_acceleration = m_config.get_computed_value("top_solid_infill_acceleration");
+                if (computed_acceleration(m_config, "top_solid_infill_acceleration") > 0) {
+                    double top_solid_infill_acceleration = computed_acceleration(m_config, "top_solid_infill_acceleration");
                     if (top_solid_infill_acceleration > 0) {
                         acceleration = top_solid_infill_acceleration;
                         break;
@@ -8940,8 +9006,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 }
                 goto accel_solidInfill;
             case GCodeExtrusionRole::Ironing:
-                if (m_config.ironing_acceleration.value > 0) {
-                    double ironing_acceleration = m_config.get_computed_value("ironing_acceleration");
+                if (computed_acceleration(m_config, "ironing_acceleration") > 0) {
+                    double ironing_acceleration = computed_acceleration(m_config, "ironing_acceleration");
                     if (ironing_acceleration > 0) {
                         acceleration = ironing_acceleration;
                         break;
@@ -8968,8 +9034,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_supportMaterial;
             case GCodeExtrusionRole::Skirt:
                 //skirtBrim:
-                if (m_config.brim_acceleration.value > 0) {
-                    double brim_acceleration = m_config.get_computed_value("brim_acceleration");
+                if (computed_acceleration(m_config, "brim_acceleration") > 0) {
+                    double brim_acceleration = computed_acceleration(m_config, "brim_acceleration");
                     if (brim_acceleration > 0) {
                         acceleration = brim_acceleration;
                         break;
@@ -8978,15 +9044,15 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_supportMaterial;
             case GCodeExtrusionRole::BridgeInfill:
             accel_bridgeInfill:
-                if (m_config.bridge_acceleration.value > 0) {
-                    double bridge_acceleration = m_config.get_computed_value("bridge_acceleration");
+                if (computed_acceleration(m_config, "bridge_acceleration") > 0) {
+                    double bridge_acceleration = computed_acceleration(m_config, "bridge_acceleration");
                     if (bridge_acceleration > 0)
                         acceleration = bridge_acceleration;
                 }
                 break;
             case GCodeExtrusionRole::InternalBridgeInfill:
-                if (m_config.internal_bridge_acceleration.value > 0) {
-                    double internal_bridge_acceleration = m_config.get_computed_value("internal_bridge_acceleration");
+                if (computed_acceleration(m_config, "internal_bridge_acceleration") > 0) {
+                    double internal_bridge_acceleration = computed_acceleration(m_config, "internal_bridge_acceleration");
                     if (internal_bridge_acceleration > 0) {
                         acceleration = internal_bridge_acceleration;
                         break;
@@ -8994,8 +9060,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 }
                 goto accel_bridgeInfill;
             case GCodeExtrusionRole::OverhangPerimeter:
-                if (m_config.overhangs_acceleration.value > 0) {
-                    double overhangs_acceleration = m_config.get_computed_value("overhangs_acceleration");
+                if (computed_acceleration(m_config, "overhangs_acceleration") > 0) {
+                    double overhangs_acceleration = computed_acceleration(m_config, "overhangs_acceleration");
                     if (overhangs_acceleration > 0) {
                         acceleration = overhangs_acceleration;
                         break;
@@ -9003,8 +9069,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 }
                 goto accel_bridgeInfill;
             case GCodeExtrusionRole::GapFill:
-                if (m_config.gap_fill_acceleration.value > 0) {
-                    double gap_fill_acceleration = m_config.get_computed_value("gap_fill_acceleration");
+                if (computed_acceleration(m_config, "gap_fill_acceleration") > 0) {
+                    double gap_fill_acceleration = computed_acceleration(m_config, "gap_fill_acceleration");
                     if (gap_fill_acceleration > 0) {
                         acceleration = gap_fill_acceleration;
                         break;
@@ -9013,8 +9079,8 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 goto accel_perimeter;
                 break;
             case GCodeExtrusionRole::ThinWall:
-                if (m_config.thin_walls_acceleration.value > 0) {
-                    double thin_walls_acceleration = m_config.get_computed_value("thin_walls_acceleration");
+                if (computed_acceleration(m_config, "thin_walls_acceleration") > 0) {
+                    double thin_walls_acceleration = computed_acceleration(m_config, "thin_walls_acceleration");
                     if (thin_walls_acceleration > 0) {
                         acceleration = thin_walls_acceleration;
                         break;
@@ -9030,8 +9096,10 @@ std::pair<double, double> GCodeGenerator::_compute_acceleration(const ExtrusionP
                 break;
         }
 
-        if (this->on_first_layer() && m_config.first_layer_acceleration.value > 0) {
-            acceleration = std::min(acceleration, m_config.first_layer_acceleration.get_effective_value(acceleration));
+        const ConfigOptionFloatOrPercent *first_layer_acceleration_opt =
+            m_config.opt<ConfigOptionFloatOrPercent>("first_layer_acceleration");
+        if (this->on_first_layer() && first_layer_acceleration_opt != nullptr && first_layer_acceleration_opt->value > 0) {
+            acceleration = std::min(acceleration, first_layer_acceleration_opt->get_effective_value(acceleration));
         } else if (this->object_layer_over_raft() && m_config.first_layer_acceleration_over_raft.value > 0) {
             acceleration = m_config.first_layer_acceleration_over_raft.get_effective_value(acceleration);
         }
@@ -9080,7 +9148,9 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
     auto [/*double*/acceleration, /*double*/travel_acceleration] = _compute_acceleration(path);
 
     bool moved_to_point = last_pos_defined() && last_pos().coincides_with_epsilon(path.first_point());
-    if (m_config.travel_deceleration_use_target) {
+    const ConfigOptionBool *travel_deceleration_use_target_opt =
+        m_config.opt<ConfigOptionBool>("travel_deceleration_use_target");
+    if (travel_deceleration_use_target_opt != nullptr && travel_deceleration_use_target_opt->value) {
         if (travel_acceleration <= acceleration || travel_acceleration == 0 || acceleration == 0) {
             m_writer.set_travel_acceleration((uint32_t)floor(acceleration + 0.5));
             m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
@@ -9133,9 +9203,12 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
                     // don't use it if the distance is too small
                     distf_t min_dist_for_deceleration = distf_t(SCALED_EPSILON);
                     min_dist_for_deceleration = std::max(min_dist_for_deceleration, dist_to_go_extrude_speed / 10);
-                    min_dist_for_deceleration = std::max(min_dist_for_deceleration,
-                                                         scale_d(m_config.gcode_min_length.get_effective_value(
-                                                             m_current_perimeter_extrusion_width)));
+                    const ConfigOptionFloatOrPercent *gcode_min_length_opt =
+                        m_config.opt<ConfigOptionFloatOrPercent>("gcode_min_length");
+                    if (gcode_min_length_opt != nullptr)
+                        min_dist_for_deceleration = std::max(min_dist_for_deceleration,
+                                                             scale_d(gcode_min_length_opt->get_effective_value(
+                                                                 m_current_perimeter_extrusion_width)));
                     cant_use_deceleration = cant_use_deceleration || length < min_dist_for_deceleration;
                     // don't use it their isn't enough acceleration to go to the next speed without going by the travel speed
                     cant_use_deceleration = cant_use_deceleration || accel_extrude2extrude * 1.1 > acceleration;
@@ -9368,13 +9441,13 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     }
     // extrude arc or line
     GCodeExtrusionRole grole = extrusion_role_to_gcode_extrusion_role(path.role());
-    if (grole != m_last_extrusion_role && !m_config.feature_gcode.value.empty()) {
+    if (grole != m_last_extrusion_role && !config_string(m_config, "feature_gcode").empty()) {
         DynamicConfig config;
         config.set_key_value("extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(grole)));
         config.set_key_value("next_extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(grole)));
         config.set_key_value("previous_extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(m_last_extrusion_role)));
         config.set_key_value("last_extrusion_role", new ConfigOptionString(gcode_extrusion_role_to_string(m_last_extrusion_role)));
-        gcode += this->placeholder_parser_process("feature_gcode", m_config.feature_gcode.value,
+        gcode += this->placeholder_parser_process("feature_gcode", config_string(m_config, "feature_gcode"),
                                                   m_writer.tool()->id(), &config)
             + "\n";
     }
@@ -9700,8 +9773,10 @@ Polyline GCodeGenerator::travel_to(std::string &gcode, const Point &point, Extru
     this->m_throw_if_canceled();
     //if needed, remove points to avoid surcharging the printer.
     if (this->last_pos_defined()) {
-        const coordf_t scaled_min_length = this->config().gcode_min_length.is_enabled() ?
-            scale_d(this->config().gcode_min_length.get_effective_value(m_current_perimeter_extrusion_width)) :
+        const ConfigOptionFloatOrPercent *gcode_min_length_opt =
+            this->config().opt<ConfigOptionFloatOrPercent>("gcode_min_length");
+        const coordf_t scaled_min_length = (gcode_min_length_opt != nullptr && gcode_min_length_opt->is_enabled()) ?
+            scale_d(gcode_min_length_opt->get_effective_value(m_current_perimeter_extrusion_width)) :
             0;
         coordf_t scaled_min_resolution = scale_d(this->config().gcode_min_resolution.get_effective_value(m_current_perimeter_extrusion_width));
         if (config().avoid_crossing_perimeters.value) {
@@ -10233,15 +10308,15 @@ std::string GCodeGenerator::retract_and_wipe(bool toolchange, bool inhibit_lift)
         // check if need to lift
         bool need_lift = !m_writer.tool_is_extruder() || toolchange
             || (BOOL_EXTRUDER_CONFIG(retract_lift_first_layer) && this->m_layer_index == 0 &&
-                (!m_config.print_retract_lift.is_enabled() || m_config.print_retract_lift.value > 0))
+                (!config_is_enabled(m_config, "print_retract_lift") || config_value(m_config, "print_retract_lift") > 0))
             || this->m_writer.get_extra_lift() > 0;
         bool last_fill_extusion_role_top_infill = (this->m_last_extrusion_role == GCodeExtrusionRole::TopSolidInfill || this->m_last_extrusion_role == GCodeExtrusionRole::Ironing);
         if (this->m_last_extrusion_role == GCodeExtrusionRole::GapFill)
             last_fill_extusion_role_top_infill = (this->m_last_not_gapfill_extrusion_role == GCodeExtrusionRole::TopSolidInfill || this->m_last_not_gapfill_extrusion_role == GCodeExtrusionRole::Ironing);
-        if (!need_lift && (!m_config.print_retract_lift.is_enabled() || m_config.print_retract_lift.value > 0)) {
-            if (EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Not on top")
+        if (!need_lift && (!config_is_enabled(m_config, "print_retract_lift") || config_value(m_config, "print_retract_lift") > 0)) {
+            if (STRING_EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Not on top")
                 need_lift = !last_fill_extusion_role_top_infill;
-            else if (EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Only on top")
+            else if (STRING_EXTRUDER_CONFIG_WITH_DEFAULT(retract_lift_top, "") == "Only on top")
                 need_lift = last_fill_extusion_role_top_infill;
             else
                 need_lift = true;
@@ -10290,7 +10365,9 @@ std::string GCodeGenerator::toolchange(extruder_index_t extruder_id, coord_t pri
     std::string gcode;
 
     // Process the custom toolchange_gcode. If it is empty, insert just a Tn command.
-    std::string toolchange_gcode = m_config.toolchange_gcode.value;
+    const ConfigOptionString *toolchange_gcode_opt =
+        m_config.opt<ConfigOptionString>("toolchange_gcode");
+    std::string toolchange_gcode = toolchange_gcode_opt != nullptr ? toolchange_gcode_opt->value : std::string();
     boost::trim(toolchange_gcode); //remove invisible characters that may compromize the 'toolchange_gcode.empty()'
     std::string toolchange_gcode_parsed;
     if (!toolchange_gcode.empty() && m_writer.multiple_extruders) {
@@ -10341,7 +10418,7 @@ std::string GCodeGenerator::set_extruder(extruder_index_t extruder_id, coord_t p
         this->placeholder_parser().set("current_extruder", extruder_id);
 
         // Append the filament start G-code.
-        const std::string &start_filament_gcode = m_config.start_filament_gcode.get_at(extruder_id);
+        const std::string start_filament_gcode = config_string_at(m_config, "start_filament_gcode", size_t(extruder_id));
         if (! start_filament_gcode.empty()) {
             DynamicConfig config;
             assert((m_layer == nullptr ? m_last_layer_z_ : m_layer->scaled_print_z()) == print_z);
@@ -10373,7 +10450,7 @@ std::string GCodeGenerator::set_extruder(extruder_index_t extruder_id, coord_t p
     if (m_writer.tool() != nullptr) {
         // Process the custom end_filament_gcode. set_extruder() is only called if there is no wipe tower
         // so it should not be injected twice.
-        const std::string  &end_filament_gcode  = m_config.end_filament_gcode.get_at(old_extruder_id);
+        const std::string  end_filament_gcode  = config_string_at(m_config, "end_filament_gcode", size_t(old_extruder_id));
         if (! end_filament_gcode.empty()) {
             DynamicConfig config;
             assert((m_layer == nullptr ? m_last_layer_z_ : m_layer->scaled_print_z()) == print_z);
@@ -10409,7 +10486,7 @@ std::string GCodeGenerator::set_extruder(extruder_index_t extruder_id, coord_t p
     this->placeholder_parser().set("current_extruder", extruder_id);
 
     // Append the filament start G-code.
-    const std::string &start_filament_gcode = m_config.start_filament_gcode.get_at(extruder_id);
+    const std::string start_filament_gcode = config_string_at(m_config, "start_filament_gcode", size_t(extruder_id));
     if (!start_filament_gcode.empty()) {
         DynamicConfig config;
         assert((m_layer == nullptr ? m_last_layer_z_ : m_layer->scaled_print_z()) == print_z);

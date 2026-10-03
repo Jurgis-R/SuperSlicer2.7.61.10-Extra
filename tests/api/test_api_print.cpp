@@ -19,6 +19,14 @@
 #include <libslic3r/Plugins/SliceVolume.hpp>
 #include <libslic3r/Plugins/StandardLayerHeightGenerator.hpp>
 #include <libslic3r/Plugins/Support/SupportDemandBridgeRemoval.hpp>
+#include <libslic3r/Plugins/Perimeter/ClassicPerimeterGenerator.hpp>
+#include <libslic3r/Plugins/Perimeter/OnlyOnePerimeterOnTop.hpp>
+#include <libslic3r/Plugins/Surface/InitialTypedSurfaceBuilder.hpp>
+#include <libslic3r/Steps/StepGeneratePerimeter.hpp>
+#include <libslic3r/Steps/StepLayerHeightGeneration.hpp>
+#include <libslic3r/Steps/StepPostSlicing.hpp>
+#include <libslic3r/Steps/StepPrepareForPeriemters.hpp>
+#include <libslic3r/Steps/StepSlicing.hpp>
 #include <libslic3r/Config/FFFPrintConfig.hpp>
 #include <libslic3r/Config/PrintConfig.hpp>
 #include <libslic3r/SLA/SLAPrintConfig.hpp>
@@ -52,6 +60,10 @@ void ensure_api_test_runtime_initialized()
         slic3r_api::MaxOverhangThresholdPlugin::register_max_overhang_threshold_plugin(orchestrator);
         slic3r_api::Support::SupportDemandBridgeRemovalPlugin::register_support_demand_bridge_removal_plugin(orchestrator);
         slic3r_api::SkirtBrim::DefaultBrimGeneratorPlugin::register_default_brim_generator_plugin(orchestrator);
+        slic3r_api::Perimeter::ClassicPerimeterGeneratorPlugin::register_classic_perimeter_generator_plugin(orchestrator);
+        slic3r_api::Perimeter::OnlyOnePerimeterOnTopPlugin::register_only_one_perimeter_on_top_plugin(orchestrator);
+        // Print::process() runs STEP_SURFACE_GENERATION, whose validation needs typed fill surfaces.
+        slic3r_api::SurfaceGeneration::InitialTypedSurfaceBuilderPlugin::register_initial_typed_surface_builder_plugin(orchestrator);
 
         REQUIRE(Orchestrator::instance().set_plugin_active("bridge_detector.default", true));
         REQUIRE(Orchestrator::instance().set_plugin_active("standard_layer_height_generator", true));
@@ -61,6 +73,9 @@ void ensure_api_test_runtime_initialized()
         REQUIRE(Orchestrator::instance().set_plugin_active("max_overhang_threshold", true));
         REQUIRE(Orchestrator::instance().set_plugin_active("support.demand.bridge_removal", true));
         REQUIRE(Orchestrator::instance().set_plugin_active("skirt_brim.brim.default", true));
+        REQUIRE(Orchestrator::instance().set_plugin_active("perimeter.generator.classic", true));
+        REQUIRE(Orchestrator::instance().set_plugin_active("perimeter.module.only_one_perimeter_on_top", true));
+        REQUIRE(Orchestrator::instance().set_plugin_active("surface.initial_typed_surface_builder", true));
 
         register_exclusive_step_group_options(Orchestrator::instance());
         Orchestrator::instance().initialize_plugins();
@@ -256,7 +271,7 @@ TEST_CASE("Plugin warning and error callbacks queue GUI notifications", "[Api][P
     orchestrator.reset_plugin_cancel();
 }
 
-SCENARIO("PrintObject: Perimeter generation") {
+SCENARIO("PrintObject: Perimeter generation", "[Api][perimeter]") {
     GIVEN("20mm cube and default config & 0.3 layer height") {
         ensure_api_test_runtime_initialized();
         DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
@@ -266,13 +281,17 @@ SCENARIO("PrintObject: Perimeter generation") {
         config.set_deserialize("nozzle_diameter", "0.4");
         config.set_deserialize("layer_height", "0.3");
 
-        WHEN("make_perimeters() is called") {
+        WHEN("the perimeter pipeline steps run") {
             Print print{};
             Slic3r::Test::init_print({mesh}, print, model, config);
-#ifdef _DEBUG
-            Slic3r::Steps::StepPipeline::debug_run(Orchestrator::instance(), print, STEP_PRE_PERIMETER);
-#endif
-            print.process();
+            Orchestrator &orchestrator = Orchestrator::instance();
+            Steps::StepLayerHeightGeneration::run_step(orchestrator, print);
+            Steps::StepSlicing::run_step(orchestrator, print);
+            Steps::StepPostSlicing::run_step(orchestrator, print);
+            Steps::StepPrepareForPeriemters::prepare(print);
+            Steps::StepPrepareForPeriemters::run_step(orchestrator, print);
+            Steps::StepGeneratePerimeter::prepare(print);
+            Steps::StepGeneratePerimeter::run_step(orchestrator, print);
             PrintObject &object = print.object(0);
             //THEN("67 layers exist in the model") 
             { REQUIRE(object.layer_count() == 67); }
@@ -297,4 +316,40 @@ SCENARIO("PrintObject: Perimeter generation") {
             REQUIRE_FALSE(object.has_raft());
         }
     }
+}
+
+TEST_CASE("Print::process runs the slicing pipeline up to FINALIZE_SLICING", "[Api][process]")
+{
+    ensure_api_test_runtime_initialized();
+    DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
+    config.set_key_value("fill_density", new ConfigOptionPercent(0));
+    config.set_deserialize("nozzle_diameter", "0.4");
+    config.set_deserialize("layer_height", "0.3");
+    Model model{};
+    Print print{};
+    Slic3r::Test::init_print({TestMesh::cube_20x20x20}, print, model, config);
+    size_t slicing_ended = 0;
+    print.set_status_callback([&slicing_ended](const PrintBase::SlicingStatus &status) {
+        if (status.flags & PrintBase::SlicingStatus::SLICING_ENDED)
+            ++slicing_ended;
+    });
+
+    print.process();
+
+    // process() prepares the slicing data only; export-side steps wait for export_gcode().
+    for (const slicing_step_t step : Steps::execution_order()) {
+        CAPTURE(step);
+        const bool slicing_side = Steps::executes_before(step, STEP_ORDERING);
+        CHECK(print.is_step_done(step) == slicing_side);
+        CHECK(print.should_execute_step(step) == !slicing_side);
+    }
+    CHECK(print.slices_ready());
+    CHECK(slicing_ended == 1);
+
+    const PrintObject &object = print.object(0);
+    REQUIRE(object.layer_count() > 0);
+    size_t perimeter_layers = 0;
+    for (const Layer &layer : object.layers())
+        perimeter_layers += perimeter_region_island_count(layer, layer.region(0)) > 0;
+    CHECK(perimeter_layers == object.layer_count());
 }

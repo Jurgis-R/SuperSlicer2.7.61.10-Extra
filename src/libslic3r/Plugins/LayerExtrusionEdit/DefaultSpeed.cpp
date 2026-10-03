@@ -23,16 +23,21 @@ and hoist acceleration without depending on this strategy.
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "ExtrusionProcessParameterHelpers.hpp"
 #include "RegionalProcessParameterHelpers.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 
@@ -70,6 +75,559 @@ const raw_used_config_key k_used_config_keys[] = {
     {"top_solid_infill_speed", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
     {"travel_speed", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE}
 };
+
+const char *const k_defined_config_keys[] = {
+    "autospeed_min_thin_flow",
+    "bridge_speed",
+    "brim_speed",
+    "external_perimeter_speed",
+    "filament_max_speed",
+    "filament_max_volumetric_speed",
+    "first_layer_flow_ratio",
+    "first_layer_infill_speed",
+    "first_layer_min_speed",
+    "first_layer_speed",
+    "gap_fill_speed",
+    "infill_speed",
+    "internal_bridge_speed",
+    "ironing_speed",
+    "max_print_speed",
+    "max_volumetric_speed",
+    "milling_speed",
+    "perimeter_speed",
+    "solid_infill_speed",
+    "thin_walls_speed",
+    "top_solid_infill_speed"
+};
+
+void initialize_default_speed_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- autospeed_min_thin_flow | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "autospeed_min_thin_flow";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Minimum flow for thin extrusions";
+    def.tooltip = "Thin walls and gapfill have very thin extrusions (often at the ends). Using these thin extrusions force the autospeed to have a very low average speed, as the maximum speed is used for the thinnest extrusion. This setting allow to have a threshold, enforcing the max speed to this flow. Any lower flow will still use the max speed, creating a difference in mm3/s for these but keeping a high speed for all others.\nTo keep the automatic computation for the Autospeed, but excluding the thin gap fill & thin wall from it, set this setting to 0.\nCan be a % of the maximum flow (compute from print's autospeed max volumetric flow and filament's max volumetric flow.";
+    def.sidetext = "mm3/s or %";
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- bridge_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "bridge_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Bridges";
+    def.full_label = "Bridge Infill speed";
+    def.tooltip = "Speed for printing bridges.\nThis can be expressed as a percentage (for example: 60%) over the Default speed.\nSet zero to use the autospeed for this feature";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "default_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    {
+        static const char *const k_aliases[] = { "bridge_feed_rate" };
+        def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "60%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- brim_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "brim_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Brim & Skirt";
+    def.full_label = "Brim & Skirt speed";
+    def.tooltip = "This separate setting will affect the speed of brim and skirt. \nIf expressed as percentage (for example: 80%) it will be calculated over the Support speed setting.\nSet zero to use autospeed for this feature.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "support_material_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "50%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- external_perimeter_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "external_perimeter_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "External";
+    def.full_label = "External perimeters speed";
+    def.tooltip = "This separate setting will affect the speed of external perimeters (the visible ones). \nIf expressed as percentage (for example: 80%) it will be calculated over the Internal Perimeters speed setting.\nSet zero to use autospeed for this feature.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "perimeter_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "50%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- filament_max_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "filament_max_speed";
+    def.type = RAW_CO_VECTOR_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_LAYER_EXTRUSION_EDIT;
+    def.category = RAW_OPTION_CATEGORY_FILAMENT;
+    def.label = "Max speed";
+    def.tooltip = "Maximum speed allowed for this filament. Limits the maximum speed of a print to the minimum of the print speed and the filament speed. Set zero for no limit.";
+    def.sidetext = "mm/s";
+    def.is_vector_extruder = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- filament_max_volumetric_speed | preset=RAW_PRESET_TYPE_FFF_FILAMENT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "filament_max_volumetric_speed";
+    def.type = RAW_CO_VECTOR_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_FILAMENT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_LAYER_EXTRUSION_EDIT;
+    def.category = RAW_OPTION_CATEGORY_FILAMENT;
+    def.label = "Max volumetric speed";
+    def.tooltip = "Maximum volumetric speed allowed for this filament. Limits the maximum volumetric speed of a print to the minimum of print and filament volumetric speed. Set zero for no limit.";
+    def.sidetext = "mm³/s";
+    def.is_vector_extruder = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- first_layer_flow_ratio | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "first_layer_flow_ratio";
+    def.type = RAW_CO_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_WIDTH;
+    def.label = "First layer";
+    def.full_label = "First layer flow ratio";
+    def.tooltip = "You can increase this to over-extrude on the first layer if there is not enough plastic because your bed isn't levelled.\nNote: DON'T USE THIS if your only problem is bed leveling, LEVEL YOUR BED! Use this setting only as last resort after all calibrations failed.";
+    def.sidetext = "%";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "100%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- first_layer_infill_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "first_layer_infill_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Max infill";
+    def.full_label = "Infill max first layer speed";
+    def.tooltip = "If expressed as absolute value in mm/s, this speed will be applied as a maximum for all infill print moves of the first layer.\nIf expressed as a percentage it will scale the current infill speed.\nSet it at 100% to remove any infill first layer speed modification.\nSet zero to disable (using first_layer_speed instead).";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "depends";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- first_layer_min_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "first_layer_min_speed";
+    def.type = RAW_CO_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Min";
+    def.full_label = "Min first layer speed";
+    def.tooltip = "Minimum speed when printing the first layer.\nSet zero to disable.";
+    def.sidetext = "mm/s";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- first_layer_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "first_layer_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Max";
+    def.full_label = "Default first layer speed";
+    def.tooltip = "If expressed as absolute value in mm/s, this speed will be applied as a maximum to all the print moves (but infill) of the first layer.\nIf expressed as a percentage it will scale the current speed.\nSet it at 100% to remove any first layer speed modification (but for infill).";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "depends";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "30";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_SLICING;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Gap fill";
+    def.full_label = "Gap fill speed";
+    def.tooltip = "Speed for filling small gaps using short zigzag moves. Keep this reasonably low to avoid too much shaking and resonance issues.\nGap fill extrusions are ignored from the automatic volumetric speed computation, unless you set it to 0.\nThis can be expressed as a percentage (for example: 80%) over the Internal Perimeter speed.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "perimeter_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "50%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- infill_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "infill_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Sparse";
+    def.full_label = "Sparse infill speed";
+    def.tooltip = "Speed for printing the internal fill.\nThis can be expressed as a percentage (for example: 80%) over the Solid Infill speed.\nSet zero to use autospeed for this feature.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "solid_infill_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    {
+        static const char *const k_aliases[] = { "print_feed_rate", "infill_feed_rate" };
+        def.aliases = const_strings_t{ k_aliases, 2 };
+    }
+    def.default_serialized_value = "300%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- internal_bridge_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "internal_bridge_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Internal Bridge Infill speed";
+    def.tooltip = "Speed for printing the bridges that support the top layer.\nCan be a % of the bridge speed.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "bridge_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    {
+        static const char *const k_aliases[] = { "bridge_speed_internal" };
+        def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "150%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- ironing_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "ironing_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_IRONING;
+    def.label = "Ironing";
+    def.full_label = "Ironing speed";
+    def.tooltip = "Ironing speed. Used for the ironing pass of the ironing infill pattern, and the post-process infill.\nThis can be expressed as a percentage (for example: 80%) over the Top Solid Infill speed.\nIroning extrusions are ignored from the automatic volumetric speed computation.";
+    def.sidetext = "mm/s";
+    def.ratio_over = "top_solid_infill_speed";
+    def.has_min = 1;
+    def.min_value = 0.10000000000000001;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "50%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- max_print_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "max_print_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Max Autospeed";
+    def.full_label = "Max print speed for Autospeed";
+    def.tooltip = "When setting other speed settings to 0, Slic3r will autocalculate the optimal speed in order to keep constant extruder pressure. This experimental setting is used to set the highest print speed you want to allow.\nThis can be expressed as a percentage (for example: 100%) over the machine Max Feedrate for X axis.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "machine_max_feedrate_x";
+    def.has_min = 1;
+    def.min_value = 1;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "80";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- max_volumetric_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "max_volumetric_speed";
+    def.type = RAW_CO_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_EXTRUDERS;
+    def.label = "Maximum flow for Autospeed";
+    def.full_label = "Maximum Volumetric print speed for Autospeed";
+    def.tooltip = "This setting allows you to set the maximum flowrate for your print, and so cap the desired flow rate for the autospeed algorithm. The autospeed tries to keep a constant feedrate for the entire object, and so can lower the volumetric speed for some features.\nThe autospeed is only enable on speed fields that have a value of 0. If a speed field is a % of a 0 field, then it will be a % of the value it should have got from the autospeed.\nIf this field is set to 0, then there is no autospeed nor maximum flowrate. If a speed value i still set to 0, it will get the max speed allwoed by the printer.";
+    def.sidetext = "mm³/s";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- milling_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "milling_speed";
+    def.type = RAW_CO_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_MILLING;
+    def.label = "Milling Speed";
+    def.tooltip = "Speed for milling tool.";
+    def.sidetext = "mm/s";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "30";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- perimeter_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "perimeter_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Internal";
+    def.full_label = "Internal perimeters speed";
+    def.tooltip = "Speed for perimeters (contours, aka vertical shells).\nThis can be expressed as a percentage (for example: 80%) over the Default speed.\nSet zero to use autospeed for this feature.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "default_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    {
+        static const char *const k_aliases[] = { "perimeter_feed_rate" };
+        def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "60%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- solid_infill_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "solid_infill_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Solid";
+    def.full_label = "Solid infill speed";
+    def.tooltip = "Speed for printing solid regions (top/bottom/internal horizontal shells). \nThis can be expressed as a percentage (for example: 80%) over the Default speed.\nSet zero to use autospeed for this feature.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "default_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    {
+        static const char *const k_aliases[] = { "solid_infill_feed_rate" };
+        def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "30%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_walls_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_walls_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Thin walls";
+    def.full_label = "Thin walls speed";
+    def.tooltip = "Speed for thin walls (external extrusions that are alone because the object is too thin at these places).\nThis can be expressed as a percentage (for example: 80%) over the External Perimeter speed.\nSet zero to use autospeed for this feature.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "external_perimeter_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "100%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- top_solid_infill_speed | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "top_solid_infill_speed";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Top solid";
+    def.full_label = "Top solid speed";
+    def.tooltip = "Speed for printing top solid layers (it only applies to the uppermost external layers and not to their internal solid layers). You may want to slow down this to get a nicer surface finish.\nThis can be expressed as a percentage (for example: 80%) over the Solid Infill speed.\nSet zero to use autospeed for this feature.";
+    def.sidetext = "mm/s or %";
+    def.ratio_over = "solid_infill_speed";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "50%";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
+void add_default_speed_gui_rules(orchestrator_handle *orchestrator)
+{
+    using slic3r_api::all_of;
+    using slic3r_api::any_of;
+    using slic3r_api::GuiCondition;
+    using slic3r_api::GuiRule;
+    using slic3r_api::int_equals;
+    using slic3r_api::non_zero;
+    using slic3r_api::true_;
+
+    // Membership tests shared by the rules below. `has_top` holds when a top
+    // solid surface exists: solid top layers, spiral vase perimeters or solid
+    // infill on every layer. `has_solid` also accepts bottom solid layers, a
+    // solid infill cadence and solid infill below the area threshold.
+    // `has_infill_or_solid` widens `has_solid` with any sparse infill, and
+    // `brim_or_skirt` requires a brim or a skirt. `ironing_pp` requires ironing
+    // on a top surface, and `ironing_any` also accepts a smooth top, bottom or
+    // solid fill pattern. gui_rules.core keeps equivalent copies of these
+    // conditions for the settings it hosts.
+    const GuiCondition has_top = any_of({
+        non_zero("top_solid_layers"),
+        all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+        int_equals("solid_infill_every_layers", 1)
+    });
+    const GuiCondition has_solid = any_of({
+        non_zero("top_solid_layers"),
+        all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+        int_equals("solid_infill_every_layers", 1),
+        non_zero("bottom_solid_layers"),
+        all_of({ non_zero("fill_density"), non_zero("solid_infill_every_layers") }),
+        all_of({ non_zero("fill_density"), non_zero("solid_infill_below_area") })
+    });
+    const GuiCondition has_infill_or_solid = any_of({ has_solid, non_zero("fill_density") });
+    const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
+    const GuiCondition ironing_any = any_of({
+        ironing_pp,
+        fill_pattern_is_smooth("top_fill_pattern"),
+        fill_pattern_is_smooth("bottom_fill_pattern"),
+        fill_pattern_is_smooth("solid_fill_pattern")
+    });
+    const GuiCondition brim_or_skirt = any_of({
+        non_zero("brim_width"),
+        non_zero("brim_width_interior"),
+        non_zero("skirts")
+    });
+
+    // Each call registers one activation reason for the listed settings; a
+    // setting stays editable while at least one of its reasons holds.
+    const auto add_rule = [orchestrator](std::initializer_list<const char *> target_keys,
+                                         const GuiCondition &condition) {
+        GuiRule::activate(std::vector<std::string>(target_keys.begin(), target_keys.end()))
+            .when(condition)
+            .scope(RAW_PRESET_TYPE_FFF_PRINT)
+            .add_to(orchestrator);
+    };
+
+    add_rule({ "perimeter_speed", "external_perimeter_speed" }, non_zero("perimeters"));
+    add_rule({ "solid_infill_speed" }, has_solid);
+    add_rule({ "infill_speed" }, has_infill_or_solid);
+    add_rule({ "top_solid_infill_speed" }, has_top);
+    add_rule({ "ironing_speed" }, ironing_any);
+    add_rule({ "brim_speed" }, brim_or_skirt);
+    add_rule({ "milling_speed" }, true_("milling_post_process"));
+    add_rule({ "max_print_speed", "autospeed_min_thin_flow" }, non_zero("max_volumetric_speed"));
+}
 
 const RegionSettings::OptionKeyGroup k_region_speed_keys = {
     "bridge_speed",
@@ -155,7 +713,7 @@ void collect_autospeed_minimum(const MutableExtrusionEntity &entity,
 // Prepare raw/final regional partitions and group/extruder autospeed targets.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AutospeedTargets &targets,
                   SpeedPartitions &speed_partitions,
                   const plugin_run_context *run_ctx);
@@ -192,8 +750,8 @@ double autospeed_target(const AutospeedTargets &targets,
 // Resolve and compact speed on one cloned extrusion root.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     uint32_t group_idx,
                     double target,
                     const SpeedPartitions &speed_partitions,
@@ -216,6 +774,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
     void setup_impl(const plugin_run_context *run_ctx, uint32_t run_count) const override;
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
@@ -478,7 +1038,7 @@ void collect_autospeed_minimum(const MutableExtrusionEntity &entity,
 
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AutospeedTargets &targets,
                   SpeedPartitions &speed_partitions,
                   const plugin_run_context *run_ctx)
@@ -498,20 +1058,20 @@ void prepare_plan(storage_handle *storage,
 
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         std::map<extruder_index_t, double> minimum_by_extruder;
 
         // Validate the entire plan before any parallel mutation. During the
         // same pass, collect the minimum flow when autospeed is enabled.
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer_group = group.layer_group(layer_idx);
+            PrintingLayerGroup layer_group = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, true);
                     const LayerRegionIsland region_island = extrusion.region_island();
@@ -583,17 +1143,17 @@ void prepare_plan(storage_handle *storage,
     std::set<SpeedPartitionKey> prepared_keys;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer_group = group.layer_group(layer_idx);
+            PrintingLayerGroup layer_group = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 const double target = autospeed_target(targets, group_idx, tool_group.extruder_id());
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
                     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
                     if (object_instance_idx < size_t(-1) && object_instance_idx > std::numeric_limits<uint16_t>::max())
@@ -750,8 +1310,8 @@ double autospeed_target(const AutospeedTargets &targets,
 
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     uint32_t group_idx,
                     double target,
                     const SpeedPartitions &speed_partitions,
@@ -833,6 +1393,20 @@ int32_t DefaultSpeed::used_config_keys(raw_used_config_key *keys) const noexcept
     return int32_t(std::size(k_used_config_keys));
 }
 
+int32_t DefaultSpeed::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void DefaultSpeed::inilialize_impl(storage_handle *) const
+{
+    initialize_default_speed_settings(m_orchestrator);
+    add_default_speed_gui_rules(m_orchestrator);
+}
+
 const char *DefaultSpeed::progress_message_format_impl() const noexcept
 {
     return "Resolving extrusion speed: %u / %u trees";
@@ -854,7 +1428,8 @@ void DefaultSpeed::setup_impl(const plugin_run_context *run_ctx, uint32_t) const
         run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
         return;
 
-    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), PrintingPlan(ctx->plan),
+    PrintingPlan plan(ctx->plan);
+    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), plan,
                  m_autospeed_targets, m_speed_partitions, run_ctx);
     throw_if_cancelled(run_ctx);
     m_setup_valid = true;
@@ -884,11 +1459,11 @@ void DefaultSpeed::run_impl(const plugin_run_context *run_ctx) const
     // Each run owns one layer group and reads immutable targets prepared before
     // the host launched parallel work.
     const Print print(ctx->print);
-    const PrintingPlan plan(ctx->plan);
-    const PrintingLayerGroup layer_group(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer_group(ctx->layer_group);
     for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+        PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
         const double target = autospeed_target(m_autospeed_targets, ctx->group_idx, tool_group.extruder_id());
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
             throw_if_cancelled(run_ctx);

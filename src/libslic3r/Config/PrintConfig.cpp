@@ -45,7 +45,7 @@
 #include "GCode/Thumbnails.hpp"
 #include "I18N.hpp"
 #include "PointUtils.hpp"
-#include "PrintSteps.hpp"
+#include "Api/plugin/c/slic3r_slicing_step.h"
 #include "Semver.hpp"
 #include "SLA/SupportTree.hpp"
 #include "Utils.hpp"
@@ -255,7 +255,7 @@ void PrintConfigDef::init_common_params()
     def = this->add("bed_shape", coPoints);
     def->label = L("Bed shape");
     def->category = OptionCategory::general;
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionPoints{ Vec2d(0, 0), Vec2d(200, 0), Vec2d(200, 200), Vec2d(0, 200) });
 
@@ -279,7 +279,7 @@ void PrintConfigDef::init_common_params()
                      "Currently supported extensions are PNG, QOI and JPG.");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::firmware;
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->mode = comExpert | comPrusa;
     def->min = 0;
     def->max = 2048;
@@ -290,7 +290,7 @@ void PrintConfigDef::init_common_params()
     def->full_label = L("Thumbnail color");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::filament;
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("This is the color that will be enforced on objects in the thumbnails.");
     def->gui_type = ConfigOptionDef::GUIType::color;
     def->mode = comExpert | comSuSi;
@@ -301,14 +301,14 @@ void PrintConfigDef::init_common_params()
     def->tooltip = L("Use a uniform color, extruder colors, or filament colors for thumbnails.");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::firmware;
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->mode = comExpert | comSuSi;
     def->set_enum<ThumbnailColorMode>({"uniform", "extruder", "filament"});
     def->set_default_value(new ConfigOptionEnum<ThumbnailColorMode>(ThumbnailColorMode::Filament));
 
     def = this->add("thumbnails_end_file", coBool);
     def->label = L("Print at the end");
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("Print the thumbnail code at the end of the gcode file instead of the front."
         "\nBe careful! Most firmwares expect it at the front, so be sure that your firmware support it.");
     def->mode = comExpert | comSuSi;
@@ -319,7 +319,7 @@ void PrintConfigDef::init_common_params()
     def->tooltip = L("Show the bed texture on the thumbnail picture.");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::firmware;
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(true));
 
@@ -329,7 +329,7 @@ void PrintConfigDef::init_common_params()
         "\n Some firmware need it to know how to decode the thumbnail, some others don't support it.");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::firmware;
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->mode    = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
@@ -348,7 +348,7 @@ void PrintConfigDef::init_common_params()
         "Thinner layers give better accuracy but take more time to print.");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::slicing;
-    def->invalidates_step = posSlice;
+    def->invalidates_step = STEP_SLICING;
     def->sidetext = L("mm");
     def->min = 0;
     def->mode = comAdvancedE | comPrusa;
@@ -358,7 +358,7 @@ void PrintConfigDef::init_common_params()
     def->label = L("Max print height");
     def->printer_technology = ptFFF | ptSLA;
     def->category = OptionCategory::general;
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("Set this to the maximum height that can be reached by your extruder while printing.");
     def->sidetext = L("mm");
     def->min = 0;
@@ -2588,6 +2588,12 @@ void PrintConfigDef::set_gui_activation_id(const t_config_option_key &opt_key, u
         option->second.gui_activation_id = activation_id;
 }
 
+size_t PrintConfigDef::update_definition_translations(const std::function<std::string(const std::string &, const std::string &)> &translate)
+{
+    PrintConfigDef &def = private_instance();
+    return def.update_translations(translate);
+}
+
 DynamicPrintConfig DynamicPrintConfig::full_print_config()
 {
 	return DynamicPrintConfig((const PrintRegionConfig&)FullPrintConfig::defaults());
@@ -3493,7 +3499,7 @@ CLIMiscConfigDef::CLIMiscConfigDef()
 
     def = this->add("threads", coInt);
     def->label = L("Maximum number of threads");
-    def->invalidates_step = psGCodeExport;
+    def->invalidates_step = STEP_GCODE;
     def->tooltip = L("Sets the maximum number of threads the slicing process will use. If not defined, it will be decided automatically.");
     def->min = 1;
 

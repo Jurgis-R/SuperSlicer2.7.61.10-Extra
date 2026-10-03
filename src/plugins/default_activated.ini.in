@@ -7,11 +7,11 @@
 [activated]
 ; Plugin ids enabled on a fresh profile.
 standard_layer_height_generator = 1
+gui_rules.core = 1
 slice_volume = 1
 polyholes = 1
 max_overhang_threshold = 1
 vase.multi_island_connector = 1
-gcode.legacy = 1
 gcode.printing_plan_file_writer = 1
 gcode.settings_scripts = 1
 gcode.feature_gcode = 1

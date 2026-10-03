@@ -22,15 +22,21 @@ temperature fields remain owned by their original producers.
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
+#include <iterator>
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "ExtrusionProcessParameterHelpers.hpp"
 #include "RegionalProcessParameterHelpers.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 
@@ -62,6 +68,481 @@ const raw_used_config_key k_used_config_keys[] = {
     {"top_solid_infill_acceleration", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
     {"travel_acceleration", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE}
 };
+
+const char *const k_defined_config_keys[] = {
+    "bridge_acceleration",
+    "brim_acceleration",
+    "default_acceleration",
+    "external_perimeter_acceleration",
+    "first_layer_acceleration",
+    "gap_fill_acceleration",
+    "infill_acceleration",
+    "internal_bridge_acceleration",
+    "ironing_acceleration",
+    "machine_max_acceleration_extruding",
+    "machine_max_acceleration_travel",
+    "overhangs_acceleration",
+    "solid_infill_acceleration",
+    "thin_walls_acceleration",
+    "top_solid_infill_acceleration",
+    "travel_acceleration"
+};
+
+void initialize_default_acceleration_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- bridge_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "bridge_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Bridges";
+    def.full_label = "Bridge acceleration";
+    def.tooltip = "This is the acceleration your printer will use for bridges.\nCan be a % of the default acceleration\nSet zero to use default acceleration for bridges.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "default_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -220;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- brim_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "brim_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Brim & Skirt";
+    def.full_label = "Brim & Skirt acceleration";
+    def.tooltip = "This is the acceleration your printer will use for brim and skirt. \nCan be a % of the support acceleration\nSet zero to use support acceleration.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "support_material_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- default_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "default_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Default";
+    def.full_label = "Default acceleration";
+    def.tooltip = "This is the acceleration your printer will be reset to after the role-specific acceleration values are used (perimeter/infill). \nAccelerations from the left column can also be expressed as a percentage of this value.\nThis can be expressed as a percentage (for example: 80%) over the machine Max Acceleration for X axis.\nSet zero to prevent resetting acceleration at all.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "machine_max_acceleration_x";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- external_perimeter_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "external_perimeter_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "External";
+    def.full_label = "External Perimeter acceleration";
+    def.tooltip = "This is the acceleration your printer will use for external perimeters. \nCan be a % of the internal perimeter acceleration\nSet zero to use internal perimeter acceleration for external perimeters.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "perimeter_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- first_layer_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "first_layer_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Max";
+    def.full_label = "First layer acceleration";
+    def.tooltip = "This is the maximum acceleration your printer will use for first layer.\nIf set to %, all accelerations will be reduced by that ratio.\nSet zero to disable acceleration control for first layer.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "depends";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Gap fill";
+    def.full_label = "Gap fill acceleration";
+    def.tooltip = "This is the acceleration your printer will use for gap fills. \nThis can be expressed as a percentage over the perimeter acceleration.\nSet zero to use perimeter acceleration for gap fills.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "perimeter_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- infill_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "infill_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Sparse";
+    def.full_label = "Infill acceleration";
+    def.tooltip = "This is the acceleration your printer will use for Sparse infill.\nCan be a % of the solid infill acceleration\nSet zero to use solid infill acceleration for infill.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "solid_infill_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- internal_bridge_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "internal_bridge_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Internal bridges ";
+    def.full_label = "Internal bridges acceleration";
+    def.tooltip = "This is the acceleration your printer will use for internal bridges. \nCan be a % of the default acceleration\nSet zero to use bridge acceleration for internal bridges.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "bridge_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    {
+        static const char *const k_aliases[] = { "bridge_internal_acceleration" };
+        def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- ironing_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "ironing_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_IRONING;
+    def.label = "Ironing";
+    def.full_label = "Ironing acceleration";
+    def.tooltip = "This is the acceleration your printer will use for ironing. \nCan be a % of the top solid infill acceleration\nSet zero or 100% to use top solid infill acceleration for ironing.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "top_solid_infill_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- machine_max_acceleration_extruding | preset=RAW_PRESET_TYPE_FFF_PRINTER,RAW_PRESET_TYPE_FFF_PRINTER_MACHINE_LIMITS ----
+    def = raw_config_option_def_init();
+    def.opt_key = "machine_max_acceleration_extruding";
+    def.type = RAW_CO_VECTOR_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER_MACHINE_LIMITS;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_ANY;
+    def.category = RAW_OPTION_CATEGORY_LIMITS;
+    def.full_label = "Maximum acceleration when extruding";
+    def.tooltip = "Maximum acceleration when extruding";
+    def.sidetext = "mm/s²";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "1500,1250";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- machine_max_acceleration_travel | preset=RAW_PRESET_TYPE_FFF_PRINTER,RAW_PRESET_TYPE_FFF_PRINTER_MACHINE_LIMITS ----
+    def = raw_config_option_def_init();
+    def.opt_key = "machine_max_acceleration_travel";
+    def.type = RAW_CO_VECTOR_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER_MACHINE_LIMITS;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_ANY;
+    def.category = RAW_OPTION_CATEGORY_LIMITS;
+    def.full_label = "Maximum acceleration for travel moves";
+    def.tooltip = "Maximum acceleration for travel moves.";
+    def.sidetext = "mm/s²";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "1500,1250";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- overhangs_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "overhangs_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Overhangs";
+    def.full_label = "Overhang acceleration";
+    def.tooltip = "This is the acceleration your printer will use for overhangs.\nCan be a % of the bridge acceleration\nSet zero to to use bridge acceleration for overhangs.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "bridge_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- solid_infill_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "solid_infill_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Solid ";
+    def.full_label = "Solid acceleration";
+    def.tooltip = "This is the acceleration your printer will use for solid infill. \nCan be a % of the default acceleration\nSet zero or 100% to use default acceleration for solid infill.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "default_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_walls_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_walls_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Thin Walls";
+    def.full_label = "Thin walls acceleration";
+    def.tooltip = "This is the acceleration your printer will use for thin walls. \nCan be a % of the external perimeter acceleration\nSet zero to use external perimeter acceleration for thin walls.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "external_perimeter_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- top_solid_infill_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "top_solid_infill_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Top solid ";
+    def.full_label = "Top solid acceleration";
+    def.tooltip = "This is the acceleration your printer will use for top solid infill. \nCan be a % of the solid infill acceleration\nSet zero or 100% to use solid infill acceleration for top solid infill.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "solid_infill_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- travel_acceleration | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "travel_acceleration";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Travel";
+    def.full_label = "Travel acceleration";
+    def.tooltip = "Acceleration for travel moves (jumps between distant extrusion points).\nCan be a % of the default acceleration\nSet zero to use default acceleration for travel moves.";
+    def.sidetext = "mm/s² or %";
+    def.ratio_over = "default_acceleration";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = -200;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "1500";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
+void add_default_acceleration_gui_rules(orchestrator_handle *orchestrator)
+{
+    using slic3r_api::all_of;
+    using slic3r_api::any_of;
+    using slic3r_api::GuiCondition;
+    using slic3r_api::GuiRule;
+    using slic3r_api::int_equals;
+    using slic3r_api::non_zero;
+    using slic3r_api::true_;
+
+    // Membership tests shared by the rules below. `has_top` holds when a top
+    // solid surface exists: solid top layers, spiral vase perimeters or solid
+    // infill on every layer. `has_solid` also accepts bottom solid layers, a
+    // solid infill cadence and solid infill below the area threshold.
+    // `ironing_pp` requires ironing on a top surface, and `ironing_any` also
+    // accepts a smooth top, bottom or solid fill pattern. gui_rules.core keeps
+    // equivalent copies of these conditions for the settings it hosts.
+    const GuiCondition has_top = any_of({
+        non_zero("top_solid_layers"),
+        all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+        int_equals("solid_infill_every_layers", 1)
+    });
+    const GuiCondition has_solid = any_of({
+        non_zero("top_solid_layers"),
+        all_of({ non_zero("perimeters"), true_("spiral_vase") }),
+        int_equals("solid_infill_every_layers", 1),
+        non_zero("bottom_solid_layers"),
+        all_of({ non_zero("fill_density"), non_zero("solid_infill_every_layers") }),
+        all_of({ non_zero("fill_density"), non_zero("solid_infill_below_area") })
+    });
+    const GuiCondition ironing_pp = all_of({ has_top, true_("ironing") });
+    const GuiCondition ironing_any = any_of({
+        ironing_pp,
+        fill_pattern_is_smooth("top_fill_pattern"),
+        fill_pattern_is_smooth("bottom_fill_pattern"),
+        fill_pattern_is_smooth("solid_fill_pattern")
+    });
+
+    // Each call registers one activation reason for the listed settings; a
+    // setting stays editable while at least one of its reasons holds.
+    const auto add_rule = [orchestrator](std::initializer_list<const char *> target_keys,
+                                         const GuiCondition &condition) {
+        GuiRule::activate(std::vector<std::string>(target_keys.begin(), target_keys.end()))
+            .when(condition)
+            .scope(RAW_PRESET_TYPE_FFF_PRINT)
+            .add_to(orchestrator);
+    };
+
+    add_rule({ "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
+               "gap_fill_acceleration", "travel_acceleration", "first_layer_acceleration" },
+             non_zero("default_acceleration"));
+    add_rule({ "external_perimeter_acceleration", "thin_walls_acceleration" },
+             all_of({ non_zero("default_acceleration"), non_zero("perimeters") }));
+    add_rule({ "infill_acceleration" },
+             all_of({ non_zero("default_acceleration"), non_zero("fill_density") }));
+    add_rule({ "solid_infill_acceleration" },
+             all_of({ non_zero("default_acceleration"), has_solid }));
+    add_rule({ "top_solid_infill_acceleration" },
+             all_of({ non_zero("default_acceleration"), has_top }));
+    add_rule({ "ironing_acceleration" },
+             all_of({ non_zero("default_acceleration"), ironing_any }));
+    add_rule({ "brim_acceleration" },
+             all_of({ non_zero("default_acceleration"),
+                      any_of({ non_zero("brim_width"), non_zero("brim_width_interior"),
+                               non_zero("skirts") }) }));
+}
 
 const RegionSettings::OptionKeyGroup k_region_acceleration_keys = {
     "default_acceleration",
@@ -115,7 +596,7 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
 // Validate all trees and prepare immutable partitions before parallel mutation.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AccelerationPartitions &partitions,
                   const plugin_run_context *run_ctx);
 
@@ -132,8 +613,8 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
 // Resolve and compact acceleration on one cloned extrusion root.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     const AccelerationPartitions &partitions,
                     const plugin_run_context *run_ctx);
 
@@ -154,6 +635,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
     void setup_impl(const plugin_run_context *run_ctx, uint32_t run_count) const override;
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
@@ -280,7 +763,7 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
 
 void prepare_plan(storage_handle *storage,
                   const Print &print,
-                  const PrintingPlan &plan,
+                  PrintingPlan &plan,
                   AccelerationPartitions &partitions,
                   const plugin_run_context *run_ctx)
 {
@@ -293,16 +776,16 @@ void prepare_plan(storage_handle *storage,
     // collect every role that may need a regional partition in later runs.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer_group = group.layer_group(layer_idx);
+            PrintingLayerGroup layer_group = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
-                    const PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, false);
                     const LayerRegionIsland region_island = extrusion.region_island();
@@ -408,8 +891,8 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
 
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
-                    const PrintingToolGroup &tool_group,
-                    const PrintingExtrusion &extrusion,
+                    PrintingToolGroup tool_group,
+                    PrintingExtrusion extrusion,
                     const AccelerationPartitions &partitions,
                     const plugin_run_context *run_ctx)
 {
@@ -486,6 +969,20 @@ int32_t DefaultAcceleration::used_config_keys(raw_used_config_key *keys) const n
     return int32_t(std::size(k_used_config_keys));
 }
 
+int32_t DefaultAcceleration::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void DefaultAcceleration::inilialize_impl(storage_handle *) const
+{
+    initialize_default_acceleration_settings(m_orchestrator);
+    add_default_acceleration_gui_rules(m_orchestrator);
+}
+
 const char *DefaultAcceleration::progress_message_format_impl() const noexcept
 {
     return "Resolving extrusion acceleration: %u / %u trees";
@@ -503,7 +1000,8 @@ void DefaultAcceleration::setup_impl(const plugin_run_context *run_ctx, uint32_t
         run_ctx == nullptr || run_ctx->plugin_storage == nullptr)
         return;
 
-    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), PrintingPlan(ctx->plan),
+    PrintingPlan plan(ctx->plan);
+    prepare_plan(run_ctx->plugin_storage, Print(ctx->print), plan,
                  m_partitions, run_ctx);
     throw_if_cancelled(run_ctx);
     m_setup_valid = true;
@@ -531,11 +1029,11 @@ void DefaultAcceleration::run_impl(const plugin_run_context *run_ctx) const
     throw_if_cancelled(run_ctx);
 
     const Print print(ctx->print);
-    const PrintingPlan plan(ctx->plan);
-    const PrintingLayerGroup layer_group(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer_group(ctx->layer_group);
     for (uint32_t tool_idx = 0; tool_idx < layer_group.tool_group_count(); ++tool_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
+        PrintingToolGroup tool_group = layer_group.tool_group(tool_idx);
         for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
             throw_if_cancelled(run_ctx);
             edit_extrusion(

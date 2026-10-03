@@ -17,6 +17,7 @@ source trees before any plugin can consume or reorder the clones.
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_ordering.h"
+#include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionProperty.hpp"
@@ -182,12 +183,17 @@ const char *instance_kind(const Printing::PrintingObjectInstance *instance,
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
-    // Rebuilding the PrintingPlan discards all process properties added by
-    // downstream steps, including the speeds required by STEP_GCODE.
-    print.mark_step_and_dependents_for_execution(STEP_ORDERING);
+    // Cleanup discards output only; replay scheduling belongs to Print's checkpoint entry points.
     print.reset_printing_plan();
+}
+
+void prepare(Print &print)
+{
+    DynamicConfig record = CustomGCode::make_print_record(print.model().custom_gcode_per_print_z);
+    // Keep the channel object alive for consumers retaining borrowed Config handles.
+    print.records().get_or_add(CustomGCode::PrintRecordChannel).swap(record);
 }
 
 bool validate_pre(const Print &print, std::string *error)
@@ -367,6 +373,7 @@ void run_step(Orchestrator &orchestrator, Print &print)
     if (!validate_post(print, &validation_error))
         throw RuntimeError("STEP_ORDERING post-validation failed after the plugin pipeline "
                            "(last executed plugin: '" + last_plugin_id + "'): " + validation_error);
+
 }
 
 } // namespace Slic3r::Steps::StepExtrusionOrdering

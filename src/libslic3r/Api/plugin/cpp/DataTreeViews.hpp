@@ -123,9 +123,9 @@ get_mutable(), get_or_add() and remove() operations. The payload is copied as
 raw bytes by the host. Keep it a plain C-style struct: no std::string, no
 std::vector, no owning pointers.
 
-The view is mutable even when it comes from a const Layer, Island or Surface
-handle. This mutates only plugin metadata; it does not make the object geometry
-or native slicer fields writable.
+The writable view requires an explicit metadata editing capability. Data-tree
+properties() returns ConstPluginProperties; mutable_properties() requests a
+phase-checked capability. Source surfaces expose only reads globally.
 */
 class PluginProperties
 {
@@ -159,7 +159,7 @@ public:
     }
 
     void clear() { plugin_property_clear(mutable_handle()); }
-    void copy_from(const PluginProperties &other) {
+    template<class Properties> void copy_from(const Properties &other) {
         plugin_property_copy_all(mutable_handle(), other.handle());
     }
     bool remove(plugin_property_type type) { return plugin_property_remove(mutable_handle(), type) != 0; }
@@ -190,6 +190,8 @@ public:
     template<class PropertyType> PropertyType &get_or_add(orchestrator_handle *orchestrator,
                                                            plugin_property_type type)
     {
+        if (!valid())
+            throw std::runtime_error("The plugin property editing capability is null.");
         static_assert(std::is_trivially_copyable<PropertyType>::value,
                       "Plugin property payloads are copied as bytes and must be trivially copyable.");
         /*
@@ -221,6 +223,51 @@ private:
     plugin_property_container_handle *m_handle = nullptr;
 };
 
+/* Read-only metadata borrowed from a data-tree node or plan scope. */
+class ConstPluginProperties
+{
+public:
+    explicit ConstPluginProperties(const plugin_property_container_handle *handle = nullptr) :
+        m_handle(handle) {}
+
+    bool valid() const { return m_handle != nullptr; }
+    const plugin_property_container_handle *handle() const { return m_handle; }
+    uint32_t count() const { return plugin_property_count(handle()); }
+    plugin_property_type type_at(uint32_t idx) const {
+        return plugin_property_type_at(handle(), idx);
+    }
+    bool has(plugin_property_type type) const {
+        return plugin_property_has(handle(), type) != 0;
+    }
+    template<class PropertyType> bool has(const PluginPropertyKey<PropertyType> &key) const {
+        return has(key.type());
+    }
+    uint32_t data_size(plugin_property_type type) const {
+        return plugin_property_data_size(handle(), type);
+    }
+    const void *data(plugin_property_type type) const {
+        return plugin_property_data(handle(), type);
+    }
+
+    template<class PropertyType> const PropertyType *get(plugin_property_type type) const
+    {
+        static_assert(std::is_trivially_copyable<PropertyType>::value,
+                      "Plugin property payloads are copied as bytes and must be trivially copyable.");
+        if (data_size(type) != sizeof(PropertyType))
+            return nullptr;
+        return reinterpret_cast<const PropertyType *>(data(type));
+    }
+
+    template<class PropertyType> const PropertyType *get(
+        const PluginPropertyKey<PropertyType> &key) const
+    {
+        return get<PropertyType>(key.type());
+    }
+
+private:
+    const plugin_property_container_handle *m_handle = nullptr;
+};
+
 // Configuration shared by LayerRegion objects that belong to the same print
 // region. It is a link to print-wide region settings, not a layer geometry
 // container.
@@ -242,8 +289,11 @@ class LayerRegion : public ConstDataTreeHandleView<layer_region_handle>
 public:
     using ConstDataTreeHandleView<layer_region_handle>::ConstDataTreeHandleView;
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_region_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_region_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_region_get_properties_mutable(const_cast<layer_region_handle *>(handle())));
     }
 
     c_flow flow(raw_extrusion_role role) const { return layer_region_get_flow(handle(), role); }
@@ -286,8 +336,11 @@ public:
         return layer_region_island_get_extrusion(handle(), role);
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_region_island_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_region_island_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_region_island_get_properties_mutable(const_cast<layer_region_island_handle *>(handle())));
     }
     uint32_t region_count() const { return layer_region_island_count_region(handle()); }
 
@@ -337,8 +390,11 @@ public:
         return ExPolygonCollection(layer_island_get_infill_no_overlap_areas(handle()));
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_island_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_island_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_island_get_properties_mutable(const_cast<layer_island_handle *>(handle())));
     }
     uint32_t region_count() const { return layer_island_count_region(handle()); }
 
@@ -371,6 +427,8 @@ public:
                 handles.empty() ? nullptr : handles.data(),
                 uint32_t(handles.size()),
                 static_cast<extruder_index_t>(extruder_id));
+        if (region_island == nullptr)
+            throw std::runtime_error("The region-island editing capability could not be obtained.");
         return LayerRegionIsland(region_island);
     }
 
@@ -385,6 +443,8 @@ public:
                 nullptr,
                 0,
                 static_cast<extruder_index_t>(extruder_id));
+        if (region_island == nullptr)
+            throw std::runtime_error("The region-island editing capability could not be obtained.");
         return LayerRegionIsland(region_island);
     }
 
@@ -449,8 +509,11 @@ public:
         return Layer(layer_get_lower_layer(handle()));
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(layer_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(layer_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(layer_get_properties_mutable(const_cast<layer_handle *>(handle())));
     }
 
     uint32_t region_count() const { return layer_count_region(handle()); }
@@ -499,8 +562,11 @@ public:
         return Config(object_get_config(handle()));
     }
 
-    PluginProperties properties() const {
-        return PluginProperties(object_get_properties(handle()));
+    ConstPluginProperties properties() const {
+        return ConstPluginProperties(object_get_properties(handle()));
+    }
+    PluginProperties mutable_properties() const {
+        return PluginProperties(object_get_properties_mutable(const_cast<object_handle *>(handle())));
     }
 
     coord_t max_z() const { return object_get_max_z(handle()); }
@@ -525,7 +591,10 @@ public:
         return Layer(object_get_auxiliary_layer(handle(), idx));
     }
     Layer add_auxiliary_layer(coord_t height, coord_t print_z, coord_t slice_z) const {
-        return Layer(object_add_auxiliary_layer(handle(), height, print_z, slice_z));
+        layer_handle *layer = object_add_auxiliary_layer(handle(), height, print_z, slice_z);
+        if (layer == nullptr)
+            throw std::runtime_error("The auxiliary layer could not be created.");
+        return Layer(layer);
     }
     bool remove_auxiliary_layer(const Layer &layer) const {
         return object_remove_auxiliary_layer(handle(), const_cast<layer_handle *>(layer.handle())) != 0;

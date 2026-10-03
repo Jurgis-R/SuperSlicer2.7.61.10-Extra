@@ -3,16 +3,32 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+OnlyOnePerimeterFirstLayer.cpp
+==============================
+
+Implementation of the only one perimeter first layer module declared in
+OnlyOnePerimeterFirstLayer.hpp.
+
+The file holds the plugin metadata, the owned option definition and activation
+rule, the module callbacks (start, after, end) and the registration entry point.
+after() lowers the requested count of the enabled children to one perimeter and
+lets the generator drop the branches it would otherwise continue.
+*/
+
 #include "OnlyOnePerimeterFirstLayer.hpp"
 
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
 
 /*
@@ -62,6 +78,37 @@ const char *k_no_dependencies[] = { nullptr };
 const raw_used_config_key k_used_config_keys[] = {
     { "only_one_perimeter_first_layer", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "only_one_perimeter_first_layer"
+};
+
+void initialize_only_one_perimeter_first_layer_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- only_one_perimeter_first_layer | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "only_one_perimeter_first_layer";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Only one perimeter on First layer";
+    def.tooltip = "Use only one perimeter on first layer, to give more space to the top infill pattern.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 const char *k_only_one_perimeter_first_layer_key = "only_one_perimeter_first_layer";
 
 class ModuleState
@@ -224,6 +271,15 @@ OnlyOnePerimeterFirstLayer::instance(orchestrator_handle *orch)
     return s_instance;
 }
 
+void add_only_one_perimeter_first_layer_gui_rules(orchestrator_handle *orchestrator)
+{
+    // Collapsing the first layer to a single perimeter needs at least two
+    // perimeters configured.
+    GuiRule::activate({ "only_one_perimeter_first_layer" })
+        .when(all_of({ int_not_equals("perimeters", 0), int_not_equals("perimeters", 1) }))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const char *OnlyOnePerimeterFirstLayer::id_impl() const noexcept
 {
     return k_only_one_perimeter_first_layer_id;
@@ -249,6 +305,20 @@ int32_t OnlyOnePerimeterFirstLayer::used_config_keys(raw_used_config_key *keys) 
     if (keys != nullptr)
         keys[0] = k_used_config_keys[0];
     return 1;
+}
+
+int32_t OnlyOnePerimeterFirstLayer::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void OnlyOnePerimeterFirstLayer::inilialize_impl(storage_handle *) const
+{
+    initialize_only_one_perimeter_first_layer_settings(m_orchestrator);
+    add_only_one_perimeter_first_layer_gui_rules(m_orchestrator);
 }
 
 const char *OnlyOnePerimeterFirstLayer::progress_message_format_impl() const noexcept

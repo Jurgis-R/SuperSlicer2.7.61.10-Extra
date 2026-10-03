@@ -23,6 +23,7 @@
 #define slic3r_Print_hpp_
 
 #include <atomic>
+#include <cstdint>
 #include <ctime>
 #include <functional>
 #include <map>
@@ -42,15 +43,17 @@
 #include "GCode/WipeTower.hpp"
 #include "libslic3r.h"
 #include "Point.hpp"
+#include "PluginProperty.hpp"
 #include "PrintBase.hpp"
 #include "Config/FFFPrintConfig.hpp"
 #include "PrintRecords.hpp"
-#include "PrintSteps.hpp"
+#include "Api/plugin/c/slic3r_slicing_step.h"
 #include "Steps/PipelineProgress.hpp"
 
 namespace Slic3r {
 
 class GCodeGenerator;
+class Plugin;
 struct GCodeProcessorResult;
 class WipeTower2;
 struct ConflictResult;
@@ -59,6 +62,9 @@ struct PrintingPlan;
 }
 namespace ApiInternal {
 struct PrintAccess;
+}
+namespace Steps {
+enum class Checkpoint : uint8_t;
 }
 
 struct WipeTowerData
@@ -146,6 +152,8 @@ struct PrintStatistics
     std::string             finalize_output_path(const std::string &path_in) const;
 
     void clear() {
+        estimated_print_time.clear();
+        estimated_print_time_str.clear();
         total_used_filament    = 0.;
         total_extruded_volume  = 0.;
         total_cost             = 0.;
@@ -159,6 +167,9 @@ struct PrintStatistics
         printing_filament_types.clear();
         filament_stats.clear();
         printing_extruders.clear();
+        color_extruderid_to_used_filament.clear();
+        color_extruderid_to_used_weight.clear();
+        _layer_area_stats.clear();
         is_computing_gcode = false;
     }
 
@@ -198,6 +209,7 @@ struct ConflictResult
 };
 
 using ConflictResultOpt = std::optional<ConflictResult>;
+
 // The complete print tray with possibly multiple objects.
 class Print : public PrintBase
 {
@@ -225,15 +237,14 @@ public:
     void set_task(const TaskParams &params) override;
     void process() override;
     void finalize() override;
-    void                cleanup() override;
 
     // methods for handling state
-    // Returns true if a print step is done, or if an object step is done on all objects.
+    // Canonical pipeline snapshots are copied under state_mutex.
     bool                is_step_done(slicing_step_t step) const;
     PrintStateBase::StateWithTimeStamp step_state_with_timestamp(slicing_step_t step) const;
     PrintStateBase::StateWithWarnings  step_state_with_warnings(slicing_step_t step) const;
     // Returns true if the last step was finished with success.
-    bool                finished() const override { return this->is_step_done(psGCodeExport); }
+    bool                finished() const override { return this->is_step_done(STEP_GCODE); }
 
     bool                has_infinite_skirt() const;
     bool                has_skirt() const;
@@ -311,6 +322,24 @@ public:
     const Printing::PrintingPlan *printing_plan() const { return m_printing_plan.get(); }
     Printing::PrintingPlan &mutable_printing_plan();
     void reset_printing_plan();
+    // Release only the live plan and keep the Checkpoint::Ordering copy, which
+    // restores a fresh working plan when the pipeline resumes.
+    void release_live_printing_plan();
+    // Control whether Checkpoint::Ordering is available: when enabled, a deep
+    // copy of the plan is kept after STEP_ORDERING so plan editors can replay
+    // without re-ordering. Disabling it releases the copy.
+    void set_keep_ordering_checkpoint(bool keep);
+    bool keep_ordering_checkpoint() const { return m_keep_ordering_checkpoint; }
+    // Store, query, restore or release the Checkpoint::Ordering plan copy.
+    // Restoring clones the copy so it can be restored again later.
+    bool save_ordering_checkpoint();
+    bool has_ordering_checkpoint() const;
+    bool restore_ordering_checkpoint();
+    void clear_ordering_checkpoint();
+    // Records and main-object properties, not geometry: None before LayerHeight prepare/plugins; Slicing after successful, noncancelled PostSlicing.
+    void save_metadata_checkpoint(Steps::Checkpoint checkpoint);
+    // Both operations require caller-owned execution or stopped workers; neither acquires a lock.
+    bool has_metadata_checkpoint(Steps::Checkpoint checkpoint) const;
     // Path of the finished text stream used by GCodeReader and GCodeViewer.
     // The producer owns the file; Print owns only this copied UTF-8 path.
     const std::string &gcode_reader_source_path() const { return m_gcode_reader_source_path; }
@@ -342,9 +371,57 @@ public:
     //put this in public to be accessible for tests, it was in private before.
     bool                invalidate_state_by_config_options(const ConfigOptionResolver& new_config, const std::vector<t_config_option_key> &opt_keys);
 
-    // New plugin pipeline execution plan. mark_step_and_dependents_for_execution()
-    // asks the next process() call to re-run one producer step and every
-    // downstream step listed in Steps::step_dependents().
+    // Control thread only: callers hold state_mutex, which the GUI cancel
+    // callback expects before it can stop and wait for the worker. Worker-side
+    // paths must use request_replay_from_worker() instead.
+    bool                request_replay_from(Steps::Checkpoint checkpoint);
+    // Worker/idle only: refresh scheduling without self-cancellation.
+    bool                request_replay_from_worker(Steps::Checkpoint checkpoint);
+    bool                slices_ready() const;
+    // Latest checkpoint whose data is valid: the checkpoint just before the
+    // first requested step, moved back to Checkpoint::Print when its plan
+    // (Ordering copy or live Plan) is missing.
+    Steps::Checkpoint   current_checkpoint() const;
+    // Pipeline-only: request every step after current_checkpoint() and put the
+    // live plan in the state that checkpoint describes (restored Ordering copy,
+    // or released plan for Checkpoint::Print and earlier).
+    void                prepare_checkpoint_resume();
+    /*
+    One successful plugin setup() that may still hold caches for this Print. The
+    entry is kept until a clear callback succeeds, so a failed cleanup can be
+    retried before the owners it borrowed are replaced. setup_order is the host's
+    monotonic setup counter, used to unwind participants in reverse order.
+    */
+    struct PluginCleanupParticipant
+    {
+        Plugin *plugin = nullptr;
+        // Pipeline step whose setup created the state; also its cleanup boundary.
+        slicing_step_t step = STEP_NONE;
+        size_t setup_order = 0;
+    };
+    // Record one plugin setup so it can receive a clear callback later.
+    void track_plugin_setup(Plugin &plugin, slicing_step_t step);
+    // Ask every tracked plugin at or after first_invalid_step to release the
+    // state it prepared. Returns false when at least one callback failed; failed
+    // entries stay tracked for a retry.
+    bool clear_plugin_state(slicing_step_t first_invalid_step);
+    // Borrowed list used by the orchestrator to unwind plugins before their owners are replaced.
+    const std::vector<PluginCleanupParticipant> &plugin_cleanup_participants() const
+        { return m_plugin_cleanup_participants; }
+    // Drop one participant after its clear callback succeeded.
+    void erase_plugin_cleanup_participant(Plugin *plugin, slicing_step_t step);
+    // Pipeline step currently running, or STEP_NONE outside the pipeline.
+    slicing_step_t      running_step() const { return m_running_step.load(std::memory_order_acquire); }
+    // Publishing a non-idle step starts a fresh execution attempt, including a retry of the same step.
+    void                set_running_step(slicing_step_t step);
+    // Atomically elect one reporter per attempt; only a non-idle step begin resets the claim, never cleanup.
+    bool                claim_freeze_diagnostic() const { return !m_freeze_diagnostic_claimed.exchange(true, std::memory_order_relaxed); }
+    // Checkpoint freeze contract: data owned by the steps up to
+    // last_editor_step may be edited only by those steps, or outside the
+    // pipeline (apply, tests). Host API debug asserts use this, for example
+    // STEP_POST_SLICING for slices and STEP_FINALIZE_SLICING for the data tree.
+    bool                running_step_may_edit(slicing_step_t last_editor_step) const;
+    // Worker-owned or stopped-worker primitives; UI invalidation must use request_replay_from().
     void                mark_step_for_execution(slicing_step_t step);
     void                mark_step_and_dependents_for_execution(slicing_step_t step);
     bool                should_execute_step(slicing_step_t step) const;
@@ -354,17 +431,7 @@ public:
     Steps::PipelineProgress       &pipeline_progress()       { return m_pipeline_progress; }
     const Steps::PipelineProgress &pipeline_progress() const { return m_pipeline_progress; }
 
-    // Deprecated: legacy PrintState invalidation used by the historical object
-    // and print steps. New plugin-pipeline options should mark execution with
-    // invalidates_step and the methods above instead of extending this linear
-    // propagation model.
-    bool                invalidate_step(slicing_step_t step);
-    bool                invalidate_steps(std::initializer_list<slicing_step_t> steps);
-    bool                invalidate_all_steps();
-
-    // Legacy mutable facade used by G-code processing for warnings, step state
-    // and statistics. It is unrelated to PrintStatus, which only delivers
-    // progress and control notifications.
+    // Native G-code facade for warnings and statistics, not scheduling state.
     class StatusMonitor
     {
     private:
@@ -379,39 +446,38 @@ public:
             print.active_step_add_warning(warning_level, message, message_id);
         }
         PrintStatistics &stats() { return print.m_print_statistics; }
-        bool             set_started(slicing_step_t step) { return print.set_started(step); }
-        PrintStateBase::TimeStamp set_done(slicing_step_t step) { return print.set_done(step); }
         
     };
 
 protected:
 private:
-    bool                set_started(slicing_step_t step);
-    PrintStateBase::TimeStamp set_done(slicing_step_t step);
     void                active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message, int message_id = 0);
-
-    [[deprecated("Skirt/brim is generated by STEP_SKIRT_BRIM plugins into auxiliary layers.")]]
-    void                _make_skirt_brim();
-    [[deprecated("Skirt/brim is generated by STEP_SKIRT_BRIM plugins into auxiliary layers.")]]
-    void                _make_skirt(const PrintObjectPtrs &objects, ExtrusionEntityCollection &out, std::optional<ExtrusionEntityCollection> &out_first_layer);
-    //void                _make_wipe_tower();
+    void                add_step_warning(PrintStateBase::WarningLevel level, const std::string &message, int message_id);
     void                finalize_first_layer_convex_hull();
-    void                alert_when_supports_needed();
+    // Non-cancelling scheduling invalidates downstream snapshots but retains the
+    // live plan until plugins have released their borrowed handles.
+    bool                request_steps_after(Steps::Checkpoint checkpoint);
+    // Control paths already own the non-recursive state mutex.
+    bool                mark_step_for_execution_unguarded(slicing_step_t step);
+    bool                mark_step_and_dependents_for_execution_unguarded(slicing_step_t step);
+    void                reset_step_execution_plan_all_unguarded();
+    void                restore_metadata_checkpoint(Steps::Checkpoint checkpoint);
+    void                forget_metadata_checkpoint_object(const PrintObject *object);
 
     // Islands of objects and their supports extruded at the 1st layer.
     Polygons            first_layer_islands() const;
     // Return 4 wipe tower corners in the world coordinates (shifted and rotated), including the wipe tower brim.
     Points              first_layer_wipe_tower_corners() const;
 
-    // Returns true if any of the print_objects has print_object_step valid.
-    // That means data shared by all print objects of the print_objects span may still use the shared data.
-    // Otherwise the shared data shall be released.
-    // Unguarded variant, thus it shall only be called from main thread with background processing stopped.
-    static bool         is_shared_print_object_step_valid_unguarded(SpanOfConstPtrs<PrintObject> print_objects, PrintObjectStep print_object_step);
-
     PrintConfig                             m_config;
     // Variable metadata shared by plugins and host producers for this Print.
     PrintRecordStore                        m_records;
+    struct CheckpointMetadataSnapshot {
+        PrintRecordStore::Snapshot records;
+        std::map<const PrintObject *, PluginPropertyContainer> object_properties;
+    };
+    std::unique_ptr<CheckpointMetadataSnapshot> m_none_metadata_checkpoint;
+    std::unique_ptr<CheckpointMetadataSnapshot> m_slicing_metadata_checkpoint;
     PrintObjectConfig                       m_default_object_config;
     PrintRegionConfig                       m_default_region_config;
     PrintObjectUPtrs                        m_objects;
@@ -446,6 +512,20 @@ private:
     // Following section will be consumed by the GCodeGenerator.
     std::vector<ToolOrdering>               m_tool_orderings;
     std::unique_ptr<Printing::PrintingPlan> m_printing_plan;
+    // Checkpoint::Ordering copy. It owns its plan trees and metadata but
+    // borrows source objects, layers and region-islands from this Print.
+    std::unique_ptr<Printing::PrintingPlan> m_ordering_checkpoint;
+    bool                                    m_keep_ordering_checkpoint = true;
+    // Written by the pipeline thread between steps only; read by host API
+    // debug checks while the step runs.
+    std::atomic<slicing_step_t>             m_running_step{STEP_NONE};
+    struct PipelineStepState {
+        bool done = false;
+        PrintStateBase::TimeStamp timestamp = 0;
+        std::vector<PrintStateBase::Warning> warnings;
+    };
+    std::map<slicing_step_t, PipelineStepState> m_pipeline_state;
+    mutable std::atomic_bool                m_freeze_diagnostic_claimed{false};
     std::string                             m_gcode_reader_source_path;
     mutable std::mutex                      m_wipe_tower_data_mutex;
     WipeTowerData                           m_wipe_tower_data {this};
@@ -463,6 +543,10 @@ private:
     // by Print because config changes arrive here, while StepPipeline only
     // knows how to consume the plan in its fixed written order.
     std::set<slicing_step_t> m_steps_to_execute;
+    std::vector<PluginCleanupParticipant>     m_plugin_cleanup_participants;
+    // Tracked caches may belong to valid in-flight work; their presence alone must not trigger UI cleanup.
+    std::atomic_bool                         m_plugin_cleanup_pending { false };
+    size_t                                    m_next_plugin_setup_order = 0;
 
     Steps::PipelineProgress                    m_pipeline_progress;
 
@@ -476,10 +560,6 @@ private:
 
     std::optional<ConflictResult> m_conflict_result;
 };
-
-//for testing purpose (in printobject)
-ExPolygons dense_fill_fit_to_size(const ExPolygon &polygon_to_cover,
-    const ExPolygon& growing_area, const coord_t offset, float coverage);
 
 } /* slic3r_Print_hpp_ */
 

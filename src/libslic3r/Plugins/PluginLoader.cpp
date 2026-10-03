@@ -86,13 +86,13 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/FeatureGCode.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/BuiltinGCodeFirmwares.hpp"
 #include "libslic3r/Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp"
-#include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/SeamPlacer/AlignedSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/ContiguousSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/CostSeamPlacer.hpp"
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
+#include "libslic3r/Plugins/GuiRulesCore.hpp"
 #include "libslic3r/Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp"
 #include "libslic3r/Plugins/Infill/Lightning/LightningPattern.hpp"
 #include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
@@ -668,8 +668,6 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::MaxOverhangThresholdPlugin::register_max_overhang_threshold_plugin);
     register_builtin_plugin(orchestrator, "vase.multi_island_connector",
         slic3r_api::VaseMultiIslandConnectorPlugin::register_vase_multi_island_connector_plugin);
-    register_builtin_plugin(orchestrator, "gcode.legacy",
-        slic3r_api::GCodeGeneration::LegacyGCodeGeneratorPlugin::register_legacy_gcode_generator_plugin);
     register_builtin_plugin(orchestrator, "gcode.printing_plan_file_writer",
         slic3r_api::GCodeGeneration::PrintingPlanFileWriterPlugin::register_printing_plan_file_writer_plugin);
     register_builtin_plugin(
@@ -804,6 +802,10 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
             register_infill_region_compatibility_splitter_plugin);
     register_builtin_plugin(orchestrator, "support_demand_bridge_removal",
         slic3r_api::Support::SupportDemandBridgeRemovalPlugin::register_support_demand_bridge_removal_plugin);
+    // Last: the built-in activation rules reference settings created by the
+    // other plugins; the pending-rule queue attaches the ones that appear later.
+    register_builtin_plugin(orchestrator, "gui_rules.core",
+        slic3r_api::GuiRulesCorePlugin::register_gui_rules_core_plugin);
 }
 
 

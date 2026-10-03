@@ -139,7 +139,8 @@ struct Parameters
         // infill gap to add vs perimeter (useful if using perimeter bonding)
         infill_gap(0),
         //
-        round_peri(this->config.perimeter_round_corners.value),
+        round_peri(this->config.option("perimeter_round_corners") != nullptr &&
+                   this->config.option("perimeter_round_corners")->get_bool()),
         min_round_spacing(round_peri ? perimeter_width / 10 : 0)
     {
     }

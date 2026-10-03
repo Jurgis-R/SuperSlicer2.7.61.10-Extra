@@ -363,11 +363,11 @@ std::vector<float> top_infill_widths(const char *perimeter_generator)
         "concentric"
     });
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::clear(prepared.print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
-    Steps::StepGenerateInfill::clean_and_prepare(prepared.print);
+    Steps::StepGenerateInfill::clear(prepared.print);
     Steps::StepGenerateInfill::run_step(orchestrator, prepared.print);
 
     // The initial typed surface builder makes the last layer top-solid.

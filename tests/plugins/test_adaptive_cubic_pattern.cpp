@@ -122,11 +122,11 @@ size_t count_infill_paths(const Print &print)
 void run_until_infill(PreparedPerimeterPrint &prepared)
 {
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::clear(prepared.print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
-    Steps::StepGenerateInfill::clean_and_prepare(prepared.print);
+    Steps::StepGenerateInfill::clear(prepared.print);
     Steps::StepGenerateInfill::run_step(orchestrator, prepared.print);
 }
 
@@ -505,9 +505,9 @@ void prepare_surfaces(PreparedPerimeterPrint &prepared,
     prepare_cube_print(prepared, config);
     ScopedActivePlugins active({SIMPLE_PERIMETER_GENERATOR, INITIAL_TYPED_SURFACE_BUILDER});
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::clear(prepared.print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
 }
 
@@ -622,9 +622,9 @@ TEST_CASE("Adaptive setup owns generation caches without a pre-infill step", "[p
     Steps::StepPostSlicing::run_step(orchestrator, prepared.print);
     {
         ScopedActivePlugins active({SIMPLE_PERIMETER_GENERATOR, INITIAL_TYPED_SURFACE_BUILDER});
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-        Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+        Steps::StepSurfaceGeneration::clear(prepared.print);
         Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
     }
     for (raw_infill_pattern_object_init &entry : objects)
@@ -825,9 +825,9 @@ TEST_CASE("Support Cubic preserves oriented paths through model transforms", "[p
         Steps::StepPostSlicing::run_step(orchestrator, prepared.print);
         {
             ScopedActivePlugins active({SIMPLE_PERIMETER_GENERATOR, INITIAL_TYPED_SURFACE_BUILDER});
-            Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+            Steps::StepGeneratePerimeter::clear(prepared.print);
             Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-            Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+            Steps::StepSurfaceGeneration::clear(prepared.print);
             Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
         }
 
@@ -1063,9 +1063,9 @@ void prepare_mixed_cubic_surfaces(PreparedPerimeterPrint &prepared)
     Steps::StepPostSlicing::run_step(orchestrator, prepared.print);
     {
         ScopedActivePlugins active({SIMPLE_PERIMETER_GENERATOR, INITIAL_TYPED_SURFACE_BUILDER});
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-        Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+        Steps::StepSurfaceGeneration::clear(prepared.print);
         Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
     }
 }

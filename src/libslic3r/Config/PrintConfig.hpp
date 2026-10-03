@@ -49,6 +49,8 @@
 #include <cstdint>
 #include <unordered_map>
 
+// The generated hash() members call boost::hash_combine.
+#include <boost/container_hash/hash.hpp>
 #include <boost/preprocessor/facilities/empty.hpp>
 #include <boost/preprocessor/punctuation/comma_if.hpp>
 #include <boost/preprocessor/seq/for_each.hpp>
@@ -151,6 +153,11 @@ public:
     // activation rules may be registered later (deferred plugin init, tests)
     // without changing any user-visible definition.
     static void set_gui_activation_id(const t_config_option_key &opt_key, uint32_t activation_id);
+    // Host-only: fill the translated presentation fields (label, full_label,
+    // tooltip, enum labels) of every definition. Stays valid after finalize(),
+    // like set_gui_activation_id(), because only host-only presentation fields
+    // change. Returns the number of definitions updated.
+    static size_t update_definition_translations(const std::function<std::string(const std::string &text, const std::string &domain)> &translate);
     static void handle_legacy_map(std::unordered_map<t_config_option_key, std::pair<t_config_option_key, std::string>> &dict, bool remove_unkown_keys = true);
     static void handle_legacy_pair(t_config_option_key &opt_key, std::string &value, bool remove_unkown_keys = true);
     static bool is_defined(const t_config_option_key& opt_key);

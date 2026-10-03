@@ -3,7 +3,8 @@
 
 namespace Slic3r::Steps::StepGenerateWipeTower {
 
-void clean_and_prepare(Print &) {}
+void clear(Print &) {}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string *)
 {

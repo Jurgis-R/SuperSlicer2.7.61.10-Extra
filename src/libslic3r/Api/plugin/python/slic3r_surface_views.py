@@ -160,14 +160,14 @@ class Surface:
             return int(self.api.host.surface_get_id(self.c_handle()))
         return int(self._surface.id)
 
-    def properties(self) -> "PluginProperties":
+    def properties(self) -> "ConstPluginProperties":
         # Delayed import keeps Surface views independent from the much larger
         # data-tree module while preserving the existing public property type.
-        from slic3r_datatree_views import PluginProperties
+        from slic3r_datatree_views import ConstPluginProperties
 
         if not self.has_handle():
-            return PluginProperties(self.api, None)
-        return PluginProperties(
+            return ConstPluginProperties(self.api, None)
+        return ConstPluginProperties(
             self.api, self.api.host.surface_get_properties(self.c_handle())
         )
 
@@ -190,8 +190,9 @@ class Surface:
 # plugin metadata only. Structural changes to the parent invalidate this view.
 @abi_requires_headers("slic3r_data_tree.h")
 class MutableSurface(Surface):
-    def __init__(self, api, handle) -> None:
+    def __init__(self, api, handle, properties) -> None:
         super().__init__(api, handle=handle)
+        self._properties = properties
 
     def mutable_c_handle(self) -> ctypes.c_void_p:
         return self.c_handle()
@@ -206,7 +207,7 @@ class MutableSurface(Surface):
 
         return PluginProperties(
             self.api,
-            self.api.host.surface_get_properties(self.mutable_c_handle()),
+            self._properties,
         )
 
     def copy_properties_from(self, other: Surface) -> None:
@@ -297,7 +298,8 @@ class StoredSurfaceCollection(_UniqueOwnerMixin, SurfaceCollection):
         handle = self.api.host.surface_collection_at_mutable(
             self.mutable_c_handle(), int(idx)
         )
-        return MutableSurface(self.api, handle)
+        return MutableSurface(self.api, handle,
+                              self.api.host.surface_collection_get_properties_mutable(self.mutable_c_handle(), int(idx)))
 
     def back_mutable(self) -> MutableSurface:
         if self.empty():

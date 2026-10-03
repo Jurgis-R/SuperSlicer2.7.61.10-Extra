@@ -63,7 +63,7 @@ public:
     // machine state. The borrowed Config view is not retained.
     void setup(const Config &config);
 
-    std::string begin_print(const Print &print, const PrintingPlan &plan) override;
+    std::string begin_print(const Print &print, const ConstPrintingPlan &plan) override;
     // Renderer and orchestrator are borrowed until firmware destruction.
     void set_thumbnail_services(orchestrator_handle *, const raw_gcode_thumbnail_renderer *);
     // Build the plugin-side Reader client used to interpret custom G-code.
@@ -74,10 +74,10 @@ public:
     // Reader. Provider wiring calls this before the session is published.
     void set_reader_state_id(orchestrator_runtime_id reader_state_id);
     std::string reader_plugin_id() const override { return "gcode.reader.default"; }
-    std::string begin_group(const PrintingGroup &group) override;
-    std::string begin_layer(const PrintingLayerGroup &layer) override;
-    std::string begin_tool_group(const PrintingToolGroup &tool_group) override;
-    std::string write_extrusion(const PrintingExtrusion &extrusion) override;
+    std::string begin_group(const ConstPrintingGroup &group) override;
+    std::string begin_layer(const ConstPrintingLayerGroup &layer) override;
+    std::string begin_tool_group(const ConstPrintingToolGroup &tool_group) override;
+    std::string write_extrusion(const ConstPrintingExtrusion &extrusion) override;
     std::string write_event(const ExtrusionEntity &event_root) override;
     std::string end_tool_group() override;
     std::string end_layer() override;
@@ -96,10 +96,10 @@ protected:
     };
 
     // Called once per export; derived firmwares may mix providers and placements.
-    virtual std::vector<GCodeThumbnailRequest> thumbnail_requests(const Print &, const PrintingPlan &);
+    virtual std::vector<GCodeThumbnailRequest> thumbnail_requests(const Print &, const ConstPrintingPlan &);
     // Startup policy hooks. Encoders retain dialect-specific command syntax.
-    virtual std::string write_pre_thumbnail(const Print &, const PrintingPlan &);
-    virtual std::string write_post_thumbnail(const Print &, const PrintingPlan &);
+    virtual std::string write_pre_thumbnail(const Print &, const ConstPrintingPlan &);
+    virtual std::string write_post_thumbnail(const Print &, const ConstPrintingPlan &);
     virtual std::string write_pre_start(const std::string &resolved_script);
     virtual std::string write_post_start();
     // Describes one movement after geometry and extrusion have been converted
@@ -247,9 +247,9 @@ private:
     class GCodeStateInterpreter;
 
     std::string select_extruder(extruder_index_t tool_id, bool emit_command = true);
-    std::string move_to_group_start(const PrintingGroup &group);
+    std::string move_to_group_start(const ConstPrintingGroup &group);
     std::string write_extrusion_tree(const ExtrusionEntity &root);
-    std::optional<float> reliable_layer_height(const PrintingLayerGroup &layer) const;
+    std::optional<float> reliable_layer_height(const ConstPrintingLayerGroup &layer) const;
     std::string write_printable_markers(const EPropertyAttributes &attributes);
     std::string write_seam_marker(const ExtrusionEntity &loop) const;
     std::string transition_wipe_marker(bool wipe);

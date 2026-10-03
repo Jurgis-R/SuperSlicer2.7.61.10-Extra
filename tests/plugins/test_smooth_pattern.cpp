@@ -296,14 +296,14 @@ std::vector<SmoothRoot> run_pipeline(std::initializer_list<std::pair<std::string
         "infill.post_process.full_fill_volume"
     });
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::clear(prepared.print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
-    Steps::StepGenerateInfill::clean_and_prepare(prepared.print);
+    Steps::StepGenerateInfill::clear(prepared.print);
     Steps::StepGenerateInfill::run_step(orchestrator, prepared.print);
     if (post_infill) {
-        Steps::StepPostInfillGeneration::clean_and_prepare(prepared.print);
+        Steps::StepPostInfillGeneration::clear(prepared.print);
         Steps::StepPostInfillGeneration::run_step(orchestrator, prepared.print);
     }
     return collect_roots(prepared.print);

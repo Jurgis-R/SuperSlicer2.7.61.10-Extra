@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -70,11 +71,11 @@ TEST_CASE("Configured G-code scripts become typed global plan events",
 
     Print print;
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value = "M117 configured start";
-    config.end_gcode.value = "M117 configured end";
+    config.option<ConfigOptionString>("start_gcode")->value = "M117 configured start";
+    config.option<ConfigOptionString>("end_gcode")->value = "M117 configured end";
     PrintingPlan &plan = print.mutable_printing_plan();
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(plan.events.before().child_count() == 1);
@@ -92,9 +93,9 @@ TEST_CASE("Configured G-code scripts become typed global plan events",
     CHECK(end_property->script_type == GCODE_SCRIPT_TYPE_END_GCODE);
     CHECK(end.custom_gcode_string(*end_property) == "M117 configured end");
 
-    config.start_gcode.value.clear();
-    config.end_gcode.value.clear();
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK_FALSE(plan.events.has_before());
     CHECK_FALSE(plan.events.has_after());
@@ -109,10 +110,10 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
     config.before_layer_gcode.value = "; before layer";
     config.layer_gcode.value = "; after layer move";
-    config.toolchange_gcode.value = "; custom toolchange";
-    config.start_filament_gcode.set(std::vector<std::string>{"; start filament 0", "; start filament 1"});
-    config.end_filament_gcode.set(std::vector<std::string>{"; end filament 0", "; end filament 1"});
-    config.end_gcode.value = "; end print";
+    config.option<ConfigOptionString>("toolchange_gcode")->value = "; custom toolchange";
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{"; start filament 0", "; start filament 1"});
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{"; end filament 0", "; end filament 1"});
+    config.option<ConfigOptionString>("end_gcode")->value = "; end print";
 
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
@@ -128,7 +129,7 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
     group.layers.back().tool_groups.emplace_back();
     group.layers.back().tool_groups.back().extruder_id = 0;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(group.events.before().child_count() == 1);
@@ -208,11 +209,11 @@ TEST_CASE("Configured layer and filament scripts become scoped plan events",
 
     config.before_layer_gcode.value.clear();
     config.layer_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{"", ""});
-    config.end_filament_gcode.set(std::vector<std::string>{"", ""});
-    config.end_gcode.value.clear();
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{"", ""});
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{"", ""});
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK_FALSE(group.events.has_before());
     CHECK_FALSE(group.layers[0].events.has_after());
@@ -235,14 +236,14 @@ TEST_CASE("Between-object scripts select the requested side of the group move",
     print.objects()[1].model_object()->name = "Second/object";
 
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value.clear();
-    config.end_gcode.value.clear();
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
     config.before_layer_gcode.value.clear();
     config.layer_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{""});
-    config.end_filament_gcode.set(std::vector<std::string>{""});
-    config.between_objects_gcode.value =
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{""});
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{""});
+    config.option<ConfigOptionString>("between_objects_gcode")->value =
         "; between [previous_object_id]:[previous_object_name] [next_object_id]:[next_object_name]";
 
     PrintingPlan &plan = print.mutable_printing_plan();
@@ -256,8 +257,8 @@ TEST_CASE("Between-object scripts select the requested side of the group move",
     plan.groups.back().printing_catalog_ids.push_back(
         plan.find_or_add_object_instance(print.objects()[1], 0));
 
-    config.between_objects_gcode_before_move.value = false;
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    config.option<ConfigOptionBool>("between_objects_gcode_before_move")->value = false;
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK_FALSE(plan.groups[0].events.has_after());
     CHECK_FALSE(plan.groups[1].events.has_before());
@@ -286,8 +287,8 @@ TEST_CASE("Between-object scripts select the requested side of the group move",
     CHECK(firmware.write_event(plan_view.group(2).events().before()) ==
           "; between 0:First_object 1:Second_object\n");
 
-    config.between_objects_gcode_before_move.value = true;
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    config.option<ConfigOptionBool>("between_objects_gcode_before_move")->value = true;
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     REQUIRE(plan.groups[0].events.after().child_count() == 1);
     CHECK_FALSE(plan.groups[1].events.has_before());
@@ -309,11 +310,11 @@ TEST_CASE("Single-extruder multimaterial finalizes only the active logical tool"
     Print print;
     configure_standard_firmware(print, 2);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value.clear();
-    config.end_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{"", ""});
-    config.end_filament_gcode.set(std::vector<std::string>{"; finalize 0", "; finalize 1"});
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{"", ""});
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{"; finalize 0", "; finalize 1"});
     config.single_extruder_multi_material.value = true;
 
     PrintingPlan &plan = print.mutable_printing_plan();
@@ -325,7 +326,7 @@ TEST_CASE("Single-extruder multimaterial finalizes only the active logical tool"
     plan.groups.front().layers.front().tool_groups.emplace_back();
     plan.groups.front().layers.front().tool_groups.back().extruder_id = 1;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(plan.events.after().child_count() == 1);
@@ -354,20 +355,20 @@ TEST_CASE("Configured scripts use ordered plan tools and final layer state",
     full_config.set_key_value("filament_diameter", new ConfigOptionFloats(std::vector<double>{1.75, 2.85}));
     config.print_first_layer_bed_temperature.value = 71;
     config.print_first_layer_bed_temperature.set_enabled(true);
-    config.start_gcode.value = "; SCRIPT_START T[current_extruder] D{filament_diameter[current_extruder]} "
+    config.option<ConfigOptionString>("start_gcode")->value = "; SCRIPT_START T[current_extruder] D{filament_diameter[current_extruder]} "
                                "B[start_gcode_bed_temperature]";
     config.before_layer_gcode.value = "; BEFORE_LAYER L[layer_num] Z[layer_z] P[previous_layer_z]";
     config.layer_gcode.value = "; LAYER L[layer_num] Z[layer_z]";
-    config.toolchange_gcode.value = "; CUSTOM_TOOL P[previous_extruder] N[next_extruder]";
-    config.start_filament_gcode.set(std::vector<std::string>{
+    config.option<ConfigOptionString>("toolchange_gcode")->value = "; CUSTOM_TOOL P[previous_extruder] N[next_extruder]";
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{
         "; START_FILAMENT F[filament_extruder_id] P[previous_extruder] N[next_extruder]",
         "; START_FILAMENT F[filament_extruder_id] P[previous_extruder] N[next_extruder]"
     });
-    config.end_filament_gcode.set(std::vector<std::string>{
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{
         "; END_FILAMENT F[filament_extruder_id] P[previous_extruder] N[next_extruder]",
         "; END_FILAMENT F[filament_extruder_id] P[previous_extruder] N[next_extruder]"
     });
-    config.end_gcode.value = "; SCRIPT_END L[layer_num] Z[layer_z] M[max_layer_z] F[filament_extruder_id] "
+    config.option<ConfigOptionString>("end_gcode")->value = "; SCRIPT_END L[layer_num] Z[layer_z] M[max_layer_z] F[filament_extruder_id] "
                              "P[previous_extruder] N[next_extruder]";
 
     PrintingPlan &plan = print.mutable_printing_plan();
@@ -382,7 +383,7 @@ TEST_CASE("Configured scripts use ordered plan tools and final layer state",
     group.layers.back().tool_groups.emplace_back();
     group.layers.back().tool_groups.back().extruder_id = 0;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Slic3r::Test::TransitionPipeline::run_layer_plugins(
         print, {Slic3r::Test::TransitionPipeline::TOOLCHANGE_PLUGIN});
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
@@ -468,10 +469,10 @@ TEST_CASE("Layer scripts report consumed filament",
     select_printing_plan_writer(print);
     configure_standard_firmware(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value.clear();
-    config.end_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{""});
-    config.end_filament_gcode.set(std::vector<std::string>{""});
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{""});
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{""});
     config.before_layer_gcode.value = "; USED L[layer_num] F{layer_used_filament[0]}";
 
     PrintingPlan &plan = print.mutable_printing_plan();
@@ -507,7 +508,7 @@ TEST_CASE("Layer scripts report consumed filament",
     group.layers.back().tool_groups.emplace_back();
     group.layers.back().tool_groups.back().extruder_id = 0;
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const boost::filesystem::path output_path = temporary_gcode_path();
@@ -566,12 +567,12 @@ TEST_CASE("End script uses stable defaults when a plan has no layers",
     select_printing_plan_writer(print);
     configure_standard_firmware(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value.clear();
-    config.end_gcode.value = "; EMPTY_END L[layer_num] Z[layer_z] M[max_layer_z] F[filament_extruder_id] "
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value = "; EMPTY_END L[layer_num] Z[layer_z] M[max_layer_z] F[filament_extruder_id] "
                              "P[previous_extruder] N[next_extruder]";
     print.mutable_printing_plan();
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const boost::filesystem::path output_path = temporary_gcode_path();
@@ -590,4 +591,79 @@ TEST_CASE("End script uses stable defaults when a plan has no layers",
     }
     orchestrator.reset_plugin_cancel();
     remove_output_pair(output_path);
+}
+
+
+TEST_CASE("Settings scripts plugin owns the configured script settings",
+          "[plugins][gcode][settings-scripts][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("gcode.settings_scripts");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 6);
+    for (const char *expected : { "start_gcode", "end_gcode", "between_objects_gcode",
+                                  "between_objects_gcode_before_move", "start_filament_gcode", "end_filament_gcode" })
+        CHECK(std::find(defined_keys.begin(), defined_keys.end(), expected) != defined_keys.end());
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("start_gcode");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Plater);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+    CHECK(def->multiline);
+    CHECK(def->full_width);
+
+    def = PrintConfigDef::instance().get("end_gcode");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Plater);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+
+    def = PrintConfigDef::instance().get("between_objects_gcode");
+    REQUIRE(def != nullptr);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+
+    def = PrintConfigDef::instance().get("between_objects_gcode_before_move");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coBool);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+
+    def = PrintConfigDef::instance().get("start_filament_gcode");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Plater);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_FILAMENT);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+    CHECK(def->multiline);
+    CHECK(def->full_width);
+    CHECK(def->is_vector_extruder);
+
+    def = PrintConfigDef::instance().get("end_filament_gcode");
+    REQUIRE(def != nullptr);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_FILAMENT);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+    CHECK(def->is_vector_extruder);
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    CHECK(config.option<ConfigOptionString>("start_gcode")->value ==
+          "G28 ; home all axes\nG1 Z5 F5000 ; lift nozzle\n");
+    CHECK(config.option<ConfigOptionString>("end_gcode")->value ==
+          "M104 S0 ; turn off temperature\nG28 X0  ; home X axis\nM84     ; disable motors\n");
+    CHECK(config.option<ConfigOptionString>("between_objects_gcode")->value.empty());
+    CHECK_FALSE(config.option<ConfigOptionBool>("between_objects_gcode_before_move")->value);
+    CHECK(config.option<ConfigOptionStrings>("start_filament_gcode")->get_at(0) ==
+          "; Filament gcode\n");
+    CHECK(config.option<ConfigOptionStrings>("end_filament_gcode")->get_at(0) ==
+          "; Filament-specific end gcode \n;END gcode for filament\n");
+
+    // The configured scripts stay always editable: the plugin owns no rule.
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
+        CHECK(rule.owner != "gcode.settings_scripts");
 }

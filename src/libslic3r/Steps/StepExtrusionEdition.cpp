@@ -43,11 +43,13 @@ void clear_scope_events(Printing::PrintingPlan &plan)
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
     if (print.printing_plan() != nullptr)
         clear_scope_events(print.mutable_printing_plan());
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string *error)
 {

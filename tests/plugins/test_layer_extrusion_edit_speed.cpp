@@ -17,6 +17,8 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_data_tree.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/AuxiliaryLayerHelpers.hpp"
@@ -228,7 +230,8 @@ void prepare_ordered_plan(PreparedSpeedPrint &prepared,
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx)
         append_source_layer(prepared, layers[layer_idx], 0.2 + 0.2 * double(layer_idx));
 
-    Steps::StepExtrusionOrdering::clean_and_prepare(prepared.print);
+    Steps::StepExtrusionOrdering::clear(prepared.print);
+    Steps::StepExtrusionOrdering::prepare(prepared.print);
     Steps::StepExtrusionOrdering::run_step(Orchestrator::instance(), prepared.print);
     REQUIRE(prepared.print.printing_plan() != nullptr);
 }
@@ -350,7 +353,8 @@ void prepare_regional_process_plan(
     prepared.source_layers.push_back(reinterpret_cast<Layer *>(
         const_cast<layer_handle *>(result.layer.handle())));
 
-    Steps::StepExtrusionOrdering::clean_and_prepare(prepared.print);
+    Steps::StepExtrusionOrdering::clear(prepared.print);
+    Steps::StepExtrusionOrdering::prepare(prepared.print);
     Steps::StepExtrusionOrdering::run_step(orchestrator, prepared.print);
     REQUIRE(prepared.print.printing_plan() != nullptr);
 }
@@ -612,8 +616,27 @@ TEST_CASE("Layer extrusion editors expose independent config contracts",
     CHECK(acceleration_plugin->get_priority() == 10);
     CHECK(speed_plugin->get_exclusive_group() == "layer_extrusion_edit.speed");
     CHECK(acceleration_plugin->get_exclusive_group() == "layer_extrusion_edit.acceleration");
-    CHECK(speed_plugin->get_defined_config_keys().empty());
-    CHECK(acceleration_plugin->get_defined_config_keys().empty());
+    // Keys the speed step reads; the plugin publishes exactly this set.
+    std::vector<std::string> speed_defined;
+    for (const Plugin::DefinedConfigKey &key : speed_plugin->get_defined_config_keys())
+        speed_defined.push_back(key.key);
+    CHECK(speed_defined.size() == 21);
+    for (const char *expected : { "perimeter_speed", "bridge_speed", "max_print_speed",
+                                  "filament_max_speed", "first_layer_flow_ratio", "milling_speed" })
+        CHECK(std::find(speed_defined.begin(), speed_defined.end(), expected) != speed_defined.end());
+    CHECK(std::find(speed_defined.begin(), speed_defined.end(), "travel_speed") == speed_defined.end());
+
+    // Keys the acceleration step reads; the plugin publishes exactly this set.
+    std::vector<std::string> acceleration_defined;
+    for (const Plugin::DefinedConfigKey &key : acceleration_plugin->get_defined_config_keys())
+        acceleration_defined.push_back(key.key);
+    CHECK(acceleration_defined.size() == 16);
+    for (const char *expected : { "default_acceleration", "bridge_acceleration",
+                                  "machine_max_acceleration_travel", "travel_acceleration" })
+        CHECK(std::find(acceleration_defined.begin(), acceleration_defined.end(), expected) !=
+              acceleration_defined.end());
+    CHECK(std::find(acceleration_defined.begin(), acceleration_defined.end(), "machine_limits_usage") ==
+          acceleration_defined.end());
 
     std::vector<std::string> speed_keys;
     for (const Plugin::UsedConfigKey &key : speed_plugin->get_used_config_keys())
@@ -1585,7 +1608,36 @@ TEST_CASE("Layer fan plugin exposes its independent contract",
     CHECK(fan_plugin->get_step() == STEP_LAYER_EXTRUSION_EDIT);
     CHECK(fan_plugin->get_priority() == 20);
     CHECK(fan_plugin->get_exclusive_group() == "layer_extrusion_edit.fan");
-    CHECK(fan_plugin->get_defined_config_keys().empty());
+
+    // Keys the fan step reads; the plugin publishes exactly this set.
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : fan_plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 18);
+    for (const char *expected : { "bridge_fan_speed", "default_fan_speed", "disable_fan_first_layers",
+                                  "fan_below_layer_time", "fan_printer_min_speed", "max_fan_speed",
+                                  "top_fan_speed" })
+        CHECK(std::find(defined_keys.begin(), defined_keys.end(), expected) != defined_keys.end());
+
+    const ConfigOptionDef *fan_def = PrintConfigDef::instance().get("bridge_fan_speed");
+    REQUIRE(fan_def != nullptr);
+    CHECK(fan_def->type == coInts);
+    CHECK(fan_def->is_vector_extruder);
+    CHECK(fan_def->can_be_disabled);
+    CHECK(fan_def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+    CHECK(fan_def->default_value->serialize() == "100");
+
+    fan_def = PrintConfigDef::instance().get("default_fan_speed");
+    REQUIRE(fan_def != nullptr);
+    CHECK(fan_def->type == coInts);
+    CHECK(fan_def->default_value->serialize() == "!100");
+    REQUIRE(fan_def->aliases.size() == 1);
+    CHECK(fan_def->aliases.front() == "min_fan_speed");
+
+    fan_def = PrintConfigDef::instance().get("fan_printer_min_speed");
+    REQUIRE(fan_def != nullptr);
+    CHECK(fan_def->type == coInt);
+    CHECK(fan_def->default_value->serialize() == "0");
 
     std::vector<std::string> keys;
     for (const Plugin::UsedConfigKey &key : fan_plugin->get_used_config_keys())
@@ -1859,4 +1911,146 @@ TEST_CASE("Layer fan plugin consumes final timing without estimating geometry",
     REQUIRE(time != nullptr);
     CHECK(time->duration_seconds == Approx(123.0));
     CHECK(time->is_final());
+}
+
+TEST_CASE("Acceleration plugin owns its settings and activation rules",
+          "[plugins][layer-extrusion-edit][acceleration][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("default_acceleration");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloatOrPercent);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+    CHECK(def->default_value->serialize() == "0");
+
+    def = PrintConfigDef::instance().get("machine_max_acceleration_travel");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloats);
+    CHECK(def->default_value->serialize() == "1500,1250");
+
+    // Every rule this plugin owns applies to the print scope and keeps the
+    // default_acceleration gate. Each any_of() disjunction expands to one rule
+    // per activation reason, so the counts below cover all of them.
+    size_t owned_rule_count = 0;
+    size_t bridge_rule_count = 0;
+    size_t perimeter_rule_count = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != DEFAULT_ACCELERATION_PLUGIN)
+            continue;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        owned_rule_count++;
+        REQUIRE(!rule.clauses.empty());
+        CHECK(rule.clauses.front().condition == RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO);
+        CHECK(rule.clauses.front().condition_key == "default_acceleration");
+        if (rule.target_key == "bridge_acceleration") {
+            bridge_rule_count++;
+            REQUIRE(rule.clauses.size() == 1);
+        }
+        if (rule.target_key == "external_perimeter_acceleration") {
+            perimeter_rule_count++;
+            REQUIRE(rule.clauses.size() == 2);
+            CHECK(rule.clauses[1].condition_key == "perimeters");
+        }
+    }
+    CHECK(owned_rule_count == 27);
+    CHECK(bridge_rule_count == 1);
+    CHECK(perimeter_rule_count == 1);
+
+    const auto enabled = [&orchestrator](const DynamicPrintConfig &config, const char *target) {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1,
+                                               DEFAULT_ACCELERATION_PLUGIN))
+            if (application.target_key == target)
+                return application.enabled;
+        return false;
+    };
+
+    const DynamicPrintConfig no_default = speed_config({{"default_acceleration", "0"}, {"perimeters", "2"}});
+    CHECK_FALSE(enabled(no_default, "bridge_acceleration"));
+    CHECK_FALSE(enabled(no_default, "external_perimeter_acceleration"));
+
+    const DynamicPrintConfig no_perimeters = speed_config({{"default_acceleration", "1000"}, {"perimeters", "0"}});
+    CHECK(enabled(no_perimeters, "bridge_acceleration"));
+    CHECK_FALSE(enabled(no_perimeters, "external_perimeter_acceleration"));
+
+    const DynamicPrintConfig all_set = speed_config({{"default_acceleration", "1000"}, {"perimeters", "2"}});
+    CHECK(enabled(all_set, "bridge_acceleration"));
+    CHECK(enabled(all_set, "external_perimeter_acceleration"));
+}
+
+TEST_CASE("Speed plugin owns its settings and activation rules",
+          "[plugins][layer-extrusion-edit][speed][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("perimeter_speed");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloatOrPercent);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+    CHECK(def->default_value->serialize() == "60%");
+
+    def = PrintConfigDef::instance().get("first_layer_flow_ratio");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coPercent);
+    CHECK(def->default_value->serialize() == "100%");
+
+    def = PrintConfigDef::instance().get("filament_max_speed");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloats);
+    CHECK(def->is_vector_extruder);
+
+    // Every rule this plugin owns applies to the print scope and keeps its
+    // condition keys. Each any_of() disjunction expands to one rule per
+    // activation reason, so the counts below cover all of them.
+    size_t owned_rule_count = 0;
+    size_t perimeter_rule_count = 0;
+    size_t milling_rule_count = 0;
+    size_t max_print_rule_count = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != DEFAULT_SPEED_PLUGIN)
+            continue;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        owned_rule_count++;
+        REQUIRE(!rule.clauses.empty());
+        if (rule.target_key == "perimeter_speed") {
+            perimeter_rule_count++;
+            REQUIRE(rule.clauses.size() == 1);
+            CHECK(rule.clauses.front().condition_key == "perimeters");
+        }
+        if (rule.target_key == "milling_speed") {
+            milling_rule_count++;
+            REQUIRE(rule.clauses.size() == 1);
+            CHECK(rule.clauses.front().condition_key == "milling_post_process");
+        }
+        if (rule.target_key == "max_print_speed") {
+            max_print_rule_count++;
+            REQUIRE(rule.clauses.size() == 1);
+            CHECK(rule.clauses.front().condition_key == "max_volumetric_speed");
+        }
+    }
+    CHECK(owned_rule_count == 30);
+    CHECK(perimeter_rule_count == 1);
+    CHECK(milling_rule_count == 1);
+    CHECK(max_print_rule_count == 1);
+
+    const auto enabled = [&orchestrator](const DynamicPrintConfig &config, const char *target) {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1,
+                                               DEFAULT_SPEED_PLUGIN))
+            if (application.target_key == target)
+                return application.enabled;
+        return false;
+    };
+
+    CHECK_FALSE(enabled(speed_config({{"perimeters", "0"}}), "perimeter_speed"));
+    CHECK(enabled(speed_config({{"perimeters", "2"}}), "perimeter_speed"));
+
+    CHECK_FALSE(enabled(speed_config({{"milling_post_process", "0"}}), "milling_speed"));
+    CHECK(enabled(speed_config({{"milling_post_process", "1"}}), "milling_speed"));
+
+    CHECK_FALSE(enabled(speed_config({{"max_volumetric_speed", "0"}}), "max_print_speed"));
+    CHECK(enabled(speed_config({{"max_volumetric_speed", "5"}}), "max_print_speed"));
 }

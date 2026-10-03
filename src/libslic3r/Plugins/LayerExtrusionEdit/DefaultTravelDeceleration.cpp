@@ -25,12 +25,16 @@ the movement speed that preceded that independently processed layer.
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <vector>
 
 #include "ExtrusionProcessParameterHelpers.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_polyline.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginContext.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintingPlanViews.hpp"
@@ -53,6 +57,69 @@ const raw_used_config_key k_used_config_keys[] = {
 const RegionSettings::OptionKeyGroup k_travel_deceleration_region_keys{
     "travel_deceleration_use_target"
 };
+
+const char *const k_defined_config_keys[] = {
+    "gcode_min_length",
+    "travel_deceleration_use_target"
+};
+
+const char *const k_gcode_min_length_aliases[] = { "min_length" };
+
+using slic3r_api::GuiRule;
+using slic3r_api::non_zero;
+
+void initialize_default_travel_deceleration_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "gcode_min_length";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "Minimum extrusion length";
+    def.tooltip = "When outputting gcode, this setting ensure that there is almost no commands more than this value apart."
+        " Be sure to also use max_gcode_per_second instead, as it's much better when you have very different speeds for features"
+        " (Too many too small commands may overload the firmware / connection)."
+        "\nDisabled if set to 0.";
+    def.sidetext = "mm or %";
+    def.has_min = 1;
+    def.min_value = 0.0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.can_be_disabled = 1;
+    def.default_serialized_value = "0.02";
+    def.aliases = const_strings_t{ k_gcode_min_length_aliases, 1 };
+    orchestrator_create_option_def(orchestrator, &def);
+
+    def = raw_config_option_def_init();
+    def.opt_key = "travel_deceleration_use_target";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.label = "Decelerate with target acceleration";
+    def.full_label = "Use target acceleration for travel deceleration";
+    def.tooltip = "If selected, the deceleration of a travel will use the acceleration value of the extrusion that will be printed after it (if any) ";
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "1";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // Travel deceleration applies once a default acceleration is set for the print.
+    GuiRule::activate({ "travel_deceleration_use_target" })
+        .when(non_zero("default_acceleration"))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 
 struct LayerEntrySpeed
 {
@@ -106,7 +173,7 @@ void scan_last_speed(const MutableExtrusionEntity &entity,
                      const plugin_run_context *run_ctx);
 
 /* Cache the movement speed visible immediately before every layer-group. */
-void prepare_layer_entry_speeds(const PrintingPlan &plan,
+void prepare_layer_entry_speeds(PrintingPlan &plan,
                                 std::vector<std::vector<LayerEntrySpeed>> &entry_speeds,
                                 const plugin_run_context *run_ctx);
 
@@ -121,8 +188,8 @@ void collect_ordered_leaves(
 
 /* Flatten one tool-group across tree and PrintingExtrusion boundaries. */
 std::vector<OrderedLeaf> ordered_tool_leaves(
-    const PrintingPlan &plan,
-    const PrintingToolGroup &tool,
+    PrintingPlan &plan,
+    PrintingToolGroup tool,
     PluginProgress &progress,
     const plugin_run_context *run_ctx);
 
@@ -167,16 +234,16 @@ void apply_split_travel_acceleration(const std::vector<OrderedLeaf> &leaves,
 
 /* Process homogeneous Travel runs within one tool-group. */
 void process_tool_group(const Print &print,
-                        const PrintingPlan &plan,
-                        const PrintingToolGroup &tool,
+                        PrintingPlan &plan,
+                        PrintingToolGroup tool,
                         LayerEntrySpeed &previous,
                         PluginProgress &progress,
                         const plugin_run_context *run_ctx);
 
 /* Apply target deceleration to eligible travels of one independently processed layer. */
 void process_layer(const Print &print,
-                   const PrintingPlan &plan,
-                   const PrintingLayerGroup &layer,
+                   PrintingPlan &plan,
+                   PrintingLayerGroup &layer,
                    const LayerEntrySpeed &entry_speed,
                    PluginProgress &progress,
                    const plugin_run_context *run_ctx);
@@ -198,6 +265,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
     void setup_impl(const plugin_run_context *run_ctx, uint32_t run_count) const override;
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
@@ -260,7 +329,7 @@ void scan_last_speed(const MutableExtrusionEntity &entity,
     }
 }
 
-void prepare_layer_entry_speeds(const PrintingPlan &plan,
+void prepare_layer_entry_speeds(PrintingPlan &plan,
                                 std::vector<std::vector<LayerEntrySpeed>> &entry_speeds,
                                 const plugin_run_context *run_ctx)
 {
@@ -273,15 +342,15 @@ void prepare_layer_entry_speeds(const PrintingPlan &plan,
     // writer. The resulting scalar snapshots are safe for parallel readers.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         entry_speeds[group_idx].resize(group.layer_group_count());
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
             entry_speeds[group_idx][layer_idx] = last_speed;
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                PrintingToolGroup tool = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
                     scan_last_speed(tool.extrusion(extrusion_idx).mutable_root(),
@@ -324,8 +393,8 @@ void collect_ordered_leaves(
 }
 
 std::vector<OrderedLeaf> ordered_tool_leaves(
-    const PrintingPlan &plan,
-    const PrintingToolGroup &tool,
+    PrintingPlan &plan,
+    PrintingToolGroup tool,
     PluginProgress &progress,
     const plugin_run_context *run_ctx)
 {
@@ -335,7 +404,7 @@ std::vector<OrderedLeaf> ordered_tool_leaves(
         throw std::runtime_error("Travel deceleration encountered a tool group without an extruder.");
     for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
+        PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
         const LayerRegionIsland region_island = extrusion.region_island();
         if (!region_island.valid() || region_island.region_count() == 0)
             throw std::runtime_error(
@@ -598,8 +667,8 @@ void apply_split_travel_acceleration(const std::vector<OrderedLeaf> &leaves,
 }
 
 void process_tool_group(const Print &print,
-                        const PrintingPlan &plan,
-                        const PrintingToolGroup &tool,
+                        PrintingPlan &plan,
+                        PrintingToolGroup tool,
                         LayerEntrySpeed &previous,
                         PluginProgress &progress,
                         const plugin_run_context *run_ctx)
@@ -654,8 +723,8 @@ void process_tool_group(const Print &print,
 }
 
 void process_layer(const Print &print,
-                   const PrintingPlan &plan,
-                   const PrintingLayerGroup &layer,
+                   PrintingPlan &plan,
+                   PrintingLayerGroup &layer,
                    const LayerEntrySpeed &entry_speed,
                    PluginProgress &progress,
                    const plugin_run_context *run_ctx)
@@ -731,6 +800,19 @@ int32_t DefaultTravelDeceleration::used_config_keys(raw_used_config_key *keys) c
     return int32_t(std::size(k_used_config_keys));
 }
 
+int32_t DefaultTravelDeceleration::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void DefaultTravelDeceleration::inilialize_impl(storage_handle *) const
+{
+    initialize_default_travel_deceleration_settings(m_orchestrator);
+}
+
 const char *DefaultTravelDeceleration::progress_message_format_impl() const noexcept
 {
     return "Applying target travel deceleration: %u / %u trees";
@@ -746,7 +828,8 @@ void DefaultTravelDeceleration::setup_impl(const plugin_run_context *run_ctx, ui
     if (ctx == nullptr || ctx->print == nullptr || ctx->plan == nullptr)
         return;
 
-    prepare_layer_entry_speeds(PrintingPlan(ctx->plan), m_entry_speeds, run_ctx);
+    PrintingPlan plan(ctx->plan);
+    prepare_layer_entry_speeds(plan, m_entry_speeds, run_ctx);
     throw_if_cancelled(run_ctx);
     m_setup_valid = true;
 }
@@ -777,8 +860,10 @@ void DefaultTravelDeceleration::run_impl(const plugin_run_context *run_ctx) cons
         ctx->layer_group_idx >= m_entry_speeds[ctx->group_idx].size())
         throw std::runtime_error("Travel-deceleration layer location is outside its setup cache.");
 
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer_group(ctx->layer_group);
     process_layer(
-        Print(ctx->print), PrintingPlan(ctx->plan), PrintingLayerGroup(ctx->layer_group),
+        Print(ctx->print), plan, layer_group,
         m_entry_speeds[ctx->group_idx][ctx->layer_group_idx], progress(), run_ctx);
 }
 

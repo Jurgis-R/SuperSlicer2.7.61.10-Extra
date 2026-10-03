@@ -187,9 +187,9 @@ void run_surface_cleanup_pipeline(PreparedPerimeterPrint &prepared)
     Orchestrator &orchestrator = Orchestrator::instance();
 
     prepare_middle_layer_island(prepared);
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::clear(prepared.print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
 
     std::string validation_error;
@@ -206,10 +206,10 @@ void run_surface_cleanup_pipeline_with_middle_infill_areas(PreparedPerimeterPrin
     Orchestrator &orchestrator = Orchestrator::instance();
 
     prepare_middle_layer_island(prepared);
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
     set_middle_infill_areas(prepared, areas);
-    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::clear(prepared.print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
 
     std::string validation_error;

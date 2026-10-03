@@ -57,7 +57,9 @@ bool GCodeWriter::supports_separate_travel_acceleration(GCodeFlavor flavor)
 
 std::string GCodeWriter::get_default_pause_gcode(const GCodeConfig &config)
 {
-    if (config.pause_print_gcode.value.empty()) {
+    const ConfigOptionString *pause_script = config.opt<ConfigOptionString>("pause_print_gcode");
+    const std::string pause_gcode = pause_script != nullptr ? pause_script->value : std::string();
+    if (pause_gcode.empty()) {
         if (config.gcode_flavor.value == GCodeFlavor::gcfKlipper) {
             return "PAUSE";
         } else if (config.gcode_flavor.value == GCodeFlavor::gcfRepRap || config.gcode_flavor.value == GCodeFlavor::gcfMarlinLegacy /*prusa only*/) {
@@ -67,13 +69,15 @@ std::string GCodeWriter::get_default_pause_gcode(const GCodeConfig &config)
             return "";
         }
     } else {
-        return config.pause_print_gcode.value;
+        return pause_gcode;
     }
 }
 
 std::string GCodeWriter::get_default_color_change_gcode(const GCodeConfig &config)
 {
-    if (config.color_change_gcode.value.empty()) {
+    const ConfigOptionString *color_change_script = config.opt<ConfigOptionString>("color_change_gcode");
+    const std::string color_change_gcode = color_change_script != nullptr ? color_change_script->value : std::string();
+    if (color_change_gcode.empty()) {
         if (config.gcode_flavor.value == GCodeFlavor::gcfRepRap || config.gcode_flavor.value == GCodeFlavor::gcfMarlinLegacy ||
             config.gcode_flavor.value == GCodeFlavor::gcfMarlinFirmware || config.gcode_flavor.value == GCodeFlavor::gcfSmoothie) {
             return "M600";
@@ -82,7 +86,7 @@ std::string GCodeWriter::get_default_color_change_gcode(const GCodeConfig &confi
             return "";
         }
     } else {
-        return config.color_change_gcode.value;
+        return color_change_gcode;
     }
 }
 
@@ -1033,9 +1037,11 @@ std::string GCodeWriter::retract(bool before_wipe)
     if (factor == 0)
         return "";
     //check for override
-    if (config_region && config_region->print_retract_length.is_enabled()) {
+    const ConfigOptionFloat *print_retract_length_opt =
+        config_region != nullptr ? config_region->opt<ConfigOptionFloat>("print_retract_length") : nullptr;
+    if (print_retract_length_opt != nullptr && print_retract_length_opt->is_enabled()) {
         return this->_retract(
-            factor * config_region->print_retract_length,
+            factor * print_retract_length_opt->value,
             factor * m_tool->retract_restart_extra(),
             std::nullopt,
             "retract"
@@ -1187,8 +1193,10 @@ double GCodeWriter::will_lift(int layer_id) const{
     }
 
     // use the override if set
-    if (target_lift > 0 && config_region && config_region->print_retract_lift.is_enabled()) {
-        target_lift = config_region->print_retract_lift.value;
+    const ConfigOptionFloat *print_retract_lift_opt =
+        config_region != nullptr ? config_region->opt<ConfigOptionFloat>("print_retract_lift") : nullptr;
+    if (target_lift > 0 && print_retract_lift_opt != nullptr && print_retract_lift_opt->is_enabled()) {
+        target_lift = print_retract_lift_opt->value;
     }
 
     // one-time extra lift (often for dangerous travels)

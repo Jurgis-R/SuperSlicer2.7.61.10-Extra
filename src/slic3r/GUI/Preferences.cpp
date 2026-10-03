@@ -239,6 +239,13 @@ void PreferencesDialog::show(const std::string& highlight_opt_key /*= std::strin
             field->set_any_value(val, false);
         }
     }
+    // No plugin emits support alerts yet: keep the stored value but grey out the checkbox.
+    // set_any_value() keeps a disabled field disabled, so later value refreshes do not re-enable it.
+    if (m_optkey_to_optgroup.find("alert_when_supports_needed") != m_optkey_to_optgroup.end()) {
+        if (Field *field = m_optkey_to_optgroup["alert_when_supports_needed"]->get_field(
+                OptionKeyIdx::scalar("alert_when_supports_needed")))
+            field->toggle_widget_enable(false);
+    }
 
     if (wxGetApp().is_editor()) {
         auto app_config = get_app_config();
@@ -594,12 +601,20 @@ void PreferencesDialog::build()
 			L("If this is enabled, Slic3r will pre-process objects as soon "
 				"as they\'re loaded in order to save time when exporting G-code."),
 			app_config->get_bool("background_processing"));
-		
+
+		append_bool_option(workflow_project_behavior, "keep_ordering_checkpoint",
+			L("Keep ordered slicing data in memory"),
+			L("Retain a copy of the PrintingPlan right after extrusion ordering. "
+				"When a plan-editing setting such as a speed changes, the plan is restored from this copy "
+				"instead of being ordered again. This uses additional memory."),
+			app_config->get_bool("keep_ordering_checkpoint"));
+
 		append_bool_option(workflow_project_behavior, "alert_when_supports_needed",
 			L("Alert when supports needed"),
 			L("If this is enabled, Slic3r will raise alerts when it detects "
 				"issues in the sliced object, that can be resolved with supports (and brim). "
-				"Examples of such issues are floating object parts, unsupported extrusions and low bed adhesion."),
+				"Examples of such issues are floating object parts, unsupported extrusions and low bed adhesion.\n"
+				"Currently inactive: no support-alert plugin is available yet."),
 			app_config->get_bool("alert_when_supports_needed"));
 
         // auto_switch_preview
@@ -1042,6 +1057,12 @@ void PreferencesDialog::build()
 			app_config->get_bool("use_rich_tooltip"));
 		m_values_need_restart.push_back("use_rich_tooltip");
 		
+		append_bool_option(interface_accessibility, "use_option_labels_in_disabled_tooltip",
+			L("Use option labels in disabled-setting tooltips"),
+			L("When a setting is disabled by a plugin or by another setting, its tooltip explains why."
+			  " Enable this to show the translated option labels instead of the raw setting keys."),
+			app_config->get_bool("use_option_labels_in_disabled_tooltip"));
+
 		append_bool_option(interface_accessibility, "hide_slice_tooltip",
 			L("Hide tooltips on slice buttons"),
 			L("These tooltip may be bothersome. You can hide them with this option."),

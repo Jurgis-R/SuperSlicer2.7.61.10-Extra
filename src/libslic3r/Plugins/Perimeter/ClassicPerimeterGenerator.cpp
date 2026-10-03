@@ -3,17 +3,33 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+ClassicPerimeterGenerator.cpp
+=============================
+
+Implementation of the classic perimeter generator declared in
+ClassicPerimeterGenerator.hpp.
+
+The file holds the plugin metadata, the owned option definitions and activation
+rules, the extrusion-building helpers, the run callbacks that turn each host
+node into concentric loops, and the registration entry point. The header records
+the generator contract seen by the host and by the perimeter modules.
+*/
+
 #include "ClassicPerimeterGenerator.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <utility>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
@@ -118,6 +134,397 @@ const raw_used_config_key k_used_config_keys[] = {
     { k_gap_fill_extension_key, RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
     { k_gap_fill_overlap_key, RAW_CO_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "gap_fill_enabled",
+    "gap_fill_extension",
+    "gap_fill_last",
+    "gap_fill_max_width",
+    "gap_fill_min_area",
+    "gap_fill_min_length",
+    "gap_fill_min_width",
+    "gap_fill_overlap",
+    "perimeter_round_corners",
+    "thin_perimeters",
+    "thin_perimeters_all",
+    "thin_walls",
+    "thin_walls_merge",
+    "thin_walls_min_width",
+    "thin_walls_overlap"
+};
+
+void initialize_classic_perimeter_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- gap_fill_enabled | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_enabled";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_SLICING;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Gap fill";
+    def.full_label = "Enable Gap fill";
+    def.tooltip = "Enable gap fill algorithm. It will extrude small lines between perimeters when there is not enough space for another perimeter or an infill.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    {
+        static const char *const k_aliases[] = { "gap_fill" };
+        def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "1";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_extension | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_extension";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Extension";
+    def.full_label = "Gap fill: extra extension";
+    def.tooltip = "Increase the length of all gapfills by this amount (may overextrude a little bit)\nCan be a % of the extrusion width\nIs also used by infill's gapfill.";
+    def.sidetext = "mm or %";
+    def.ratio_over = "perimeter_width";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = 50;
+    def.max_literal_is_percent = 1;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_last | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_last";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "after last perimeter";
+    def.full_label = "Gapfill: after last perimeter";
+    def.tooltip = "All gaps, between the last perimeter and the infill, which are thinner than a perimeter will be filled by gapfill.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_max_width | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_max_width";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Max width";
+    def.full_label = "Gapfill: Max width";
+    def.tooltip = "This setting represents the maximum width of a gapfill. Points wider than this threshold won't be created.\nCan be a % of the extrusion width\n0 to auto\nIs also used by infill's gapfill.";
+    def.sidetext = "mm or %";
+    def.ratio_over = "perimeter_width";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_min_area | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_min_area";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Min surface";
+    def.full_label = "Gapfill: Min surface";
+    def.tooltip = "This setting represents the minimum mm² for a gapfill extrusion to be created.\nCan be a % of (extrusion width)²\nIs also used by infill's gapfill.";
+    def.sidetext = "mm² or %";
+    def.ratio_over = "perimeter_width_square";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "100%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_min_length | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_min_length";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Min length";
+    def.full_label = "Gapfill: Min length";
+    def.tooltip = "This setting represents the minimum mm for a gapfill extrusion to be extruded.\nCan be a % of the extrusion width\n0 to auto\nIs also used by infill's gapfill.";
+    def.sidetext = "mm or %";
+    def.ratio_over = "perimeter_width";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_min_width | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_min_width";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Min width";
+    def.full_label = "Gapfill: Min width";
+    def.tooltip = "This setting represents the minimum width of a gapfill. Points thinner than this threshold won't be created.\nCan be a % of the extrusion width\n0 to auto\nIs also used by infill's gapfill.";
+    def.sidetext = "mm or %";
+    def.ratio_over = "perimeter_width";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- gap_fill_overlap | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_overlap";
+    def.type = RAW_CO_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_WIDTH;
+    def.label = "Gap fill overlap";
+    def.full_label = "Gap fill overlap";
+    def.tooltip = "This setting allows you to reduce the overlap between the perimeters and the gap fill. 100% means that no gaps are left, and 0% means that the gap fill won't touch the perimeters.\nMay be useful if you can see the gapfill on the exterrnal surface, to reduce that artifact.";
+    def.sidetext = "%";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max = 1;
+    def.max_value = 100;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "80%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- perimeter_round_corners | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "perimeter_round_corners";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Round corners";
+    def.full_label = "Round corners for perimeters";
+    def.tooltip = "Internal perimeters will go around sharp corners by turning around instead of making the same sharp corner. This can help when there are visible holes in sharp corners on internal perimeters.\nCan incur some more processing time, and corners are a bit less sharp.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_perimeters | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_perimeters";
+    def.type = RAW_CO_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Overlapping external perimeter";
+    def.full_label = "Overlapping external perimeter";
+    def.tooltip = "Allow outermost perimeter to overlap itself to avoid the use of thin walls. Note that flow isn't adjusted and so this will result in over-extruding and undefined behavior.\n100% means that perimeters can overlap completely on top of each other.\n0% will deactivate this setting.\nValues below 2% don't have any effect.\n-1% will also deactivate the anti-hysteresis checks for external perimeters.";
+    def.sidetext = "%";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "80%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_perimeters_all | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_perimeters_all";
+    def.type = RAW_CO_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Overlapping all perimeters";
+    def.full_label = "Overlapping all perimeters";
+    def.tooltip = "Allow all perimeters to overlap, instead of just external ones.\n100% means that perimeters can overlap completely on top of each other.\n0% will deactivate this setting.\nValues below 2% don't have any effect.\n-1% will also deactivate the anti-hysteresis checks for internal perimeters.";
+    def.sidetext = "%";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "20%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_walls | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_walls";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_SLICING;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Thin walls";
+    def.full_label = "Thin walls";
+    def.tooltip = "Detect single-width walls (parts where two extrusions don't fit and we need to collapse them into a single trace). If unchecked, Slic3r may try to fit perimeters where it's not possible, creating some overlap leading to over-extrusion.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "1";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_walls_merge | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_walls_merge";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Merging with perimeters";
+    def.full_label = "Thin wall merge";
+    def.tooltip = "Allow the external perimeter to merge the thin walls in the path. You can deactivate this if you are using thin walls as a custom support, to reduce adhesion a little.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "1";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_walls_min_width | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_walls_min_width";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Min width";
+    def.full_label = "Thin walls min width";
+    def.tooltip = "Minimum width for the extrusion to be extruded (widths lower than the nozzle diameter will be over-extruded at the nozzle diameter). If expressed as percentage (for example 110%) it will be computed over nozzle diameter. The default behavior of PrusaSlicer is with a 33% value. Put 100% to avoid any sort of over-extrusion.";
+    def.ratio_over = "nozzle_diameter";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = 20;
+    def.max_literal_is_percent = 1;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "33%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- thin_walls_overlap | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "thin_walls_overlap";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Overlap";
+    def.full_label = "Thin wall overlap";
+    def.tooltip = "Overlap between the thin wall and the perimeters. Can be a % of the external perimeter width (default 50%)";
+    def.ratio_over = "external_perimeter_extrusion_width";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = 10;
+    def.max_literal_is_percent = 1;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "50%";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
+void add_classic_perimeter_gui_rules(orchestrator_handle *orchestrator)
+{
+    using slic3r_api::all_of;
+    using slic3r_api::any_of;
+    using slic3r_api::false_;
+    using slic3r_api::GuiCondition;
+    using slic3r_api::GuiRule;
+    using slic3r_api::int_not_equals;
+    using slic3r_api::non_zero;
+    using slic3r_api::true_;
+
+    // Membership tests shared by the rules below. `not_arachne` covers the
+    // classic generator and a print with perimeters turned off; `classic_only`
+    // also requires a non-zero perimeter count. `gap_base` requires gap filling
+    // on top of classic perimeters, and `gap_extended` also accepts a filled
+    // bottom, solid or top surface. gui_rules.core keeps equivalent copies of
+    // these conditions for the settings it hosts.
+    const GuiCondition not_arachne = any_of({
+        false_("perimeters"),
+        perimeter_generator_is_not_arachne()
+    });
+    const GuiCondition classic_only = all_of({
+        non_zero("perimeters"),
+        perimeter_generator_is_not_arachne()
+    });
+    const GuiCondition gap_base = any_of({
+        all_of({ false_("perimeters"), true_("gap_fill_enabled") }),
+        all_of({ perimeter_generator_is_not_arachne(),
+                 true_("gap_fill_enabled") })
+    });
+    const GuiCondition gap_extended = any_of({
+        gap_base,
+        true_("infill_filled_bottom"),
+        true_("infill_filled_solid"),
+        true_("infill_filled_top")
+    });
+
+    // Each call registers one activation reason for the listed settings; a
+    // setting stays editable while at least one of its reasons holds.
+    const auto add_rule = [orchestrator](std::initializer_list<const char *> target_keys,
+                                         const GuiCondition &condition) {
+        GuiRule::activate(std::vector<std::string>(target_keys.begin(), target_keys.end()))
+            .when(condition)
+            .scope(RAW_PRESET_TYPE_FFF_PRINT)
+            .add_to(orchestrator);
+    };
+
+    add_rule({ "thin_perimeters", "perimeter_round_corners" }, classic_only);
+    add_rule({ "thin_perimeters_all" }, all_of({ non_zero("perimeters"), non_zero("thin_perimeters"),
+                                                 perimeter_generator_is_not_arachne() }));
+    add_rule({ "thin_walls" }, classic_only);
+    add_rule({ "thin_walls_min_width", "thin_walls_overlap", "thin_walls_merge" },
+             all_of({ non_zero("perimeters"),
+                      perimeter_generator_is_not_arachne(),
+                      true_("thin_walls") }));
+    add_rule({ "gap_fill_enabled" }, not_arachne);
+    add_rule({ "gap_fill_last" }, gap_base);
+    add_rule({ "gap_fill_extension", "gap_fill_max_width", "gap_fill_min_area",
+               "gap_fill_min_length", "gap_fill_min_width" }, gap_extended);
+}
 
 constexpr double k_inset_overlap_tolerance = 0.4;
 
@@ -233,9 +640,9 @@ StoredExPolygonCollection create_island_overhang_area(storage_handle *storage,
 
     const coord_t overhang_width = overhang_width_from_config(values, reference_flow);
 
-    // First find the truly unsupported part of the current region group. The
-    // small offset2 cleans boundary noise before the optional width expansion
-    // below, matching the intent of the legacy process_classic preparation.
+    // Find the truly unsupported part of the current region group first. The
+    // small offset2 clears boundary noise before the optional width expansion
+    // below.
     throw_if_cancelled(run_ctx);
     ClipperOperand unsupported =
         clipper_diff_with_safety_offset(clipper(root_area), lower_area);
@@ -246,10 +653,10 @@ StoredExPolygonCollection create_island_overhang_area(storage_handle *storage,
     if (unsupported.empty() || overhang_width <= 0)
         return unsupported.to_expolygon_collection();
 
-    // The legacy code grows the unsupported area, clips it back to the current
-    // island/region, then intersects the grown selector with the raw unsupported
-    // area. With one already-split region group this reduces to a conservative
-    // cleanup that keeps only overhang material belonging to this root area.
+    // Grow the unsupported area, clip it back to the current island/region and
+    // intersect the grown selector with the raw unsupported area. With one
+    // already-split region group this keeps only overhang material belonging to
+    // this root area.
     throw_if_cancelled(run_ctx);
     ClipperOperand expanded = clipper_intersection(clipper_offset(unsupported, double(overhang_width)), clipper(root_area));
     throw_if_cancelled(run_ctx);
@@ -302,10 +709,10 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
     ClipperContext clipper(storage);
     StoredExPolygonCollection printable_gaps(storage);
 
-    // The gap-fill medial axis works only on narrow printable slivers. The
-    // legacy algorithm first rejects areas outside the configured width/area
-    // window, then grows the surviving shrink-test polygons back to printable
-    // gap areas before asking MedialAxis for centerlines.
+    // The gap-fill medial axis works only on narrow printable slivers. Reject
+    // areas outside the configured width/area window first, then grow the
+    // surviving shrink-test polygons back to printable gap areas before asking
+    // MedialAxis for centerlines.
     coordf_t min_width = std::max(0.2 * double(perimeter_flow.width) * (1.0 - k_inset_overlap_tolerance),
                                   double(SCALED_EPSILON));
     const coordf_t natural_max_width = 2.5 * double(perimeter_flow.spacing);
@@ -333,9 +740,9 @@ void create_gap_fill(std::vector<StoredExtrusionEntity> &gaps_extrusions,
     if (max_width <= min_width)
         return;
 
-    // The area threshold is expressed in mm2 relative to perimeter width in the
-    // legacy config. Two scale_d calls convert that physical area into scaled
-    // coordinate squared units, matching ExPolygon::area().
+    // The area threshold is expressed in mm2 relative to the perimeter width.
+    // Two scale_d calls convert that physical area into scaled coordinate
+    // squared units, matching ExPolygon::area().
     const double reference_area = reference_width * reference_width;
     const double min_area = gap_fill_config.is_enabled(k_gap_fill_min_area_key) ?
         scale_d(scale_d(gap_fill_config.get_effective_value(reference_area, k_gap_fill_min_area_key))) :
@@ -987,7 +1394,7 @@ const char *ClassicPerimeterGenerator::name_impl() const noexcept
 
 const char *ClassicPerimeterGenerator::description_impl() const noexcept
 {
-    return "API-only skeleton for the future process_classic perimeter generator.";
+    return "Classic concentric perimeter generator.";
 }
 
 slicing_step_t ClassicPerimeterGenerator::step_impl() const noexcept
@@ -1011,6 +1418,20 @@ int32_t ClassicPerimeterGenerator::used_config_keys(raw_used_config_key *keys) c
         for (uint32_t idx = 0; idx < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++idx)
             keys[idx] = k_used_config_keys[idx];
     return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
+}
+
+int32_t ClassicPerimeterGenerator::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void ClassicPerimeterGenerator::inilialize_impl(storage_handle *) const
+{
+    initialize_classic_perimeter_settings(m_orchestrator);
+    add_classic_perimeter_gui_rules(m_orchestrator);
 }
 
 const char *ClassicPerimeterGenerator::progress_message_format_impl() const noexcept

@@ -1,6 +1,11 @@
 #include <catch2/catch.hpp>
 
 #include "perimeter_test_helpers.hpp"
+#include "plugin_test_helpers.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 #include <initializer_list>
 #include <string>
@@ -687,4 +692,44 @@ TEST_CASE("Separate hole contour close-edge topology changes", "[plugins][perime
         check_no_unknown_simple_loops(run);
         require_leaf_fill_area_consistency(run);
     }
+}
+TEST_CASE("Separate hole contour owns its setting and activation rule",
+          "[plugins][perimeter][separate-hole-contour][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("perimeter.module.separate_hole_contour");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "perimeters_hole");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("perimeters_hole");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_PERIMETER);
+    CHECK(PrintConfig::defaults().option("perimeters_hole") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("perimeters_hole") != nullptr);
+
+    // The not_arachne disjunction expands to two activation reasons. The
+    // generated implementation rule of the plugin's own exclusive group stays
+    // active, so the plugin rules are checked through their structure.
+    size_t moved_rules = 0;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != "perimeter.module.separate_hole_contour" ||
+            rule.target_key != "perimeters_hole")
+            continue;
+        if (rule.clauses.size() != 1)
+            continue;
+        if (rule.clauses[0].condition_key != "perimeters" &&
+            rule.clauses[0].condition_key != "perimeter_generator")
+            continue;
+        ++moved_rules;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+    }
+    CHECK(moved_rules == 2);
 }

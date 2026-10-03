@@ -94,7 +94,7 @@ TEST_CASE("Overhanging edge should be supported", "[SupGen]") {
 
     std::copy_if(pts.begin(), pts.end(), std::back_inserter(overh_pts),
                  [&overh](const sla::SupportPoint &pt){
-                     return line_alg::distance_to(overh, Vec3d{pt.pos.cast<double>()}) < 1.;
+                     return std::sqrt(line_alg::distance_to_squared(overh, Vec3d{pt.pos.cast<double>()})) < 1.;
                  });
 
     REQUIRE(overh_pts.size() * cfg.support_force() > overh.length() * cfg.tear_pressure());

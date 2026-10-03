@@ -154,11 +154,11 @@ DynamicPrintConfig pattern_test_config(const char *pattern_id)
 void run_until_infill(PreparedPerimeterPrint &prepared)
 {
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+    Steps::StepSurfaceGeneration::clear(prepared.print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
-    Steps::StepGenerateInfill::clean_and_prepare(prepared.print);
+    Steps::StepGenerateInfill::clear(prepared.print);
     Steps::StepGenerateInfill::run_step(orchestrator, prepared.print);
 }
 

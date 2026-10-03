@@ -13,6 +13,18 @@
 
 namespace Slic3r {
 
+class Plugin;
+
+/*
+Record that one plugin received setup() for the given step, so a later Print
+invalidation can ask it to release the state it created. Only plugins with a
+clear callback are tracked; repeated calls for the same plugin and step keep a
+single entry.
+*/
+void note_plugin_setup(plugin_host_context *host_context,
+                       const Plugin &plugin,
+                       slicing_step_t step);
+
 class Plugin
 {
 public:
@@ -68,14 +80,26 @@ public:
     const std::vector<UsedConfigKey>& get_used_config_keys() const noexcept { return m_used_config_keys; }
     const std::vector<DefinedConfigKey>& get_defined_config_keys() const noexcept { return m_defined_config_keys; }
     int get_priority() const noexcept { return m_priority; }
+    // True when the plugin opted into per-Print cleanup through clear().
+    bool has_clear() const noexcept { return m_c_api.vt->clear != nullptr; }
     void initialize(storage_handle *storage) const {
         m_c_api.vt->initialize(m_c_api.ctx, storage);
     }
     void setup(const plugin_run_context &context, uint32_t run_count) const {
+        // Register first so caches created by a partially failed setup are still cleaned up.
+        note_plugin_setup(context.host_context, *this, context.step);
         m_c_api.vt->setup(m_c_api.ctx, &context, run_count);
     }
     void setup_run(const plugin_run_context &context) const { m_c_api.vt->setup_run(m_c_api.ctx, &context); }
     void run(const plugin_run_context &context) const { m_c_api.vt->run(m_c_api.ctx, &context); }
+    // An absent callback succeeds without touching the plugin's storage.
+    // Returns PLUGIN_ERROR_OK, or a diagnostic id the host resolves through
+    // Orchestrator::error_message().
+    int32_t clear(const print_handle *print, storage_handle *storage) const {
+        if (m_c_api.vt->clear != nullptr)
+            return m_c_api.vt->clear(m_c_api.ctx, print, storage);
+        return PLUGIN_ERROR_OK;
+    }
 
 };
 

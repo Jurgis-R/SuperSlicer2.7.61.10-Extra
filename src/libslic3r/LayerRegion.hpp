@@ -117,9 +117,6 @@ protected:
     LayerRegion(Layer *layer, const PrintRegion *region) : m_layer(layer), m_region(region) {}
 
 private:
-    template<typename ThrowOnCancel>
-    friend void apply_mm_segmentation(PrintObject& print_object, ThrowOnCancel throw_on_cancel);
-
     Layer                      *m_layer;
     const PrintRegion          *m_region;
 

@@ -46,6 +46,9 @@ class PrintingPlanHost:
     def printing_plan_get_properties(self, _plan):
         return 12
 
+    def printing_plan_get_properties_mutable(self, _plan):
+        return 12
+
     def printing_plan_count_object_instance(self, _plan):
         return 2
 
@@ -98,6 +101,9 @@ class PrintingPlanHost:
     def printing_group_get_properties(self, _group):
         return 23
 
+    def printing_group_get_properties_mutable(self, _group):
+        return 23
+
     def printing_group_count_object_instance(self, _group):
         return 1
 
@@ -139,6 +145,9 @@ class PrintingPlanHost:
         return 32
 
     def printing_layer_group_get_properties(self, _layer_group):
+        return 33
+
+    def printing_layer_group_get_properties_mutable(self, _layer_group):
         return 33
 
     def printing_layer_group_get_print_z(self, _layer_group):
@@ -188,6 +197,9 @@ class PrintingPlanHost:
         return 42
 
     def printing_tool_group_get_properties(self, _tool_group):
+        return 43
+
+    def printing_tool_group_get_properties_mutable(self, _tool_group):
         return 43
 
     def printing_tool_group_get_extruder_id(self, _tool_group):

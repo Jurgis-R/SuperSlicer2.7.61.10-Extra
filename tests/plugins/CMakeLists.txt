@@ -5,6 +5,7 @@ add_executable(${_TEST_NAME}_tests
     ../../src/plugins_cpp/DenseInfill/DenseInfill.cpp
     ../../src/plugins_cpp/ExtraPerimeterOverhangWave/ExtraPerimeterOverhangWave.cpp
     ../../src/plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.cpp
+    ../../src/plugins_cpp/NozzleCleaning/NozzleCleaning.cpp
     ../../src/plugins_cpp/Polyholes/Polyholes.cpp
     clipper_offset_test_helpers.cpp
     gcode_test_helpers.cpp
@@ -23,7 +24,7 @@ add_executable(${_TEST_NAME}_tests
     test_clipper_offset_contacts.cpp
     test_clipper_offset_parity.cpp
     test_clipper_offset_strategies.cpp
-
+    test_config_translations.cpp
     test_deferred_callback_exception.cpp
     test_extrusion_continuity.cpp
     test_extrusion_ordered_leaf.cpp
@@ -39,6 +40,7 @@ add_executable(${_TEST_NAME}_tests
     test_printing_entity_property_traversal.cpp
     test_plugin_repository.cpp
     test_plugin_translation_catalogs.cpp
+    test_python_plugin_clear.cpp
     test_repository_updater.cpp
     test_seam_placer_cost.cpp
     test_seam_placer_fixed_direction.cpp
@@ -67,6 +69,7 @@ add_executable(${_TEST_NAME}_tests
     test_gcode_printing_plan_file_writer.cpp
     test_gcode_script_processor.cpp
     test_gcode_settings_scripts.cpp
+    test_gui_rule_explanations.cpp
     test_gui_rule_helpers.cpp
     test_gyroid_pattern.cpp
     test_infill_pattern_init.cpp
@@ -81,6 +84,7 @@ add_executable(${_TEST_NAME}_tests
     test_layer_extrusion_edit_travel_deceleration.cpp
     test_layer_extrusion_edit_speed.cpp
     test_flat_area_layer_height.cpp
+    test_nozzle_cleaning.cpp
     test_ordering_advanced_extrusion_tree.cpp
     test_ordering_engine.cpp
     test_ordering_printing_extrusion_presort.cpp
@@ -108,6 +112,7 @@ add_executable(${_TEST_NAME}_tests
     test_printing_plan.cpp
     test_print_status_queue.cpp
     test_skirt_brim_default_generator.cpp
+    test_slice_volume.cpp
     test_step_pipeline_invalidation.cpp
     test_dense_infill.cpp
     test_support_demand_modifiers.cpp
@@ -216,6 +221,11 @@ foreach(_variant IN ITEMS legacy_abi unknown_api zero_api_table missing_vtable i
 endforeach()
 
 target_link_libraries(${_TEST_NAME}_tests test_common test_common_data libslic3r)
+# Scoped to the strict-freeze tests so toggling the option rebuilds only them.
+if (SLIC3R_STRICT_FREEZE)
+    set_source_files_properties(test_plugin_property.cpp test_python_plugin_clear.cpp
+        PROPERTIES COMPILE_DEFINITIONS SLIC3R_TEST_STRICT_FREEZE=1)
+endif()
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 if (WIN32)
@@ -313,6 +323,11 @@ if (TARGET python_plugin_loader)
             "${CMAKE_CURRENT_SOURCE_DIR}/pure_python_package"
             "${_python_test_runtime_directory}/plugins/python.external.package_root"
         ${_python_plugin_copy_commands}
+        COMMAND "${CMAKE_COMMAND}" -E remove_directory
+            "${_python_test_runtime_directory}/plugins/python.test.clear.invalid_registration"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/invalid_python_clear_package"
+            "${_python_test_runtime_directory}/plugins/python.test.clear.invalid_registration"
         COMMENT "Copy Python plugin runtime to plugin tests"
         VERBATIM
     )

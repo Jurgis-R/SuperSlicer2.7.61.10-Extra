@@ -19,6 +19,7 @@
 #include "libslic3r/Steps/StepExtrusionEdition.hpp"
 #include "libslic3r/Steps/StepExtrusionOrdering.hpp"
 #include "libslic3r/Steps/StepExtrusionSimplification.hpp"
+#include "libslic3r/Steps/StepFinalizeSlicing.hpp"
 #include "libslic3r/Steps/StepGenerateGcode.hpp"
 #include "libslic3r/Steps/StepReadGeneratedGcode.hpp"
 #include "libslic3r/Steps/StepGenerateInfill.hpp"
@@ -33,7 +34,6 @@
 #include "libslic3r/Steps/StepPostPerimeterGeneration.hpp"
 #include "libslic3r/Steps/StepPostSlicing.hpp"
 #include "libslic3r/Steps/StepPrepareForPeriemters.hpp"
-#include "libslic3r/Steps/StepPrepareGcode.hpp"
 #include "libslic3r/Steps/StepPrepareInfill.hpp"
 #include "libslic3r/Steps/StepSlicing.hpp"
 #include "libslic3r/Steps/StepRunner.hpp"
@@ -45,24 +45,14 @@
 
 #include <boost/log/trivial.hpp>
 
-#ifdef _DEBUG
-#include "libslic3r/Steps/DebugPrintProcessComparator.hpp"
-
-#include <iostream>
-#include <stdexcept>
-#endif
-
 #include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <map>
 #include <set>
 #include <string>
+#include <stdexcept>
 #include <vector>
-
-namespace Slic3r {
-LayerUPtrs new_layers(PrintObject *print_object, const std::vector<double> &object_layers);
-}
 
 namespace Slic3r::Steps {
 
@@ -83,7 +73,7 @@ const std::vector<slicing_step_t> &execution_order()
         STEP_SUPPORT_DEMAND,
         STEP_SUPPORT,
         STEP_SKIRT_BRIM,
-        STEP_PRE_GCODE,
+        STEP_FINALIZE_SLICING,
         STEP_ORDERING,
         STEP_WIPETOWER,
         STEP_SUPPORT_SPOT,
@@ -94,6 +84,73 @@ const std::vector<slicing_step_t> &execution_order()
         STEP_GCODE,
     };
     return steps;
+}
+
+size_t execution_index(const slicing_step_t step)
+{
+    const std::vector<slicing_step_t> &steps = execution_order();
+    const std::vector<slicing_step_t>::const_iterator found =
+        std::find(steps.begin(), steps.end(), step);
+    return found == steps.end() ? steps.size() : size_t(std::distance(steps.begin(), found));
+}
+
+bool executes_before(const slicing_step_t lhs, const slicing_step_t rhs)
+{
+    const size_t lhs_index = execution_index(lhs);
+    const size_t rhs_index = execution_index(rhs);
+    assert(lhs_index < execution_order().size());
+    assert(rhs_index < execution_order().size());
+    return lhs_index < rhs_index;
+}
+
+slicing_step_t tightened_invalidation_step(const slicing_step_t current,
+                                           const slicing_step_t consumer_step)
+{
+    // STEP_ANY already replays every producer. STEP_NONE declares that a value
+    // change never affects slicing, for example an import-only placement
+    // setting, so a reader must not turn it into a replay.
+    if (current == STEP_ANY || current == STEP_NONE)
+        return current;
+    // Replaying a step also replays every later step through the dependency
+    // chain, so the earlier of the two covers both producers.
+    return executes_before(consumer_step, current) ? consumer_step : current;
+}
+
+Checkpoint checkpoint_before_step(const slicing_step_t step)
+{
+    if (step == STEP_ANY)
+        return Checkpoint::None;
+
+    const size_t step_index = execution_index(step);
+    assert(step_index < execution_order().size());
+    if (step_index >= execution_order().size())
+        return Checkpoint::None;
+
+    // Each checkpoint sits right before its resume step, so the latest
+    // checkpoint whose resume step is not after `step` is the one to use.
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Slicing)))
+        return Checkpoint::None;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Print)))
+        return Checkpoint::Slicing;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Ordering)))
+        return Checkpoint::Print;
+    if (step_index < execution_index(checkpoint_resume_step(Checkpoint::Plan)))
+        return Checkpoint::Ordering;
+    return Checkpoint::Plan;
+}
+
+slicing_step_t checkpoint_resume_step(const Checkpoint checkpoint)
+{
+    switch (checkpoint) {
+    case Checkpoint::None:     return STEP_LAYER_HEIGHT;
+    case Checkpoint::Slicing:  return STEP_PRE_PERIMETER;
+    case Checkpoint::Print:    return STEP_ORDERING;
+    case Checkpoint::Ordering: return STEP_WIPETOWER;
+    case Checkpoint::Plan:     return STEP_GCODE;
+    case Checkpoint::GCode:    return STEP_NONE;
+    }
+    assert(false);
+    return STEP_LAYER_HEIGHT;
 }
 
 const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
@@ -112,8 +169,8 @@ const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
         {STEP_POST_INFILL, {STEP_SUPPORT_DEMAND}},
         {STEP_SUPPORT_DEMAND, {STEP_SUPPORT}},
         {STEP_SUPPORT, {STEP_SKIRT_BRIM}},
-        {STEP_SKIRT_BRIM, {STEP_PRE_GCODE}},
-        {STEP_PRE_GCODE, {STEP_ORDERING}},
+        {STEP_SKIRT_BRIM, {STEP_FINALIZE_SLICING}},
+        {STEP_FINALIZE_SLICING, {STEP_ORDERING}},
         {STEP_ORDERING, {STEP_WIPETOWER}},
         {STEP_WIPETOWER, {STEP_SUPPORT_SPOT}},
         {STEP_SUPPORT_SPOT, {STEP_LAYER_EXTRUSION_EDIT}},
@@ -251,7 +308,7 @@ bool is_known_builtin_step(slicing_step_t step)
     case STEP_POST_INFILL:
     case STEP_SUPPORT_DEMAND:
     case STEP_SUPPORT:
-    case STEP_PRE_GCODE:
+    case STEP_FINALIZE_SLICING:
     case STEP_CHECK_CONFLICT:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
@@ -294,7 +351,6 @@ raw_option_category option_category_for_step(slicing_step_t step)
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
     case GCODE_READER:
-    case STEP_PRE_GCODE:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
     case STEP_LAYER_STICHING:
@@ -536,10 +592,8 @@ std::vector<StepExclusivePluginGroup> active_exclusive_plugin_groups(Orchestrato
     // the same selection model.
     for (const std::pair<const slicing_step_t, StepExclusiveGroup> &entry : exclusive_steps) {
         std::vector<Plugin *> active_plugins = orchestrator.get_active_plugins_for_step(entry.first);
-        // The firmware selector is intentionally visible with its single
-        // reference provider so printer profiles already serialize the choice
-        // before additional firmware packages are installed.
-        if (active_plugins.empty() || (active_plugins.size() == 1 && entry.first != GCODE_FIRMWARE))
+        // The printer layout anchors the firmware selector to the G-code selector even with one writer.
+        if (active_plugins.empty() || (active_plugins.size() == 1 && entry.first != GCODE_FIRMWARE && entry.first != STEP_GCODE))
             continue;
 
         StepExclusivePluginGroup plugin_group;
@@ -763,32 +817,40 @@ void run_step_if_requested(Print &print, slicing_step_t step, RunFn &&run_fn)
     if (!print.should_execute_step(step))
         return;
 
-    run_fn();
+    // Publish the running step to the host API freeze checks. The scope also
+    // resets it when the step throws, so later edits made outside the pipeline
+    // are never attributed to this step.
+    struct RunningStepScope
+    {
+        Print &print;
+        ~RunningStepScope() { print.set_running_step(STEP_NONE); }
+    };
+    // Metadata checkpoints bracket the slicing prefix: None before its first step, Slicing after its last.
+    if (step == STEP_LAYER_HEIGHT)
+        print.save_metadata_checkpoint(Checkpoint::None);
+    print.set_running_step(step);
+    {
+        const RunningStepScope running_step_scope{print};
+        run_fn();
+    }
 
     // A step may observe cancellation cooperatively and return without
     // throwing. Do not publish such partial work as a completed step.
     print.throw_if_canceled();
     print.pipeline_progress().complete_step(step);
     print.pipeline_progress().verify_step_complete(step);
+    if (step == STEP_POST_SLICING) {
+        print.throw_if_canceled();
+        print.save_metadata_checkpoint(Checkpoint::Slicing);
+    }
     print.mark_step_executed(step);
-}
-
-void mark_legacy_step_done(Print &print, slicing_step_t step)
-{
-    // The new plugin pipeline writes the same data that the legacy GUI expects,
-    // but the GUI still asks the historical Print/PrintObject state machine
-    // whether slices, perimeters or infill are available. Mark only those
-    // compatibility milestones that really correspond to finished data.
-    Print::StatusMonitor status(print);
-    if (status.set_started(step))
-        status.set_done(step);
 }
 
 void run_layer_height_generation(Orchestrator &orchestrator, Print &print, const std::string &path)
 {
     run_step_if_requested(print, STEP_LAYER_HEIGHT, [&] {
         begin_step(print, STEP_LAYER_HEIGHT, L("Creating the layer height"));
-        StepLayerHeightGeneration::clean_and_prepare(print);
+        StepLayerHeightGeneration::prepare(print);
         StepLayerHeightGeneration::run_step(orchestrator, print);
     });
 }
@@ -798,7 +860,6 @@ void run_slicing(Orchestrator &orchestrator, Print &print, const std::string &pa
     run_step_if_requested(print, STEP_SLICING, [&] {
         begin_step(print, STEP_SLICING, L("StepSlicing"));
         StepSlicing::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posSlice);
     });
 }
 
@@ -806,7 +867,7 @@ void run_post_slicing(Orchestrator &orchestrator, Print &print, const std::strin
 {
     run_step_if_requested(print, STEP_POST_SLICING, [&] {
         begin_step(print, STEP_POST_SLICING, L("Post-processing slices"));
-        StepPostSlicing::clean_and_prepare(print);
+        StepPostSlicing::prepare(print);
         StepPostSlicing::run_step(orchestrator, print);
     });
 }
@@ -818,35 +879,34 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
                          GCodeProcessorResult *gcode_result = nullptr)
 {
     // This helper is shared by slice preparation and export. Print::process()
-    // stops it at STEP_PRE_GCODE, while Orchestrator::export_gcode() calls it
+    // stops it at STEP_FINALIZE_SLICING, while Orchestrator::export_gcode() calls it
     // again with only the export-side steps marked for execution.
     StepSupportDemand::State support_demand;
 
     run_step_if_requested(print, STEP_PRE_PERIMETER, [&] {
         begin_step(print, STEP_PRE_PERIMETER, L("Preparing perimeters"));
-        StepPrepareForPeriemters::clean_and_prepare(print);
+        StepPrepareForPeriemters::prepare(print);
         StepPrepareForPeriemters::run_step(orchestrator, print);
     });
     if (stop_after(STEP_PRE_PERIMETER, until)) return;
     
     run_step_if_requested(print, STEP_PERIMETER, [&] {
         begin_step(print, STEP_PERIMETER, L("Generating perimeters"));
-        StepGeneratePerimeter::clean_and_prepare(print);
+        StepGeneratePerimeter::prepare(print);
         StepGeneratePerimeter::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posPerimeters);
     });
     if (stop_after(STEP_PERIMETER, until)) return;
     
     run_step_if_requested(print, STEP_POST_PERIMETER, [&] {
         begin_step(print, STEP_POST_PERIMETER, L("Post-processing perimeters"));
-        StepPostPerimeterGeneration::clean_and_prepare(print);
+        StepPostPerimeterGeneration::prepare(print);
         StepPostPerimeterGeneration::run_step(orchestrator, print);
     });
     if (stop_after(STEP_POST_PERIMETER, until)) return;
 
     run_step_if_requested(print, STEP_SURFACE_GENERATION, [&] {
         begin_step(print, STEP_SURFACE_GENERATION, L("Generating surfaces"));
-        StepSurfaceGeneration::clean_and_prepare(print);
+        StepSurfaceGeneration::prepare(print);
 #ifdef _DEBUG
         Detail::validate_or_report(StepSurfaceGeneration::validate_pre, print, "Surface-generation pre-step validation");
 #endif
@@ -859,124 +919,117 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
 
     run_step_if_requested(print, STEP_PRE_INFILL, [&] {
         begin_step(print, STEP_PRE_INFILL, L("Preparing infill"));
-        StepPrepareInfill::clean_and_prepare(print);
+        StepPrepareInfill::prepare(print);
         StepPrepareInfill::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posPrepareInfill);
     });
     if (stop_after(STEP_PRE_INFILL, until)) return;
 
     run_step_if_requested(print, STEP_INFILL_GROUP, [&] {
         begin_step(print, STEP_INFILL_GROUP, L("Grouping infill regions"));
-        StepGroupInfillRegions::clean_and_prepare(print);
+        StepGroupInfillRegions::prepare(print);
         StepGroupInfillRegions::run_step(orchestrator, print);
     });
     if (stop_after(STEP_INFILL_GROUP, until)) return;
 
     run_step_if_requested(print, STEP_INFILL, [&] {
         begin_step(print, STEP_INFILL, L("Generating infill"));
-        StepGenerateInfill::clean_and_prepare(print);
+        StepGenerateInfill::prepare(print);
         StepGenerateInfill::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posInfill);
     });
     if (stop_after(STEP_INFILL, until)) return;
 
     run_step_if_requested(print, STEP_POST_INFILL, [&] {
         begin_step(print, STEP_POST_INFILL, L("Post-processing infill"));
-        StepPostInfillGeneration::clean_and_prepare(print);
+        StepPostInfillGeneration::prepare(print);
         StepPostInfillGeneration::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posIroning);
     });
     if (stop_after(STEP_POST_INFILL, until)) return;
 
     run_step_if_requested(print, STEP_SUPPORT_DEMAND, [&] {
         begin_step(print, STEP_SUPPORT_DEMAND, L("Detecting support demand"));
-        StepSupportDemand::clean_and_prepare(print);
+        StepSupportDemand::prepare(print);
         StepSupportDemand::run_step(orchestrator, print, support_demand);
     });
     if (stop_after(STEP_SUPPORT_DEMAND, until)) return;
 
     run_step_if_requested(print, STEP_SUPPORT, [&] {
         begin_step(print, STEP_SUPPORT, L("Generating support material"));
-        StepGenerateSupport::clean_and_prepare(print);
+        StepGenerateSupport::prepare(print);
         StepGenerateSupport::run_step(orchestrator, print, support_demand);
-        mark_legacy_step_done(print, posSupportMaterial);
     });
     if (stop_after(STEP_SUPPORT, until)) return;
 
     run_step_if_requested(print, STEP_SKIRT_BRIM, [&] {
         begin_step(print, STEP_SKIRT_BRIM, L("Generating skirt and brim"));
-        StepSkirtBrim::clean_and_prepare(print);
+        StepSkirtBrim::prepare(print);
         StepSkirtBrim::run_step(orchestrator, print);
     });
     if (stop_after(STEP_SKIRT_BRIM, until)) return;
 
-    run_step_if_requested(print, STEP_PRE_GCODE, [&] {
-        begin_step(print, STEP_PRE_GCODE, L("Preparing G-code"));
-        StepPrepareGcode::clean_and_prepare(print);
-        StepPrepareGcode::run_step(orchestrator, print);
+    run_step_if_requested(print, STEP_FINALIZE_SLICING, [&] {
+        begin_step(print, STEP_FINALIZE_SLICING, L("Finalizing slicing"));
+        StepFinalizeSlicing::prepare(print);
+        StepFinalizeSlicing::run_step(orchestrator, print);
     });
-    if (stop_after(STEP_PRE_GCODE, until)) return;
+    if (stop_after(STEP_FINALIZE_SLICING, until)) return;
 
     run_step_if_requested(print, STEP_ORDERING, [&] {
         begin_step(print, STEP_ORDERING, L("Ordering extrusions"));
-        StepExtrusionOrdering::clean_and_prepare(print);
+        StepExtrusionOrdering::prepare(print);
         StepExtrusionOrdering::run_step(orchestrator, print);
+        // Checkpoint::Ordering: keep a copy of the freshly ordered plan so a
+        // later plan-editor invalidation resumes here instead of re-ordering.
+        // A resume from this checkpoint skips STEP_ORDERING, so the retained
+        // copy is never replaced by an equivalent one.
+        print.save_ordering_checkpoint();
     });
     if (stop_after(STEP_ORDERING, until)) return;
 
     run_step_if_requested(print, STEP_WIPETOWER, [&] {
         begin_step(print, STEP_WIPETOWER, L("Generating wipe tower"));
-        StepGenerateWipeTower::clean_and_prepare(print);
+        StepGenerateWipeTower::prepare(print);
         StepGenerateWipeTower::run_step(orchestrator, print);
     });
     if (stop_after(STEP_WIPETOWER, until)) return;
 
     run_step_if_requested(print, STEP_SUPPORT_SPOT, [&] {
         begin_step(print, STEP_SUPPORT_SPOT, L("Detecting support spots"));
-        StepDetectSupportSpots::clean_and_prepare(print);
+        StepDetectSupportSpots::prepare(print);
         StepDetectSupportSpots::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posSupportSpotsSearch);
     });
     if (stop_after(STEP_SUPPORT_SPOT, until)) return;
 
     run_step_if_requested(print, STEP_LAYER_EXTRUSION_EDIT, [&] {
         begin_step(print, STEP_LAYER_EXTRUSION_EDIT, L("Editing layers extrusions"));
-        StepLayerExtrusionEdition::clean_and_prepare(print);
+        StepLayerExtrusionEdition::prepare(print);
         StepLayerExtrusionEdition::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posEstimateCurledExtrusions);
     });
     if (stop_after(STEP_LAYER_EXTRUSION_EDIT, until)) return;
 
     run_step_if_requested(print, STEP_LAYER_STICHING, [&] {
         begin_step(print, STEP_LAYER_STICHING, L("Stitching layers"));
-        StepLayerStiching::clean_and_prepare(print);
+        StepLayerStiching::prepare(print);
         StepLayerStiching::run_step(orchestrator, print);
     });
     if (stop_after(STEP_LAYER_STICHING, until)) return;
 
     run_step_if_requested(print, STEP_EXTRUSION_EDIT, [&] {
         begin_step(print, STEP_EXTRUSION_EDIT, L("Editing extrusions"));
-        StepExtrusionEdition::clean_and_prepare(print);
+        StepExtrusionEdition::prepare(print);
         StepExtrusionEdition::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posCalculateOverhangingPerimeters);
     });
     if (stop_after(STEP_EXTRUSION_EDIT, until)) return;
 
     run_step_if_requested(print, STEP_EXTRUSION_SIMPLIFICATION, [&] {
         begin_step(print, STEP_EXTRUSION_SIMPLIFICATION, L("Simplifying extrusions"));
-        StepExtrusionSimplification::clean_and_prepare(print);
+        StepExtrusionSimplification::prepare(print);
         StepExtrusionSimplification::run_step(orchestrator, print);
-        mark_legacy_step_done(print, posSimplifyPath);
     });
     if (stop_after(STEP_EXTRUSION_SIMPLIFICATION, until)) return;
 
     run_step_if_requested(print, STEP_GCODE, [&] {
         begin_step(print, STEP_GCODE, L("Generating G-code"));
-        {
-            Print::StatusMonitor status(print);
-            status.set_started(psGCodeExport);
-        }
-        StepGenerateGcode::clean_and_prepare(print);
+        StepGenerateGcode::prepare(print);
         const std::string selected_reader = StepGenerateGcode::run_step(
             orchestrator, print, path, thumbnail_renderer);
         if (reader_plugin_id != nullptr)
@@ -1012,11 +1065,6 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
                     PrintStateBase::WarningLevel::NON_CRITICAL, message);
             }
         }
-        // Keep psGCodeExport active through the host Reader phase so parsing
-        // diagnostics are attached to the same export operation as writing.
-        Print::StatusMonitor status(print);
-        status.set_done(psGCodeExport);
-
         // The Reader and firmware are services nested under the G-code writer.
         // Complete the writer's single top-level unit only after those services
         // and the optional viewer result have also finished.
@@ -1028,87 +1076,29 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
     if (stop_after(STEP_GCODE, until)) return;
 }
 
-#ifdef _DEBUG
-
-void assert_same(DebugPrintProcessComparator &comparator, const char *label)
-{
-    std::string error;
-    if (comparator.compare_tree_after(label, error))
-        return;
-
-    std::cerr << error << std::endl;
-    assert(false && "Debug step pipeline comparison failed");
-    throw std::runtime_error(error);
-}
-
-std::vector<coord_t> layer_profile_from_object_layers(const std::vector<double> &object_layers)
-{
-    std::vector<coord_t> out;
-    out.reserve(object_layers.size());
-    for (size_t idx = 1; idx < object_layers.size(); idx += 2) {
-        out.push_back(scale_i(object_layers[idx]));
-        out.push_back(scale_i(object_layers[idx] - object_layers[idx - 1]));
-    }
-    return out;
-}
-
-std::vector<double> object_layers_from_layer_profile(const std::vector<coord_t> &layer_profile)
-{
-    std::vector<double> out;
-    out.reserve(layer_profile.size());
-    for (size_t idx = 0; idx + 1 < layer_profile.size(); idx += 2) {
-        const double z = unscaled(layer_profile[idx]);
-        const double height = unscaled(layer_profile[idx + 1]);
-        out.push_back(z - height);
-        out.push_back(z);
-    }
-    return out;
-}
-
-void recompute_layer_slices_from_regions(PrintObject &object)
-{
-    for (Layer &layer : object.layers())
-        ApiInternal::LayerAccess::recompute_slices_from_layer_regions(layer);
-}
-
-void add_debug_surfaces_from_raw_slices(PrintObject &object)
-{
-    for (Layer &layer : object.layers()) {
-        for (LayerRegion &region : layer.regions()) {
-            SurfaceCollection &surfaces = ApiInternal::LayerRegionAccess::surfaces_mutable(region);
-            surfaces.clear();
-            // Native slice_volumes() creates temporary internal/sparse surfaces
-            // from raw slices. Recreate them only for debug comparisons while
-            // the plugin slicing step intentionally owns just the raw slices.
-            surfaces.append(region.get_raw_slices(), stPosInternal | stDensSparse);
-        }
-    }
-}
-
-void add_debug_surfaces_from_raw_slices(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        add_debug_surfaces_from_raw_slices(print.object(idx));
-    });
-}
-
-void clear_debug_surfaces(PrintObject &object)
-{
-    for (Layer &layer : object.layers())
-        for (LayerRegion &region : layer.regions())
-            ApiInternal::LayerRegionAccess::surfaces_mutable(region).clear();
-}
-
-void clear_debug_surfaces(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        clear_debug_surfaces(print.object(idx));
-    });
-}
-
-#endif
-
 } // namespace
+
+void StepPipeline::clear_checkpoint_outputs(Print &print, const Checkpoint checkpoint)
+{
+    if (checkpoint == Checkpoint::GCode)
+        return;
+    StepGenerateGcode::clear(print);
+    if (checkpoint <= Checkpoint::Print)
+        StepExtrusionOrdering::clear(print);
+    // The edited plan is stale; the resume clones a new one from the kept Ordering copy.
+    if (checkpoint == Checkpoint::Ordering)
+        print.release_live_printing_plan();
+    // At None the layers themselves will be deleted, so visiting their region-islands would duplicate work.
+    if (checkpoint == Checkpoint::Slicing)
+        StepGeneratePerimeter::clear(print);
+    // Auxiliary layers may borrow main-layer data and must disappear before those main layers.
+    if (checkpoint <= Checkpoint::Slicing)
+        StepPrepareForPeriemters::clear(print);
+    if (checkpoint == Checkpoint::None) {
+        StepSlicing::clear(print);
+        StepLayerHeightGeneration::clear(print);
+    }
+}
 
 void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
 {
@@ -1118,6 +1108,12 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
 
     const std::string path;
     orchestrator.reset_plugin_cancel();
+    const Checkpoint checkpoint = print.current_checkpoint();
+    if (checkpoint == Checkpoint::None ||
+        checkpoint == Checkpoint::Slicing ||
+        checkpoint == Checkpoint::Print) {
+        print.prepare_checkpoint_resume();
+    }
     // run_slice() starts a new end-to-end execution. run_gcode() will retain
     // this table while it is incomplete so slicing and export share one
     // denominator.
@@ -1127,7 +1123,7 @@ void StepPipeline::run_slice(Orchestrator &orchestrator, Print &print)
     run_layer_height_generation(orchestrator, print, path);
     run_slicing(orchestrator, print, path);
     run_post_slicing(orchestrator, print, path);
-    run_remaining_steps(orchestrator, print, path, STEP_PRE_GCODE);
+    run_remaining_steps(orchestrator, print, path, STEP_FINALIZE_SLICING);
 }
 
 std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
@@ -1139,10 +1135,16 @@ std::string StepPipeline::run_gcode(Orchestrator &orchestrator, Print &print,
     assert(validate_execution_order_against_dependencies());
 #endif
 
+    // Reject before cleanup can delete layers whose replacement this export entry point cannot build.
+    if (print.current_checkpoint() == Checkpoint::None)
+        throw SlicingError("G-code export requires slicing first: run_slice() must complete before run_gcode().");
     orchestrator.reset_plugin_cancel();
     // A direct G-code invocation does not execute the three slice-prefix
     // steps. A continuation after run_slice() keeps the complete plan already
     // stored in Print and therefore preserves its original denominator.
+    // Resume from the latest valid checkpoint, restoring the ordered plan copy
+    // when plan editors are the first steps to replay.
+    print.prepare_checkpoint_resume();
     initialize_pipeline_progress(orchestrator, print, STEP_PRE_PERIMETER);
     std::string reader_plugin_id;
     run_remaining_steps(orchestrator, print, path, STEP_GCODE, thumbnail_renderer,
@@ -1156,96 +1158,6 @@ void StepPipeline::run(Orchestrator &orchestrator, Print &print, const std::stri
     if (!path.empty())
         StepPipeline::run_gcode(orchestrator, print, path);
 }
-
-#ifdef _DEBUG
-void StepPipeline::run_native_layer_height_generation(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        StepPipeline::run_native_layer_height_generation_object(print.object(idx));
-    });
-}
-
-void StepPipeline::run_native_slicing(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        StepPipeline::run_native_slicing_object(print.object(idx));
-    });
-}
-
-void StepPipeline::run_native_post_slicing(Print &print)
-{
-    parallel_for(size_t(0), print.objects().size(), [&print](const size_t idx) {
-        StepPipeline::run_native_post_slicing_object(print.object(idx));
-    });
-}
-
-void StepPipeline::run_native_layer_height_generation_object(PrintObject &object)
-{
-    object.update_slicing_parameters();
-
-    std::vector<coordf_t> layer_height_profile;
-    PrintObject::update_layer_height_profile(*object.model_object(), *object.m_slicing_params, layer_height_profile);
-
-    ApiInternal::PrintObjectAccess::set_layer_profile(
-        object,
-        layer_profile_from_object_layers(generate_object_layers(object.slicing_parameters(), layer_height_profile)));
-}
-
-void StepPipeline::run_native_slicing_object(PrintObject &object)
-{
-    LayerUPtrs object_layers = new_layers(&object, object_layers_from_layer_profile(object.layer_profile()));
-    for (std::unique_ptr<Layer> &layer : object_layers)
-        ApiInternal::LayerAccess::init_regions_from_object(*layer);
-
-    ApiInternal::PrintObjectAccess::replace_layers_by_moving_contents(object, std::move(object_layers));
-    object.slice_volumes();
-    recompute_layer_slices_from_regions(object);
-}
-
-void StepPipeline::run_native_post_slicing_object(PrintObject &object)
-{
-    object._transform_hole_to_polyholes();
-    object._max_overhang_threshold();
-    recompute_layer_slices_from_regions(object);
-}
-
-void StepPipeline::debug_run(Orchestrator &orchestrator, const Print &source, slicing_step_t until)
-{
-    const std::string path;
-    DebugPrintProcessComparator comparator(source);
-    orchestrator.reset_plugin_cancel();
-
-    assert_same(comparator, "START");
-
-    run_native_layer_height_generation(comparator.reference_print());
-    run_layer_height_generation(orchestrator, comparator.candidate_print(), path);
-    assert_same(comparator, "STEP_LAYER_HEIGHT");
-    if (stop_after(STEP_LAYER_HEIGHT, until)) return;
-
-    run_native_slicing(comparator.reference_print());
-    run_slicing(orchestrator, comparator.candidate_print(), path);
-    // temporairement generer des surface dans les regionlayer du plugin pour correspondre à ce que fait le natif
-    add_debug_surfaces_from_raw_slices(comparator.candidate_print());
-    assert_same(comparator, "STEP_SLICING");
-    // on retire les surfaces
-    clear_debug_surfaces(comparator.candidate_print());
-    if (stop_after(STEP_SLICING, until)) return;
-
-    run_native_post_slicing(comparator.reference_print());
-    run_post_slicing(orchestrator, comparator.candidate_print(), path);
-    // temporairement generer des surface dans les regionlayer du plugin pour correspondre à ce que fait le natif
-    add_debug_surfaces_from_raw_slices(comparator.candidate_print());
-    assert_same(comparator, "STEP_POST_SLICING");
-    // on retire les surfaces
-    clear_debug_surfaces(comparator.candidate_print());
-    if (stop_after(STEP_POST_SLICING, until)) return;
-
-    // The remaining step classes are still being filled one by one. Keep the
-    // candidate path executable. Add the native side above as each step gets a
-    // stable split point.
-    run_remaining_steps(orchestrator, comparator.candidate_print(), path, until);
-}
-#endif
 
 
 } // namespace Slic3r::Steps

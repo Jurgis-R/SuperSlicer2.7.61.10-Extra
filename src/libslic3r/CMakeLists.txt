@@ -127,6 +127,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/steps/slic3r_step_common.h
 	Api/plugin/c/steps/slic3r_step_extrusion_edit.h
 	Api/plugin/c/steps/slic3r_step_extrusion_simplification.h
+	Api/plugin/c/steps/slic3r_step_finalize_slicing.h
 	Api/plugin/c/steps/slic3r_step_gcode.h
 	Api/plugin/c/steps/slic3r_step_gcode_firmware.h
 	Api/plugin/c/steps/slic3r_step_gcode_reader.h
@@ -141,7 +142,6 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/steps/slic3r_step_post_infill.h
 	Api/plugin/c/steps/slic3r_step_post_perimeter.h
 	Api/plugin/c/steps/slic3r_step_post_slicing.h
-	Api/plugin/c/steps/slic3r_step_pre_gcode.h
 	Api/plugin/c/steps/slic3r_step_pre_infill.h
 	Api/plugin/c/steps/slic3r_step_pre_perimeter.h
 	Api/plugin/c/steps/slic3r_step_seam_placer.h
@@ -168,6 +168,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/PluginPropertyKey.hpp
 	Api/plugin/cpp/properties/DataTreeProperties.hpp
 	Api/plugin/cpp/properties/ExtrusionProperties.hpp
+	Api/plugin/cpp/properties/PrintingExtrusionScopeProperty.hpp
 	Api/plugin/cpp/gcode/EncodableState.hpp
 	Api/plugin/cpp/gcode/DefaultExtruder.cpp
 	Api/plugin/cpp/gcode/DefaultExtruder.hpp
@@ -214,6 +215,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/PluginBase.hpp
 	Api/plugin/cpp/PluginContext.hpp
 	Api/plugin/cpp/PrintingEntityPropertyTraversal.hpp
+	Api/plugin/cpp/PrintingExtrusionScopeViews.hpp
 	Api/plugin/cpp/PrintingPlanViews.hpp
 	Api/plugin/cpp/PrintingPlanTimeEstimator.cpp
 	Api/plugin/cpp/PrintingPlanTimeEstimator.hpp
@@ -271,12 +273,12 @@ set(SLIC3R_SOURCES
 	Plugins/GCode/CustomGCodePerPrintZOrdering.cpp
 	Plugins/GCode/CustomGCodePerPrintZRecord.cpp
 	Plugins/GCode/CustomGCodePerPrintZRecord.hpp
-	Plugins/GCode/LegacyGCodeGenerator.cpp
-	Plugins/GCode/LegacyGCodeGenerator.hpp
 	Plugins/GCode/PrintingPlanFileWriter.cpp
 	Plugins/GCode/PrintingPlanFileWriter.hpp
 	Plugins/GCode/SettingsGCodeScripts.cpp
 	Plugins/GCode/SettingsGCodeScripts.hpp
+	Plugins/GuiRulesCore.cpp
+	Plugins/GuiRulesCore.hpp
 	Plugins/GuiRulesExample.cpp
 	Plugins/GuiRulesExample.hpp
 	Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.cpp
@@ -495,8 +497,6 @@ set(SLIC3R_SOURCES
 	Plugins/Support/SupportDemandPainting.hpp
 	Printing/PrintingPlan.cpp
 	Printing/PrintingPlan.hpp
-	Steps/DebugPrintProcessComparator.cpp
-	Steps/DebugPrintProcessComparator.hpp
 	Steps/StepDetectSupportSpots.cpp
 	Steps/StepDetectSupportSpots.hpp
 	Steps/StepSkirtBrim.cpp
@@ -507,6 +507,8 @@ set(SLIC3R_SOURCES
 	Steps/StepExtrusionOrdering.hpp
 	Steps/StepExtrusionSimplification.cpp
 	Steps/StepExtrusionSimplification.hpp
+	Steps/StepFinalizeSlicing.cpp
+	Steps/StepFinalizeSlicing.hpp
 	Steps/StepGenerateGcode.cpp
 	Steps/StepGenerateGcode.hpp
 	Steps/StepGenerateInfill.cpp
@@ -537,8 +539,6 @@ set(SLIC3R_SOURCES
 	Steps/StepPipeline.hpp
 	Steps/StepPrepareForPeriemters.cpp
 	Steps/StepPrepareForPeriemters.hpp
-	Steps/StepPrepareGcode.cpp
-	Steps/StepPrepareGcode.hpp
 	Steps/StepPrepareInfill.cpp
 	Steps/StepPrepareInfill.hpp
 	Steps/StepReadGeneratedGcode.cpp
@@ -595,6 +595,8 @@ set(SLIC3R_SOURCES
     Config/ConfigSnapshotSerialization.hpp
     Config/GuiRuleRegistry.cpp
     Config/GuiRuleRegistry.hpp
+    Config/GuiRuleTexts.cpp
+    Config/GuiRuleTexts.hpp
     ContainerUtils.hpp
     CSGMesh/CSGMesh.hpp
     CSGMesh/SliceCSGMesh.hpp
@@ -929,8 +931,6 @@ set(SLIC3R_SOURCES
     PrintObjectSlice.cpp
     PrintRegion.cpp
     PrintRegion.hpp
-    PrintSteps.cpp
-    PrintSteps.hpp
     PointGrid.hpp
     PNGReadWrite.hpp
     PNGReadWrite.cpp
@@ -1112,6 +1112,12 @@ set(SLIC3R_SOURCES
 )
 
 add_library(libslic3r STATIC ${SLIC3R_SOURCES})
+
+# Only the data-tree host reads this switch; scope it so toggling rebuilds one file.
+if (SLIC3R_STRICT_FREEZE)
+    set_source_files_properties(Api/host/slic3r_data_tree.cpp
+        PROPERTIES COMPILE_DEFINITIONS SLIC3R_STRICT_FREEZE=1)
+endif()
 
 if (SLIC3R_BUILD_TESTS)
     target_compile_definitions(libslic3r PUBLIC SLIC3R_PLUGIN_REPOSITORY_TESTING)

@@ -389,7 +389,10 @@ public:
     {
         plugin_instance instance = {};
         instance.ctx = const_cast<PluginBase *>(this);
-        instance.vt = &vtable();
+        // Cleanup participation varies by instance; never modify the shared vtable for one plugin.
+        m_instance_vtable = vtable();
+        m_instance_vtable.clear = clear_enabled_impl() ? &PluginBase::clear_bridge : nullptr;
+        instance.vt = &m_instance_vtable;
         return instance;
     }
 
@@ -479,6 +482,17 @@ protected:
     // starts. Use it to call progress().add_max(...).
     virtual void setup_run_impl(const plugin_run_context *) const {}
 
+    // Optional: release state associated with the Print that was prepared by
+    // setup(). Return PLUGIN_ERROR_OK on success, or a diagnostic id obtained
+    // from orchestrator_set_error_message() to report why the state survived.
+    // The default keeps the ABI callback absent for services that do not
+    // participate in pipeline cleanup.
+    virtual bool clear_enabled_impl() const noexcept { return false; }
+    virtual int32_t clear_impl(const print_handle *, storage_handle *) const
+    {
+        return PLUGIN_ERROR_OK;
+    }
+
     // Required: perform the plugin work for one run context. This method may be
     // called in parallel for different objects, so shared plugin state must be
     // protected or atomic.
@@ -542,6 +556,26 @@ private:
             report_error(run_ctx, "Unknown C++ exception in plugin");
             return;
         }
+    }
+
+    int32_t clear_safe(const print_handle *print, storage_handle *storage) const noexcept
+    {
+        // Copy the diagnostic into the host registry before the exception dies;
+        // no exception may cross the plugin ABI.
+        try {
+            return clear_impl(print, storage);
+        } catch (const std::exception &error) {
+            return store_error_message(error.what());
+        } catch (...) {
+            return store_error_message("Unknown C++ exception in plugin clear");
+        }
+    }
+
+    // Register the failure text and return its id. The host returns the generic
+    // failure code when it cannot store the message.
+    int32_t store_error_message(const char *message) const noexcept
+    {
+        return orchestrator_set_error_message(m_orchestrator, message);
     }
 
     static const char *get_id_bridge(void *plugin_ctx)
@@ -627,6 +661,13 @@ private:
         static_cast<PluginBase *>(plugin_ctx)->run_safe(run_ctx);
     }
 
+    static int32_t clear_bridge(void *plugin_ctx,
+                                const print_handle *print,
+                                storage_handle *storage) noexcept
+    {
+        return static_cast<PluginBase *>(plugin_ctx)->clear_safe(print, storage);
+    }
+
     static const plugin_vtable &vtable()
     {
         static const plugin_vtable vt = {
@@ -644,11 +685,15 @@ private:
             &PluginBase::initialize_bridge,
             &PluginBase::setup_bridge,
             &PluginBase::setup_run_bridge,
-            &PluginBase::run_bridge
+            &PluginBase::run_bridge,
+            &PluginBase::clear_bridge
         };
         return vt;
     }
 
+    // Per-instance copy of the shared vtable, so enabling clear for one derived
+    // plugin does not modify the table every other instance points to.
+    mutable plugin_vtable m_instance_vtable = {};
     mutable PluginProgress m_progress;
 
 protected:

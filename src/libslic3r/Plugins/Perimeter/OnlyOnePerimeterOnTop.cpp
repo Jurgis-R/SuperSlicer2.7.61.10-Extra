@@ -3,18 +3,34 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+OnlyOnePerimeterOnTop.cpp
+=========================
+
+Implementation of the only one perimeter on top module declared in
+OnlyOnePerimeterOnTop.hpp.
+
+The file holds the plugin metadata, the owned option definitions and activation
+rules, the top-surface classification helpers, the module callbacks (start,
+after) and the registration entry point. after() classifies the child domain of
+each processed node and lowers the requested count of the top-facing branches.
+*/
+
 #include "OnlyOnePerimeterOnTop.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
 
 /*
@@ -83,6 +99,61 @@ const raw_used_config_key k_used_config_keys[] = {
     { "external_infill_margin", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
     { "bridged_infill_margin", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "min_width_top_surface",
+    "only_one_perimeter_top_other_algo"
+};
+
+void initialize_only_one_perimeter_on_top_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- min_width_top_surface | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "min_width_top_surface";
+    def.type = RAW_CO_FLOAT_OR_PERCENT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_SPEED;
+    def.label = "Minimum top width for infill";
+    def.tooltip = "If a top surface has to be printed and it's partially covered by another layer, it won't be considered at a top layer where its width is below this value. This can be useful to not let the 'one perimeter on top' trigger on surface that should be covered only by perimeters. This value can be a mm or a % of the perimeter extrusion width.\nWarning: If enabled, artifacts can be created is you have some thin features on the next layer, like letters. Set this setting to 0 to remove these artifacts.";
+    def.sidetext = "mm or %";
+    def.ratio_over = "perimeter_extrusion_width";
+    def.has_min = 1;
+    def.min_value = 0;
+    def.has_max_literal = 1;
+    def.max_literal_value = 15;
+    def.max_literal_is_percent = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "100%";
+    orchestrator_create_option_def(orchestrator, &def);
+
+    // ---- only_one_perimeter_top_other_algo | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "only_one_perimeter_top_other_algo";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Only one peri - other algo";
+    def.tooltip = "If you have some problem with the 'Only one perimeter on Top surfaces' option, you can try to activate this on the problematic layer.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_HIDDEN;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 const char *k_only_one_perimeter_top_key = "only_one_perimeter_top";
 const char *k_min_width_top_surface_key = "min_width_top_surface";
 const char *k_only_one_perimeter_top_other_algo_key = "only_one_perimeter_top_other_algo";
@@ -771,6 +842,14 @@ OnlyOnePerimeterOnTop::instance(orchestrator_handle *orch)
     return s_instance;
 }
 
+void add_only_one_perimeter_on_top_gui_rules(orchestrator_handle *orchestrator)
+{
+    // The top surface width limit applies when top perimeters collapse to one.
+    GuiRule::activate({ "min_width_top_surface" })
+        .when(all_of({ non_zero("perimeters"), true_("only_one_perimeter_top") }))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const char *OnlyOnePerimeterOnTop::id_impl() const noexcept
 {
     return k_only_one_perimeter_on_top_id;
@@ -797,6 +876,20 @@ int32_t OnlyOnePerimeterOnTop::used_config_keys(raw_used_config_key *keys) const
         for (uint32_t idx = 0; idx < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++idx)
             keys[idx] = k_used_config_keys[idx];
     return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
+}
+
+int32_t OnlyOnePerimeterOnTop::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void OnlyOnePerimeterOnTop::inilialize_impl(storage_handle *) const
+{
+    initialize_only_one_perimeter_on_top_settings(m_orchestrator);
+    add_only_one_perimeter_on_top_gui_rules(m_orchestrator);
 }
 
 const char *OnlyOnePerimeterOnTop::progress_message_format_impl() const noexcept

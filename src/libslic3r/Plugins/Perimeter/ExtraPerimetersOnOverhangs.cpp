@@ -3,12 +3,27 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+ExtraPerimetersOnOverhangs.cpp
+==============================
+
+Implementation of the extra perimeters on overhangs plugin declared in
+ExtraPerimetersOnOverhangs.hpp.
+
+The file holds the plugin metadata, the owned option definition and activation
+rule, the overhang detection and path-building helpers, the setup and run
+callbacks, and the registration entry point. run() walks the extrusion tree of
+each island, detects unsupported overhang edges and inserts the anchoring paths
+in the node entity collections.
+*/
+
 #include "ExtraPerimetersOnOverhangs.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -17,9 +32,11 @@
 #include <unordered_set>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_post_perimeter.h"
 #include "libslic3r/Api/plugin/cpp/BridgeDetectorViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
@@ -96,6 +113,41 @@ const raw_used_config_key k_used_config_keys[] = {
     { "perimeters", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
     { "raft_layers", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "extra_perimeters_on_overhangs"
+};
+
+void initialize_extra_perimeters_on_overhangs_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- extra_perimeters_on_overhangs | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "extra_perimeters_on_overhangs";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "Extra perimeters on overhangs (Experimental)";
+    def.tooltip = "Detect overhang areas where bridges cannot be anchored, and fill them with extra perimeter paths. These paths are anchored to the nearby non-overhang area when possible.\nIf you use this setting, strongly consider also using overhangs_reverse.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_ADVANCED | RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    {
+        static const char *const k_aliases[] = { "extra_perimeters_overhangs" };
+        def.aliases = const_strings_t{ k_aliases, 1 };
+    }
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 const char *k_extra_perimeters_on_overhangs_key = "extra_perimeters_on_overhangs";
 const char *k_bridged_infill_margin_key = "bridged_infill_margin";
 const char *k_bridge_angle_key = "bridge_angle";
@@ -1280,10 +1332,10 @@ void update_fill_areas(storage_handle *storage,
                        coord_t infill_overlap,
                        const plugin_run_context *run_ctx)
 {
-    // Extra perimeter paths consume part of the old infill job. The strict
+    // Extra perimeter paths consume part of the planned infill area. The strict
     // free area loses the generated extrusion coverage; the wider fill/anchor
-    // area either follows the legacy overlap expansion or subtracts the same
-    // coverage when no infill/perimeter overlap is requested.
+    // area either applies the overlap expansion or subtracts the same coverage
+    // when no infill/perimeter overlap is requested.
     ClipperContext clipper(storage);
     const ExPolygonCollection fill_areas = island.infill_areas();
     const ExPolygonCollection free_areas = island.infill_no_overlap_areas();
@@ -1401,6 +1453,14 @@ ExtraPerimetersOnOverhangs::instance(orchestrator_handle *orch)
     return s_instance;
 }
 
+void add_extra_perimeters_on_overhangs_gui_rules(orchestrator_handle *orchestrator)
+{
+    // Overhang perimeter detection needs a non-zero perimeter count.
+    GuiRule::activate({ "extra_perimeters_on_overhangs" })
+        .when(non_zero("perimeters"))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const char *ExtraPerimetersOnOverhangs::id_impl() const noexcept
 {
     return k_extra_overhang_perimeters_id;
@@ -1437,6 +1497,20 @@ int32_t ExtraPerimetersOnOverhangs::used_config_keys(raw_used_config_key *keys) 
         for (uint32_t idx = 0; idx < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++idx)
             keys[idx] = k_used_config_keys[idx];
     return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
+}
+
+int32_t ExtraPerimetersOnOverhangs::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void ExtraPerimetersOnOverhangs::inilialize_impl(storage_handle *) const
+{
+    initialize_extra_perimeters_on_overhangs_settings(m_orchestrator);
+    add_extra_perimeters_on_overhangs_gui_rules(m_orchestrator);
 }
 
 const char *ExtraPerimetersOnOverhangs::progress_message_format_impl() const noexcept

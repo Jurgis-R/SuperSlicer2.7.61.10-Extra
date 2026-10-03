@@ -95,7 +95,8 @@ int32_t set_island_fill_free_areas_callback(const layer_island_handle *island_ha
 
 } // namespace
 
-void clean_and_prepare(Print &) {}
+void clear(Print &) {}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string &)
 {

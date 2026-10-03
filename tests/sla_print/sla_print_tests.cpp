@@ -57,7 +57,7 @@ TEST_CASE("Support point generator should be deterministic if seeded",
     auto get_chksum = [](const std::vector<sla::SupportPoint> &pts){
         int64_t chksum = 0;
         for (auto &pt : pts) {
-            auto p = scaled(pt.pos);
+            const Vec3crd p(scale_i(pt.pos.x()), scale_i(pt.pos.y()), scale_i(pt.pos.z()));
             chksum += p.x() + p.y() + p.z();
         }
         
@@ -220,13 +220,13 @@ TEST_CASE("RasterizedPolygonAreaShouldMatch", "[SLARasterOutput]") {
     
     double gamma = 1.;
     sla::RasterGrayscaleAAGammaPower raster(res, pixdim, {}, gamma);
-    auto bb = BoundingBox({0, 0}, {scaled(disp_w), scaled(disp_h)});
+    auto bb = BoundingBox({0, 0}, {scale_i(disp_w), scale_i(disp_h)});
     
     ExPolygon poly = square_with_hole(10.);
     poly.translate(bb.center().x(), bb.center().y());
     raster.draw(poly);
     
-    double a = poly.area() / (scaled<double>(1.) * scaled(1.));
+    double a = poly.area() / (scale_d(1.) * scale_i(1.));
     double ra = raster_white_area(raster);
     double diff = std::abs(a - ra);
     
@@ -237,7 +237,7 @@ TEST_CASE("RasterizedPolygonAreaShouldMatch", "[SLARasterOutput]") {
     poly.translate(bb.center().x(), bb.center().y());
     raster.draw(poly);
     
-    a = poly.area() / (scaled<double>(1.) * scaled(1.));
+    a = poly.area() / (scale_d(1.) * scale_i(1.));
     ra = raster_white_area(raster);
     diff = std::abs(a - ra);
     

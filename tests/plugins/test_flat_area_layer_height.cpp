@@ -382,7 +382,8 @@ TEST_CASE("StepSlicing consumes explicit layer descriptors with vertical gaps", 
 
     std::string error;
     REQUIRE(Steps::StepSlicing::validate_pre(print, error));
-    Steps::StepSlicing::clean_and_prepare(print);
+    Steps::StepSlicing::clear(print);
+    Steps::StepSlicing::prepare(print);
 
     PrintObject &object = print.object(0);
     REQUIRE(object.layer_count() == 2);

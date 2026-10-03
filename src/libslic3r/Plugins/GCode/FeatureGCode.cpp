@@ -14,6 +14,7 @@
 
 #include <boost/log/trivial.hpp>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
 #include "libslic3r/Api/plugin/cpp/DataTreeViews.hpp"
@@ -63,6 +64,14 @@ namespace slic3r_api { namespace GCodeGeneration { namespace FeatureGCodePlugin 
 namespace {
 
 const char *const k_no_dependencies[] = {nullptr};
+
+const char *const k_defined_config_keys[] = {
+    "feature_gcode"
+};
+
+// Register the option definitions owned by this plugin; it runs once from
+// inilialize_impl().
+void initialize_feature_gcode_settings(orchestrator_handle *orchestrator);
 
 // Convert a valid extrusion role to the stable text consumed by feature_gcode.
 // Structurally valid roles which the G-code vocabulary cannot express are
@@ -221,22 +230,22 @@ void clear_feature_scripts(storage_handle *storage,
 }
 
 void clear_plan_feature_scripts(storage_handle *storage,
-                                const PrintingPlan &plan,
+                                PrintingPlan &plan,
                                 const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         if ((group_idx & 63u) == 0)
             throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             if ((layer_idx & 63u) == 0)
                 throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 if ((tool_idx & 63u) == 0)
                     throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     if ((extrusion_idx & 63u) == 0)
                         throw_if_cancelled(run_ctx);
@@ -310,7 +319,7 @@ void FeatureRoleVisitor::add_transition(MutableExtrusionEntity entity,
 }
 
 void add_plan_feature_scripts(storage_handle *storage,
-                              const PrintingPlan &plan,
+                              PrintingPlan &plan,
                               const std::string &script,
                               const plugin_run_context *run_ctx)
 {
@@ -319,15 +328,15 @@ void add_plan_feature_scripts(storage_handle *storage,
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         if ((group_idx & 63u) == 0)
             throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             if ((layer_idx & 63u) == 0)
                 throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 if ((tool_idx & 63u) == 0)
                     throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     if ((extrusion_idx & 63u) == 0)
                         throw_if_cancelled(run_ctx);
@@ -336,6 +345,37 @@ void add_plan_feature_scripts(storage_handle *storage,
             }
         }
     }
+}
+
+void initialize_feature_gcode_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definition owned by this module. It fixes the option type, override
+    scope, default and GUI metadata; the defined key is published in the print
+    presets, so profiles read and write it by name like any built-in setting.
+    Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "feature_gcode";
+    def.type = RAW_CO_STRING;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINTER;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
+    def.label = "After extrusion type change in G-code";
+    def.tooltip = "This custom code is inserted at every extrusion type change."
+        "Note that you can use placeholder variables for all Slic3r settings as well as {last_extrusion_role}, {extrusion_role}, {layer_num} and {layer_z}."
+        " The 'extrusion_role' strings can take these string values:"
+        " { Perimeter, ExternalPerimeter, OverhangPerimeter, InternalInfill, SolidInfill, TopSolidInfill, BridgeInfill, GapFill, Skirt, SupportMaterial, SupportMaterialInterface, WipeTower, Mixed }."
+        " Mixed is only used when the role of the extrusion is not unique, not exactly inside another category or not known.";
+    def.multiline = 1;
+    def.full_width = 1;
+    def.height = 5;
+    def.cli = "feature-gcode";
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "";
+    orchestrator_create_option_def(orchestrator, &def);
 }
 
 class FeatureGCode final : public PluginBase
@@ -366,6 +406,17 @@ private:
                 "feature_gcode", RAW_CO_STRING, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         return 1;
     }
+    int32_t defined_config_keys(const char **keys) const noexcept override
+    {
+        if (keys != nullptr)
+            for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+                keys[idx] = k_defined_config_keys[idx];
+        return int32_t(std::size(k_defined_config_keys));
+    }
+    void inilialize_impl(storage_handle *) const override
+    {
+        initialize_feature_gcode_settings(m_orchestrator);
+    }
     void run_impl(const plugin_run_context *run_context) const override
     {
         throw_if_cancelled(run_context);
@@ -376,7 +427,7 @@ private:
             return;
 
         const Print print(context->print);
-        const PrintingPlan plan(context->plan);
+        PrintingPlan plan(context->plan);
         clear_plan_feature_scripts(run_context->plugin_storage, plan, run_context);
 
         const std::string script = print.config().string_or_default("feature_gcode", std::string());

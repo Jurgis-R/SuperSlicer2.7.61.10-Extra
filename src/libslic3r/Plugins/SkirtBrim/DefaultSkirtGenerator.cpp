@@ -15,9 +15,11 @@
 #include <utility>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_skirt_brim.h"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Api/plugin/cpp/PrintHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/SkirtBrimStepViews.hpp"
@@ -103,6 +105,16 @@ const raw_used_config_key k_used_config_keys[] = {
     { "support_material_interface_extruder", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
     { "support_material_interface_layers", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "complete_objects_one_skirt"
+};
+
+// Register the option definitions owned by this plugin, then the activation
+// rules that decide when they stay editable. Both run once from
+// inilialize_impl().
+void initialize_default_skirt_generator_settings(orchestrator_handle *orchestrator);
+void add_default_skirt_generator_gui_rules(orchestrator_handle *orchestrator);
 
 struct SkirtOutput
 {
@@ -782,6 +794,48 @@ void generate_default_skirt(const plugin_run_context *run_ctx, orchestrator_hand
     throw_if_cancelled(run_ctx);
 }
 
+void initialize_default_skirt_generator_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "complete_objects_one_skirt";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_PLATER;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_SKIRT_BRIM;
+    def.category = RAW_OPTION_CATEGORY_OUTPUT;
+    def.label = "Allow only one skirt loop";
+    def.tooltip = "When using 'Complete individual objects', the default behavior is to draw the skirt around each object."
+                  " if you prefer to have only one skirt for the whole platter, use this option.";
+    def.mode = RAW_CONFIG_OPTION_MODE_ADV_EXP | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
+
+void add_default_skirt_generator_gui_rules(orchestrator_handle *orchestrator)
+{
+    using slic3r_api::any_of;
+    using slic3r_api::GuiCondition;
+    using slic3r_api::GuiRule;
+    using slic3r_api::non_zero;
+    using slic3r_api::true_;
+
+    const GuiCondition sequential = any_of({
+        true_("complete_objects"),
+        non_zero("parallel_objects_step")
+    });
+    GuiRule::activate("complete_objects_one_skirt")
+        .when(sequential)
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
+
 class DefaultSkirtGenerator : public PluginBase
 {
 public:
@@ -817,6 +871,20 @@ private:
             return int32_t(std::size(k_used_config_keys));
         std::copy(std::begin(k_used_config_keys), std::end(k_used_config_keys), keys);
         return int32_t(std::size(k_used_config_keys));
+    }
+
+    int32_t defined_config_keys(const char **keys) const noexcept override
+    {
+        if (keys != nullptr)
+            for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+                keys[idx] = k_defined_config_keys[idx];
+        return int32_t(std::size(k_defined_config_keys));
+    }
+
+    void inilialize_impl(storage_handle *) const override
+    {
+        initialize_default_skirt_generator_settings(m_orchestrator);
+        add_default_skirt_generator_gui_rules(m_orchestrator);
     }
 
     void run_impl(const plugin_run_context *run_ctx) const override

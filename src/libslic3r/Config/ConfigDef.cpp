@@ -199,6 +199,62 @@ ConfigOptionDef* ConfigDef::add(const t_config_option_key &opt_key, ConfigOption
     return opt;
 }
 
+size_t ConfigDef::update_translations(const std::function<std::string(const std::string &text, const std::string &domain)> &translate)
+{
+    size_t updated = 0;
+    for (std::pair<const t_config_option_key, ConfigOptionDef> &kvp : this->options) {
+        ConfigOptionDef &def = kvp.second;
+        bool changed = false;
+
+        // Store the translation only when it differs from the raw text, so the
+        // raw fields stay authoritative and untranslated options keep no copy.
+        const auto fill = [&translate, &def, &changed](const std::string &raw, std::string &translated) {
+            std::string result = raw.empty() ? std::string() : translate(raw, def.translation_domain);
+            if (result.empty() || result == raw)
+                result.clear();
+            if (translated != result) {
+                translated = std::move(result);
+                changed = true;
+            }
+        };
+        fill(def.label, def.label_translated);
+        fill(def.full_label, def.full_label_translated);
+        fill(def.tooltip, def.tooltip_translated);
+
+        if (def.enum_def) {
+            // Only closed enums own display labels; labels() would otherwise
+            // return the serialized values, which must never be translated.
+            std::vector<std::string> translated_labels;
+            bool any_translated = false;
+            if (def.enum_def->has_labels()) {
+                const std::vector<std::string> &raw_labels = def.enum_def->labels();
+                translated_labels.reserve(raw_labels.size());
+                for (const std::string &raw : raw_labels) {
+                    std::string result = raw.empty() ? std::string() : translate(raw, def.translation_domain);
+                    if (result.empty() || result == raw) {
+                        // Keep the raw label at this index; translated_labels()
+                        // still falls back per entry.
+                        translated_labels.push_back(raw);
+                    } else {
+                        translated_labels.push_back(std::move(result));
+                        any_translated = true;
+                    }
+                }
+            }
+            if (!any_translated)
+                translated_labels.clear();
+            if (def.enum_def->m_labels_translated != translated_labels) {
+                def.enum_def->m_labels_translated = std::move(translated_labels);
+                changed = true;
+            }
+        }
+
+        if (changed)
+            ++updated;
+    }
+    return updated;
+}
+
 void ConfigDef::finalize()
 {
     assert(!m_is_finalized);
@@ -333,6 +389,7 @@ std::ostream& ConfigDef::print_cli_help(std::ostream& out, bool show_defaults, s
 ConfigOptionEnumDef::ConfigOptionEnumDef(const ConfigOptionEnumDef &other)
     : m_values(other.m_values)
     , m_labels(other.m_labels)
+    , m_labels_translated(other.m_labels_translated)
     , m_values_ordinary(other.m_values_ordinary)
     , m_enum_names(other.m_enum_names)
     , m_enum_keys_map(other.m_enum_keys_map) {

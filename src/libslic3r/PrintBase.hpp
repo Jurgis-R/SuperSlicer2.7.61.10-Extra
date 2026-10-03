@@ -117,13 +117,15 @@ public:
     };
 
 protected:
+    friend class Print;
+    static TimeStamp next_timestamp() { return ++g_last_timestamp; }
     //FIXME last timestamp is shared between Print & SLAPrint,
     // and if multiple Print or SLAPrint instances are executed in parallel, modification of g_last_timestamp
     // is not synchronized!
     static size_t g_last_timestamp;
 };
 
-// To be instantiated over PrintStep or PrintObjectStep enums.
+// SLA and background-process state use their own step enums.
 template <class StepType, size_t COUNT>
 class PrintState : public PrintStateBase
 {
@@ -481,11 +483,6 @@ public:
     // Clean up after process() finished, either with success, error or if canceled.
     // The adjustments on the Print / PrintObject data due to set_task() are to be reverted here.
     virtual void            finalize() = 0;
-    // Clean up print step / print object step data after
-    // 1) some print step / print object step was invalidated inside PrintBase::apply() while holding the milestone mutex locked.
-    // 2) background thread finished being canceled.
-    virtual void            cleanup() = 0;
-
     using SlicingStatus = PrintStatus::SlicingStatus;
     using PendingStatusBatch = PrintStatus::PendingBatch;
     using status_callback_type = PrintStatus::callback_type;

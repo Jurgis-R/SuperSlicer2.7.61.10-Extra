@@ -40,6 +40,7 @@
 
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -62,6 +63,8 @@ using OrchestratorReportPackageErrorFn = void (*)(orchestrator_handle *, const c
                                                   raw_plugin_package_load_error_code, const char *);
 using OrchestratorFinishPackageLoadFn = void (*)(orchestrator_handle *, const char *);
 
+using OrchestratorSetErrorMessageFn = int32_t (*)(orchestrator_handle *orchestrator, const char *message);
+
 struct OrchestratorFunctions
 {
     OrchestratorRegisterPluginFn register_plugin = nullptr;
@@ -69,6 +72,8 @@ struct OrchestratorFunctions
     OrchestratorBeginPackageLoadFn begin_package_load = nullptr;
     OrchestratorReportPackageErrorFn report_package_error = nullptr;
     OrchestratorFinishPackageLoadFn finish_package_load = nullptr;
+    // Host hook used to turn Python failures into retrievable diagnostic ids.
+    OrchestratorSetErrorMessageFn set_error_message = nullptr;
 };
 
 std::vector<std::unique_ptr<class PythonPlugin>> s_python_plugins;
@@ -76,6 +81,23 @@ std::vector<std::unique_ptr<class PythonPlugin>> s_python_plugins;
 // Consume the active Python exception and format its complete traceback. The
 // returned string is safe to retain after the GIL is released.
 std::string take_python_error();
+
+// Register one failure message through the host hook and return its id,
+// or PLUGIN_ERROR_GENERAL when no hook is available.
+int32_t store_python_error_message(OrchestratorSetErrorMessageFn set_error_message,
+                                   orchestrator_handle *orchestrator,
+                                   const char *message) noexcept
+{
+    if (set_error_message == nullptr || orchestrator == nullptr)
+        return PLUGIN_ERROR_GENERAL;
+    return set_error_message(orchestrator, message);
+}
+
+// Format the active Python exception and register it as a diagnostic id. Falls
+// back to the supplied generic text when the exception carries none.
+int32_t take_python_error_message(OrchestratorSetErrorMessageFn set_error_message,
+                                orchestrator_handle *orchestrator,
+                                const char *fallback) noexcept;
 
 // Publish a package-specific Python failure when loading an external script.
 void report_python_package_error(const OrchestratorFunctions &functions,
@@ -249,6 +271,28 @@ std::string take_python_error()
     Py_XDECREF(exception_type);
     PyErr_Clear();
     return result;
+}
+
+int32_t take_python_error_message(OrchestratorSetErrorMessageFn set_error_message,
+                                orchestrator_handle *orchestrator,
+                                const char *fallback) noexcept
+{
+    PyObject *exception_type = nullptr;
+    PyObject *exception_value = nullptr;
+    PyObject *exception_traceback = nullptr;
+    PyErr_Fetch(&exception_type, &exception_value, &exception_traceback);
+    PyErr_NormalizeException(&exception_type, &exception_value, &exception_traceback);
+    PyErr_Clear();
+    PyObject *text = exception_value == nullptr ? nullptr : PyObject_Str(exception_value);
+    const char *utf8 = text == nullptr ? nullptr : PyUnicode_AsUTF8(text);
+    const char *message = utf8 != nullptr && *utf8 != '\0' ? utf8 : fallback;
+    const int32_t id = store_python_error_message(set_error_message, orchestrator, message);
+    Py_XDECREF(text);
+    Py_XDECREF(exception_traceback);
+    Py_XDECREF(exception_value);
+    Py_XDECREF(exception_type);
+    PyErr_Clear();
+    return id;
 }
 
 void report_python_package_error(const OrchestratorFunctions &functions,
@@ -483,7 +527,12 @@ PyObject *pointer_to_python_uint(const void *ptr)
     return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ptr)));
 }
 
-void call_python_void(PyObject *object, const char *method_name, PyObject *args, const std::string &plugin_id,
+/*
+Call one optional Python method. A missing attribute is a successful no-op, so
+plugins may implement only the hooks they need; an attribute that exists but
+cannot run returns false.
+*/
+bool call_python_void(PyObject *object, const char *method_name, PyObject *args, const std::string &plugin_id,
                       const char *fallback_method_name = nullptr)
 {
     PyObject *method = PyObject_GetAttrString(object, method_name);
@@ -495,14 +544,14 @@ void call_python_void(PyObject *object, const char *method_name, PyObject *args,
     }
     if (method == nullptr) {
         PyErr_Clear();
-        return;
+        return true;
     }
 
     if (!PyCallable_Check(method)) {
         BOOST_LOG_TRIVIAL(warning) << "Python plugin '" << plugin_id << "' attribute "
                                    << method_name << " is not callable.";
         Py_DECREF(method);
-        return;
+        return false;
     }
 
     PyObject *result = PyObject_CallObject(method, args);
@@ -510,18 +559,43 @@ void call_python_void(PyObject *object, const char *method_name, PyObject *args,
         PyErr_Print();
         BOOST_LOG_TRIVIAL(error) << "Python plugin '" << plugin_id << "' failed in " << method_name << "().";
         Py_DECREF(method);
-        return;
+        return false;
     }
 
     Py_DECREF(result);
     Py_DECREF(method);
+    return true;
+}
+
+/*
+Report whether the Python plugin exposes a callable clear hook. A declared but
+non-callable attribute is a plugin error, so it throws instead of silently
+disabling per-Print cleanup.
+*/
+bool python_plugin_has_clear(PyObject *plugin, const std::string &plugin_id)
+{
+    PyObject *method = PyObject_GetAttrString(plugin, "clear");
+    if (method == nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+
+    const bool callable = PyCallable_Check(method) != 0;
+    Py_DECREF(method);
+    if (!callable)
+        throw std::runtime_error("Python plugin '" + plugin_id + "' clear attribute is not callable.");
+    return true;
 }
 
 class PythonPlugin
 {
 public:
-    explicit PythonPlugin(PyObject *plugin)
+    PythonPlugin(PyObject *plugin,
+                 const OrchestratorSetErrorMessageFn set_error_message,
+                 orchestrator_handle *orchestrator)
         : m_plugin(plugin)
+        , m_set_error_message(set_error_message)
+        , m_orchestrator(orchestrator)
         , m_id(string_attribute(plugin, "plugin_id", "python.unnamed"))
         , m_name(string_attribute(plugin, "name", m_id.c_str()))
         , m_description(string_attribute(plugin, "description", ""))
@@ -533,6 +607,7 @@ public:
         , m_dependencies(string_list_attribute(plugin, "dependencies"))
         , m_used_config_keys(used_config_key_list_attribute(plugin, "used_config_keys"))
         , m_defined_config_keys(string_list_attribute(plugin, "defined_config_keys"))
+        , m_has_clear(python_plugin_has_clear(plugin, m_id))
     {
         Py_INCREF(m_plugin);
         for (const std::string &dependency : m_dependencies)
@@ -560,7 +635,10 @@ public:
     {
         plugin_instance instance = {};
         instance.ctx = this;
-        instance.vt = &vtable();
+        m_instance_vtable = vtable();
+        // A null callback must remain distinguishable from a Python method that participates in cleanup.
+        m_instance_vtable.clear = m_has_clear ? &PythonPlugin::clear_bridge : nullptr;
+        instance.vt = &m_instance_vtable;
         return instance;
     }
 
@@ -702,6 +780,65 @@ private:
         PyGILState_Release(gil_state);
     }
 
+    static int32_t clear_bridge(void *plugin_ctx,
+                                const print_handle *print,
+                                storage_handle *plugin_storage) noexcept
+    {
+        PythonPlugin *plugin = static_cast<PythonPlugin *>(plugin_ctx);
+        try {
+            // Destruction runs in reverse declaration order: release Python references before releasing the GIL.
+            struct GilGuard {
+                PyGILState_STATE state = PyGILState_Ensure();
+                ~GilGuard() { PyGILState_Release(state); }
+            } gil;
+            const std::unique_ptr<PyObject, decltype(&Py_DecRef)> py_print(
+                pointer_to_python_uint(print), &Py_DecRef);
+            const std::unique_ptr<PyObject, decltype(&Py_DecRef)> py_storage(
+                pointer_to_python_uint(plugin_storage), &Py_DecRef);
+            const std::unique_ptr<PyObject, decltype(&Py_DecRef)> args(
+                py_print && py_storage ? PyTuple_Pack(2, py_print.get(), py_storage.get()) : nullptr,
+                &Py_DecRef);
+            if (args == nullptr)
+                return take_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                               "Python plugin clear argument allocation failed");
+            const std::unique_ptr<PyObject, decltype(&Py_DecRef)> method(
+                PyObject_GetAttrString(plugin->m_plugin, "clear"), &Py_DecRef);
+            if (method == nullptr)
+                return take_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                               "Python plugin clear method lookup failed");
+            if (!PyCallable_Check(method.get()))
+                return store_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                                  "Python plugin clear attribute is not callable");
+            const std::unique_ptr<PyObject, decltype(&Py_DecRef)> result(
+                PyObject_CallObject(method.get(), args.get()), &Py_DecRef);
+            if (result == nullptr)
+                return take_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                               "Python plugin failed in clear()");
+
+            // clear() returns PLUGIN_ERROR_OK, a registered diagnostic id, or
+            // None for success. Anything else is a plugin-side contract error
+            // the host must see as a failure.
+            if (result.get() == Py_None)
+                return PLUGIN_ERROR_OK;
+            if (!PyLong_Check(result.get()) || PyBool_Check(result.get()))
+                return store_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                                  "Python plugin clear() must return an int32 status or None");
+            const long long status = PyLong_AsLongLong(result.get());
+            if (PyErr_Occurred() || status < 0 || status > (std::numeric_limits<int32_t>::max)()) {
+                PyErr_Clear();
+                return store_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                                  "Python plugin clear() status is outside the int32 range");
+            }
+            return static_cast<int32_t>(status);
+        } catch (const std::exception &error) {
+            return store_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                              error.what());
+        } catch (...) {
+            return store_python_error_message(plugin->m_set_error_message, plugin->m_orchestrator,
+                                              "Unknown C++ exception in Python plugin clear");
+        }
+    }
+
     static const plugin_vtable &vtable()
     {
         static const plugin_vtable vt = {
@@ -719,7 +856,8 @@ private:
             &PythonPlugin::initialize_bridge,
             &PythonPlugin::setup_bridge,
             &PythonPlugin::setup_run_bridge,
-            &PythonPlugin::run_bridge
+            &PythonPlugin::run_bridge,
+            nullptr
         };
         return vt;
     }
@@ -739,6 +877,11 @@ private:
     std::vector<raw_used_config_key> m_used_config_key_views;
     std::vector<std::string> m_defined_config_keys;
     std::vector<const char *> m_defined_config_key_ptrs;
+    bool m_has_clear = false;
+    // Host hook and Orchestrator owning the messages returned by clear().
+    OrchestratorSetErrorMessageFn m_set_error_message = nullptr;
+    orchestrator_handle *m_orchestrator = nullptr;
+    plugin_vtable m_instance_vtable = {};
 };
 
 bool resolve_registration_functions(const boost::filesystem::path &host_library_path,
@@ -770,7 +913,9 @@ bool resolve_registration_functions(const boost::filesystem::path &host_library_
     FARPROC begin_farproc = GetProcAddress(module, "orchestrator_begin_plugin_package_load");
     FARPROC report_farproc = GetProcAddress(module, "orchestrator_report_plugin_package_load_error");
     FARPROC finish_farproc = GetProcAddress(module, "orchestrator_finish_plugin_package_load");
-    if (begin_farproc == NULL || report_farproc == NULL || finish_farproc == NULL) {
+    FARPROC error_message_farproc = GetProcAddress(module, "orchestrator_set_error_message");
+    if (begin_farproc == NULL || report_farproc == NULL || finish_farproc == NULL ||
+        error_message_farproc == NULL) {
         BOOST_LOG_TRIVIAL(error) << "Host library '" << host_library_path.string()
                                  << "' does not export plugin package diagnostic functions.";
         return false;
@@ -780,19 +925,22 @@ bool resolve_registration_functions(const boost::filesystem::path &host_library_
     functions.begin_package_load = reinterpret_cast<OrchestratorBeginPackageLoadFn>(begin_farproc);
     functions.report_package_error = reinterpret_cast<OrchestratorReportPackageErrorFn>(report_farproc);
     functions.finish_package_load = reinterpret_cast<OrchestratorFinishPackageLoadFn>(finish_farproc);
+    functions.set_error_message = reinterpret_cast<OrchestratorSetErrorMessageFn>(error_message_farproc);
 #else
     void *symbol = dlsym(RTLD_DEFAULT, "orchestrator_register_plugin");
     void *package_symbol = dlsym(RTLD_DEFAULT, "orchestrator_register_plugin_from_package");
     void *begin_symbol = dlsym(RTLD_DEFAULT, "orchestrator_begin_plugin_package_load");
     void *report_symbol = dlsym(RTLD_DEFAULT, "orchestrator_report_plugin_package_load_error");
     void *finish_symbol = dlsym(RTLD_DEFAULT, "orchestrator_finish_plugin_package_load");
+    void *error_message_symbol = dlsym(RTLD_DEFAULT, "orchestrator_set_error_message");
     if (symbol != nullptr && package_symbol != nullptr && begin_symbol != nullptr &&
-        report_symbol != nullptr && finish_symbol != nullptr) {
+        report_symbol != nullptr && finish_symbol != nullptr && error_message_symbol != nullptr) {
         functions.register_plugin = reinterpret_cast<OrchestratorRegisterPluginFn>(symbol);
         functions.register_package_plugin = reinterpret_cast<OrchestratorRegisterPluginFromPackageFn>(package_symbol);
         functions.begin_package_load = reinterpret_cast<OrchestratorBeginPackageLoadFn>(begin_symbol);
         functions.report_package_error = reinterpret_cast<OrchestratorReportPackageErrorFn>(report_symbol);
         functions.finish_package_load = reinterpret_cast<OrchestratorFinishPackageLoadFn>(finish_symbol);
+        functions.set_error_message = reinterpret_cast<OrchestratorSetErrorMessageFn>(error_message_symbol);
         return true;
     }
 
@@ -818,7 +966,9 @@ bool resolve_registration_functions(const boost::filesystem::path &host_library_
     begin_symbol = dlsym(module, "orchestrator_begin_plugin_package_load");
     report_symbol = dlsym(module, "orchestrator_report_plugin_package_load_error");
     finish_symbol = dlsym(module, "orchestrator_finish_plugin_package_load");
-    if (begin_symbol == nullptr || report_symbol == nullptr || finish_symbol == nullptr) {
+    error_message_symbol = dlsym(module, "orchestrator_set_error_message");
+    if (begin_symbol == nullptr || report_symbol == nullptr || finish_symbol == nullptr ||
+        error_message_symbol == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "Host library '" << host_library_path.string()
                                  << "' does not export plugin package diagnostic functions.";
         return false;
@@ -828,6 +978,7 @@ bool resolve_registration_functions(const boost::filesystem::path &host_library_
     functions.begin_package_load = reinterpret_cast<OrchestratorBeginPackageLoadFn>(begin_symbol);
     functions.report_package_error = reinterpret_cast<OrchestratorReportPackageErrorFn>(report_symbol);
     functions.finish_package_load = reinterpret_cast<OrchestratorFinishPackageLoadFn>(finish_symbol);
+    functions.set_error_message = reinterpret_cast<OrchestratorSetErrorMessageFn>(error_message_symbol);
 #endif
     return true;
 }
@@ -840,7 +991,8 @@ void register_python_plugin_object(PyObject *plugin_object,
     if (plugin_object == nullptr || plugin_object == Py_None)
         return;
 
-    std::unique_ptr<PythonPlugin> plugin(new PythonPlugin(plugin_object));
+    std::unique_ptr<PythonPlugin> plugin(new PythonPlugin(
+        plugin_object, functions.set_error_message, orchestrator));
     plugin_instance instance = plugin->c_instance();
     if (package_root.empty())
         functions.register_plugin(orchestrator, instance);

@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -208,10 +209,10 @@ TEST_CASE("Custom height markers become ordered typed plan events",
     Print print;
     configure_standard_firmware(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.color_change_gcode.value.clear();
-    config.pause_print_gcode.value.clear();
-    config.template_custom_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{"M117 filament start"});
+    config.option<ConfigOptionString>("color_change_gcode")->value.clear();
+    config.option<ConfigOptionString>("pause_print_gcode")->value.clear();
+    config.option<ConfigOptionString>("template_custom_gcode")->value.clear();
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{"M117 filament start"});
 
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
@@ -230,7 +231,7 @@ TEST_CASE("Custom height markers become ordered typed plan events",
         {scale_to_layer_coord(0.2), CustomGCode::Custom, 1, "", "G4 P25"}
     });
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const ExtrusionEntity &events = layer.tool_groups.front().events.before();
@@ -310,9 +311,9 @@ TEST_CASE("Custom height semantic tags precede exactly one script payload",
     Print print;
     configure_standard_firmware(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.color_change_gcode.value = "M600\n";
-    config.pause_print_gcode.value = "M601\n";
-    config.start_filament_gcode.set(std::vector<std::string>{""});
+    config.option<ConfigOptionString>("color_change_gcode")->value = "M600\n";
+    config.option<ConfigOptionString>("pause_print_gcode")->value = "M601\n";
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{""});
 
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
@@ -327,7 +328,7 @@ TEST_CASE("Custom height semantic tags precede exactly one script payload",
         {scale_to_layer_coord(0.2), CustomGCode::Custom, 1, "", "M117 custom action"}
     });
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const ExtrusionEntity &events = layer.tool_groups.front().events.before();
@@ -347,4 +348,38 @@ TEST_CASE("Custom height semantic tags precede exactly one script payload",
     CHECK(count_occurrences(output, "M600\n") == 1);
     CHECK(count_occurrences(output, "M601\n") == 1);
     CHECK(count_occurrences(output, "M117 custom action\n") == 1);
+}
+
+
+TEST_CASE("Custom G-code per print Z plugin owns its script settings",
+          "[plugins][gcode][custom-gcode-per-print-z][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("gcode.custom_gcode_per_print_z");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 3);
+    for (const char *expected : { "color_change_gcode", "pause_print_gcode", "template_custom_gcode" })
+        CHECK(std::find(defined_keys.begin(), defined_keys.end(), expected) != defined_keys.end());
+
+    for (const char *key : { "color_change_gcode", "pause_print_gcode", "template_custom_gcode" }) {
+        const ConfigOptionDef *def = PrintConfigDef::instance().get(key);
+        REQUIRE(def != nullptr);
+        CHECK(def->type == coString);
+        CHECK(def->container_type == ConfigOptionContainerType::Plater);
+        CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
+        CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+        CHECK(def->multiline);
+        CHECK(def->full_width);
+        CHECK(PrintConfig::defaults().option<ConfigOptionString>(key)->value.empty());
+    }
+
+    // The scripts stay always editable: the plugin owns no activation rule.
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
+        CHECK(rule.owner != "gcode.custom_gcode_per_print_z");
 }

@@ -242,7 +242,7 @@ PerimeterRunCapture capture_perimeter_outputs(const LayerSliceIsland &island)
 PerimeterRunCapture run_active_perimeter_plugins(Print &print, LayerSliceIsland &island)
 {
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(print);
+    Steps::StepGeneratePerimeter::clear(print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, print);
     return capture_perimeter_outputs(island);
 }
@@ -646,7 +646,7 @@ PerimeterCancellationCapture run_perimeter_cancellation_case(
 
     Orchestrator &orchestrator = Orchestrator::instance();
     ScopedActivePlugins active_scope(active_plugins);
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+    Steps::StepGeneratePerimeter::clear(prepared.print);
     orchestrator.reset_plugin_cancel();
     (void) orchestrator.consume_plugin_messages();
 
@@ -703,7 +703,7 @@ PerimeterRunCapture run_perimeter_and_post_case(
 
     {
         ScopedActivePlugins active_scope(perimeter_plugins);
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(Orchestrator::instance(), prepared.print);
     }
 
@@ -736,7 +736,7 @@ PerimeterRunCapture run_perimeter_and_post_case_with_regions(
 
     {
         ScopedActivePlugins active_scope(perimeter_plugins);
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(Orchestrator::instance(), prepared.print);
     }
 
@@ -783,7 +783,7 @@ PerimeterRunCapture run_perimeter_and_post_case_with_lower_area(
 
     {
         ScopedActivePlugins active_scope(perimeter_plugins);
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(Orchestrator::instance(), prepared.print);
     }
 
@@ -815,7 +815,7 @@ PerimeterRunCapture run_perimeter_and_post_case_with_generic_facet_painting(
 
     {
         ScopedActivePlugins active_scope(perimeter_plugins);
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(Orchestrator::instance(), prepared.print);
     }
 
@@ -843,7 +843,7 @@ PerimeterMultiIslandRunCapture run_perimeter_multi_island_case(
 
     ScopedActivePlugins active_scope(active_plugins);
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
 
     PerimeterMultiIslandRunCapture out;

@@ -60,7 +60,7 @@ bool publish_adhesion_extrusion_to_auxiliary_layer(storage_handle *storage,
 
     // Mark the feature explicitly so later adhesion plugins do not have to
     // infer whether an auxiliary layer contains brim or one of the skirt forms.
-    LayerAdhesionProperty &property = result.layer.properties().get_or_add(LayerAdhesionProperty::key);
+    LayerAdhesionProperty &property = result.layer.mutable_properties().get_or_add(LayerAdhesionProperty::key);
     property.kind = kind;
     property.flags = flags;
 

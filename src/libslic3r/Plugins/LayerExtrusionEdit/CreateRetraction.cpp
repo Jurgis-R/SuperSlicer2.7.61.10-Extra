@@ -18,12 +18,15 @@ small scalar cache so parallel workers never inspect or mutate another layer.
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <vector>
 
 #include "ExtrusionScopeHelpers.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
+#include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_extrusion_edit.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_layer_extrusion_edit.h"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
@@ -49,6 +52,37 @@ const char *const k_no_dependencies[] = {nullptr};
 const RegionSettings::OptionKeyGroup k_retraction_region_keys = {
     "print_retract_length"
 };
+
+const char *const k_defined_config_keys[] = {
+    "print_retract_length"
+};
+
+void initialize_create_retraction_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definition owned by this module. It fixes the option type, override
+    scope, default and GUI metadata; the defined key is published in the print
+    presets, so profiles read and write it by name like any built-in setting.
+    Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+    def.opt_key = "print_retract_length";
+    def.type = RAW_CO_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_GCODE;
+    def.category = RAW_OPTION_CATEGORY_FILAMENT;
+    def.label = "Retraction length";
+    def.tooltip = "Override the retract_length setting from the printer config. Used for calibration.";
+    def.can_be_disabled = 1;
+    def.has_min = 1;
+    def.min_value = 0;
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "!0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 
 /* One absolute endpoint in scaled PrintingPlan coordinates. */
 struct PlannedPosition
@@ -199,13 +233,13 @@ void write_incoming_retraction(const ScopeEntity &target,
                                const plugin_run_context *run_ctx);
 
 /* Count marked roots for progress without retaining their handles. */
-uint32_t scope_count(const PrintingLayerGroup &layer,
+uint32_t scope_count(PrintingLayerGroup &layer,
                      const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
                      const plugin_run_context *run_ctx);
 
 /* Append the end-of-print Retract event to the plan after sequence. */
 void append_terminal_retraction(storage_handle *storage,
-                                const PrintingPlan &plan,
+                                PrintingPlan &plan,
                                 double target,
                                 const plugin_run_context *run_ctx);
 
@@ -227,6 +261,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
     void setup_impl(const plugin_run_context *run_ctx,
                     uint32_t run_count) const override;
@@ -638,7 +674,7 @@ void write_incoming_retraction(
 }
 
 uint32_t scope_count(
-    const PrintingLayerGroup &layer,
+    PrintingLayerGroup &layer,
     const PluginPropertyKey<PrintingExtrusionScopeProperty> &key,
     const plugin_run_context *run_ctx)
 {
@@ -659,7 +695,7 @@ uint32_t scope_count(
 }
 
 void append_terminal_retraction(storage_handle *storage,
-                                const PrintingPlan &plan,
+                                PrintingPlan &plan,
                                 const double target,
                                 const plugin_run_context *run_ctx)
 {
@@ -748,6 +784,19 @@ int32_t CreateRetraction::used_config_keys(raw_used_config_key *keys) const noex
     return int32_t(sizeof(used_keys) / sizeof(used_keys[0]));
 }
 
+int32_t CreateRetraction::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void CreateRetraction::inilialize_impl(storage_handle *) const
+{
+    initialize_create_retraction_settings(m_orchestrator);
+}
+
 const char *CreateRetraction::progress_message_format_impl() const noexcept
 {
     return "Creating retractions: %u / %u scopes";
@@ -765,7 +814,7 @@ void CreateRetraction::setup_impl(const plugin_run_context *run_ctx,
     if (ctx == nullptr || ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     size_t flat_idx = 0;
     m_flat_indices.resize(plan.group_count());
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
@@ -831,8 +880,8 @@ void CreateRetraction::setup_run_impl(const plugin_run_context *run_ctx) const
         ctx->plan == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
-    const PrintingLayerGroup layer(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer(ctx->layer_group);
     const Config print_config = Print(ctx->print).config();
     LayerBoundarySummary summary;
     summary.prepared = true;
@@ -881,8 +930,8 @@ void CreateRetraction::run_impl(const plugin_run_context *run_ctx) const
         throw std::runtime_error("A retraction layer has no prepared summary.");
     const LayerBoundarySummary *preceding = previous_nonempty_layer(flat_idx, run_ctx);
     const LayerBoundarySummary *following = next_nonempty_layer(flat_idx, run_ctx);
-    const PrintingLayerGroup layer(ctx->layer_group);
-    const PrintingPlan plan(ctx->plan);
+    PrintingLayerGroup layer(ctx->layer_group);
+    PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
 
     PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
@@ -1035,15 +1084,15 @@ void CreateTerminalRetraction::run_impl(
         run_ctx->plugin_storage == nullptr)
         return;
 
-    const PrintingPlan plan(ctx->plan);
+    PrintingPlan plan(ctx->plan);
     const Config print_config = Print(ctx->print).config();
     bool found_terminal = false;
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             PrintingEntityPropertyTraversal<PrintingExtrusionScopeProperty> traversal(
                 m_scope_property,
                 retraction_state_definition(),

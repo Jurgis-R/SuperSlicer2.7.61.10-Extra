@@ -98,7 +98,7 @@ region views and publishes ownership only for its session object.
 std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessions(
     orchestrator_handle *orchestrator,
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     std::vector<ProviderBatch> &batches);
 
 /*
@@ -109,7 +109,7 @@ provider priority selects one region before the route is stored.
 */
 void build_entity_routes(
     storage_handle *scratch_storage,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const PrintingExtrusion &extrusion,
     const ExtrusionEntity &entity,
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions,
@@ -121,7 +121,7 @@ loop-to-provider routing table used by place_seam().
 */
 std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
     storage_handle *scratch_storage,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions);
 
 struct ProviderBatch
@@ -163,11 +163,11 @@ std::vector<PrintRegion> collect_print_regions(const Print &print, const Printin
     // This also makes the router robust to generated or synthetic plan data
     // that is not represented by the ordinary object-region enumeration.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        const ConstPrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            const ConstPrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                const ConstPrintingToolGroup tool = layer.tool_group(tool_idx);
                 for (uint32_t idx = 0; idx < tool.extrusion_count(); ++idx) {
                     const LayerRegionIsland island = tool.extrusion(idx).region_island();
                     if (!island.valid()) continue;
@@ -237,7 +237,7 @@ std::vector<ProviderBatch> group_regions_by_provider(
 std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessions(
     orchestrator_handle *orchestrator,
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     std::vector<ProviderBatch> &batches)
 {
     OrchestratorView orchestrator_view(orchestrator);
@@ -253,7 +253,7 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
             batch.raw_regions.push_back(region.handle());
 
         run_ctx_seam_placer context = {};
-        context.plan = plan.handle();
+        context.plan = plan.mutable_handle();
         context.regions = batch.raw_regions.empty() ? nullptr : batch.raw_regions.data();
         context.region_count = uint32_t(batch.raw_regions.size());
 
@@ -290,7 +290,7 @@ std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> create_sessio
 
 void build_entity_routes(
     storage_handle *scratch_storage,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const PrintingExtrusion &extrusion,
     const ExtrusionEntity &entity,
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions,
@@ -354,7 +354,7 @@ void build_entity_routes(
 
 std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
     storage_handle *scratch_storage,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const std::map<const print_region_handle *, std::shared_ptr<SeamPlacer>> &sessions)
 {
     std::map<const extrusion_entity_handle *, LoopRoute> result;
@@ -363,11 +363,11 @@ std::map<const extrusion_entity_handle *, LoopRoute> build_plan_routes(
     // later uses. Keeping this order makes duplicate detection and exact
     // priority ties deterministic.
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
-                const PrintingToolGroup tool = layer.tool_group(tool_idx);
+                PrintingToolGroup tool = layer.tool_group(tool_idx);
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
                     const PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
                     build_entity_routes(
@@ -393,7 +393,7 @@ struct SeamPlacerRouter::Impl
 
 SeamPlacerRouter::SeamPlacerRouter(orchestrator_handle *orchestrator,
                                    const Print &print,
-                                   const PrintingPlan &plan,
+                                   PrintingPlan plan,
                                    storage_handle *scratch_storage) :
     m_impl(new Impl())
 {

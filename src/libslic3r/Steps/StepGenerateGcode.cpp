@@ -38,7 +38,7 @@ STEP_GCODE bridge
 
 The G-code step is now a plugin boundary. Earlier pipeline steps build a
 PrintingPlan, then this step creates the selected firmware session and invokes
-the active STEP_GCODE writer. The writer receives the source Print, mutable
+the active STEP_GCODE writer. The writer receives the source Print, read-only
 PrintingPlan, borrowed firmware session, and resolved final output path.
 
 Before crossing that plugin boundary, the step validates the process speed of
@@ -858,12 +858,15 @@ void create_firmware_session(Orchestrator &orchestrator,
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
     // A failed or skipped writer must not leave the next preview phase pointing
     // at text produced by an earlier export.
     print.reset_gcode_reader_source_path();
+    print.print_statistics().clear();
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string *error)
 {
@@ -972,10 +975,6 @@ bool validate_post(const Print &, std::string *)
 std::string run_step(Orchestrator &orchestrator, Print &print, const std::string &path,
                      const raw_gcode_thumbnail_renderer *thumbnail_renderer)
 {
-    // Direct callers do not necessarily pass through clean_and_prepare(). Clear
-    // the previous publication before the writer can fail or publish a new one.
-    print.reset_gcode_reader_source_path();
-
     if (path.empty())
         throw RuntimeError("G-code generation plugin needs a non-empty output path.");
 
@@ -990,10 +989,11 @@ std::string run_step(Orchestrator &orchestrator, Print &print, const std::string
     if (plugin == nullptr)
         throw RuntimeError("No active G-code generation plugin is available.");
 
-    // The G-code step consumes the PrintingPlan created by STEP_ORDERING. If a
-    // caller runs this step directly in a test, mutable_printing_plan() still
-    // gives the plugin a valid empty plan instead of a null handle.
-    Printing::PrintingPlan &plan = print.mutable_printing_plan();
+    // The G-code step consumes the finalized PrintingPlan created by the
+    // ordering and editing stages.
+    const Printing::PrintingPlan *plan = print.printing_plan();
+    if (plan == nullptr)
+        throw RuntimeError("G-code generation needs a finalized PrintingPlan.");
 
     // The host facade validates the Reader identity selected by the firmware.
     // Firmware sessions execute that Reader through their plugin-side helper.
@@ -1008,7 +1008,7 @@ std::string run_step(Orchestrator &orchestrator, Print &print, const std::string
     ReaderSourcePathReceiver reader_source(print);
     run_ctx_generate_gcode payload = {};
     payload.print = reinterpret_cast<const print_handle *>(&print);
-    payload.plan = reinterpret_cast<printing_plan_handle *>(&plan);
+    payload.plan = reinterpret_cast<const printing_plan_handle *>(plan);
     payload.firmware = firmware.instance();
     payload.output_path = path.c_str();
     payload.reader_source_context = &reader_source;

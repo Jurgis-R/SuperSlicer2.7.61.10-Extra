@@ -275,6 +275,8 @@ public:
         std::string plugin_id;
         slicing_step_t step = STEP_NONE;
         std::string message;
+        // Zero denotes text-only diagnostics; registered ids remain resolvable after the callback.
+        int32_t diagnostic_id = PLUGIN_ERROR_OK;
     };
 
     // Return the process-wide orchestrator that owns registered plugins and host services.
@@ -371,10 +373,13 @@ public:
     // finalize_plugin_option_defs() runs.
     option_def_error_code modify_print_config(const raw_option_def_patch *patch);
 
-    // Apply every recorded patch, prune enum values whose plugin is missing or
-    // inactive when the definition advertises contains_plugin_id, and rebuild
-    // the scripted enum maps. Missing target keys are ignored. A plugin-id list
+    // Move the invalidation step of every setting read by an active plugin no
+    // later than the pipeline step running that plugin. Then apply every
+    // recorded patch, prune enum values whose plugin is missing or inactive
+    // when the definition advertises contains_plugin_id, and rebuild the
+    // scripted enum maps. Missing target keys are ignored. A plugin-id list
     // that becomes empty reports a non-fatal plugin error and stays empty.
+    // Runs once, after initialize_plugins() and before PrintConfigDef::finalize().
     void finalize_plugin_option_defs();
 
     // Register a plugin instance and transfer its lifetime to the orchestrator.
@@ -478,15 +483,30 @@ public:
     plugin_run_context prepare_plugin_run_context(slicing_step_t step,
                                                   Plugin *plugin,
                                                   plugin_host_context *host_context = nullptr);
+    // Remember that this plugin prepared state for the given Print and step, so
+    // a later replay can ask it to release that state.
+    void track_plugin_setup(Plugin &plugin, Print &print, slicing_step_t step);
+    // Ask plugins that prepared state for this Print at or after
+    // first_invalid_step to release it. Returns false when a callback failed;
+    // failed entries stay registered for a retry.
+    bool clear_plugin_participants(Print &print, slicing_step_t first_invalid_step);
     // Queue a plugin diagnostic for the GUI thread. The message is copied so C,
     // C++ and Python plugins may pass temporary buffers safely.
     void add_plugin_message(PluginMessageLevel level,
                             const Plugin *plugin,
                             slicing_step_t step,
-                            const char *message);
+                            const char *message,
+                            int32_t diagnostic_id = PLUGIN_ERROR_OK);
     // Drain queued plugin diagnostics. The Plater uses this to turn plugin
     // warnings and errors into ImGui notifications without opening modal dialogs.
     std::vector<PluginMessage> consume_plugin_messages();
+    // Copy one UTF-8 diagnostic into the process-lifetime error registry and
+    // return its id, or PLUGIN_ERROR_GENERAL when the message cannot be stored.
+    int32_t store_error_message(const char *message);
+    // Resolve a diagnostic id: static text for the reserved ids, registered text
+    // for dynamic ids, generic text for anything unknown. Never fails and never
+    // borrows registry storage.
+    std::string error_message(int32_t id) const;
     // Return whether cancellation was requested by the host.
     bool is_plugin_cancelled() const;
     // Request cancellation; plugin code must observe it at a cancellation point.
@@ -576,6 +596,12 @@ private:
     std::atomic_bool m_plugin_cancel_requested { false };
     std::mutex m_plugin_messages_mutex;
     std::vector<PluginMessage> m_plugin_messages;
+    // Process-lifetime diagnostics registered through store_error_message().
+    // Entries are append-only and an id is never reused, so concurrent callbacks
+    // cannot overwrite each other's message.
+    mutable std::mutex m_error_messages_mutex;
+    std::vector<std::string> m_error_messages;
+    int32_t m_next_error_message_id { PLUGIN_ERROR_FIRST_DYNAMIC };
     Plugin *m_initializing_plugin { nullptr };
     bool m_initializing_plugin_failed { false };
     std::string m_initializing_plugin_failure;

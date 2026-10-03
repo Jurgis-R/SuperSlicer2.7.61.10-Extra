@@ -43,6 +43,7 @@ struct EPropertyAttributes :
     EPropertyAttributes &no_seam_enabled(bool enabled = true) { no_seam = enabled ? 1 : 0; return *this; }
     bool no_seam_enabled() const { return no_seam != 0; }
     EPropertyAttributes &mm3_per_mm(double value) { c_extrusion_property_attributes::mm3_per_mm = value; return *this; }
+    double mm3_per_mm() const { return c_extrusion_property_attributes::mm3_per_mm; }
     EPropertyAttributes &width(float value) { c_extrusion_property_attributes::width = value; return *this; }
     EPropertyAttributes &height(float value) { c_extrusion_property_attributes::height = value; return *this; }
 };

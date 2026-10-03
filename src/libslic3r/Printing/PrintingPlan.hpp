@@ -234,6 +234,12 @@ struct PrintingPlan
     PrintingPlan(PrintingPlan &&) noexcept = default;
     PrintingPlan &operator=(PrintingPlan &&) noexcept = default;
 
+    /* Make an independent work plan, including every owned tree, scope event,
+       catalog value, and plugin-property payload. Borrowed source pointers still
+       refer to the same Print, while all child plan identities point at the new
+       plan's identity token. */
+    std::unique_ptr<PrintingPlan> clone() const;
+
     PrintingScopeEvents events;
     // Plan-wide metadata is reset whenever the plan is rebuilt with clear().
     PluginPropertyContainer properties;

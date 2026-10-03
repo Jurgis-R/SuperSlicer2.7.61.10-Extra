@@ -32,7 +32,7 @@
 
 #include "libslic3r/enum_bitmask.hpp"
 #include "libslic3r/Point.hpp"
-#include "libslic3r/PrintSteps.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_slicing_step.h"
 #include "libslic3r/Config/Preset.hpp"
 
 #include "GUI_Preview.hpp"
@@ -326,7 +326,7 @@ public:
     bool has_toolpaths_to_export() const;
     void export_toolpaths_to_obj() const;
     void reslice();
-    void reslice_FFF_until_step(PrintObjectStep step, const ModelObject &object, bool postpone_error_messages = false);
+    void reslice_FFF_until_step(slicing_step_t step, const ModelObject &object, bool postpone_error_messages = false);
     void reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &object, bool postpone_error_messages = false);
 
     void clear_before_change_mesh(int obj_idx, const std::string &notification_msg);

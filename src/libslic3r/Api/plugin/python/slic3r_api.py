@@ -237,6 +237,21 @@ def report_progress(run_ctx_address: int, progress: float, message: Optional[str
         PLUGIN_REPORT_PROGRESS(ctx.report_progress)(ctx.host_context, progress, _as_bytes(message))
 
 
+@abi_requires_headers("slic3r_orchestrator.h")
+def store_error_message(message: str) -> int:
+    """Register one failure message and return its diagnostic id.
+
+    Use it from PluginBase.clear() (and future status-returning callbacks)
+    before returning the id to the host. The registered text stays valid for
+    the lifetime of the application. Returns PLUGIN_ERROR_GENERAL when no API
+    is registered or the host cannot store the message.
+    """
+    if not _registered_apis:
+        return PLUGIN_ERROR_GENERAL
+    api = _registered_apis[-1]
+    return int(api.host.orchestrator_set_error_message(api.orchestrator, _as_bytes(message)))
+
+
 def used_config_key(
     key: str,
     type: int,
@@ -277,9 +292,17 @@ class PluginBase:
     - setup(run_ctx_address, run_count)
     - setup_run(run_ctx_address)
     - run(run_ctx_address)
+    - clear(print_address, plugin_storage_address), when the plugin owns
+      per-Print state that must be discarded before replay; return
+      PLUGIN_ERROR_OK (or None) when the state was released, or a diagnostic id
+      obtained from store_error_message() to report why it survived.
 
-    Use run_context(), is_cancelled(), report_warning(), report_error() and
-    report_progress() to inspect or use the common plugin_run_context callbacks.
+    The clear status must be a signed 32-bit int, not bool. Omit clear entirely
+    when no per-Print cleanup is needed.
+
+    Use run_context(), is_cancelled(), report_warning(), report_error(),
+    report_progress() and store_error_message() to inspect or use the common
+    callbacks.
     ``progress`` is reset before setup() and may then be shared by concurrent
     run() calls. Raise PluginCancelled (normally through throw_if_cancelled())
     to stop cooperatively without reporting a plugin failure.
@@ -803,9 +826,9 @@ class Slic3rAPI:
         return Surface(self, handle)
 
     @abi_requires_headers("slic3r_data_tree.h")
-    def mutable_surface(self, handle: int) -> MutableSurface:
+    def mutable_surface(self, handle: int, properties: int) -> MutableSurface:
         """Borrow a mutable Surface view explicitly supplied by the host."""
-        return MutableSurface(self, handle)
+        return MutableSurface(self, handle, properties)
 
     @abi_requires_headers("slic3r_data_tree.h")
     def surface_collection(self, handle: int) -> SurfaceCollection:
@@ -1028,9 +1051,9 @@ class Slic3rAPI:
     def ordering_context(self, address: int) -> OrderingContext | None:
         return OrderingContext.from_ordering_run_context(self, address)
 
-    @abi_requires_headers("steps/slic3r_step_pre_gcode.h")
-    def pre_gcode_context(self, address: int) -> PreGCodeContext | None:
-        return PreGCodeContext.from_pre_gcode_run_context(self, address)
+    @abi_requires_headers("steps/slic3r_step_finalize_slicing.h")
+    def finalize_slicing_context(self, address: int) -> FinalizeSlicingContext | None:
+        return FinalizeSlicingContext.from_finalize_slicing_run_context(self, address)
 
     @abi_requires_headers("steps/slic3r_step_gcode.h")
     def gcode_context(self, address: int) -> GCodeContext | None:

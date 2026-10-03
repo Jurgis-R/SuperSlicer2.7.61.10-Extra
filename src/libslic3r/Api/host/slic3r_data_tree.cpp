@@ -3,6 +3,7 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -28,6 +29,7 @@
 #include "libslic3r/PluginProperty.hpp"
 #include "libslic3r/Surface.hpp"
 #include "libslic3r/SurfaceCollection.hpp"
+#include "libslic3r/Steps/StepRunner.hpp"
 
 namespace Slic3r {
 
@@ -67,9 +69,14 @@ static const PluginPropertyContainer *to_plugin_properties(const plugin_property
     return reinterpret_cast<const PluginPropertyContainer *>(me);
 }
 
-static plugin_property_container_handle *to_mutable_property_handle(const PluginPropertyContainer *container)
+static plugin_property_container_handle *to_mutable_property_handle(PluginPropertyContainer *container)
 {
-    return reinterpret_cast<plugin_property_container_handle *>(const_cast<PluginPropertyContainer *>(container));
+    return reinterpret_cast<plugin_property_container_handle *>(container);
+}
+
+static const plugin_property_container_handle *to_property_handle(const PluginPropertyContainer *container)
+{
+    return reinterpret_cast<const plugin_property_container_handle *>(container);
 }
 
 static ExPolygon *to_expolygon(expolygon_handle *me) { return reinterpret_cast<ExPolygon*>(me); }
@@ -77,6 +84,72 @@ static const ExPolygon *to_expolygon(const expolygon_handle *me) { return reinte
 
 static ExPolygons *to_expolygons(expolygon_collection_handle *me) { return reinterpret_cast<ExPolygons*>(me); }
 static const ExPolygons *to_expolygons(const expolygon_collection_handle *me) { return reinterpret_cast<const ExPolygons*>(me); }
+
+static bool check_freeze(const Print *print, slicing_step_t last_editor_step, const char *what)
+{
+    // STEP_NONE means idle-only access; it is not a boundary in execution_order().
+    const bool allowed = print == nullptr ||
+        (last_editor_step == STEP_NONE ? print->running_step() == STEP_NONE : print->running_step_may_edit(last_editor_step));
+#if defined(SLIC3R_STRICT_FREEZE)
+    if (!allowed) {
+        Orchestrator &orchestrator = Orchestrator::instance();
+        orchestrator.request_plugin_cancel();
+        if (!print->claim_freeze_diagnostic())
+            return false;
+        try {
+            const std::string message = std::string("Frozen data-tree edit refused: ") + what +
+                " (running step " + Steps::Detail::step_name_for_diagnostic(orchestrator, print->running_step()) +
+                ", last editor " + Steps::Detail::step_name_for_diagnostic(orchestrator, last_editor_step) + ").";
+            const int32_t id = orchestrator.store_error_message(message.c_str());
+            // No plugin context reaches these getters; only the owning Print's step is attributable.
+            orchestrator.add_plugin_message(Orchestrator::PluginMessageLevel::Error,
+                                            nullptr, print->running_step(), message.c_str(), id);
+        } catch (...) {
+            // Cancellation survives diagnostic allocation failures at the C boundary.
+        }
+        return false;
+    }
+#else
+    (void)what;
+    assert(allowed);
+#endif
+    return true;
+}
+
+static bool data_tree_editable(const PrintObject &object, const char *what)
+{
+    return check_freeze(object.print(), STEP_FINALIZE_SLICING, what);
+}
+
+static bool island_outputs_editable(const LayerSliceIsland &island, const char *what)
+{
+    const Layer *layer = island.layer();
+    const PrintObject *object = layer == nullptr ? nullptr : layer->object();
+    return object == nullptr || data_tree_editable(*object, what);
+}
+
+static bool region_island_editable(const LayerRegionIsland &island, const char *what)
+{
+    // Region-islands borrow their Print ownership through their associated regions.
+    for (const LayerRegion *region : island.regions()) {
+        const PrintObject *object = region->layer() == nullptr ? nullptr : region->layer()->object();
+        if (object != nullptr && !data_tree_editable(*object, what))
+            return false;
+    }
+    return true;
+}
+
+// Auxiliary geometry is produced after PostSlicing and follows the later data-tree boundary.
+static bool slices_editable(const Layer &layer, const char *what)
+{
+    const PrintObject *object = layer.object();
+    if (object == nullptr || object->print() == nullptr)
+        return true;
+    for (const Layer &auxiliary_layer : object->auxiliary_layers())
+        if (&auxiliary_layer == &layer)
+            return data_tree_editable(*object, what);
+    return check_freeze(object->print(), STEP_POST_SLICING, what);
+}
 
 static c_point to_c_point(const Point &point)
 {
@@ -256,9 +329,16 @@ int32_t surface_get_flag(const surface_handle *me, raw_surface_type flag)
     return me != nullptr && (surface_get_type(me) & flag) != 0;
 }
 
-plugin_property_container_handle *surface_get_properties(const surface_handle *me)
+const plugin_property_container_handle *surface_get_properties(const surface_handle *me)
 {
-    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(static_cast<const Slic3r::PluginPropertyContainer *>(Slic3r::to_surface(me)));
+    return me == nullptr ? nullptr : Slic3r::to_property_handle(Slic3r::to_surface(me));
+}
+
+plugin_property_container_handle *surface_collection_get_properties_mutable(surface_collection_handle *me, uint32_t idx)
+{
+    if (me == nullptr || idx >= Slic3r::to_surface_collection(me)->size())
+        return nullptr;
+    return Slic3r::to_mutable_property_handle(&Slic3r::to_surface_collection(me)->at(idx));
 }
 
 surface_collection_handle *storage_new_surface_collection(storage_handle *me)
@@ -398,9 +478,16 @@ const layer_handle *layer_get_lower_layer(const layer_handle *me)
     return me == nullptr ? nullptr : reinterpret_cast<const layer_handle*>(Slic3r::to_layer(me)->lower_layer);
 }
 
-plugin_property_container_handle *layer_get_properties(const layer_handle *me)
+const plugin_property_container_handle *layer_get_properties(const layer_handle *me)
 {
-    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(static_cast<const Slic3r::PluginPropertyContainer *>(Slic3r::to_layer(me)));
+    return me == nullptr ? nullptr : Slic3r::to_property_handle(Slic3r::to_layer(me));
+}
+
+plugin_property_container_handle *layer_get_properties_mutable(layer_handle *me)
+{
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_get_properties_mutable"))
+        return nullptr;
+    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_layer(me));
 }
 
 uint32_t layer_count_region(const layer_handle *me)
@@ -441,9 +528,17 @@ const layer_island_handle *layer_get_island(const layer_handle *me, uint32_t idx
     return reinterpret_cast<const layer_island_handle*>(&Slic3r::to_layer(me)->island(idx));
 }
 
-plugin_property_container_handle *layer_region_get_properties(const layer_region_handle *me)
+const plugin_property_container_handle *layer_region_get_properties(const layer_region_handle *me)
 {
-    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(static_cast<const Slic3r::PluginPropertyContainer *>(Slic3r::to_layer_region(me)));
+    return me == nullptr ? nullptr : Slic3r::to_property_handle(Slic3r::to_layer_region(me));
+}
+
+plugin_property_container_handle *layer_region_get_properties_mutable(layer_region_handle *me)
+{
+    const Slic3r::Layer *layer = me == nullptr ? nullptr : Slic3r::to_layer_region(me)->layer();
+    if (layer != nullptr && !Slic3r::slices_editable(*layer, "layer_region_get_properties_mutable"))
+        return nullptr;
+    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_layer_region(me));
 }
 
 c_flow layer_region_get_flow(const layer_region_handle *me, raw_extrusion_role flow_role)
@@ -484,6 +579,9 @@ const print_region_handle *layer_region_get_print_region(const layer_region_hand
 
 expolygon_handle *layer_island_get_slice_mutable(layer_island_handle *me)
 {
+    const Slic3r::Layer *layer = me == nullptr ? nullptr : Slic3r::to_layer_island(me)->layer();
+    if (layer != nullptr && !Slic3r::slices_editable(*layer, "layer_island_get_slice_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr :
                            reinterpret_cast<expolygon_handle *>(
                                &Slic3r::ApiInternal::LayerIslandAccess::slice_mutable(*Slic3r::to_layer_island(me)));
@@ -534,9 +632,17 @@ const expolygon_collection_handle *layer_island_get_infill_no_overlap_areas(cons
                                &Slic3r::to_layer_island(me)->infill_free_areas());
 }
 
-plugin_property_container_handle *layer_island_get_properties(const layer_island_handle *me)
+const plugin_property_container_handle *layer_island_get_properties(const layer_island_handle *me)
 {
-    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(static_cast<const Slic3r::PluginPropertyContainer *>(Slic3r::to_layer_island(me)));
+    return me == nullptr ? nullptr : Slic3r::to_property_handle(Slic3r::to_layer_island(me));
+}
+
+plugin_property_container_handle *layer_island_get_properties_mutable(layer_island_handle *me)
+{
+    const Slic3r::Layer *layer = me == nullptr ? nullptr : Slic3r::to_layer_island(me)->layer();
+    if (layer != nullptr && !Slic3r::slices_editable(*layer, "layer_island_get_properties_mutable"))
+        return nullptr;
+    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_layer_island(me));
 }
 
 uint32_t layer_island_count_region(const layer_island_handle *me)
@@ -571,6 +677,8 @@ layer_region_island_handle *layer_island_get_region_island_mutable(layer_island_
 {
     if (me == nullptr || idx >= Slic3r::to_layer_island(me)->regions_islands().size())
         return nullptr;
+    if (!Slic3r::island_outputs_editable(*Slic3r::to_layer_island(me), "layer_island_get_region_island_mutable"))
+        return nullptr;
     return reinterpret_cast<layer_region_island_handle*>(&Slic3r::to_layer_island(me)->regions_island(idx));
 }
 
@@ -589,6 +697,8 @@ layer_region_island_handle *layer_island_get_or_create_region_island(
 {
     Slic3r::LayerSliceIsland *island = Slic3r::to_layer_island(island_handle);
     if (island == nullptr)
+        return nullptr;
+    if (!Slic3r::island_outputs_editable(*island, "layer_island_get_or_create_region_island"))
         return nullptr;
 
     Slic3r::LayerRegionSetCPtrs regions;
@@ -666,6 +776,8 @@ extrusion_entity_handle *layer_region_island_get_mutable_extrusion(layer_region_
 {
     if (me == nullptr)
         return nullptr;
+    if (!Slic3r::region_island_editable(*Slic3r::to_layer_region_island(me), "layer_region_island_get_mutable_extrusion"))
+        return nullptr;
     Slic3r::ExtrusionEntityCollection &collection = Slic3r::to_layer_region_island(me)->mutable_extrusion(Slic3r::to_extrusion_role(role));
     return reinterpret_cast<extrusion_entity_handle*>(&collection);
 }
@@ -694,9 +806,18 @@ const surface_handle *layer_region_island_get_fill_surface(const layer_region_is
     return surface_collection_at(layer_region_island_get_fill_surfaces(me), idx);
 }
 
-plugin_property_container_handle *layer_region_island_get_properties(const layer_region_island_handle *me)
+const plugin_property_container_handle *layer_region_island_get_properties(const layer_region_island_handle *me)
 {
-    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(static_cast<const Slic3r::PluginPropertyContainer *>(Slic3r::to_layer_region_island(me)));
+    return me == nullptr ? nullptr : Slic3r::to_property_handle(Slic3r::to_layer_region_island(me));
+}
+
+plugin_property_container_handle *layer_region_island_get_properties_mutable(layer_region_island_handle *me)
+{
+    if (me == nullptr)
+        return nullptr;
+    if (!Slic3r::region_island_editable(*Slic3r::to_layer_region_island(me), "layer_region_island_get_properties_mutable"))
+        return nullptr;
+    return Slic3r::to_mutable_property_handle(Slic3r::to_layer_region_island(me));
 }
 
 uint32_t layer_region_island_count_region(const layer_region_island_handle *me)
@@ -722,6 +843,8 @@ const config_handle *print_region_get_config(const print_region_handle *me)
 
 config_handle *object_get_config_mutable(object_handle *me)
 {
+    if (me != nullptr && !Slic3r::check_freeze(Slic3r::to_object(me)->print(), STEP_NONE, "object_get_config_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::ApiHost::to_config_handle(Slic3r::mutable_config(*Slic3r::to_object(me)));
 }
 
@@ -730,9 +853,16 @@ const config_handle *object_get_config(const object_handle *me)
     return me == nullptr ? nullptr : Slic3r::ApiHost::to_config_handle(&Slic3r::to_object(me)->config());
 }
 
-plugin_property_container_handle *object_get_properties(const object_handle *me)
+const plugin_property_container_handle *object_get_properties(const object_handle *me)
 {
-    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(static_cast<const Slic3r::PluginPropertyContainer *>(Slic3r::to_object(me)));
+    return me == nullptr ? nullptr : Slic3r::to_property_handle(Slic3r::to_object(me));
+}
+
+plugin_property_container_handle *object_get_properties_mutable(object_handle *me)
+{
+    if (me != nullptr && !Slic3r::data_tree_editable(*Slic3r::to_object(me), "object_get_properties_mutable"))
+        return nullptr;
+    return me == nullptr ? nullptr : Slic3r::to_mutable_property_handle(Slic3r::to_object(me));
 }
 
 uint32_t object_get_name(const object_handle *me, char *out, uint32_t capacity)
@@ -822,6 +952,8 @@ layer_handle *object_add_auxiliary_layer(const object_handle *me,
 {
     if (me == nullptr || height <= 0 || print_z <= 0)
         return nullptr;
+    if (!Slic3r::data_tree_editable(*Slic3r::to_object(me), "object_add_auxiliary_layer"))
+        return nullptr;
 
     Slic3r::PrintObject *object = const_cast<Slic3r::PrintObject *>(Slic3r::to_object(me));
     Slic3r::LayerUPtrs &layers = object->mutable_auxiliary_layers();
@@ -844,6 +976,8 @@ int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *lay
 {
     if (me == nullptr || layer == nullptr)
         return 0;
+    if (!Slic3r::data_tree_editable(*Slic3r::to_object(me), "object_remove_auxiliary_layer"))
+        return 0;
 
     Slic3r::PrintObject *object = const_cast<Slic3r::PrintObject *>(Slic3r::to_object(me));
     Slic3r::LayerUPtrs &layers = object->mutable_auxiliary_layers();
@@ -859,6 +993,8 @@ int32_t object_remove_auxiliary_layer(const object_handle *me, layer_handle *lay
 
 expolygon_collection_handle *layer_borrow_mutable_slices(layer_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_borrow_mutable_slices"))
+        return nullptr;
     return me == nullptr ?
         nullptr :
         reinterpret_cast<expolygon_collection_handle *>(&Slic3r::ApiInternal::LayerAccess::slices_mutable(
@@ -867,6 +1003,8 @@ expolygon_collection_handle *layer_borrow_mutable_slices(layer_handle *me)
 
 expolygon_collection_handle *layer_region_borrow_mutable_slices(const layer_region_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer_region(me)->layer(), "layer_region_borrow_mutable_slices"))
+        return nullptr;
     return me == nullptr ?
         nullptr :
         reinterpret_cast<expolygon_collection_handle *>(&Slic3r::ApiInternal::LayerRegionAccess::slices_mutable(
@@ -875,18 +1013,24 @@ expolygon_collection_handle *layer_region_borrow_mutable_slices(const layer_regi
 
 void layer_recompute_slices_from_islands(layer_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_recompute_slices_from_islands"))
+        return;
     if (me != nullptr)
         Slic3r::ApiInternal::LayerAccess::recompute_slices_from_islands(*reinterpret_cast<Slic3r::Layer *>(me));
 }
 
 void layer_recompute_slices_and_islands_from_layer_regions(layer_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_recompute_slices_and_islands_from_layer_regions"))
+        return;
     if (me != nullptr)
         Slic3r::ApiInternal::LayerAccess::recompute_slices_from_layer_regions(*reinterpret_cast<Slic3r::Layer *>(me));
 }
 
 void layer_add_regions_to_islands(layer_handle *me)
 {
+    if (me != nullptr && !Slic3r::slices_editable(*Slic3r::to_layer(me), "layer_add_regions_to_islands"))
+        return;
     if (me != nullptr && !Slic3r::to_layer(me)->islands().empty())
         Slic3r::to_layer(me)->add_regions_to_islands();
 }
@@ -919,6 +1063,8 @@ const print_region_handle *print_register_print_region_config(print_handle *me, 
 
 config_handle *print_get_config_mutable(print_handle *me)
 {
+    if (me != nullptr && !Slic3r::check_freeze(Slic3r::to_print(me), STEP_NONE, "print_get_config_mutable"))
+        return nullptr;
     return me == nullptr ? nullptr : Slic3r::ApiHost::to_config_handle(Slic3r::mutable_config(*Slic3r::to_print(me)));
 }
 
@@ -973,6 +1119,8 @@ config_handle *print_records_get_or_add(const print_handle *me, const char *chan
 {
     if (me == nullptr || channel == nullptr)
         return nullptr;
+    if (!Slic3r::check_freeze(Slic3r::to_print(me), STEP_FINALIZE_SLICING, "print_records_get_or_add"))
+        return nullptr;
     try {
         Slic3r::Print *print = const_cast<Slic3r::Print *>(Slic3r::to_print(me));
         return Slic3r::ApiHost::to_config_handle(&print->records().get_or_add(channel));
@@ -984,6 +1132,8 @@ config_handle *print_records_get_or_add(const print_handle *me, const char *chan
 int32_t print_records_remove(const print_handle *me, const char *channel)
 {
     if (me == nullptr || channel == nullptr)
+        return 0;
+    if (!Slic3r::check_freeze(Slic3r::to_print(me), STEP_FINALIZE_SLICING, "print_records_remove"))
         return 0;
     try {
         Slic3r::Print *print = const_cast<Slic3r::Print *>(Slic3r::to_print(me));

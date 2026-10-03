@@ -314,7 +314,7 @@ static slic3r_api::SeamPlacer execute_seam_provider(Print &print)
 
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
     run_ctx_seam_placer context = {};
-    context.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
+    context.plan = reinterpret_cast<printing_plan_handle *>(&plan);
     const print_region_handle *regions[] = { print_region_view().handle() };
     context.regions = regions;
     context.region_count = 1;
@@ -426,7 +426,7 @@ TEST_CASE("Seam placer failures remain contained and diagnostics are thread loca
     g_seam_state.throw_initialize = true;
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
     run_ctx_seam_placer failed_context = {};
-    failed_context.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
+    failed_context.plan = reinterpret_cast<printing_plan_handle *>(&plan);
     const print_region_handle *regions[] = { print_region_view().handle() };
     failed_context.regions = regions;
     failed_context.region_count = 1;

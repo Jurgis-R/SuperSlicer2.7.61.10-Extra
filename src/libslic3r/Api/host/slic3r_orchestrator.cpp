@@ -499,21 +499,25 @@ void orchestrator_plugin_report_warning(plugin_host_context *host_context, const
 
 void orchestrator_plugin_report_error(plugin_host_context *host_context, const char *message)
 {
-    const char *plugin_id = host_context != nullptr && host_context->plugin != nullptr ?
-                                host_context->plugin->get_id().c_str() :
-                                "<unknown>";
-    BOOST_LOG_TRIVIAL(error) << "Plugin error from " << plugin_id << ": " << (message != nullptr ? message : "");
-
     if (host_context != nullptr && host_context->execution_error != nullptr)
         host_context->execution_error->store(true, std::memory_order_relaxed);
+    if (host_context != nullptr && host_context->orchestrator != nullptr && host_context->cancel_on_error)
+        host_context->orchestrator->request_plugin_cancel();
 
-    if (host_context != nullptr && host_context->orchestrator != nullptr) {
-        host_context->orchestrator->add_plugin_message(Slic3r::Orchestrator::PluginMessageLevel::Error,
-                                                       host_context->plugin,
-                                                       host_context->step,
-                                                       message);
-        if (host_context->cancel_on_error)
-            host_context->orchestrator->request_plugin_cancel();
+    try {
+        const char *plugin_id = host_context != nullptr && host_context->plugin != nullptr ?
+                                    host_context->plugin->get_id().c_str() :
+                                    "<unknown>";
+        BOOST_LOG_TRIVIAL(error) << "Plugin error from " << plugin_id << ": " << (message != nullptr ? message : "");
+
+        if (host_context != nullptr && host_context->orchestrator != nullptr) {
+            host_context->orchestrator->add_plugin_message(Slic3r::Orchestrator::PluginMessageLevel::Error,
+                                                           host_context->plugin,
+                                                           host_context->step,
+                                                           message);
+        }
+    } catch (...) {
+        // Diagnostic allocation failures must not escape the C ABI or erase the error state.
     }
 }
 
@@ -535,6 +539,17 @@ void orchestrator_plugin_report_progress(plugin_host_context *host_context, doub
     host_context->print->set_status(percent,
                                     message_text,
                                     Slic3r::PrintBase::SlicingStatus::SECONDARY_STATE);
+}
+
+int32_t orchestrator_set_error_message(orchestrator_handle *orchestrator, const char *message)
+{
+    if (orchestrator == nullptr)
+        return PLUGIN_ERROR_GENERAL;
+    try {
+        return to_orchestrator(orchestrator)->store_error_message(message);
+    } catch (...) {
+        return PLUGIN_ERROR_GENERAL;
+    }
 }
 
 }

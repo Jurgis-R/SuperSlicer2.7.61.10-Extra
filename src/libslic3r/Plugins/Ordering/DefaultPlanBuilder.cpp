@@ -75,7 +75,7 @@ objects contributing to the same Z buckets.
 */
 void build_plan_by_layer(
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const plugin_run_context *run_ctx);
 
 /*
@@ -85,7 +85,7 @@ that choice from public data.
 */
 void build_plan_by_object(
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const plugin_run_context *run_ctx);
 
 /*
@@ -139,26 +139,26 @@ Find or create the PrintingLayerGroup for print_z.
 Appending to a group may invalidate older child handles, so callers keep only
 indices in the map and request a fresh view for each use.
 */
-PrintingLayerGroup layer_group_for_print_z(const PrintingGroup &group,
+PrintingLayerGroup layer_group_for_print_z(PrintingGroup &group,
                                            std::map<coord_t, uint32_t> &layer_index_by_print_z,
                                            coord_t print_z,
                                            const plugin_run_context *run_ctx);
 
 /* Store each source Layer pointer once in a PrintingLayerGroup. */
 void append_layer_once(
-    const PrintingLayerGroup &layer_group,
+    PrintingLayerGroup &layer_group,
     const Layer &layer,
     const plugin_run_context *run_ctx);
 
 /* Find or create the tool bucket for one extruder inside one layer group. */
 PrintingToolGroup tool_group_for_extruder(
-    const PrintingLayerGroup &layer_group,
+    PrintingLayerGroup &layer_group,
     extruder_index_t extruder_id,
     const plugin_run_context *run_ctx);
 
 /* Store each source LayerRegionIsland pointer once in a tool group. */
 void append_region_island_once(
-    const PrintingToolGroup &tool_group,
+    PrintingToolGroup &tool_group,
     const LayerRegionIsland &region_island,
     const plugin_run_context *run_ctx);
 
@@ -174,8 +174,8 @@ The source tree is object-local. The appended plan clone is translated by
 instance_shift immediately, so later ordering and G-code code can read plan
 coordinates directly.
 */
-void append_region_island_instance_extrusions(const PrintingPlan &plan,
-                                              const PrintingLayerGroup &layer_group,
+void append_region_island_instance_extrusions(PrintingPlan &plan,
+                                              PrintingLayerGroup &layer_group,
                                               const LayerRegionIsland &region_island,
                                               c_point instance_shift,
                                               uint32_t printing_catalog_id,
@@ -188,8 +188,8 @@ Normal object layers and auxiliary layers share the same LayerIsland tree once
 their raw slices have been recomputed. Keeping this traversal shared prevents
 print-level helper layers from needing their own ordering model.
 */
-void append_layer_instance_extrusions(const PrintingPlan &plan,
-                                      const PrintingLayerGroup &layer_group,
+void append_layer_instance_extrusions(PrintingPlan &plan,
+                                      PrintingLayerGroup &layer_group,
                                       const Layer &layer,
                                       c_point instance_shift,
                                       uint32_t printing_catalog_id,
@@ -203,8 +203,8 @@ are already in platter coordinates, so they must not be duplicated for real
 object instances.
 */
 void append_print_auxiliary_layers_to_group(const Print &print,
-                                            const PrintingPlan &plan,
-                                            const PrintingGroup &group,
+                                            PrintingPlan &plan,
+                                            PrintingGroup &group,
                                             std::map<coord_t, uint32_t> &layer_index_by_print_z,
                                             const plugin_run_context *run_ctx);
 
@@ -214,7 +214,7 @@ layers. Returning false means the print has no print-level auxiliary work.
 */
 bool append_print_auxiliary_group(
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const plugin_run_context *run_ctx);
 
 /*
@@ -231,7 +231,7 @@ void translate_extrusion_tree(
 
 /* Sort the layer groups after a construction walk that discovered them object by object. */
 void sort_layer_groups_by_print_z(
-    const PrintingGroup &group,
+    PrintingGroup &group,
     const plugin_run_context *run_ctx);
 
 bool config_bool_value(const Config &config, const char *key)
@@ -375,7 +375,7 @@ void order_instances_by_nearest(
     }
 }
 
-PrintingLayerGroup layer_group_for_print_z(const PrintingGroup &group,
+PrintingLayerGroup layer_group_for_print_z(PrintingGroup &group,
                                            std::map<coord_t, uint32_t> &layer_index_by_print_z,
                                            const coord_t print_z,
                                            const plugin_run_context *run_ctx)
@@ -398,7 +398,7 @@ PrintingLayerGroup layer_group_for_print_z(const PrintingGroup &group,
 }
 
 void append_layer_once(
-    const PrintingLayerGroup &layer_group,
+    PrintingLayerGroup &layer_group,
     const Layer &layer,
     const plugin_run_context *run_ctx)
 {
@@ -417,7 +417,7 @@ void append_layer_once(
 }
 
 PrintingToolGroup tool_group_for_extruder(
-    const PrintingLayerGroup &layer_group,
+    PrintingLayerGroup &layer_group,
     const extruder_index_t extruder_id,
     const plugin_run_context *run_ctx)
 {
@@ -437,7 +437,7 @@ PrintingToolGroup tool_group_for_extruder(
 }
 
 void append_region_island_once(
-    const PrintingToolGroup &tool_group,
+    PrintingToolGroup &tool_group,
     const LayerRegionIsland &region_island,
     const plugin_run_context *run_ctx)
 {
@@ -474,8 +474,8 @@ bool region_island_has_printable_extrusions(
     return false;
 }
 
-void append_region_island_instance_extrusions(const PrintingPlan &plan,
-                                              const PrintingLayerGroup &layer_group,
+void append_region_island_instance_extrusions(PrintingPlan &plan,
+                                              PrintingLayerGroup &layer_group,
                                               const LayerRegionIsland &region_island,
                                               const c_point instance_shift,
                                               const uint32_t printing_catalog_id,
@@ -520,8 +520,8 @@ void append_region_island_instance_extrusions(const PrintingPlan &plan,
     append_region_island_once(tool_group, region_island, run_ctx);
 }
 
-void append_layer_instance_extrusions(const PrintingPlan &plan,
-                                      const PrintingLayerGroup &layer_group,
+void append_layer_instance_extrusions(PrintingPlan &plan,
+                                      PrintingLayerGroup &layer_group,
                                       const Layer &layer,
                                       const c_point instance_shift,
                                       const uint32_t printing_catalog_id,
@@ -548,8 +548,8 @@ void append_layer_instance_extrusions(const PrintingPlan &plan,
 }
 
 void append_print_auxiliary_layers_to_group(const Print &print,
-                                            const PrintingPlan &plan,
-                                            const PrintingGroup &group,
+                                            PrintingPlan &plan,
+                                            PrintingGroup &group,
                                             std::map<coord_t, uint32_t> &layer_index_by_print_z,
                                             const plugin_run_context *run_ctx)
 {
@@ -577,7 +577,7 @@ void append_print_auxiliary_layers_to_group(const Print &print,
 
 bool append_print_auxiliary_group(
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);
@@ -632,7 +632,7 @@ void translate_extrusion_tree(
 }
 
 void sort_layer_groups_by_print_z(
-    const PrintingGroup &group,
+    PrintingGroup &group,
     const plugin_run_context *run_ctx)
 {
     for (uint32_t target_idx = 0; target_idx < group.layer_group_count(); ++target_idx) {
@@ -661,7 +661,7 @@ void sort_layer_groups_by_print_z(
 
 void build_plan_by_layer(
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);
@@ -750,7 +750,7 @@ void build_plan_by_layer(
 
 void build_plan_by_object(
     const Print &print,
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);

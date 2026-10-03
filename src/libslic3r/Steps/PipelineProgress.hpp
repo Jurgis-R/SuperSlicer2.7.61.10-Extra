@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "libslic3r/PrintStatus.hpp"
-#include "libslic3r/PrintSteps.hpp"
+#include "libslic3r/Api/plugin/c/slic3r_slicing_step.h"
 
 namespace Slic3r::Steps {
 

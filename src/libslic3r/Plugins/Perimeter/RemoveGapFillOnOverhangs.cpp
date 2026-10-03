@@ -3,16 +3,33 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+RemoveGapFillOnOverhangs.cpp
+============================
+
+Implementation of the remove gap fill on overhangs module declared in
+RemoveGapFillOnOverhangs.hpp.
+
+The file holds the plugin metadata, the owned option definition and activation
+rule, the unsupported-area and entity-clipping helpers, the module callbacks
+(start, after, end) and the registration entry point. after() rebuilds the node
+entity collection, dropping only the open gap-fill entities that fall outside
+the union of lower islands.
+*/
+
 #include "RemoveGapFillOnOverhangs.hpp"
 
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <vector>
 
+#include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_perimeter.h"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
+#include "libslic3r/Api/plugin/cpp/GuiRuleHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/PerimeterStepViews.hpp"
 
 /*
@@ -69,6 +86,37 @@ const char *k_no_dependencies[] = { nullptr };
 const raw_used_config_key k_used_config_keys[] = {
     { "gap_fill_no_overhang", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
+
+const char *const k_defined_config_keys[] = {
+    "gap_fill_no_overhang"
+};
+
+void initialize_remove_gap_fill_on_overhangs_settings(orchestrator_handle *orchestrator)
+{
+    /*
+    Option definitions owned by this module. Each entry fixes the option type,
+    override scope, default and GUI metadata; defined keys are published in the
+    print presets, so profiles read and write them by name like any built-in
+    setting. Called once from inilialize_impl().
+    */
+    raw_config_option_def def = raw_config_option_def_init();
+
+    // ---- gap_fill_no_overhang | preset=RAW_PRESET_TYPE_FFF_PRINT ----
+    def = raw_config_option_def_init();
+    def.opt_key = "gap_fill_no_overhang";
+    def.type = RAW_CO_BOOL;
+    def.container_type = RAW_CONTAINER_TYPE_REGION;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_PERIMETER;
+    def.category = RAW_OPTION_CATEGORY_PERIMETER;
+    def.label = "No gap fill on overhang areas";
+    def.tooltip = "Prevent gapfill into overhang areas. May create some holes.";
+    def.precision = 6;
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_SUSI;
+    def.default_serialized_value = "0";
+    orchestrator_create_option_def(orchestrator, &def);
+}
 const char *k_gap_fill_no_overhang_key = "gap_fill_no_overhang";
 
 StoredExPolygonCollection lower_slice_coverage(storage_handle *storage,
@@ -388,6 +436,31 @@ RemoveGapFillOnOverhangs::instance(orchestrator_handle *orch)
     return s_instance;
 }
 
+void add_remove_gap_fill_on_overhangs_gui_rules(orchestrator_handle *orchestrator)
+{
+    using slic3r_api::all_of;
+    using slic3r_api::any_of;
+    using slic3r_api::false_;
+    using slic3r_api::GuiCondition;
+    using slic3r_api::GuiRule;
+    using slic3r_api::true_;
+
+    // Gap filling runs when the gap fill switch is on and the selected generator
+    // is classic; a print with perimeters off still qualifies because gap
+    // filling can run without perimeters. gui_rules.core keeps an equivalent
+    // copy of this condition for the settings it hosts.
+    const GuiCondition gap_base = any_of({
+        all_of({ false_("perimeters"), true_("gap_fill_enabled") }),
+        all_of({ perimeter_generator_is_not_arachne(), true_("gap_fill_enabled") })
+    });
+
+    // The switch edits gap fill geometry, so it stays editable while gap
+    // filling runs.
+    GuiRule::activate({ "gap_fill_no_overhang" })
+        .when(gap_base)
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
+        .add_to(orchestrator);
+}
 const char *RemoveGapFillOnOverhangs::id_impl() const noexcept
 {
     return k_remove_gap_fill_on_overhangs_id;
@@ -414,6 +487,20 @@ int32_t RemoveGapFillOnOverhangs::used_config_keys(raw_used_config_key *keys) co
         for (uint32_t idx = 0; idx < sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]); ++idx)
             keys[idx] = k_used_config_keys[idx];
     return int32_t(sizeof(k_used_config_keys) / sizeof(k_used_config_keys[0]));
+}
+
+int32_t RemoveGapFillOnOverhangs::defined_config_keys(const char **keys) const noexcept
+{
+    if (keys != nullptr)
+        for (size_t idx = 0; idx < std::size(k_defined_config_keys); ++idx)
+            keys[idx] = k_defined_config_keys[idx];
+    return int32_t(std::size(k_defined_config_keys));
+}
+
+void RemoveGapFillOnOverhangs::inilialize_impl(storage_handle *) const
+{
+    initialize_remove_gap_fill_on_overhangs_settings(m_orchestrator);
+    add_remove_gap_fill_on_overhangs_gui_rules(m_orchestrator);
 }
 
 const char *RemoveGapFillOnOverhangs::progress_message_format_impl() const noexcept

@@ -11,6 +11,8 @@
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/Api/plugin/cpp/AuxiliaryLayerHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/ExPolygon.hpp"
@@ -484,6 +486,101 @@ TEST_CASE("Travel deceleration plugin exposes an independent post-processing con
     CHECK(keys.size() == 2);
     CHECK(std::find(keys.begin(), keys.end(), "travel_deceleration_use_target") != keys.end());
     CHECK(std::find(keys.begin(), keys.end(), "gcode_min_length") != keys.end());
+}
+
+TEST_CASE("Travel deceleration plugin owns its settings and activation rule",
+          "[plugins][layer-extrusion-edit][travel-deceleration][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    // The definitions keep their type, invalidation step, mode and default.
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("travel_deceleration_use_target");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coBool);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+    CHECK(def->mode == (comExpert | comSuSi));
+    CHECK(def->default_value->serialize() == "1");
+
+    def = PrintConfigDef::instance().get("gcode_min_length");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloatOrPercent);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+    CHECK(def->precision == 6);
+    CHECK(def->can_be_disabled);
+    CHECK(def->default_value->serialize() == "0.02");
+    REQUIRE(def->aliases.size() == 1);
+    CHECK(def->aliases.front() == "min_length");
+
+    // The plugin rule enables the setting when a default acceleration is set.
+    bool found = false;
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules()) {
+        if (rule.owner != TRAVEL_DECELERATION_PLUGIN ||
+            rule.target_key != "travel_deceleration_use_target")
+            continue;
+        found = true;
+        CHECK(rule.scope == RAW_PRESET_TYPE_FFF_PRINT);
+        REQUIRE(rule.clauses.size() == 1);
+        CHECK(rule.clauses[0].condition == RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO);
+        CHECK(rule.clauses[0].condition_key == "default_acceleration");
+    }
+    CHECK(found);
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const auto enabled = [&orchestrator, &config]() {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1,
+                                               TRAVEL_DECELERATION_PLUGIN))
+            if (application.target_key == "travel_deceleration_use_target")
+                return application.enabled;
+        return false;
+    };
+    config.option<ConfigOptionFloatOrPercent>("default_acceleration")->value = 0.0;
+    CHECK_FALSE(enabled());
+    config.option<ConfigOptionFloatOrPercent>("default_acceleration")->value = 1000.0;
+    CHECK(enabled());
+}
+
+TEST_CASE("Migrated travel deceleration settings keep a single scoped storage",
+          "[plugins][layer-extrusion-edit][travel-deceleration][scope]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+
+    // travel_deceleration_use_target is region-scoped and must not be
+    // duplicated into the print config.
+    const ConfigOptionDef *deceleration_def =
+        PrintConfigDef::instance().get("travel_deceleration_use_target");
+    REQUIRE(deceleration_def != nullptr);
+    CHECK(deceleration_def->container_type == ConfigOptionContainerType::Region);
+    CHECK(PrintConfig::defaults().option("travel_deceleration_use_target") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("travel_deceleration_use_target") != nullptr);
+
+    // gcode_min_length is print-scoped and must not be duplicated into the region config.
+    const ConfigOptionDef *min_length_def =
+        PrintConfigDef::instance().get("gcode_min_length");
+    REQUIRE(min_length_def != nullptr);
+    CHECK(min_length_def->container_type == ConfigOptionContainerType::Plater);
+    CHECK(PrintConfig::defaults().option("gcode_min_length") != nullptr);
+    CHECK(PrintRegionConfig::defaults().option("gcode_min_length") == nullptr);
+
+    // brim_acceleration is object-scoped and is not duplicated into the print
+    // or region configs.
+    const ConfigOptionDef *brim_acceleration_def =
+        PrintConfigDef::instance().get("brim_acceleration");
+    REQUIRE(brim_acceleration_def != nullptr);
+    CHECK(brim_acceleration_def->container_type == ConfigOptionContainerType::Object);
+    CHECK(PrintConfig::defaults().option("brim_acceleration") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("brim_acceleration") == nullptr);
+    CHECK(PrintObjectConfig::defaults().option("brim_acceleration") != nullptr);
+
+    // gap_fill_speed is region-scoped and is not duplicated into the print
+    // config.
+    const ConfigOptionDef *gap_fill_speed_def =
+        PrintConfigDef::instance().get("gap_fill_speed");
+    REQUIRE(gap_fill_speed_def != nullptr);
+    CHECK(gap_fill_speed_def->container_type == ConfigOptionContainerType::Region);
+    CHECK(PrintConfig::defaults().option("gap_fill_speed") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("gap_fill_speed") != nullptr);
 }
 
 TEST_CASE("Travel deceleration resolves its switch at the Travel destination",

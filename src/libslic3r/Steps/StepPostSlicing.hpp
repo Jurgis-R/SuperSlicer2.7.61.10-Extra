@@ -23,7 +23,8 @@ namespace Steps::StepPostSlicing {
 Reset or prepare native data needed by STEP_POST_SLICING before plugins run.
 Currently empty; keep step-specific cleanup here instead of Orchestrator.
 */
-void clean_and_prepare(Print &print);
+void clear(Print &print);
+void prepare(Print &print);
 
 /*
 Check that the data tree is in the shape expected before running

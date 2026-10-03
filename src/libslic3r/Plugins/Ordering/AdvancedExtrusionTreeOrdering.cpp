@@ -144,7 +144,7 @@ struct ToolGroupOrderingJob
 
 /* Build immutable job inputs while the pre-sort entry points are stable. */
 std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     c_point initial_position,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
     const plugin_run_context *run_ctx);
@@ -159,7 +159,7 @@ This sequential barrier carries one position through the complete plan and
 returns fresh immutable job seeds for the final parallel pass.
 */
 std::vector<ToolGroupOrderingJob> reorder_printing_extrusions_and_make_jobs(
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     c_point initial_position,
     const OrderingEngine &ordering_engine,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
@@ -357,7 +357,7 @@ void coarsely_order_printing_extrusion(
 void coarsely_order_tool_group_job(
     uint32_t job_idx,
     storage_handle *scratch_storage,
-    const std::vector<ToolGroupOrderingJob> *jobs,
+    std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
     const SeamPlacement::SeamPlacerRouter *seam_router,
@@ -377,14 +377,14 @@ void finalize_printing_extrusion(
 void finalize_tool_group_job(
     uint32_t job_idx,
     storage_handle *scratch_storage,
-    const std::vector<ToolGroupOrderingJob> *jobs,
+    std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
     const SeamPlacement::SeamPlacerRouter *seam_router,
     const plugin_run_context *run_ctx);
 
 std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const c_point initial_position,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
     const plugin_run_context *run_ctx)
@@ -400,13 +400,13 @@ std::vector<ToolGroupOrderingJob> make_tool_group_jobs(
     */
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 jobs.push_back(ToolGroupOrderingJob{tool_group, current_position});
 
                 for (uint32_t extrusion_idx = tool_group.extrusion_count();
@@ -441,7 +441,7 @@ c_point initial_print_position(const Print &print)
 }
 
 std::vector<ToolGroupOrderingJob> reorder_printing_extrusions_and_make_jobs(
-    const PrintingPlan &plan,
+    PrintingPlan &plan,
     const c_point initial_position,
     const OrderingEngine &ordering_engine,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
@@ -457,13 +457,13 @@ std::vector<ToolGroupOrderingJob> reorder_printing_extrusions_and_make_jobs(
     */
     for (uint32_t group_idx = 0; group_idx < plan.group_count(); ++group_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingGroup group = plan.group(group_idx);
+        PrintingGroup group = plan.group(group_idx);
         for (uint32_t layer_idx = 0; layer_idx < group.layer_group_count(); ++layer_idx) {
             throw_if_cancelled(run_ctx);
-            const PrintingLayerGroup layer = group.layer_group(layer_idx);
+            PrintingLayerGroup layer = group.layer_group(layer_idx);
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 throw_if_cancelled(run_ctx);
-                const PrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                PrintingToolGroup tool_group = layer.tool_group(tool_idx);
                 jobs.push_back(ToolGroupOrderingJob{tool_group, current_position});
                 current_position = reorder_printing_extrusions(
                     tool_group, current_position, ordering_engine,
@@ -475,7 +475,7 @@ std::vector<ToolGroupOrderingJob> reorder_printing_extrusions_and_make_jobs(
 }
 
 c_point reorder_printing_extrusions(
-    const PrintingToolGroup tool_group,
+    PrintingToolGroup tool_group,
     const c_point start_position,
     const OrderingEngine &ordering_engine,
     const PluginPropertyKey<EntryPointProperty> &entry_point_key,
@@ -528,7 +528,7 @@ c_point reorder_printing_extrusions(
 }
 
 void apply_printing_extrusion_permutation(
-    const PrintingToolGroup tool_group,
+    PrintingToolGroup tool_group,
     const std::vector<uint32_t> &target_original_indices,
     const plugin_run_context *run_ctx)
 {
@@ -1386,7 +1386,7 @@ bool selected_candidate_reverses(
 }
 
 void coarsely_order_printing_extrusion(
-    const PrintingExtrusion extrusion,
+    PrintingExtrusion extrusion,
     EntryPointProperty &entry_points,
     const c_point start_position,
     const OrderingEngine &ordering_engine,
@@ -1416,7 +1416,7 @@ void coarsely_order_printing_extrusion(
 void coarsely_order_tool_group_job(
     const uint32_t job_idx,
     storage_handle *scratch_storage,
-    const std::vector<ToolGroupOrderingJob> *jobs,
+    std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
     const SeamPlacement::SeamPlacerRouter *seam_router,
@@ -1428,7 +1428,7 @@ void coarsely_order_tool_group_job(
     assert(seam_router != nullptr);
     assert(job_idx < jobs->size());
 
-    const ToolGroupOrderingJob &job = (*jobs)[job_idx];
+    ToolGroupOrderingJob &job = (*jobs)[job_idx];
     c_point current_position = job.start_position;
 
     /*
@@ -1439,7 +1439,7 @@ void coarsely_order_tool_group_job(
     for (uint32_t extrusion_idx = 0;
          extrusion_idx < job.tool_group.extrusion_count(); ++extrusion_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingExtrusion extrusion =
+        PrintingExtrusion extrusion =
             job.tool_group.extrusion(extrusion_idx);
         MutableExtrusionEntity root = extrusion.mutable_root();
         if (root.empty())
@@ -1459,7 +1459,7 @@ void coarsely_order_tool_group_job(
 }
 
 void finalize_printing_extrusion(
-    const PrintingExtrusion extrusion,
+    PrintingExtrusion extrusion,
     EntryPointProperty &entry_points,
     const c_point start_position,
     const OrderingEngine &ordering_engine,
@@ -1481,7 +1481,7 @@ void finalize_printing_extrusion(
 void finalize_tool_group_job(
     const uint32_t job_idx,
     storage_handle *scratch_storage,
-    const std::vector<ToolGroupOrderingJob> *jobs,
+    std::vector<ToolGroupOrderingJob> *jobs,
     const PluginPropertyKey<EntryPointProperty> *entry_point_key,
     const OrderingEngine *ordering_engine,
     const SeamPlacement::SeamPlacerRouter *seam_router,
@@ -1493,7 +1493,7 @@ void finalize_tool_group_job(
     assert(seam_router != nullptr);
     assert(job_idx < jobs->size());
 
-    const ToolGroupOrderingJob &job = (*jobs)[job_idx];
+    ToolGroupOrderingJob &job = (*jobs)[job_idx];
     c_point current_position = job.start_position;
 
     /*
@@ -1503,7 +1503,7 @@ void finalize_tool_group_job(
     for (uint32_t extrusion_idx = 0;
          extrusion_idx < job.tool_group.extrusion_count(); ++extrusion_idx) {
         throw_if_cancelled(run_ctx);
-        const PrintingExtrusion extrusion =
+        PrintingExtrusion extrusion =
             job.tool_group.extrusion(extrusion_idx);
         MutableExtrusionEntity root = extrusion.mutable_root();
         if (root.empty())
@@ -1584,14 +1584,14 @@ private:
 
         throw_if_cancelled(run_ctx);
         const Print print(ctx->print);
-        const PrintingPlan plan(ctx->plan);
+        PrintingPlan plan(ctx->plan);
         throw_if_cancelled(run_ctx);
         const SeamPlacement::SeamPlacerRouter seam_router(
             m_orchestrator, print, plan, run_ctx->plugin_storage);
         throw_if_cancelled(run_ctx);
         const KDTreeOrderingEngine ordering_engine;
         const c_point print_start = initial_print_position(print);
-        const std::vector<ToolGroupOrderingJob> coarse_jobs =
+        std::vector<ToolGroupOrderingJob> coarse_jobs =
             make_tool_group_jobs(plan, print_start, m_entry_point_key, run_ctx);
 
         /*
@@ -1606,7 +1606,7 @@ private:
             &ordering_engine, &seam_router, run_ctx);
 
         throw_if_cancelled(run_ctx);
-        const std::vector<ToolGroupOrderingJob> final_jobs =
+        std::vector<ToolGroupOrderingJob> final_jobs =
             reorder_printing_extrusions_and_make_jobs(
                 plan, print_start, ordering_engine, m_entry_point_key, run_ctx);
         if (final_jobs.size() != coarse_jobs.size())

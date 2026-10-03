@@ -76,13 +76,16 @@ const char *const k_defined_config_keys[] = {
     "brim_ears_max_angle",
     "brim_ears_pattern",
     "brim_ears_detection_length",
-    "brim_inside_holes"
+    "brim_inside_holes",
+    "brim_separation"
 };
 
 const key_value_string_pair_t k_brim_ear_patterns[] = {
     { "concentric", "Concentric" },
     { "rectilinear", "Rectilinear" }
 };
+
+const char *const k_brim_separation_aliases[] = { "brim_offset" };
 
 const raw_used_config_key k_used_config_keys[] = {
     { "brim_width", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
@@ -329,6 +332,24 @@ void initialize_default_brim_settings(orchestrator_handle *orchestrator)
     def.enum_def.value_label_pairs.count = uint32_t(std::size(k_brim_ear_patterns));
     orchestrator_create_option_def(orchestrator, &def);
 
+    def = raw_config_option_def_init();
+    def.opt_key = "brim_separation";
+    def.type = RAW_CO_FLOAT;
+    def.container_type = RAW_CONTAINER_TYPE_OBJECT;
+    def.option_preset_type = RAW_PRESET_TYPE_FFF_PRINT;
+    def.printer_technology = RAW_PT_FFF;
+    def.invalidates_step = STEP_SUPPORT;
+    def.category = RAW_OPTION_CATEGORY_SKIRT_BRIM;
+    def.label = "Brim separation gap";
+    def.tooltip = "Offset of brim from the printed object. Should be kept at 0 unless you encounter great difficulties to separate them."
+                  "\nIt's subtracted to brim_width and brim_width_interior, so it has to be lower than them. The offset is applied after the first layer XY compensation (elephant foot).";
+    def.sidetext = "mm";
+    def.mode = RAW_CONFIG_OPTION_MODE_EXPERT | RAW_CONFIG_OPTION_MODE_PRUSA;
+    def.default_serialized_value = "0";
+    def.aliases.items = k_brim_separation_aliases;
+    def.aliases.size = uint32_t(std::size(k_brim_separation_aliases));
+    orchestrator_create_option_def(orchestrator, &def);
+
     /*
     The fragment restores the same controls after they are removed from the
     static print.ui file. It also supplies the Simple-mode copy of brim_ears.
@@ -373,6 +394,10 @@ void initialize_default_brim_settings(orchestrator_handle *orchestrator)
     GuiRule::activate("brim_ears_pattern")
         .when_true("brim_ears")
         .when_non_zero("brim_width")
+        .add_to(orchestrator);
+    GuiRule::activate("brim_separation")
+        .when(any_of({ non_zero("brim_width"), non_zero("brim_width_interior") }))
+        .scope(RAW_PRESET_TYPE_FFF_PRINT)
         .add_to(orchestrator);
 }
 
@@ -451,6 +476,13 @@ bool same_first_layer_extrusion_width(const PrintObjectConfig &lhs, const PrintO
     return lhs.first_layer_extrusion_width.value == rhs.first_layer_extrusion_width.value;
 }
 
+// Read one float setting; an absent plugin-owned setting reads as zero.
+double brim_config_float(const PrintObjectConfig &config, const char *key)
+{
+    const ConfigOptionFloat *option = config.option<ConfigOptionFloat>(key);
+    return option != nullptr ? option->value : 0.;
+}
+
 bool same_brim_group_settings(const PrintObject &lhs, const PrintObject &rhs)
 {
     const PrintObjectConfig &lhs_config = lhs.config();
@@ -464,7 +496,7 @@ bool same_brim_group_settings(const PrintObject &lhs, const PrintObject &rhs)
            lhs_settings.geometry.ear_detection_length_mm == rhs_settings.geometry.ear_detection_length_mm &&
            lhs_settings.geometry.ear_pattern == rhs_settings.geometry.ear_pattern &&
            lhs_config.brim_per_object.value == rhs_config.brim_per_object.value &&
-           lhs_config.brim_separation.value == rhs_config.brim_separation.value &&
+           brim_config_float(lhs_config, "brim_separation") == brim_config_float(rhs_config, "brim_separation") &&
            lhs_config.brim_width.value == rhs_config.brim_width.value &&
            lhs_config.brim_width_interior.value == rhs_config.brim_width_interior.value &&
            same_first_layer_extrusion_width(lhs_config, rhs_config);

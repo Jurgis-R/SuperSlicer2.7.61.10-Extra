@@ -21,6 +21,7 @@
 ///|/
 
 #include "Plater.hpp"
+#include "libslic3r/Exception.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -3675,7 +3676,16 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
     update_print_volume_state();
     // Apply new config to the possibly running background task.
     bool               was_running = background_process.running();
-    Print::ApplyStatus invalidated = background_process.apply(q->model(), full_config, wxGetApp().preset_bundle->physical_printers.get_selected_printer_config());
+    Print::ApplyStatus invalidated;
+    try {
+        invalidated = background_process.apply(q->model(), full_config, wxGetApp().preset_bundle->physical_printers.get_selected_printer_config());
+    } catch (const PluginCleanupError &error) {
+        // Keep the project available for retry/reset, but never restart work after failed cleanup.
+        notification_manager->push_validate_error_notification(error.what());
+        notification_manager->set_slicing_progress_hidden();
+        sidebar->show_sliced_info_sizer(false);
+        return return_state | UPDATE_BACKGROUND_PROCESS_INVALID;
+    }
 
     // Just redraw the 3D canvas without reloading the scene to consume the update of the layer height profile.
     if (view3D->is_layers_editing_enabled())
@@ -4623,9 +4633,10 @@ void Plater::priv::process_slicing_status(const PrintStatus::SlicingStatus &stat
     }
 
     if ((status.flags & PrintStatus::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) &&
-        static_cast<PrintStep>(status.warning_step) == psAlertWhenSupportsNeeded &&
+        static_cast<slicing_step_t>(status.warning_step) == STEP_ALERT_SUPPORTS_NEEDED &&
         !get_app_config()->get_bool("alert_when_supports_needed")) {
-        // This alerts are from psAlertWhenSupportsNeeded and the respective app settings is not Enabled, so discard the alerts.
+        // Ignore support alerts when their notification setting is disabled.
+        // No host emitter until the support-alert plugin exists; keep the filter for that plugin.
     } else if (status.flags &
                (PrintStatus::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS | PrintStatus::SlicingStatus::UPDATE_PRINT_OBJECT_STEP_WARNINGS)) {
         // Update notification center with warnings of object_id and its warning_step.
@@ -4634,14 +4645,10 @@ void Plater::priv::process_slicing_status(const PrintStatus::SlicingStatus &stat
         PrintStateBase::StateWithWarnings state;
         if (status.flags & PrintStatus::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
             if (this->printer_technology == ptFFF)
-                state = this->fff_print.step_state_with_warnings(static_cast<PrintStep>(warning_step));
+                state = this->fff_print.step_state_with_warnings(static_cast<slicing_step_t>(warning_step));
             else if (this->printer_technology == ptSLA)
                 state = this->sla_print.step_state_with_warnings(static_cast<SLAPrintStep>(warning_step));
-        } else if (this->printer_technology == ptFFF) {
-            const PrintObject *print_object = this->fff_print.get_object(object_id);
-            if (print_object)
-                state = print_object->step_state_with_warnings(static_cast<PrintObjectStep>(warning_step));
-        } else {
+        } else if (this->printer_technology == ptSLA) {
             const SLAPrintObject *print_object = this->sla_print.get_object(object_id);
             if (print_object)
                 state = print_object->step_state_with_warnings(static_cast<SLAPrintObjectStep>(warning_step));
@@ -8121,7 +8128,7 @@ void Plater::reslice_until_step_inner(int step, const ModelObject &object, bool 
         // Nothing to do on empty input or invalid configuration.
         return;
 
-    // Limit calculation to the single object only.
+    // FFF ignores these task bounds while STEP_SUPPORT_SPOT remains unimplemented.
     PrintBase::TaskParams task;
     task.single_model_object = object.id();
     // If the background processing is not enabled, calculate supports just for the single instance.
@@ -8135,9 +8142,9 @@ void Plater::reslice_until_step_inner(int step, const ModelObject &object, bool 
     this->p->restart_background_process(state | priv::UPDATE_BACKGROUND_PROCESS_FORCE_RESTART);
 }
 
-void Plater::reslice_FFF_until_step(PrintObjectStep step, const ModelObject &object, bool postpone_error_messages)
+void Plater::reslice_FFF_until_step(slicing_step_t step, const ModelObject &object, bool postpone_error_messages)
 {
-    this->reslice_until_step_inner(PrintObjectStep(step), object, postpone_error_messages);
+    this->reslice_until_step_inner(step, object, postpone_error_messages);
 }
 
 void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &object, bool postpone_error_messages)

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -42,6 +43,7 @@
 #include "libslic3r/SurfaceCollection.hpp"
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/UiLayoutMerger.hpp"
+#include "libslic3r/Utils.hpp"
 
 #include "ApiHostUtils.hpp"
 #include "ClipperShapes.hpp"
@@ -528,17 +530,39 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
         out.set_default_value(temp_default_option);
 }
 
+static slicing_step_t plan_owner_step(const Plugin &plugin)
+{
+    const slicing_step_t step = plugin.get_step();
+    switch (step) {
+    case INFILL_PATTERN:
+    case INFILL_SURFACE_RECIPE_MODIFIER:
+        return STEP_INFILL;
+    case BRIDGE_DETECTOR:
+    case PERIMETER_GENERATION_MODULE:
+        return STEP_PERIMETER;
+    case SEAM_PLACER:
+        return STEP_ORDERING;
+    case GCODE_FIRMWARE:
+    case GCODE_THUMBNAIL:
+    case GCODE_READER:
+        return STEP_GCODE;
+    default:
+        return Steps::execution_index(step) < Steps::execution_order().size() ?
+            step : STEP_NONE;
+    }
+}
+
 static raw_config_option_def config_option_def_with_resolved_invalidation(const raw_config_option_def &def,
                                                                           const Plugin *plugin)
 {
     raw_config_option_def resolved = def;
 
-    // raw_config_option_def_init() leaves invalidates_step at STEP_NONE. During
-    // plugin initialization this means "use the plugin's own pipeline step" so
-    // plugin authors only need to override options that invalidate an earlier
-    // step or intentionally use STEP_ANY for full invalidation.
-    if (plugin != nullptr && resolved.invalidates_step == STEP_NONE)
-        resolved.invalidates_step = plugin->get_step();
+    // A service plugin runs inside its owning pipeline producer. Resolve the
+    // default there so config changes never schedule a non-executable service.
+    if (plugin != nullptr && resolved.invalidates_step == STEP_NONE) {
+        const slicing_step_t owner_step = plan_owner_step(*plugin);
+        resolved.invalidates_step = owner_step == STEP_NONE ? STEP_ANY : owner_step;
+    }
 
     return resolved;
 }
@@ -591,6 +615,26 @@ static bool validate_used_config_key_definition(const Plugin &,
     }
 
     return true;
+}
+
+// A setting read by a plugin contributes to that plugin's output, so changing
+// it must replay the pipeline step that runs the plugin, even when the setting
+// definition predates the plugin pipeline and still points at a later legacy
+// step. Service plugins use the executable step that owns them. A key without
+// a definition is skipped; this only happens for a plugin activated after
+// initialize_plugins() validated the used keys.
+static void tighten_used_config_key_invalidations(ConfigDef &definition, const Plugin &plugin)
+{
+    const slicing_step_t owner_step = plan_owner_step(plugin);
+    if (owner_step == STEP_NONE)
+        return;
+
+    for (const Plugin::UsedConfigKey &used_key : plugin.get_used_config_keys()) {
+        const t_optiondef_map::iterator option = definition.options.find(used_key.key);
+        if (option != definition.options.end())
+            option->second.invalidates_step = Steps::tightened_invalidation_step(
+                option->second.invalidates_step, owner_step);
+    }
 }
 
 static std::chrono::milliseconds elapsed_ms(const std::chrono::steady_clock::time_point &start)
@@ -1318,6 +1362,8 @@ plugin_run_context Orchestrator::prepare_plugin_run_context(slicing_step_t step,
     // Plugin storage stays owned by this orchestrator; host_context is optional and borrowed.
     plugin_run_context context = {};
     context.step = step;
+    context.print = host_context != nullptr && host_context->print != nullptr ?
+        reinterpret_cast<const print_handle *>(host_context->print) : nullptr;
     context.plugin_storage = reinterpret_cast<storage_handle *>(&this->plugin_storage()[plugin]);
     context.host_context = host_context;
     context.is_cancelled = orchestrator_plugin_is_cancelled;
@@ -1325,6 +1371,74 @@ plugin_run_context Orchestrator::prepare_plugin_run_context(slicing_step_t step,
     context.report_error = orchestrator_plugin_report_error;
     context.report_progress = orchestrator_plugin_report_progress;
     return context;
+}
+
+void Orchestrator::track_plugin_setup(Plugin &plugin, Print &print, const slicing_step_t step)
+{
+    print.track_plugin_setup(plugin, step);
+}
+
+bool Orchestrator::clear_plugin_participants(Print &print, const slicing_step_t first_invalid_step)
+{
+    const size_t first_invalid_index = Steps::execution_index(first_invalid_step);
+    assert(first_invalid_index < Steps::execution_order().size());
+    if (first_invalid_index >= Steps::execution_order().size())
+        return false;
+
+    // Cleanup removes successful entries from Print, so iterate a copy rather than that changing list.
+    std::vector<Print::PluginCleanupParticipant> participants =
+        print.plugin_cleanup_participants();
+    bool all_clear_succeeded = true;
+    // Consumers may retain producer-owned handles, so unwind steps and setup order in reverse.
+    std::stable_sort(
+        participants.begin(), participants.end(), [](const Print::PluginCleanupParticipant &lhs,
+                                                      const Print::PluginCleanupParticipant &rhs) {
+            const size_t lhs_index = Steps::execution_index(lhs.step);
+            const size_t rhs_index = Steps::execution_index(rhs.step);
+            if (lhs_index != rhs_index)
+                return lhs_index > rhs_index;
+            return lhs.setup_order > rhs.setup_order;
+        });
+
+    for (const Print::PluginCleanupParticipant &participant : participants) {
+        if (participant.plugin == nullptr ||
+            Steps::execution_index(participant.step) < first_invalid_index)
+            continue;
+
+        std::map<Plugin *, PluginStorage>::iterator storage =
+            m_plugin_storage.find(participant.plugin);
+        if (storage == m_plugin_storage.end()) {
+            this->add_plugin_message(PluginMessageLevel::Error, participant.plugin, participant.step,
+                                     "Cannot clear Print state: plugin storage is missing.");
+            all_clear_succeeded = false;
+            continue;
+        }
+
+        int32_t clear_code = PLUGIN_ERROR_OK;
+        try {
+            clear_code = participant.plugin->clear(
+                reinterpret_cast<const print_handle *>(&print),
+                reinterpret_cast<storage_handle *>(&storage->second));
+        } catch (const std::exception &error) {
+            clear_code = this->store_error_message(error.what());
+        } catch (...) {
+            clear_code = this->store_error_message("Unknown exception while clearing Print state");
+        }
+        // Failed entries stay tracked for retry instead of being mistaken for released caches.
+        if (clear_code == PLUGIN_ERROR_OK) {
+            print.erase_plugin_cleanup_participant(participant.plugin, participant.step);
+        } else {
+            all_clear_succeeded = false;
+            // The registry owns the text: reserved, unknown or negative codes
+            // resolve to a generic message instead of an empty diagnostic.
+            const std::string message = this->error_message(clear_code);
+            BOOST_LOG_TRIVIAL(error) << "Plugin '" << participant.plugin->get_id()
+                                     << "' failed to clear Print state (code " << clear_code
+                                     << "): " << message;
+            this->add_plugin_message(PluginMessageLevel::Error, participant.plugin, participant.step, message.c_str());
+        }
+    }
+    return all_clear_succeeded;
 }
 
 // Run one plugin with the same two-phase barrier used by object-oriented
@@ -1338,6 +1452,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
     bool cancel_on_error)
 {
     if (!this->owns_plugin(&plugin) || (run_count != 0 && payloads == nullptr))
+        return RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT;
+    if (plugin.has_clear() && print == nullptr)
         return RAW_PLUGIN_EXECUTION_INVALID_ARGUMENT;
     if (!this->is_plugin_active(&plugin))
         return RAW_PLUGIN_EXECUTION_INACTIVE;
@@ -1402,7 +1518,8 @@ raw_plugin_execution_status Orchestrator::execute_plugin(
 void Orchestrator::add_plugin_message(PluginMessageLevel level,
                                       const Plugin *plugin,
                                       slicing_step_t step,
-                                      const char *message)
+                                      const char *message,
+                                      int32_t diagnostic_id)
 {
     // Plugins can report messages while slicing runs on a worker thread, while
     // the Plater consumes them later from the UI thread. The queue keeps only
@@ -1410,8 +1527,11 @@ void Orchestrator::add_plugin_message(PluginMessageLevel level,
     // the callback returns.
     PluginMessage plugin_message;
     plugin_message.level = level;
-    plugin_message.plugin_id = plugin != nullptr ? plugin->get_id() : "<unknown>";
+    // Idle diagnostics without a plugin belong to the host; a real step remains unattributed.
+    plugin_message.plugin_id = plugin != nullptr ? plugin->get_id() :
+        (step == STEP_NONE ? "<host>" : "<unknown>");
     plugin_message.step = step;
+    plugin_message.diagnostic_id = diagnostic_id;
     plugin_message.message = message != nullptr && message[0] != '\0' ?
         message :
         "(empty plugin message)";
@@ -1429,6 +1549,41 @@ std::vector<Orchestrator::PluginMessage> Orchestrator::consume_plugin_messages()
     std::vector<PluginMessage> messages;
     messages.swap(m_plugin_messages);
     return messages;
+}
+
+int32_t Orchestrator::store_error_message(const char *message)
+{
+    if (message == nullptr || message[0] == '\0')
+        return PLUGIN_ERROR_GENERAL;
+
+    try {
+        std::lock_guard<std::mutex> lock(m_error_messages_mutex);
+        // Ids are append-only and never reused, so two concurrent callbacks keep
+        // distinct messages. Saturation falls back to the generic failure code.
+        if (m_next_error_message_id <= 0 ||
+            m_next_error_message_id == (std::numeric_limits<int32_t>::max)())
+            return PLUGIN_ERROR_GENERAL;
+        m_error_messages.emplace_back(message);
+        return m_next_error_message_id++;
+    } catch (...) {
+        // Diagnostic storage must not throw across the C ABI.
+        return PLUGIN_ERROR_GENERAL;
+    }
+}
+
+std::string Orchestrator::error_message(int32_t id) const
+{
+    if (id == PLUGIN_ERROR_GENERAL)
+        return "Plugin reported an error without a diagnostic.";
+    if (id < PLUGIN_ERROR_FIRST_DYNAMIC)
+        // Reserved but unused ids, and anything below zero, use the generic text.
+        return "Plugin reported an unknown error code.";
+
+    std::lock_guard<std::mutex> lock(m_error_messages_mutex);
+    const size_t index = size_t(id) - size_t(PLUGIN_ERROR_FIRST_DYNAMIC);
+    if (index >= m_error_messages.size())
+        return "Plugin reported an unknown diagnostic id.";
+    return m_error_messages[index];
 }
 
 // Read the host cancellation flag without changing it.
@@ -1592,6 +1747,23 @@ option_def_error_code Orchestrator::create_new_print_config(const raw_config_opt
     // Attach the queued rules now that the setting exists.
     m_gui_rule_registry.attach_pending_for_setting(out.opt_key);
 
+    // A plugin option that is not declared in used_config_keys never receives a
+    // generated activation rule: it would stay editable whatever the selected
+    // implementation is. Only plugins that already participate in the used-key
+    // contract are reported, so host-created group selectors stay silent.
+    if (m_initializing_plugin != nullptr) {
+        const std::vector<Plugin::UsedConfigKey> &used_keys = m_initializing_plugin->get_used_config_keys();
+        if (!used_keys.empty()) {
+            const bool declared = std::any_of(used_keys.begin(), used_keys.end(),
+                [&out](const Plugin::UsedConfigKey &used_key) { return used_key.key == out.opt_key; });
+            if (!declared)
+                BOOST_LOG_TRIVIAL(warning)
+                    << "Plugin '" << m_initializing_plugin->get_id() << "' created option '"
+                    << out.opt_key << "' without declaring it in used_config_keys; no activation rule "
+                    << "will be generated for it.";
+        }
+    }
+
     // publish it?
     PrintConfigDef::instance_mutable().option_keys(def->option_preset_type).insert(out.opt_key);
     if(def->option_preset_type == RAW_PRESET_TYPE_FFF_FILAMENT_OVERRIDE) {
@@ -1702,11 +1874,19 @@ option_def_error_code Orchestrator::modify_print_config(const raw_option_def_pat
     return OPTION_DEF_ERROR_OK;
 }
 
-// Apply every recorded patch in dependency order, prune plugin-id lists and
-// rebuild the scripted enum maps. Missing target keys are ignored.
+// Tighten the invalidation of settings read by active plugins, then apply every
+// recorded patch in dependency order, prune plugin-id lists and rebuild the
+// scripted enum maps. Missing target keys are ignored.
 void Orchestrator::finalize_plugin_option_defs()
 {
     ConfigDef &definition = PrintConfigDef::instance_mutable();
+
+    // initialize_plugins() has already disabled every plugin whose used-key
+    // contract failed, so only real consumers move a definition. This must run
+    // before the early return below, which only concerns enum patches.
+    for (const std::unique_ptr<Plugin> &plugin : m_registered_plugins)
+        if (this->is_plugin_active(plugin.get()))
+            tighten_used_config_key_invalidations(definition, *plugin);
 
     // Resolve a key after its dependencies: replication patches create edges to
     // the source option, so the source is finalized first (leaves first in the
@@ -2266,26 +2446,8 @@ std::string Orchestrator::export_gcode(Print &print,
     // output everything to a G-code file
     // The following call may die if the output_filename_format template substitution fails.
     const std::string path = print.output_filepath(path_template);
-    Plugin *gcode_plugin = Steps::selected_or_active_plugin_for_step(*this, STEP_GCODE, &print.full_print_config());
-    if (gcode_plugin != nullptr && gcode_plugin->get_id() == "gcode.legacy") {
-        /*
-        The legacy selector is not a normal STEP_GCODE plugin. It asks the host
-        to keep using the original GCodeGenerator, which still owns real G-code
-        emission and thumbnail generation while the plugin writer is a prototype.
-        */
-        std::unique_ptr<GCodeGenerator> gcode(new GCodeGenerator());
-        gcode->do_export(&print, path.c_str(), result, thumbnail_cb);
-        if (result != nullptr)
-            result->reader_plugin_id = DEFAULT_GCODE_READER_PLUGIN_ID;
-        if (result != nullptr && print.conflict_result())
-            result->conflict_result = *print.conflict_result();
-        return path;
-    }
-
-    // Export can be requested multiple times after one slice. Force the
-    // export-side sub-pipeline to rebuild the PrintingPlan and rewrite the
-    // destination file, while leaving the expensive slicing data intact.
-    print.mark_step_and_dependents_for_execution(STEP_ORDERING);
+    // Re-export through the worker path: the UI cancellation callback would wait for this very thread.
+    print.request_replay_from_worker(Steps::Checkpoint::Plan);
     GCodeThumbnailRenderer thumbnail_renderer(print, std::move(thumbnail_cb));
     const std::string reader_plugin_id = Steps::StepPipeline::run_gcode(
         *this, print, path, thumbnail_renderer.c_renderer(), result);

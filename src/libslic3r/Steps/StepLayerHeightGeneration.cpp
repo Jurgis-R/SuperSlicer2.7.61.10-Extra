@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "libslic3r/Api/host/steps/LayerHeightStep.hpp"
+#include "libslic3r/Api/internal/PrintObjectAccess.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
@@ -26,7 +27,13 @@
 
 namespace Slic3r::Steps::StepLayerHeightGeneration {
 
-void clean_and_prepare(Print &) {}
+void clear(Print &print)
+{
+    // Drop generated layer descriptors, not the user-authored profile stored on ModelObject.
+    for (PrintObject &object : print.objects())
+        ApiInternal::PrintObjectAccess::set_layer_profile(object, {});
+}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string &out_error)
 {

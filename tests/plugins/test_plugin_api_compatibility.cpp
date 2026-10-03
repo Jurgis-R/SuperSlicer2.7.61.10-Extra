@@ -12,7 +12,7 @@ TEST_CASE("Package ABI diagnostics identify the manifest section key and invalid
     const std::string declaration = GENERATE(std::string(""),
         std::string("[abi]\n"),
         std::string("[abi]\nslic3r_plugin_types.h=bad.version\n"),
-        std::string("[abi]\nslic3r_plugin_types.h=1.0\nslic3r_plugin_types.h=1.0\n"));
+        std::string("[abi]\nslic3r_plugin_types.h=3.0\nslic3r_plugin_types.h=3.0\n"));
     const boost::filesystem::path path = boost::filesystem::temp_directory_path() /
         boost::filesystem::unique_path("plugin-version-%%%%-%%%%.ini");
     {
@@ -34,9 +34,9 @@ TEST_CASE("Package ABI diagnostics identify the manifest section key and invalid
         CHECK(diagnostic.find("bad.version") != std::string::npos);
         CHECK(diagnostic.find("major.minor") != std::string::npos);
     }
-    if (declaration.find("1.0") != std::string::npos) {
+    if (declaration.find("3.0") != std::string::npos) {
         CHECK(diagnostic.find("line 6") != std::string::npos);
-        CHECK(diagnostic.find("slic3r_plugin_types.h=1.0") != std::string::npos);
+        CHECK(diagnostic.find("slic3r_plugin_types.h=3.0") != std::string::npos);
     }
 }
 
@@ -46,7 +46,7 @@ TEST_CASE("Package ABI uses literal header names and ignores the build version",
         PluginPackageMetadata metadata;
         std::string error;
         REQUIRE(parse_plugin_package_metadata("[plugin]\npackage_version=1.0.0\nslicer_version=" + slicer +
-            "\n[abi]\nslic3r_plugin_types.h=1.0\nsteps/slic3r_step_post_perimeter.h=1.0\nfuture.h=0.0\n", metadata, error));
+            "\n[abi]\nslic3r_plugin_types.h=3.0\nsteps/slic3r_step_post_perimeter.h=1.0\nfuture.h=0.0\n", metadata, error));
         CHECK(metadata.compatibility.compatible());
         REQUIRE(metadata.abi.size() == 3);
         CHECK(metadata.abi[1].header == "steps/slic3r_step_post_perimeter.h");
@@ -59,9 +59,11 @@ TEST_CASE("Package ABI rejects missing invalid and conflicting requirements", "[
     const std::string abi = GENERATE(std::string(""), std::string("[abi]\n"),
         std::string("[abi]\nslic3r_plugin_types.h=0.0\n"),
         std::string("[abi]\nslic3r_plugin_types.h=2.0\n"),
-        std::string("[abi]\nslic3r_plugin_types.h=1.65535\n"),
-        std::string("[abi]\nslic3r_plugin_types.h=1.0\nfuture.h=1.0\n"),
-        std::string("[abi]\nslic3r_plugin_types.h=1.0\nslic3r_plugin_types.h=1.0\n"),
+        std::string("[abi]\nslic3r_plugin_types.h=2.4\n"),
+        std::string("[abi]\nslic3r_plugin_types.h=4.0\n"),
+        std::string("[abi]\nslic3r_plugin_types.h=3.65535\n"),
+        std::string("[abi]\nslic3r_plugin_types.h=3.0\nfuture.h=1.0\n"),
+        std::string("[abi]\nslic3r_plugin_types.h=3.0\nslic3r_plugin_types.h=3.0\n"),
         std::string("[abi]\nslic3r_plugin_types.h=1.0.0\n"),
         std::string("[abi]\nslic3r_plugin_types.h=-1.0\n"),
         std::string("[abi]\nslic3r_plugin_types.h=65536.0\n"));
@@ -87,6 +89,14 @@ TEST_CASE("DLL and package validators share the same contract registry", "[plugi
     table.back() = {1, 0};
     CHECK_FALSE(validate_plugin_api_table(table).compatible());
     table.assign(1, {0, 0});
+    CHECK_FALSE(validate_plugin_api_table(table).compatible());
+    table.assign(1, {3, 0});
+    CHECK(validate_plugin_api_table(table).compatible());
+    table.assign(1, {2, 0});
+    CHECK_FALSE(validate_plugin_api_table(table).compatible());
+    table.assign(1, {2, 4});
+    CHECK_FALSE(validate_plugin_api_table(table).compatible());
+    table.assign(1, {4, 0});
     CHECK_FALSE(validate_plugin_api_table(table).compatible());
     CHECK(PluginPackageMetadata{}.compatibility.status == PluginApiCompatibilityStatus::NotChecked);
 }

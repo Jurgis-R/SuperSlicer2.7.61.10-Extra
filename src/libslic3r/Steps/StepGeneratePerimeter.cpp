@@ -1131,9 +1131,7 @@ int32_t set_region_island_extrusion_callback(layer_region_island_handle *region_
 
 void clear_island_outputs(LayerSliceIsland &island)
 {
-    // Perimeter generation owns these island outputs. Cleaning them before a
-    // rerun prevents stale region-islands, fill areas, or perimeter slices from
-    // surviving when a plugin produces less geometry than the previous run.
+    // Destroy the whole post-slicing subtree, including groups created by surface and infill plugins.
     island.mutable_regions_islands().clear();
     ApiInternal::LayerIslandAccess::set_infill_areas(island, ExPolygons{});
     ApiInternal::LayerIslandAccess::infill_free_areas_mutable(island).clear();
@@ -1144,6 +1142,9 @@ void clear_layer_outputs(Layer &layer)
 {
     for (LayerSliceIsland &island : layer.islands())
         clear_island_outputs(island);
+    // Rebuilt polygons can reuse old addresses, so the retained regions' address-based caches must be reset.
+    for (LayerRegion &region : layer.regions())
+        region.clear();
 }
 
 void assign_island_outputs(LayerSliceIsland &island, PerimeterRunContext &run)
@@ -1239,7 +1240,7 @@ bool run_generator_for_island(Orchestrator &orchestrator,
 
 } // namespace
 
-void clean_and_prepare(Print &print)
+void clear(Print &print)
 {
     // The new pipeline currently treats perimeter generation as owning all
     // perimeter-era island outputs, so invalidation is intentionally coarse.
@@ -1248,6 +1249,8 @@ void clean_and_prepare(Print &print)
         for (Layer &layer : object.layers())
             clear_layer_outputs(layer);
 }
+
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string *)
 {

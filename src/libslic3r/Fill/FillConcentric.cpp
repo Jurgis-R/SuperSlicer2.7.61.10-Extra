@@ -25,6 +25,17 @@
 
 namespace Slic3r {
 
+namespace {
+
+// Plugin-owned region settings can be absent when their provider is disabled.
+double fill_region_option_effective_value(const PrintRegionConfig *config, const char *key, double fallback)
+{
+    const ConfigOption *option = config != nullptr ? config->option(key) : nullptr;
+    return option != nullptr ? option->get_effective_value(fallback) : fallback;
+}
+
+} // namespace
+
 void
 FillConcentric::init_spacing(coordf_t spacing, const FillParams &params)
 {
@@ -122,7 +133,7 @@ FillConcentric::fill_surface_extrusion(
     ExtrusionEntitiesPtr out_to_check;
 
     double min_gapfill_area = double(params.flow.scaled_width()) * double(params.flow.scaled_width());
-    if (params.config != nullptr) min_gapfill_area = scale_d(params.config->gap_fill_min_area.get_effective_value(params.flow.width())) * double(params.flow.scaled_width());
+    if (params.config != nullptr) min_gapfill_area = scale_d(fill_region_option_effective_value(params.config, "gap_fill_min_area", params.flow.width())) * double(params.flow.scaled_width());
     // Perform offset. //FIXME: can miss gapfill outside of this first perimeter
     Slic3r::ExPolygons expp = offset_ex(surface->expolygon, scale_d(0 - 0.5 * this->get_spacing()));
     // Create the infills for each of the regions.
@@ -425,7 +436,7 @@ FillConcentric::fill_surface_extrusion(
     gapfill_areas = union_safety_offset_ex(gapfill_areas);
     if (gapfill_areas.size() > 0 && no_overlap_expolygons.size() > 0) {
         double minarea = double(params.flow.scaled_width()) * double(params.flow.scaled_width());
-        if (params.config != nullptr) minarea = scale_d(params.config->gap_fill_min_area.get_effective_value(params.flow.width())) * double(params.flow.scaled_width());
+        if (params.config != nullptr) minarea = scale_d(fill_region_option_effective_value(params.config, "gap_fill_min_area", params.flow.width())) * double(params.flow.scaled_width());
         for (int i = 0; i < gapfill_areas.size(); i++) {
             if (gapfill_areas[i].area() < minarea) {
                 gapfill_areas.erase(gapfill_areas.begin() + i);

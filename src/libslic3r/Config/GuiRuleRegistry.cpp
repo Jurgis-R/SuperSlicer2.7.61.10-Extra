@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 
 #include <boost/log/trivial.hpp>
 
+#include "GuiRuleTexts.hpp"
 #include "PrintConfig.hpp"
 
 namespace Slic3r {
@@ -386,6 +388,136 @@ std::string gui_rule_validation_error(const raw_gui_rule *rule)
     return std::string();
 }
 
+// Format a numeric operand without trailing zeros.
+std::string gui_rule_float_operand(double value)
+{
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%g", value);
+    return buffer;
+}
+
+// Name used for an option in the explanation text.
+std::string gui_rule_option_name(const std::string &key, GuiRuleRegistry::ExplanationStyle style)
+{
+    if (style == GuiRuleRegistry::ExplanationStyle::TranslatedLabels) {
+        const ConfigOptionDef *def = PrintConfigDef::instance().get(key);
+        if (def != nullptr) {
+            const std::string &label = def->translated_label();
+            if (!label.empty())
+                return label;
+        }
+    }
+    return key;
+}
+
+// Numeric operand of one clause: an enum label when the condition key resolves
+// to a closed enum value, otherwise the number.
+std::string gui_rule_operand_text(const GuiRuleRegistry::Clause &clause, GuiRuleRegistry::ExplanationStyle style)
+{
+    if (clause.condition == RAW_GUI_RULE_CONDITION_INT_EQUALS ||
+        clause.condition == RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS) {
+        const int32_t value = int32_t(std::llround(clause.condition_float_value));
+        const ConfigOptionDef *def = PrintConfigDef::instance().get(clause.condition_key);
+        if (def != nullptr && def->type == coEnum && def->enum_def && def->enum_def->is_valid_closed_enum()) {
+            if (const std::optional<int> index = def->enum_def->enum_to_index(value); index.has_value()) {
+                const std::vector<std::string> &labels =
+                    style == GuiRuleRegistry::ExplanationStyle::TranslatedLabels ? def->enum_def->translated_labels()
+                                                                                : def->enum_def->labels();
+                if (size_t(*index) < labels.size())
+                    return labels[*index];
+            }
+        }
+        return std::to_string(value);
+    }
+    return gui_rule_float_operand(clause.condition_float_value);
+}
+
+// Human readable text of one clause, without its state marker.
+std::string gui_rule_clause_text(const GuiRuleRegistry::Clause &clause,
+                                 int32_t current_index,
+                                 GuiRuleRegistry::ExplanationStyle style)
+{
+    std::string text = gui_rule_option_name(clause.condition_key, style);
+    if (clause.condition_index >= 0)
+        text += "[" + std::to_string(clause.condition_index) + "]";
+    else if (clause.condition_index == RAW_GUI_RULE_INDEX_CURRENT) {
+        text += "[";
+        text += current_index >= 0 ? std::to_string(current_index) : gui_rule_text(GuiRuleText::CURRENT_INDEX);
+        text += "]";
+    }
+
+    switch (clause.condition) {
+    case RAW_GUI_RULE_CONDITION_BOOL_TRUE:
+        text += " " + gui_rule_text(GuiRuleText::IS_TRUE);
+        break;
+    case RAW_GUI_RULE_CONDITION_BOOL_FALSE:
+        text += " " + gui_rule_text(GuiRuleText::IS_FALSE);
+        break;
+    case RAW_GUI_RULE_CONDITION_OPTION_ENABLED:
+        text += " " + gui_rule_text(GuiRuleText::IS_ENABLED);
+        break;
+    case RAW_GUI_RULE_CONDITION_OPTION_DISABLED:
+        text += " " + gui_rule_text(GuiRuleText::IS_DISABLED);
+        break;
+    case RAW_GUI_RULE_CONDITION_VALUE_NON_ZERO:
+        text += " " + gui_rule_text(GuiRuleText::NON_ZERO);
+        break;
+    case RAW_GUI_RULE_CONDITION_INT_EQUALS:
+    case RAW_GUI_RULE_CONDITION_FLOAT_EQUALS:
+        text += " " + gui_rule_text(GuiRuleText::EQUALS) + " " + gui_rule_operand_text(clause, style);
+        break;
+    case RAW_GUI_RULE_CONDITION_INT_NOT_EQUALS:
+        text += " " + gui_rule_text(GuiRuleText::NOT_EQUALS) + " " + gui_rule_operand_text(clause, style);
+        break;
+    case RAW_GUI_RULE_CONDITION_FLOAT_LESS_THAN:
+        text += " " + gui_rule_text(GuiRuleText::LESS_THAN) + " " + gui_rule_operand_text(clause, style);
+        break;
+    case RAW_GUI_RULE_CONDITION_FLOAT_GREATER_OR_EQUAL:
+        text += " " + gui_rule_text(GuiRuleText::GREATER_OR_EQUAL) + " " + gui_rule_operand_text(clause, style);
+        break;
+    case RAW_GUI_RULE_CONDITION_IS_PERCENT:
+        text += " " + gui_rule_text(GuiRuleText::IS_PERCENT);
+        break;
+    case RAW_GUI_RULE_CONDITION_VECTOR_EMPTY:
+        text += " " + gui_rule_text(GuiRuleText::IS_EMPTY);
+        break;
+    case RAW_GUI_RULE_CONDITION_NONE:
+    default:
+        break;
+    }
+    return text;
+}
+
+// Decide whether one rule explains the widget (target_key, target_index), and
+// with which clause evaluation index. This mirrors the pass that produced the
+// widget state: the global pass handles ALL and explicit-index rules, while the
+// per-extruder pass handles CURRENT rules on extruder-sized targets.
+bool gui_rule_applies_to_widget(const GuiRuleRegistry::Rule &rule,
+                                const ConfigOption &target_option,
+                                int32_t target_index,
+                                int32_t &evaluation_index)
+{
+    if (target_index < 0) {
+        // Whole field: only the global pass applies.
+        if (rule.target_index != RAW_GUI_RULE_INDEX_ALL)
+            return false;
+        evaluation_index = -1;
+        return true;
+    }
+    if (rule.target_index == RAW_GUI_RULE_INDEX_CURRENT) {
+        if (extruder_sized_vector(&target_option) == nullptr)
+            return false;
+        evaluation_index = target_index;
+        return true;
+    }
+    if (rule.target_index == target_index) {
+        // Explicit index: applied by the global pass.
+        evaluation_index = -1;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 // Attach one already validated and stored rule to its setting activation group.
@@ -470,6 +602,7 @@ GuiRuleRegistry::Registration GuiRuleRegistry::add(const raw_gui_rule *rule, con
     }
 
     m_rules.emplace_back(std::move(gui_rule));
+    invalidate_explanations();
     const size_t rule_index = m_rules.size() - 1;
     if (!this->attach_rule_to_setting(m_rules[rule_index].target_key, rule_index))
         m_pending_rules[m_rules[rule_index].target_key].push_back(rule_index);
@@ -506,6 +639,10 @@ std::vector<GuiRuleRegistry::Application> GuiRuleRegistry::evaluate(
     const std::string &owner_filter,
     const std::vector<OptionKeyIdx> &setting_filter) const
 {
+    // A refresh follows every setting change: drop the cached explanations so
+    // a hover cannot show a stale reason.
+    invalidate_explanations();
+
     GuiRuleEvaluationContext context(config, scope, current_index, owner_filter);
 
     if (setting_filter.empty()) {
@@ -549,12 +686,113 @@ std::vector<GuiRuleRegistry::Application> GuiRuleRegistry::evaluate(
     return out;
 }
 
+std::string GuiRuleRegistry::explain_disabled(const DynamicPrintConfig &config,
+                                              const OptionKeyIdx &target,
+                                              raw_option_preset_type scope,
+                                              ExplanationStyle style) const
+{
+    const ExplanationCacheKey cache_key{style, target.key, target.idx};
+    const auto cached = m_explanation_cache.find(cache_key);
+    if (cached != m_explanation_cache.end())
+        return cached->second;
+
+    std::string explanation;
+    const ConfigOption *target_option = config.optptr(target.key);
+    if (target_option != nullptr) {
+        std::vector<std::string> lines;
+        bool any_rule = false;
+        bool rule_satisfied = false;
+
+        for (const PluginGuiRule &rule : m_rules) {
+            if (rule.target_key != target.key)
+                continue;
+            if (!gui_rule_matches_scope(rule.scope, scope))
+                continue;
+            if (rule.clauses.empty())
+                continue;
+
+            int32_t evaluation_index = -1;
+            if (!gui_rule_applies_to_widget(rule, *target_option, target.idx, evaluation_index))
+                continue;
+
+            // Same applicability rule as the evaluator: a rule only
+            // participates when its target and every clause option exist.
+            bool applicable = true;
+            for (const Clause &clause : rule.clauses)
+                if (clause.condition_key.empty() || config.optptr(clause.condition_key) == nullptr) {
+                    applicable = false;
+                    break;
+                }
+            if (!applicable)
+                continue;
+
+            any_rule = true;
+
+            std::vector<std::pair<const Clause *, bool>> clause_states;
+            clause_states.reserve(rule.clauses.size());
+            bool rule_true = true;
+            bool invalid = false;
+            for (const Clause &clause : rule.clauses) {
+                bool value = false;
+                try {
+                    const ConfigOption *condition_option = config.optptr(clause.condition_key);
+                    value = condition_option != nullptr &&
+                            gui_rule_condition_value(*condition_option, clause, evaluation_index);
+                } catch (...) {
+                    // Malformed plugin input must not crash the tooltip.
+                    invalid = true;
+                    break;
+                }
+                clause_states.emplace_back(&clause, value);
+                if (!value)
+                    rule_true = false;
+            }
+            if (invalid)
+                continue;
+            if (rule_true) {
+                // The widget should be enabled: there is nothing to explain.
+                rule_satisfied = true;
+                break;
+            }
+
+            std::string line;
+            for (size_t i = 0; i < clause_states.size(); ++i) {
+                if (i > 0)
+                    line += " " + gui_rule_text(GuiRuleText::AND) + " ";
+                line += gui_rule_clause_text(*clause_states[i].first, evaluation_index, style);
+                line += " ";
+                line += gui_rule_text(clause_states[i].second ? GuiRuleText::SATISFIED : GuiRuleText::UNMET);
+            }
+            lines.emplace_back(std::move(line));
+        }
+
+        if (any_rule && !rule_satisfied && !lines.empty()) {
+            explanation = gui_rule_text(GuiRuleText::TO_ENABLE);
+            for (const std::string &line : lines) {
+                explanation += "\n";
+                explanation += "\xE2\x80\xA2 "; // UTF-8 bullet
+                explanation += line;
+            }
+        }
+    }
+
+    m_explanation_cache.emplace(cache_key, explanation);
+    return explanation;
+}
+
+void GuiRuleRegistry::invalidate_explanations() const
+{
+    m_explanation_cache.clear();
+}
+
 // Attach the rules queued for one setting once its definition exists.
 bool GuiRuleRegistry::attach_pending_for_setting(const std::string &setting_key)
 {
     const std::map<std::string, std::vector<size_t>>::iterator pending = m_pending_rules.find(setting_key);
     if (pending == m_pending_rules.end())
         return false;
+
+    invalidate_explanations();
 
     std::vector<size_t> queued;
     queued.swap(pending->second);

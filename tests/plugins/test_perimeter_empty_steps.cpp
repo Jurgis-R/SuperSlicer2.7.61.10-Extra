@@ -13,11 +13,13 @@
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/internal/LayerAccess.hpp"
+#include "libslic3r/Api/internal/LayerIslandAccess.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_extrusion_entity.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_post_infill.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_post_perimeter.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_pre_perimeter.h"
+#include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Model.hpp"
@@ -666,7 +668,7 @@ TEST_CASE("Post-perimeter step exposes mutable perimeter outputs", "[plugins][pe
 
     {
         ScopedActivePlugins active_scope({SIMPLE_PERIMETER_GENERATOR});
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(Orchestrator::instance(), prepared.print);
     }
 
@@ -693,6 +695,86 @@ TEST_CASE("Post-perimeter step exposes mutable perimeter outputs", "[plugins][pe
     CHECK(mutated_island.infill_areas().empty());
     CHECK(mutated_island.infill_free_areas().empty());
     CHECK(mutated_island.infill_areas_bboxes().empty());
+}
+
+TEST_CASE("Perimeter clear resets retained region fill caches", "[plugins][perimeter][steps][cache]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({}));
+    REQUIRE(prepared.print.object(0).layer_count() > 0);
+    Layer &layer = prepared.print.object(0).layer(0);
+    const ExPolygon raw_slice = rectangle_expolygon(-8., -8., 8., 8.);
+    replace_single_layer_island(layer, raw_slice);
+    LayerRegion &region = layer.region(0);
+    const ExPolygons original_fill{rectangle_expolygon(-6., -6., 6., 6.)};
+    ApiInternal::LayerIslandAccess::set_infill_areas(layer.island(0), ExPolygons(original_fill));
+    ApiInternal::LayerRegionAccess::fill_no_overlap_expolygons_mutable(region) = original_fill;
+    region.set_fill_surfaces().set(original_fill, stPosInternal | stDensSparse);
+    const ExPolygons &cached_fill = region.fill_expolygons();
+    REQUIRE_FALSE(cached_fill.empty());
+
+    SECTION("step clear empties existing references before the next getter")
+    {
+        Steps::StepGeneratePerimeter::clear(prepared.print);
+        CHECK(cached_fill.empty());
+        CHECK(layer.island(0).infill_areas().empty());
+
+        SECTION("empty island recomputes empty fill")
+        {
+            CHECK(region.fill_expolygons().empty());
+        }
+        SECTION("replacement fill recomputes without an intervening getter")
+        {
+            const ExPolygons changed_fill{rectangle_expolygon(-3., -2., 4., 5.)};
+            ApiInternal::LayerIslandAccess::set_infill_areas(layer.island(0), ExPolygons(changed_fill));
+            const ExPolygons &recomputed = region.fill_expolygons();
+            REQUIRE_FALSE(recomputed.empty());
+            CHECK(diff_ex(recomputed, changed_fill).empty());
+            CHECK(diff_ex(changed_fill, recomputed).empty());
+            CHECK_FALSE(diff_ex(original_fill, recomputed).empty());
+        }
+    }
+    SECTION("region clear resets the sentinel even when island addresses are unchanged")
+    {
+        region.clear();
+        CHECK(cached_fill.empty());
+        const ExPolygons &recomputed = region.fill_expolygons();
+        REQUIRE_FALSE(recomputed.empty());
+        CHECK(diff_ex(recomputed, original_fill).empty());
+        CHECK(diff_ex(original_fill, recomputed).empty());
+    }
+
+    CHECK(region.fill_no_overlap_expolygons().empty());
+    CHECK(region.fill_surfaces().empty());
+    REQUIRE(region.get_raw_slices().size() == 1);
+    CHECK(region.get_raw_slices().front().contour.points == raw_slice.contour.points);
+    REQUIRE(region.slices().surfaces.size() == 1);
+    CHECK(region.slices().surfaces.front().expolygon.contour.points == raw_slice.contour.points);
+    CHECK(region.slices().surfaces.front().surface_type == (stPosInternal | stDensSparse));
+}
+
+TEST_CASE("Region fill cache hashes 65 polygons", "[plugins][perimeter][steps][cache]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, perimeter_config({}));
+    REQUIRE(prepared.print.object(0).layer_count() > 0);
+    Layer &layer = prepared.print.object(0).layer(0);
+    replace_single_layer_island(layer, rectangle_expolygon(-8., -8., 8., 8.));
+    ExPolygons fill;
+    for (size_t idx = 0; idx < 65; ++idx) {
+        const double x = -7. + double(idx % 9) * 1.5;
+        const double y = -7. + double(idx / 9) * 1.5;
+        fill.push_back(rectangle_expolygon(x, y, x + 1., y + 1.));
+    }
+    ApiInternal::LayerIslandAccess::set_infill_areas(layer.island(0), ExPolygons(fill));
+    for (size_t read_idx = 0; read_idx < 2; ++read_idx) {
+        const ExPolygons &cached_fill = layer.region(0).fill_expolygons();
+        REQUIRE(cached_fill.size() == 65);
+        CHECK(diff_ex(cached_fill, fill).empty());
+        CHECK(diff_ex(fill, cached_fill).empty());
+    }
 }
 
 TEST_CASE("Post-infill step exposes mutable infill outputs", "[plugins][infill][steps]")

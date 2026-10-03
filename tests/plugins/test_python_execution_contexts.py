@@ -58,14 +58,15 @@ class PythonExecutionContextTests(unittest.TestCase):
         )
         keepalive.extend((cancel_cb, warning_cb, error_cb, progress_cb, payload))
         common = generated.PluginRunContext(
-            int(step),
-            ctypes.c_void_p(900),
-            ctypes.c_void_p(ctypes.addressof(payload)),
-            ctypes.c_void_p(901),
-            cancel_cb,
-            warning_cb,
-            error_cb,
-            progress_cb,
+            step=int(step),
+            print=ctypes.c_void_p(902),
+            plugin_storage=ctypes.c_void_p(900),
+            data=ctypes.c_void_p(ctypes.addressof(payload)),
+            host_context=ctypes.c_void_p(901),
+            is_cancelled=cancel_cb,
+            report_warning=warning_cb,
+            report_error=error_cb,
+            report_progress=progress_cb,
         )
         keepalive.append(common)
         return common, keepalive
@@ -76,6 +77,10 @@ class PythonExecutionContextTests(unittest.TestCase):
 
         self.assertEqual(singleton.exclusive_group, "test.singleton")
         self.assertEqual(service.exclusive_group, "")
+
+    def test_plugin_base_does_not_opt_into_clear(self):
+        plugin = self.api_module.PluginBase("test.no_clear", 1)
+        self.assertFalse(hasattr(plugin, "clear"))
 
     def test_simple_context_validates_step_and_wraps_borrowed_handles(self):
         payload = self.generated.RunCtxPrepareForPerimeters(ctypes.c_void_p(11), ctypes.c_void_p(12))
@@ -113,7 +118,10 @@ class PythonExecutionContextTests(unittest.TestCase):
 
         self.assertEqual(context.gcode_print().address, 21)
         self.assertEqual(context.gcode_plan_handle(), 22)
-        self.assertEqual(context.gcode_plan().address, 22)
+        plan = context.gcode_plan()
+        self.assertEqual(plan.address, 22)
+        self.assertIsInstance(plan, self.execution.PrintingPlan)
+        self.assertNotIsInstance(plan, self.execution.MutablePrintingPlan)
         self.assertEqual(
             context.gcode_firmware_handle(), ctypes.addressof(firmware)
         )

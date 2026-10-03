@@ -227,7 +227,7 @@ private:
 // Initialize startup-only context; clear borrowed views on both exit paths.
 std::string GCodePreamble::begin(
     const Print &print,
-    const PrintingPlan &plan,
+    const ConstPrintingPlan &plan,
     const std::array<std::string, 3> &thumbnail_blocks)
 {
     const Config config = print.config();
@@ -239,9 +239,9 @@ std::string GCodePreamble::begin(
     m_trailing_thumbnails.clear();
     try {
         for (uint32_t gi = 0; gi < plan.group_count() && m_initial_tools.empty(); ++gi) {
-            const PrintingGroup group = plan.group(gi);
+            const ConstPrintingGroup group = plan.group(gi);
             for (uint32_t li = 0; li < group.layer_group_count() && m_initial_tools.empty(); ++li) {
-                const PrintingLayerGroup layer = group.layer_group(li);
+                const ConstPrintingLayerGroup layer = group.layer_group(li);
                 for (uint32_t ti = 0; ti < layer.tool_group_count(); ++ti) {
                     const extruder_index_t tool = layer.tool_group(ti).extruder_id();
                     if (tool >= m_session.m_extruders.size())
@@ -252,7 +252,7 @@ std::string GCodePreamble::begin(
                 }
             }
         }
-        const PrintingScopeEvents events = plan.events();
+        const ConstPrintingScopeEvents events = plan.events();
         const size_t starts = events.has_before() ? start_script_count(events.before()) : 0;
         if (starts > 1) throw std::invalid_argument("The preamble contains multiple start scripts.");
         std::string output = thumbnail_blocks[RAW_GCODE_THUMBNAIL_FILE_PREFIX];

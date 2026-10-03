@@ -642,6 +642,26 @@ WipeTower::ToolChangeResult WipeTower::construct_tcr(WipeTowerWriter& writer,
 
 
 
+namespace {
+
+// Read one optional setting value; an absent plugin-owned setting reads as zero.
+template<typename ConfigType>
+double wipe_tower_option_value(const ConfigType &config, const char *key, size_t idx = 0)
+{
+    const ConfigOption *option = config.option(key);
+    return option != nullptr ? option->get_float(idx) : 0.;
+}
+
+// Resolve one optional float-or-percent setting against a fallback value.
+template<typename ConfigType>
+double wipe_tower_option_effective_value(const ConfigType &config, const char *key, double fallback)
+{
+    const ConfigOptionFloatOrPercent *option = config.option<ConfigOptionFloatOrPercent>(key);
+    return option != nullptr ? option->get_effective_value(fallback) : fallback;
+}
+
+} // namespace
+
 WipeTower::WipeTower(const PrintConfig& config, const PrintObjectConfig& default_object_config, const PrintRegionConfig& default_region_config, const std::vector<std::vector<float>>& wiping_matrix, extruder_index_t initial_tool) :
     m_config(&config),
     m_object_config(&default_object_config),
@@ -659,8 +679,8 @@ WipeTower::WipeTower(const PrintConfig& config, const PrintObjectConfig& default
     m_no_sparse_layers(config.wipe_tower_no_sparse_layers),
     m_gcode_flavor(config.gcode_flavor),
     m_travel_speed(config.travel_speed),
-    m_infill_speed(default_region_config.infill_speed),
-    m_perimeter_speed(default_region_config.perimeter_speed),
+    m_infill_speed(float(wipe_tower_option_value(default_region_config, "infill_speed"))),
+    m_perimeter_speed(float(wipe_tower_option_value(default_region_config, "perimeter_speed"))),
     m_current_tool(initial_tool),
     wipe_volumes(wiping_matrix)
 {
@@ -670,7 +690,7 @@ WipeTower::WipeTower(const PrintConfig& config, const PrintObjectConfig& default
     }
     // Read absolute value of first layer speed, if given as percentage,
     // it is taken over wipe_tower_speed.
-    m_first_layer_speed = default_object_config.first_layer_speed.get_effective_value(m_speed);
+    m_first_layer_speed = wipe_tower_option_effective_value(default_object_config, "first_layer_speed", m_speed);
     if (m_first_layer_speed <= 0.f) { // just to make sure autospeed doesn't break it.
         m_first_layer_speed = m_speed;
     }
@@ -763,10 +783,10 @@ void WipeTower::set_extruder(extruder_index_t idx)
     float nozzle_diameter = float(m_config->nozzle_diameter.get_at(idx));
     m_filpar[idx].nozzle_diameter = nozzle_diameter; // to be used in future with (non-single) multiextruder MM
 
-    float max_speed = float(m_config->filament_max_speed.get_at(idx));
+    float max_speed = float(wipe_tower_option_value(*m_config, "filament_max_speed", idx));
     if (max_speed > 0.f)
         m_filpar[idx].max_speed = max_speed;
-    float max_vol_speed = float(m_config->filament_max_volumetric_speed.get_at(idx));
+    float max_vol_speed = float(wipe_tower_option_value(*m_config, "filament_max_volumetric_speed", idx));
     if (max_vol_speed!= 0.f)
         m_filpar[idx].max_e_speed = (max_vol_speed / filament_area());
 
@@ -1350,8 +1370,8 @@ void WipeTower::toolchange_Wipe(
     // all speed in mm/s, will converted in mm/min when muliplied by speed_factor
     float max_speed = std::numeric_limits<float>::max();
     //stay in limits
-    if (this->m_config->filament_max_speed.get_at(this->m_current_tool) > 0) {
-        max_speed = float(this->m_config->filament_max_speed.get_at(this->m_current_tool));
+    if (wipe_tower_option_value(*this->m_config, "filament_max_speed", this->m_current_tool) > 0) {
+        max_speed = float(wipe_tower_option_value(*this->m_config, "filament_max_speed", this->m_current_tool));
     }
     float target_speed = m_speed; //mm/s
     if (is_first_layer() && m_first_layer_speed > 0)
@@ -1372,7 +1392,7 @@ void WipeTower::toolchange_Wipe(
     
     // now the wiping itself:
 	for (int i = 0; true; ++i)	{
-		if (i!=0 && this->m_config->filament_max_speed.get_at(this->m_current_tool) > 0) {
+		if (i!=0 && wipe_tower_option_value(*this->m_config, "filament_max_speed", this->m_current_tool) > 0) {
             if      (wipe_speed < 0.34f * target_speed) wipe_speed = 0.375f * target_speed;
             else if (wipe_speed < 0.377 * target_speed) wipe_speed = 0.458f * target_speed;
             else if (wipe_speed < 0.46f * target_speed) wipe_speed = 0.875f * target_speed;

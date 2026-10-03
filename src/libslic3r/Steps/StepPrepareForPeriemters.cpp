@@ -9,7 +9,14 @@
 
 namespace Slic3r::Steps::StepPrepareForPeriemters {
 
-void clean_and_prepare(Print &) {}
+void clear(Print &print)
+{
+    for (PrintObject &object : print.objects())
+        object.clear_auxiliary_layers();
+    // Print-level auxiliaries have a hidden owner and are not included in print.objects().
+    print.reset_auxiliary_object();
+}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &, std::string &)
 {

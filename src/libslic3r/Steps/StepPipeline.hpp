@@ -7,6 +7,7 @@
 #define steps_steppipeline_hpp_
 
 #include "libslic3r/Api/plugin/c/slic3r_gcode_thumbnail.h"
+#include <cstdint>
 #include <map>
 #include <string>
 #include <utility>
@@ -26,6 +27,28 @@ class Print;
 class PrintObject;
 
 namespace Steps {
+
+// Checkpoints are the fixed, host-owned points from which the pipeline can
+// resume. Each one names the data that stays valid when every later step is
+// replayed. They are ordered: an earlier checkpoint keeps less data.
+enum class Checkpoint : uint8_t
+{
+    // Nothing is reusable: slice everything from STEP_LAYER_HEIGHT.
+    None,
+    // Layer heights and slices (STEP_LAYER_HEIGHT to STEP_POST_SLICING) are
+    // kept and frozen; the pipeline resumes at STEP_PRE_PERIMETER.
+    Slicing,
+    // The whole Print data tree (objects, layers, regions, islands) is kept
+    // and frozen after STEP_FINALIZE_SLICING; resumes at STEP_ORDERING.
+    Print,
+    // Optional deep copy of the PrintingPlan taken right after STEP_ORDERING;
+    // resumes at STEP_WIPETOWER from a fresh clone of that copy.
+    Ordering,
+    // The finished PrintingPlan, read-only for STEP_GCODE; resumes at STEP_GCODE.
+    Plan,
+    // Every step has run. Asking to resume here forces nothing.
+    GCode
+};
 
 struct StepExclusiveGroup
 {
@@ -83,6 +106,30 @@ Plugin *selected_active_plugin_from_group(Orchestrator &orchestrator,
 // pipeline definition error, not something the graph should silently repair.
 const std::vector<slicing_step_t> &execution_order();
 
+// Return a step's position in execution_order(), or execution_order().size()
+// when the value is not an executable pipeline step.
+size_t execution_index(slicing_step_t step);
+
+// Compare executable steps by the written pipeline order, never by their ABI
+// numeric values. Both arguments must belong to execution_order().
+bool executes_before(slicing_step_t lhs, slicing_step_t rhs);
+
+// Return the invalidation step of a setting once a plugin running at
+// consumer_step reads it. STEP_ANY and an explicit STEP_NONE are kept; any other
+// value becomes the earlier of both steps in execution_order(), so a changed
+// value replays both its original producer and the consumer. Apart from
+// STEP_ANY and STEP_NONE, both steps must belong to execution_order().
+slicing_step_t tightened_invalidation_step(slicing_step_t current, slicing_step_t consumer_step);
+
+// Return the latest checkpoint that does not contain the output of step, that
+// is the checkpoint to resume from when step must run again. STEP_ANY maps to
+// Checkpoint::None. A step outside execution_order() is a caller error; it
+// asserts and conservatively maps to Checkpoint::None.
+Checkpoint checkpoint_before_step(slicing_step_t step);
+// First step executed when resuming from checkpoint, or STEP_NONE for
+// Checkpoint::GCode, which has nothing left to run.
+slicing_step_t checkpoint_resume_step(Checkpoint checkpoint);
+
 // Direct dependency graph used by Print's new invalidation plan. If A maps to
 // B, invalidating A also asks B to run on the next process().
 const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents();
@@ -107,6 +154,9 @@ bool validate_execution_order_against_dependencies();
 class StepPipeline
 {
 public:
+    // Release step outputs and plugin-visible owners that a checkpoint resume
+    // rebuilds, before the steps after the checkpoint run again.
+    static void clear_checkpoint_outputs(Print &print, Checkpoint checkpoint);
     // Prepare the sliced print tree up to the point where G-code ordering can
     // start. Export callers run this first through Print::process(), then call
     // run_gcode() later with the concrete output path.
@@ -124,23 +174,6 @@ public:
     // separately so the final output path is available only during export.
     static void run(Orchestrator &orchestrator, Print &print, const std::string &path = std::string());
 
-#ifdef _DEBUG
-    // Run the native/original process and the step/plugin process on two cloned
-    // Print trees, comparing them after each migrated step group. This method is
-    // for migration tests and intentionally does not mutate the input print.
-    static void debug_run(Orchestrator &orchestrator, const Print &source, slicing_step_t until);
-
-private:
-    // These native split points intentionally access PrintObject internals.
-    // PrintObject/Layer grant friendship to StepPipeline, but not to anonymous
-    // namespace helper functions, so keep them as real class members.
-    static void run_native_layer_height_generation(Print &print);
-    static void run_native_slicing(Print &print);
-    static void run_native_post_slicing(Print &print);
-    static void run_native_layer_height_generation_object(PrintObject &object);
-    static void run_native_slicing_object(PrintObject &object);
-    static void run_native_post_slicing_object(PrintObject &object);
-#endif
 };
 
 } // namespace Steps

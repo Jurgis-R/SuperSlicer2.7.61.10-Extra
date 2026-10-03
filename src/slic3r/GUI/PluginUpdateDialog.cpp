@@ -328,6 +328,7 @@ PluginUpdateDialog::PluginUpdateDialog(wxWindow *parent, PluginUpdater &updater)
     , m_activation_draft(std::make_unique<PluginActivationDraft>())
 {
     m_updater.reload_all_plugins();
+    wxGetApp().update_config_option_translations();
     rebuild();
     CentreOnParent();
     // Recreate scaled icons and reapply semantic colours after theme changes.
@@ -701,6 +702,7 @@ void PluginUpdateDialog::add_repository()
                              from_u8(format_updater_error(error)), _L("Plugin Package Manager"), wxICON_ERROR, &dialog);
                      else
                          dialog.m_updater.reload_all_plugins();
+                     wxGetApp().update_config_option_translations();
                      dialog.rebuild();
                  }));
 }

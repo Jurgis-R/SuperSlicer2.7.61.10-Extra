@@ -355,9 +355,9 @@ TEST_CASE("Lightning snapshots mixed regions and propagates physical middle-laye
         Steps::StepSlicing::run_step(orchestrator, prepared.print);
         Steps::StepPostSlicing::run_step(orchestrator, prepared.print);
         ActivePlugins active({SIMPLE_PERIMETER_GENERATOR, INITIAL_TYPED_SURFACE_BUILDER});
-        Steps::StepGeneratePerimeter::clean_and_prepare(prepared.print);
+        Steps::StepGeneratePerimeter::clear(prepared.print);
         Steps::StepGeneratePerimeter::run_step(orchestrator, prepared.print);
-        Steps::StepSurfaceGeneration::clean_and_prepare(prepared.print);
+        Steps::StepSurfaceGeneration::clear(prepared.print);
         Steps::StepSurfaceGeneration::run_step(orchestrator, prepared.print);
     }
     PrintObject &object = prepared.print.object(0);
@@ -901,7 +901,7 @@ TEST_CASE("STEP_INFILL generates Lightning on two objects without modifying surf
     const std::string before = surface_snapshot(prepared.print);
     INFO("Lightning setup and infill");
     const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    Steps::StepGenerateInfill::clean_and_prepare(prepared.print);
+    Steps::StepGenerateInfill::clear(prepared.print);
     Steps::StepGenerateInfill::run_step(orchestrator, prepared.print);
     CHECK(surface_snapshot(prepared.print) == before);
     REQUIRE(prepared.print.objects().size() == 2);

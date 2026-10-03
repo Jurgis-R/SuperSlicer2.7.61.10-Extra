@@ -6,6 +6,11 @@
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionProperty.hpp"
+#include "plugin_test_helpers.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -521,9 +526,9 @@ TEST_CASE("Arachne - Missing infill",
     REQUIRE(has_published_fill_area(generated));
 }
 
-// Distilled from GitHub issue #8849. The historical length assertion was
-// disabled, so this migration deliberately checks only the common output
-// invariants rather than inventing a new threshold.
+// Regression from GitHub issue #8849. The polygon goes through the shared
+// regression helper, which checks the common output invariants. The extrusion
+// length stays unasserted because no reference threshold is known.
 TEST_CASE("Arachne - #8849 - Missing part of model",
           "[plugins][perimeter][arachne][regression][ArachneMissingPart8849]")
 {
@@ -690,4 +695,43 @@ TEST_CASE("Arachne - SPE-1837 - No perimeters generated",
     const ArachneRegressionResult generated =
         run_arachne_regression({polygon}, 300000, 700000, 1, 0.2);
     REQUIRE_FALSE(generated.islands.empty());
+}
+TEST_CASE("Arachne perimeter generator owns its settings and activation rule",
+          "[plugins][perimeter][arachne][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("perimeter.generator.arachne");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "perimeter_reverse");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("perimeter_reverse");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_PERIMETER);
+    CHECK(PrintConfig::defaults().option("perimeter_reverse") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("perimeter_reverse") != nullptr);
+
+    // Selecting another generator removes the generated implementation reason,
+    // so the plugin rule alone decides the result here.
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const auto enabled = [&orchestrator, &config]() {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1))
+            if (application.target_key == "perimeter_reverse")
+                return application.enabled;
+        return false;
+    };
+
+    config.set_deserialize("step_perimeter_plugin", "perimeter.generator.simple");
+    config.option<ConfigOptionInt>("perimeters")->value = 0;
+    CHECK_FALSE(enabled());
+    config.option<ConfigOptionInt>("perimeters")->value = 2;
+    CHECK(enabled());
 }

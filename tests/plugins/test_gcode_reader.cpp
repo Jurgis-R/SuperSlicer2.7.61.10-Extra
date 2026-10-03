@@ -2287,8 +2287,16 @@ TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
     Slic3r::Test::init_print(
         {make_cube(10.0, 10.0, 10.0)}, print, model,
         DynamicPrintConfig::full_print_config());
-    Print::StatusMonitor status(print);
-    REQUIRE(status.set_started(psGCodeExport));
+    print.set_running_step(STEP_GCODE);
+    const PrintStateBase::TimeStamp started = print.step_state_with_timestamp(STEP_GCODE).timestamp;
+    size_t warning_events = 0;
+    print.set_status_callback([&](const PrintBase::SlicingStatus &event) {
+        if (event.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
+            CHECK(event.warning_step == STEP_GCODE);
+            CHECK(print.step_state_with_warnings(STEP_GCODE).warnings.size() == 1);
+            ++warning_events;
+        }
+    });
 
     Printing::PrintingPlan &plan = print.mutable_printing_plan();
     PluginStorage storage;
@@ -2303,14 +2311,52 @@ TEST_CASE("Host G-code reader forwards diagnostics to the active Print step",
     REQUIRE(result.reader_diagnostics.size() == 1);
 
     const PrintStateBase::StateWithWarnings step =
-        print.step_state_with_warnings(psGCodeExport);
+        print.step_state_with_warnings(STEP_GCODE);
     REQUIRE(step.warnings.size() == 1);
     CHECK(step.warnings.front().level ==
           PrintStateBase::WarningLevel::NON_CRITICAL);
     CHECK(step.warnings.front().message.find("gcode.reader.default") !=
           std::string::npos);
     CHECK(step.warnings.front().message.find("line 1") != std::string::npos);
-    status.set_done(psGCodeExport);
+    CHECK(step.timestamp > started);
+    CHECK(warning_events == 1);
+    CHECK(step.state == PrintStateBase::State::Started);
+    print.set_running_step(STEP_NONE);
+    print.mark_step_executed(STEP_GCODE);
+    CHECK(print.is_step_done(STEP_GCODE));
+}
+
+TEST_CASE("Standalone host G-code reader diagnostics are transient host warnings",
+          "[plugins][gcode][reader][viewer][diagnostic][host-attribution]")
+{
+    ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    orchestrator.consume_plugin_messages();
+    orchestrator.reset_plugin_cancel();
+    Print print;
+    Model model;
+    Slic3r::Test::init_print({make_cube(10.0, 10.0, 10.0)}, print, model,
+                           DynamicPrintConfig::full_print_config());
+    Printing::PrintingPlan &plan = print.mutable_printing_plan();
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
+    GCodeReaderService service(orchestrator, &print);
+    const GCodeProcessorResult result = service.read_for_viewer("gcode.reader.default", "M9999\n");
+    REQUIRE(result.reader_diagnostics.size() == 1);
+    const std::vector<Orchestrator::PluginMessage> messages = orchestrator.consume_plugin_messages();
+    REQUIRE(messages.size() == 1);
+    CHECK(messages[0].plugin_id == "<host>");
+    CHECK(messages[0].step == STEP_NONE);
+    CHECK(messages[0].level == Orchestrator::PluginMessageLevel::Warning);
+    CHECK(messages[0].message.find("gcode.reader.default") != std::string::npos);
+    CHECK(messages[0].message.find("line 1") != std::string::npos);
+    CHECK(print.step_state_with_warnings(STEP_GCODE).warnings.empty());
+    CHECK(print.step_state_with_timestamp(STEP_GCODE).timestamp == 0);
+    CHECK_FALSE(print.canceled());
+    CHECK_FALSE(orchestrator.is_plugin_cancelled());
 }
 
 TEST_CASE("Host G-code reader initializes the built-in RepRap private schema",

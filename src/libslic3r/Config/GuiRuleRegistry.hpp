@@ -84,6 +84,14 @@ public:
     using Application = GuiRuleApplication;
     using Registration = GuiRuleRegistration;
 
+    // How the explanation text names the options: raw keys, or the translated
+    // option labels the GUI stored in the definitions.
+    enum class ExplanationStyle : uint8_t
+    {
+        RawKeys,
+        TranslatedLabels
+    };
+
     // Register a GUI activation rule (conjunctive clauses and scope).
     // The complete descriptor is validated before it is retained: unknown
     // condition or scope values, invalid indexes, missing keys and non-finite
@@ -122,16 +130,53 @@ public:
                                              const std::string &owner_filter = std::string(),
                                              const std::vector<OptionKeyIdx> &setting_filter = std::vector<OptionKeyIdx>()) const;
 
+    // Build the text explaining why one setting widget is disabled: every rule
+    // registered for the target that applies to this item is listed with the
+    // state of its clauses. Returns an empty string when no rule targets the
+    // key, when a rule is satisfied (the widget should be enabled) or when the
+    // rules are not applicable to this config, so callers keep their normal
+    // tooltip.
+    //
+    // target.idx selects the explained item: -1 explains the whole field (only
+    // rules applied by the global pass), a real index explains that item (the
+    // rules applied by the per-extruder pass, plus explicit-index rules).
+    std::string explain_disabled(const DynamicPrintConfig &config,
+                                 const OptionKeyIdx &target,
+                                 raw_option_preset_type scope,
+                                 ExplanationStyle style = ExplanationStyle::RawKeys) const;
+    // Drop the cached explanations. Called on every registration and at the
+    // beginning of every evaluation; the GUI also calls it after refreshing the
+    // translated option labels.
+    void invalidate_explanations() const;
+
 private:
     // Attach one stored rule to its setting activation group. Returns false
     // when the setting definition does not exist yet.
     bool attach_rule_to_setting(const std::string &setting_key, size_t rule_index);
+
+    struct ExplanationCacheKey
+    {
+        ExplanationStyle style;
+        std::string target_key;
+        int32_t target_index;
+
+        bool operator<(const ExplanationCacheKey &rhs) const
+        {
+            if (style != rhs.style)
+                return style < rhs.style;
+            if (target_key != rhs.target_key)
+                return target_key < rhs.target_key;
+            return target_index < rhs.target_index;
+        }
+    };
 
     std::vector<PluginGuiRule> m_rules;
     std::vector<SettingActivation> m_setting_activations;
     // Indices into m_rules for settings whose ConfigOptionDef does not exist
     // yet. They are attached automatically when the definition appears.
     std::map<std::string, std::vector<size_t>> m_pending_rules;
+    // Explanation text per (style, target), rebuilt on demand.
+    mutable std::map<ExplanationCacheKey, std::string> m_explanation_cache;
 };
 
 } // namespace Slic3r

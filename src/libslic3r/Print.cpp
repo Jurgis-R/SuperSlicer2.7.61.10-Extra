@@ -72,110 +72,6 @@
 
 namespace Slic3r {
 
-template class PrintState<PrintObjectStep, posCount>;
-
-namespace {
-
-using SlicingStepArray = std::array<slicing_step_t, 10>;
-using PrintStepArray = std::array<slicing_step_t, 6>;
-
-const SlicingStepArray& ordered_object_steps()
-{
-    static const SlicingStepArray steps {
-        posSlice,
-        posPerimeters,
-        posPrepareInfill,
-        posInfill,
-        posIroning,
-        posSupportSpotsSearch,
-        posSupportMaterial,
-        posEstimateCurledExtrusions,
-        posCalculateOverhangingPerimeters,
-        posSimplifyPath
-    };
-    return steps;
-}
-
-const PrintStepArray& ordered_print_steps()
-{
-    static const PrintStepArray steps {
-        psAlertWhenSupportsNeeded,
-        psSkirtBrim,
-        psToolOrdering,
-        psWipeTower,
-        psCheckConflict,
-        psGCodeExport
-    };
-    return steps;
-}
-
-size_t enabled_step_count(const SlicingStepArray &steps, int requested_step)
-{
-    if (requested_step == -1)
-        return steps.size();
-    SlicingStepArray::const_iterator it = std::find(steps.begin(), steps.end(), static_cast<slicing_step_t>(requested_step));
-    return it == steps.end() ? steps.size() : size_t(std::distance(steps.begin(), it)) + 1;
-}
-
-PrintStateBase::StateWithTimeStamp aggregate_step_state(const PrintObjectUPtrs &objects, slicing_step_t step)
-{
-    PrintStateBase::StateWithTimeStamp result;
-    if (objects.empty()) {
-        result.enabled = false;
-        return result;
-    }
-
-    bool all_done = true;
-    bool any_started = false;
-    bool any_canceled = false;
-    bool any_invalidated = false;
-    bool any_enabled = false;
-
-    for (const PrintObjectUPtr &object : objects) {
-        PrintStateBase::StateWithTimeStamp state = object->step_state_with_timestamp(step);
-        result.timestamp = std::max(result.timestamp, state.timestamp);
-        any_enabled |= state.enabled;
-        all_done &= state.state == PrintStateBase::State::Done;
-        any_started |= state.state == PrintStateBase::State::Started;
-        any_canceled |= state.state == PrintStateBase::State::Canceled;
-        any_invalidated |= state.state == PrintStateBase::State::Invalidated;
-    }
-
-    result.enabled = any_enabled;
-    if (all_done)
-        result.state = PrintStateBase::State::Done;
-    else if (any_started)
-        result.state = PrintStateBase::State::Started;
-    else if (any_canceled)
-        result.state = PrintStateBase::State::Canceled;
-    else if (any_invalidated)
-        result.state = PrintStateBase::State::Invalidated;
-    return result;
-}
-
-void merge_warning(PrintStateBase::StateWithWarnings &state, const PrintStateBase::Warning &warning)
-{
-    std::vector<PrintStateBase::Warning>::iterator it = warning.message_id == 0 ?
-        std::find_if(state.warnings.begin(), state.warnings.end(), [&warning](const PrintStateBase::Warning &existing) {
-            return existing.message_id == 0 && existing.message == warning.message;
-        }) :
-        std::find_if(state.warnings.begin(), state.warnings.end(), [&warning](const PrintStateBase::Warning &existing) {
-            return existing.message_id == warning.message_id;
-        });
-
-    if (it == state.warnings.end())
-        state.warnings.emplace_back(warning);
-    else {
-        it->current |= warning.current;
-        if (warning.level == PrintStateBase::WarningLevel::CRITICAL)
-            it->level = warning.level;
-        if (it->message != warning.message)
-            it->message = warning.message;
-    }
-}
-
-} // namespace
-
 Print::Print() : m_pipeline_progress(this->status())
 {
     // Create config hierarchy.
@@ -186,7 +82,11 @@ Print::Print() : m_pipeline_progress(this->status())
 
 Print::~Print()
 {
-    this->clear();
+    try {
+        this->clear();
+    } catch (const std::exception &error) {
+        BOOST_LOG_TRIVIAL(error) << "Print cleanup failed during destruction: " << error.what();
+    }
 }
 
 Printing::PrintingPlan &Print::mutable_printing_plan()
@@ -202,11 +102,105 @@ Printing::PrintingPlan &Print::mutable_printing_plan()
 void Print::reset_printing_plan()
 {
     m_printing_plan.reset();
+    clear_ordering_checkpoint();
+}
+
+void Print::release_live_printing_plan()
+{
+    m_printing_plan.reset();
+}
+
+void Print::set_keep_ordering_checkpoint(const bool keep)
+{
+    if (m_keep_ordering_checkpoint == keep)
+        return;
+    m_keep_ordering_checkpoint = keep;
+    if (!keep)
+        clear_ordering_checkpoint();
+}
+
+bool Print::save_ordering_checkpoint()
+{
+    if (!m_keep_ordering_checkpoint || m_printing_plan == nullptr) {
+        clear_ordering_checkpoint();
+        return false;
+    }
+
+    m_ordering_checkpoint = m_printing_plan->clone();
+    return true;
+}
+
+bool Print::has_ordering_checkpoint() const
+{
+    return m_keep_ordering_checkpoint && m_ordering_checkpoint != nullptr;
+}
+
+bool Print::restore_ordering_checkpoint()
+{
+    if (!has_ordering_checkpoint())
+        return false;
+
+    // Clone rather than consume the copy so another invalidation can restore
+    // the same checkpoint after this working copy has been edited.
+    m_printing_plan = m_ordering_checkpoint->clone();
+    return true;
+}
+
+void Print::clear_ordering_checkpoint()
+{
+    // The copy's layer and region-island pointers borrow from this Print.
+    // Release it before its source objects can be replaced.
+    m_ordering_checkpoint.reset();
 }
 
 void Print::set_gcode_reader_source_path(std::string path)
 {
     m_gcode_reader_source_path = std::move(path);
+}
+
+void Print::save_metadata_checkpoint(const Steps::Checkpoint checkpoint)
+{
+    assert(checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing);
+    std::unique_ptr<CheckpointMetadataSnapshot> snapshot = std::make_unique<CheckpointMetadataSnapshot>();
+    snapshot->records = m_records.capture();
+    for (const PrintObject &object : this->objects())
+        snapshot->object_properties.emplace(&object, static_cast<const PluginPropertyContainer &>(object));
+    // Publish only a complete copy; a failed capture must not replace the retry baseline.
+    (checkpoint == Steps::Checkpoint::None ? m_none_metadata_checkpoint : m_slicing_metadata_checkpoint) = std::move(snapshot);
+}
+
+bool Print::has_metadata_checkpoint(const Steps::Checkpoint checkpoint) const
+{
+    assert(checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing);
+    return (checkpoint == Steps::Checkpoint::None ? m_none_metadata_checkpoint : m_slicing_metadata_checkpoint) != nullptr;
+}
+
+void Print::restore_metadata_checkpoint(const Steps::Checkpoint checkpoint)
+{
+    assert(checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing);
+    const CheckpointMetadataSnapshot *snapshot =
+        (checkpoint == Steps::Checkpoint::None ? m_none_metadata_checkpoint : m_slicing_metadata_checkpoint).get();
+    // Without a checkpoint baseline, leave current metadata untouched.
+    if (snapshot == nullptr)
+        return;
+    m_records.restore(snapshot->records);
+    for (PrintObject &object : this->objects()) {
+        const std::map<const PrintObject *, PluginPropertyContainer>::const_iterator it = snapshot->object_properties.find(&object);
+        // Objects absent from this baseline have no properties to preserve.
+        if (it == snapshot->object_properties.end())
+            object.clear_properties();
+        else
+            object.copy_properties_from(it->second);
+    }
+}
+
+void Print::forget_metadata_checkpoint_object(const PrintObject *object)
+{
+    // Erase before deletion so a new object at the same address cannot inherit an old baseline.
+    if (m_none_metadata_checkpoint != nullptr)
+        m_none_metadata_checkpoint->object_properties.erase(object);
+    if (m_slicing_metadata_checkpoint != nullptr)
+        m_slicing_metadata_checkpoint->object_properties.erase(object);
 }
 
 void Print::reset_gcode_reader_source_path()
@@ -301,128 +295,216 @@ void Print::reset_auxiliary_object()
     rebuild_active_print_regions();
 }
 
-void Print::set_task(const TaskParams &params)
-{
-    const SlicingStepArray &object_steps = ordered_object_steps();
-    const PrintStepArray &print_steps = ordered_print_steps();
-
-    std::scoped_lock<std::mutex> lock(this->state_mutex());
-
-    size_t n_object_steps = enabled_step_count(object_steps, params.to_object_step);
-
-    if (params.single_model_object.valid()) {
-        PrintObject *print_object = nullptr;
-        size_t idx_print_object = 0;
-        for (; idx_print_object < m_objects.size(); ++idx_print_object)
-            if (m_objects[idx_print_object]->model_object()->id() == params.single_model_object) {
-                print_object = m_objects[idx_print_object].get();
-                break;
-            }
-        assert(print_object != nullptr);
-
-        bool running = false;
-        for (size_t istep = 0; istep < n_object_steps; ++istep) {
-            if (!print_object->is_step_enabled_unguarded(object_steps[istep]))
-                break;
-            if (print_object->is_step_started_unguarded(object_steps[istep])) {
-                running = true;
-                break;
-            }
-        }
-        if (!running)
-            this->call_cancel_callback();
-
-        if (params.single_model_instance_only) {
-            for (PrintObjectUPtr &object : m_objects)
-                for (slicing_step_t step : object_steps)
-                    object->enable_step_unguarded(step, false);
-        } else if (!running && idx_print_object != 0)
-            std::swap(m_objects.front(), m_objects[idx_print_object]);
-
-        for (size_t istep = 0; istep < n_object_steps; ++istep)
-            print_object->enable_step_unguarded(object_steps[istep], true);
-        for (size_t istep = n_object_steps; istep < object_steps.size(); ++istep)
-            print_object->enable_step_unguarded(object_steps[istep], false);
-    } else {
-        bool running = false;
-        for (PrintObjectUPtr &object : m_objects) {
-            for (size_t istep = 0; istep < n_object_steps; ++istep) {
-                if (!object->is_step_enabled_unguarded(object_steps[istep]))
-                    goto loop_end;
-                if (object->is_step_started_unguarded(object_steps[istep])) {
-                    running = true;
-                    goto loop_end;
-                }
-            }
-        }
-    loop_end:
-        if (!running)
-            this->call_cancel_callback();
-        for (PrintObjectUPtr &object : m_objects) {
-            for (size_t istep = 0; istep < n_object_steps; ++istep)
-                object->enable_step_unguarded(object_steps[istep], true);
-            for (size_t istep = n_object_steps; istep < object_steps.size(); ++istep)
-                object->enable_step_unguarded(object_steps[istep], false);
-        }
-    }
-
-    if (params.to_object_step != -1) {
-        for (slicing_step_t step : print_steps)
-            for (PrintObjectUPtr &object : m_objects)
-                object->enable_step_unguarded(step, false);
-    } else if (params.to_print_step != -1) {
-        PrintStepArray::const_iterator it = std::find(print_steps.begin(), print_steps.end(), static_cast<slicing_step_t>(params.to_print_step));
-        if (it != print_steps.end()) {
-            for (++it; it != print_steps.end(); ++it)
-                for (PrintObjectUPtr &object : m_objects)
-                    object->enable_step_unguarded(*it, false);
-        }
-    }
-}
-
-void Print::finalize()
+void Print::set_task(const TaskParams &)
 {
     std::scoped_lock<std::mutex> lock(this->state_mutex());
-    for (PrintObjectUPtr &object : m_objects)
-        object->finalize_impl();
+    this->call_cancel_callback();
 }
+
+void Print::finalize() {}
 
 void Print::clear() {
-    std::scoped_lock<std::mutex> lock(this->state_mutex());
-    // The following call should stop background processing if it is running.
-    this->invalidate_all_steps();
+    std::unique_lock<std::mutex> lock(this->state_mutex());
+    // The GUI stop callback needs this lock; plugin cleanup must run after the lock is released.
+    this->call_cancel_callback();
+    lock.unlock();
+    // A full reset must remain possible even when a plugin cannot release its private cache.
+    if (!this->clear_plugin_state(STEP_LAYER_HEIGHT))
+        BOOST_LOG_TRIVIAL(error) << "Discarding failed plugin cleanup participants while resetting Print.";
+    lock.lock();
+    // The worker is already stopped; reset its bookkeeping before destroying the retained owners.
     // Plans borrow islands and layers; release them before their owners.
     this->reset_printing_plan();
     this->reset_gcode_reader_source_path();
-    this->reset_step_execution_plan_all();
+    this->reset_step_execution_plan_all_unguarded();
+    m_pipeline_state.clear();
+    m_running_step.store(STEP_NONE, std::memory_order_release);
+    m_none_metadata_checkpoint.reset();
+    m_slicing_metadata_checkpoint.reset();
     m_objects.clear();
     this->reset_auxiliary_object();
     m_print_regions.clear();
     m_model.clear_objects();
     m_records.clear();
+    m_plugin_cleanup_participants.clear();
+    m_plugin_cleanup_pending.store(false, std::memory_order_release);
+    m_next_plugin_setup_order = 0;
     std::lock_guard<std::mutex> registry_lock(m_region_registry_mutex);
     m_region_registry.clear();
 }
 
+bool Print::request_replay_from(const Steps::Checkpoint checkpoint)
+{
+    if (checkpoint == Steps::Checkpoint::GCode)
+        return false;
+    // The stop callback may clear the running step while it releases this mutex.
+    const slicing_step_t running = running_step();
+    const bool running_affected = running != STEP_NONE &&
+        !Steps::executes_before(running, Steps::checkpoint_resume_step(checkpoint));
+    // The worker does not lock the step set or snapshot pointer; wait for it before touching either.
+    this->call_cancel_callback();
+    const bool affected = this->request_steps_after(checkpoint);
+    if (checkpoint == Steps::Checkpoint::None)
+        for (PrintObjectUPtr &object : m_objects)
+            // apply() publishes new objects before creating their lazy slicing parameters.
+            if (object->m_slicing_params != nullptr)
+                object->m_slicing_params->valid = false;
+    return affected || running_affected;
+}
+
+bool Print::request_replay_from_worker(const Steps::Checkpoint checkpoint)
+{
+    if (checkpoint == Steps::Checkpoint::GCode)
+        return false;
+    // Protect state readers without invoking the UI callback that would wait for this same worker.
+    std::scoped_lock<std::mutex> lock(this->state_mutex());
+    const bool affected = this->request_steps_after(checkpoint);
+    // The worker owns this replay; an unchanged UI apply must not interrupt its preparation.
+    m_plugin_cleanup_pending.store(false, std::memory_order_release);
+    return affected;
+}
+
+Steps::Checkpoint Print::current_checkpoint() const
+{
+    for (const slicing_step_t step : Steps::execution_order()) {
+        if (!should_execute_step(step))
+            continue;
+        const Steps::Checkpoint checkpoint = Steps::checkpoint_before_step(step);
+        // Both plan checkpoints need their plan: the retained Ordering copy, or
+        // the live plan that STEP_GCODE reads. Without it, rebuild the plan
+        // from the frozen Print data tree.
+        if (checkpoint == Steps::Checkpoint::Ordering && !has_ordering_checkpoint())
+            return Steps::Checkpoint::Print;
+        if (checkpoint == Steps::Checkpoint::Plan && m_printing_plan == nullptr)
+            return Steps::Checkpoint::Print;
+        return checkpoint;
+    }
+    return Steps::Checkpoint::GCode;
+}
+
+void Print::prepare_checkpoint_resume()
+{
+    const Steps::Checkpoint checkpoint = current_checkpoint();
+    if (checkpoint == Steps::Checkpoint::GCode)
+        return;
+    // An interrupted attempt may have finished part of the suffix; all of it must become pending again.
+    this->request_replay_from_worker(checkpoint);
+    // apply() already notified plugins and destroyed invalidated outputs. Doing it again here
+    // is a no-op in that case, but it also covers a canceled run that produced part of the
+    // suffix and invalidations made outside apply().
+    // Plugins must drop their borrowed handles before the host destroys or replaces those owners.
+    if (!this->clear_plugin_state(Steps::checkpoint_resume_step(checkpoint)))
+        throw PluginCleanupError("Plugin cleanup failed before checkpoint resume.");
+    Steps::StepPipeline::clear_checkpoint_outputs(*this, checkpoint);
+    if (checkpoint == Steps::Checkpoint::None || checkpoint == Steps::Checkpoint::Slicing)
+        this->restore_metadata_checkpoint(checkpoint);
+    if (checkpoint == Steps::Checkpoint::Ordering) {
+        const bool restored = this->restore_ordering_checkpoint();
+        assert(restored);
+        (void)restored;
+    }
+    m_plugin_cleanup_pending.store(false, std::memory_order_release);
+}
+
+void Print::track_plugin_setup(Plugin &plugin, const slicing_step_t step)
+{
+    // A setup may serve many object/layer runs, but cleanup is once per plugin, step and Print.
+    for (const PluginCleanupParticipant &participant : m_plugin_cleanup_participants)
+        if (participant.plugin == &plugin && participant.step == step)
+            return;
+
+    m_plugin_cleanup_participants.push_back({&plugin, step, m_next_plugin_setup_order++});
+}
+
+bool Print::clear_plugin_state(const slicing_step_t first_invalid_step)
+{
+    const bool succeeded = m_plugin_cleanup_participants.empty() ||
+        Orchestrator::instance().clear_plugin_participants(*this, first_invalid_step);
+    // Keep failures pending even if apply() already consumed the changed inputs before it failed.
+    m_plugin_cleanup_pending.store(!succeeded, std::memory_order_release);
+    return succeeded;
+}
+
+// Drop the entry of a plugin whose clear callback succeeded, so the remaining
+// entries are exactly the ones that still need a retry.
+void Print::erase_plugin_cleanup_participant(Plugin *plugin, const slicing_step_t step)
+{
+    m_plugin_cleanup_participants.erase(
+        std::remove_if(m_plugin_cleanup_participants.begin(),
+                       m_plugin_cleanup_participants.end(),
+                       [plugin, step](const PluginCleanupParticipant &participant) {
+                           return participant.plugin == plugin && participant.step == step;
+                       }),
+        m_plugin_cleanup_participants.end());
+}
+
+bool Print::running_step_may_edit(const slicing_step_t last_editor_step) const
+{
+    const slicing_step_t running = running_step();
+    return running == STEP_NONE || !Steps::executes_before(last_editor_step, running);
+}
+
+bool Print::request_steps_after(const Steps::Checkpoint checkpoint)
+{
+    assert(checkpoint != Steps::Checkpoint::GCode);
+    // Release only the stored Ordering copy: the live plan still owns data that
+    // plugins may hold handles to, until their cleanup callbacks have run.
+    if (checkpoint <= Steps::Checkpoint::Print)
+        this->clear_ordering_checkpoint();
+    if (checkpoint == Steps::Checkpoint::None)
+        m_slicing_metadata_checkpoint.reset();
+    return this->mark_step_and_dependents_for_execution_unguarded(Steps::checkpoint_resume_step(checkpoint));
+}
+
 void Print::mark_step_for_execution(slicing_step_t step)
 {
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    mark_step_for_execution_unguarded(step);
+}
+
+bool Print::mark_step_for_execution_unguarded(slicing_step_t step)
+{
     if (step == STEP_NONE)
-        return;
+        return false;
+    PipelineStepState &state = m_pipeline_state[step];
+    const bool affected = state.done || running_step() == step;
+    const bool warnings_changed = std::any_of(state.warnings.begin(), state.warnings.end(),
+        [](const PrintStateBase::Warning &warning) { return warning.current; });
+    if (state.done || warnings_changed) {
+        state.done = false;
+        for (PrintStateBase::Warning &warning : state.warnings)
+            warning.current = false;
+        state.timestamp = PrintStateBase::next_timestamp();
+    }
     m_steps_to_execute.insert(step);
+    // The step may reuse owners that plugin caches still hold, so the next
+    // apply() or resume must offer a clear callback before running it.
+    m_plugin_cleanup_pending.store(true, std::memory_order_release);
+    return affected;
 }
 
 void Print::mark_step_and_dependents_for_execution(slicing_step_t step)
 {
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    mark_step_and_dependents_for_execution_unguarded(step);
+}
+
+bool Print::mark_step_and_dependents_for_execution_unguarded(slicing_step_t step)
+{
     if (step == STEP_NONE)
-        return;
+        return false;
     if (step == STEP_ANY) {
-        this->reset_step_execution_plan_all();
-        return;
+        bool affected = running_step() != STEP_NONE;
+        for (const std::pair<const slicing_step_t, PipelineStepState> &entry : m_pipeline_state)
+            affected |= entry.second.done;
+        this->reset_step_execution_plan_all_unguarded();
+        return affected;
     }
 
-    this->mark_step_for_execution(step);
+    bool affected = this->mark_step_for_execution_unguarded(step);
     for (slicing_step_t dependent : Steps::dependent_steps_closure(step))
-        this->mark_step_for_execution(dependent);
+        affected |= this->mark_step_for_execution_unguarded(dependent);
+    return affected;
 }
 
 bool Print::should_execute_step(slicing_step_t step) const
@@ -432,15 +514,107 @@ bool Print::should_execute_step(slicing_step_t step) const
 
 void Print::mark_step_executed(slicing_step_t step)
 {
-    m_steps_to_execute.erase(step);
+    bool removed_warnings = false;
+    {
+        std::scoped_lock<std::mutex> lock(state_mutex());
+        this->throw_if_canceled();
+        PipelineStepState &state = m_pipeline_state[step];
+        const size_t count = state.warnings.size();
+        state.warnings.erase(std::remove_if(state.warnings.begin(), state.warnings.end(),
+            [](const PrintStateBase::Warning &warning) { return !warning.current; }), state.warnings.end());
+        removed_warnings = count != state.warnings.size();
+        if (!state.done || removed_warnings)
+            state.timestamp = PrintStateBase::next_timestamp();
+        state.done = true;
+        m_steps_to_execute.erase(step);
+    }
+    // Notification callbacks may read the state again, so the mutex is released first.
+    if (removed_warnings)
+        status_update_warnings(int(step), PrintStateBase::WarningLevel::NON_CRITICAL, std::string());
 }
 
 void Print::reset_step_execution_plan_all()
 {
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    reset_step_execution_plan_all_unguarded();
+}
+
+void Print::reset_step_execution_plan_all_unguarded()
+{
     m_pipeline_progress.reset();
+    clear_ordering_checkpoint();
+    m_slicing_metadata_checkpoint.reset();
     m_steps_to_execute.clear();
     for (slicing_step_t step : Steps::execution_order())
-        m_steps_to_execute.insert(step);
+        mark_step_for_execution_unguarded(step);
+    // A full replay can reuse every owner, so plugin caches must be cleared first.
+    m_plugin_cleanup_pending.store(true, std::memory_order_release);
+}
+
+void Print::set_running_step(slicing_step_t step)
+{
+    // Freeze checks can borrow the atomic step while control paths already own this mutex.
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    const slicing_step_t previous = running_step();
+    if (step != STEP_NONE) {
+        PipelineStepState &state = m_pipeline_state[step];
+        state.done = false;
+        for (PrintStateBase::Warning &warning : state.warnings)
+            warning.current = false;
+        state.timestamp = PrintStateBase::next_timestamp();
+        m_freeze_diagnostic_claimed.store(false, std::memory_order_relaxed);
+    } else if (previous != STEP_NONE) {
+        m_pipeline_state.at(previous).timestamp = PrintStateBase::next_timestamp();
+    }
+    m_running_step.store(step, std::memory_order_release);
+}
+
+PrintStateBase::StateWithWarnings Print::step_state_with_warnings(slicing_step_t step) const
+{
+    std::scoped_lock<std::mutex> lock(state_mutex());
+    PrintStateBase::StateWithWarnings result;
+    const std::map<slicing_step_t, PipelineStepState>::const_iterator it = m_pipeline_state.find(step);
+    if (it != m_pipeline_state.end()) {
+        result.state = it->second.done ? PrintStateBase::State::Done : PrintStateBase::State::Fresh;
+        result.timestamp = it->second.timestamp;
+        result.warnings = it->second.warnings;
+    }
+    if (step != STEP_NONE && running_step() == step)
+        result.state = PrintStateBase::State::Started;
+    return result;
+}
+
+bool Print::slices_ready() const
+{
+    return is_step_done(STEP_FINALIZE_SLICING);
+}
+
+void Print::add_step_warning(PrintStateBase::WarningLevel level, const std::string &message, int message_id)
+{
+    slicing_step_t step;
+    bool changed = false;
+    {
+        std::scoped_lock<std::mutex> lock(state_mutex());
+        step = running_step();
+        assert(step != STEP_NONE);
+        PipelineStepState &state = m_pipeline_state.at(step);
+        std::vector<PrintStateBase::Warning>::iterator it = std::find_if(state.warnings.begin(), state.warnings.end(),
+            [&](const PrintStateBase::Warning &warning) {
+                return message_id == 0 ? warning.message_id == 0 && warning.message == message : warning.message_id == message_id;
+            });
+        if (it == state.warnings.end()) {
+            state.warnings.push_back({level, true, message, message_id});
+            changed = true;
+        } else if (!it->current || it->level != level || it->message != message) {
+            *it = {level, true, message, message_id};
+            changed = true;
+        }
+        if (changed)
+            state.timestamp = PrintStateBase::next_timestamp();
+    }
+    // Warning delivery can synchronously invoke a state reader.
+    if (changed)
+        status_update_warnings(int(step), level, message);
 }
 
 const PrintObject *Print::get_print_object_by_model_object_id(ObjectID object_id) const {
@@ -456,8 +630,7 @@ const PrintObject *Print::get_object(ObjectID object_id) const {
     return (it == m_objects.end()) ? nullptr : it->get();
 }
 
-// Called by Print::apply().
-// This method only accepts PrintConfig option keys. Not PrintObjectConfig or PrintRegionConfig, go to PrintObject for these
+// All FFF config scopes use the same declared first-consumer checkpoint.
 bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* new_config */,
                                                const std::vector<t_config_option_key> &opt_keys) {
     if (opt_keys.empty())
@@ -467,145 +640,37 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
     for (const t_config_option_key &opt_key : opt_keys) {
         const ConfigOptionDef *def = PrintConfigDef::instance().get(opt_key);
         if (def == nullptr) {
-            this->reset_step_execution_plan_all();
-            invalidated = true;
+            invalidated |= this->request_replay_from(Steps::Checkpoint::None);
             continue;
         }
         if (def->invalidates_step == STEP_NONE)
             continue;
-        if (def->invalidates_step == STEP_ANY)
-            this->reset_step_execution_plan_all();
-        else
-            this->mark_step_and_dependents_for_execution(def->invalidates_step);
-        invalidated = true;
+        invalidated |= this->request_replay_from(Steps::checkpoint_before_step(def->invalidates_step));
     }
     if (invalidated)
         m_timestamp_last_change = std::time(0);
     return invalidated;
 }
 
-bool Print::invalidate_step(slicing_step_t step)
-{
-    // Deprecated legacy invalidation. Keep it wired to the new execution plan
-    // while old callers still invalidate historical PrintObject/PrintState
-    // milestones directly.
-    this->mark_step_and_dependents_for_execution(step);
-
-    bool invalidated = false;
-    if (is_print_object_step(step)) {
-        for (PrintObjectUPtr &object : m_objects)
-            invalidated |= object->invalidate_step(step);
-        return invalidated;
-    }
-
-    for (PrintObjectUPtr &object : m_objects)
-        invalidated |= object->invalidate_step_direct(step);
-    // Propagate print-level steps downstream in the slicing pipeline.
-    for (slicing_step_t print_step : ordered_print_steps())
-        if (print_step > step)
-            for (PrintObjectUPtr &object : m_objects)
-                invalidated |= object->invalidate_step_direct(print_step);
-    if (step != psGCodeExport)
-        for (PrintObjectUPtr &object : m_objects)
-            invalidated |= object->invalidate_step_direct(psGCodeExport);
-    return invalidated;
-}
-
-bool Print::invalidate_steps(std::initializer_list<slicing_step_t> steps)
-{
-    bool invalidated = false;
-    for (slicing_step_t step : steps)
-        invalidated |= this->invalidate_step(step);
-    return invalidated;
-}
-
-bool Print::invalidate_all_steps()
-{
-    // Deprecated legacy invalidation. It remains the compatibility entry point
-    // for old code paths, but the new pipeline consumes m_steps_to_execute.
-    this->reset_step_execution_plan_all();
-
-    bool invalidated = false;
-    for (PrintObjectUPtr &object : m_objects)
-        invalidated |= object->invalidate_all_steps_direct();
-    return invalidated;
-}
-
 bool Print::is_step_done(slicing_step_t step) const
 {
-    if (m_objects.empty())
-        return false;
-    std::scoped_lock<std::mutex> lock(this->state_mutex());
-    for (const PrintObjectUPtr &object : m_objects)
-        if (! object->is_step_done_unguarded(step))
-            return false;
-    return true;
+    return step_state_with_warnings(step).is_done();
 }
 
 PrintStateBase::StateWithTimeStamp Print::step_state_with_timestamp(slicing_step_t step) const
 {
-    return aggregate_step_state(m_objects, step);
-}
-
-PrintStateBase::StateWithWarnings Print::step_state_with_warnings(slicing_step_t step) const
-{
-    PrintStateBase::StateWithWarnings result;
-    PrintStateBase::StateWithTimeStamp state = aggregate_step_state(m_objects, step);
-    result.state = state.state;
-    result.timestamp = state.timestamp;
-    result.enabled = state.enabled;
-
-    for (const PrintObjectUPtr &object : m_objects) {
-        PrintStateBase::StateWithWarnings object_state = object->step_state_with_warnings(step);
-        for (const PrintStateBase::Warning &warning : object_state.warnings)
-            merge_warning(result, warning);
-    }
-    return result;
-}
-
-bool Print::set_started(slicing_step_t step)
-{
-    if (m_objects.empty())
-        return false;
-    for (const PrintObjectUPtr &object : m_objects) {
-        PrintStateBase::StateWithTimeStamp state = object->step_state_with_timestamp(step);
-        if (!state.enabled || state.state == PrintStateBase::State::Done)
-            return false;
-    }
-
-    bool started = false;
-    for (PrintObjectUPtr &object : m_objects)
-        started |= object->set_started(step);
-    return started;
-}
-
-PrintStateBase::TimeStamp Print::set_done(slicing_step_t step)
-{
-    PrintStateBase::TimeStamp timestamp = 0;
-    for (PrintObjectUPtr &object : m_objects) {
-        PrintStateBase::StateWithTimeStamp state = object->step_state_with_timestamp(step);
-        if (state.state == PrintStateBase::State::Started)
-            timestamp = std::max(timestamp, object->set_done(step));
-        else if (state.state == PrintStateBase::State::Done)
-            timestamp = std::max(timestamp, state.timestamp);
-    }
-    return timestamp;
+    return step_state_with_warnings(step);
 }
 
 void Print::active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message, int message_id)
 {
-    for (PrintObjectUPtr &object : m_objects) {
-        bool has_active_step = false;
-        for (slicing_step_t step : { psAlertWhenSupportsNeeded, psSkirtBrim, psWipeTower, psGCodeExport }) {
-            PrintStateBase::StateWithTimeStamp state = object->step_state_with_timestamp(step);
-            if (state.state == PrintStateBase::State::Started) {
-                has_active_step = true;
-                break;
-            }
-        }
-        if (has_active_step)
-            object->active_step_add_warning(warning_level, message, message_id);
-    }
+    if (running_step() != STEP_NONE)
+        add_step_warning(warning_level, message, message_id);
+    else
+        Orchestrator::instance().add_plugin_message(
+            warning_level == PrintStateBase::WarningLevel::CRITICAL ?
+                Orchestrator::PluginMessageLevel::Error : Orchestrator::PluginMessageLevel::Warning,
+            nullptr, STEP_NONE, message.c_str());
 }
 
 // returns 0-based indices of used extruders
@@ -1455,7 +1520,6 @@ public:
 };
 #endif
 
-#if 1
 void Print::process() {
     m_timestamp_last_change = std::time(0);
     name_tbb_thread_pool_threads_set_locale();
@@ -1469,8 +1533,8 @@ void Print::process() {
 
     // bits not already moved by the new pipeline
     
-    // Tool ordering
-    if (this->set_started(psWipeTower)) {
+    // Native preparation does not publish the export-side wipe-tower step.
+    if (this->should_execute_step(STEP_WIPETOWER)) {
         //m_ordering.clear();
         //if (this->config().complete_objects.value || config().parallel_objects_step.value > 0) {
         //    //an ordering per object
@@ -1481,7 +1545,6 @@ void Print::process() {
         m_tool_orderings.clear();
         //if (this->has_wipe_tower()) {
         //    assert(!this->config().complete_objects.value && config().parallel_objects_step.value == 0);
-        //    this->set_status(printstep_percent(psWipeTower), _u8L("Generating wipe tower"));
         //    // Let the Toolordering class know there will be initial priming extrusions at the start of the print.
         //    m_tool_orderings.emplace_back(*this, (uint16_t) -1, true);
         //    this->_make_wipe_tower();
@@ -1539,7 +1602,6 @@ void Print::process() {
                     objects.emplace_back(object.get());
                 this->m_wipe_tower2->init(this, objects, this->m_tool_orderings.back());
 
-                this->set_done(psWipeTower);
                 // fill wtdata
                 {
                     std::scoped_lock<std::mutex> lock(m_wipe_tower_data_mutex);
@@ -1561,11 +1623,6 @@ void Print::process() {
         }
     }
     
-    /*
-    STEP_SKIRT_BRIM is now part of Orchestrator::slice(). Do not call the
-    legacy _make_skirt_brim() here, otherwise plugin-generated brim/skirt would
-    be cleared or duplicated after the pipeline has already produced it.
-    */
     secondary_status_counter_reset();
 
     m_timestamp_last_change = std::time(0);
@@ -1573,279 +1630,6 @@ void Print::process() {
     this->status().set(this->pipeline_progress().percent(), L("Slicing done"),
                        SlicingStatus::FlagBits::SLICING_ENDED);
 }
-#else
-// Slicing process, running at a background thread.
-void Print::process()
-{
-    m_timestamp_last_change = std::time(0);
-    name_tbb_thread_pool_threads_set_locale();
-    bool something_done = !this->is_step_done(psSkirtBrim);
-    BOOST_LOG_TRIVIAL(info) << "Starting the slicing process." << log_memory_info();
-    secondary_status_counter_reset();
-    Slic3r::parallel_for(size_t(0), m_objects.size(),
-        [this](const size_t idx) {
-            m_objects[idx]->make_perimeters();
-        }
-    );
-#ifdef _DEBUG
-    for (const PrintObjectUPtr &obj : m_objects)
-        for (const Layer &lay : obj->layers())
-            for (const LayerSliceIsland &layer_island_ptr : lay.islands())
-                for (const LayerRegionIsland &lri : layer_island_ptr.regions_islands())
-                    if(lri.has_extrusion(LayerRegionIsland::PERIMETERS))
-                        lri.extrusion(LayerRegionIsland::PERIMETERS).visit(ptvisitor);
-#endif
-    secondary_status_counter_reset();
-    Slic3r::parallel_for(size_t(0), m_objects.size(),
-        [this](const size_t idx) {
-            m_objects[idx]->infill();
-        }
-    );
-    secondary_status_counter_reset();
-    Slic3r::parallel_for(size_t(0), m_objects.size(),
-        [this](const size_t idx) {
-            m_objects[idx]->ironing();
-        }
-    );
-
-    // The following step writes to m_shared_regions, it should not run in parallel.
-    //FIXME: only run it when the support is needed.
-    secondary_status_counter_reset();
-    for (PrintObjectUPtr &obj : m_objects)
-        obj->generate_support_spots();
-    // check data from previous step, format the error message(s) and send alert to ui
-    // this also has to be done sequentially.
-    alert_when_supports_needed();
-    
-    secondary_status_counter_reset();
-    Slic3r::parallel_for(size_t(0), m_objects.size(),
-        [this](const size_t idx) {
-            m_objects[idx]->generate_support_material();
-        }
-    );
-    secondary_status_counter_reset();
-    Slic3r::parallel_for(size_t(0), m_objects.size(),
-        [this](const size_t idx) {
-            PrintObject &obj = *m_objects[idx];
-            m_objects[idx]->estimate_curled_extrusions();
-        }
-    );
-    secondary_status_counter_reset();
-    Slic3r::parallel_for(size_t(0), m_objects.size(),
-        [this](const size_t idx) {
-            m_objects[idx]->calculate_overhanging_perimeters();
-        }
-    );
-
-    // Tool ordering
-    if (this->set_started(psWipeTower)) {
-        //m_ordering.clear();
-        //if (this->config().complete_objects.value || config().parallel_objects_step.value > 0) {
-        //    //an ordering per object
-        //}
-        //ml_ordering.
-
-        //m_wipe_tower_data.clear();
-        m_tool_orderings.clear();
-        //if (this->has_wipe_tower()) {
-        //    assert(!this->config().complete_objects.value && config().parallel_objects_step.value == 0);
-        //    this->set_status(printstep_percent(psWipeTower), _u8L("Generating wipe tower"));
-        //    // Let the Toolordering class know there will be initial priming extrusions at the start of the print.
-        //    m_tool_orderings.emplace_back(*this, (uint16_t) -1, true);
-        //    this->_make_wipe_tower();
-        //    m_tool_orderings.back().assign_custom_gcodes(*this);
-        //} else
-        bool is_separate_objects = this->config().complete_objects.value || config().parallel_objects_step.value > 0;
-        if (config().parallel_objects_step.value > 0 && config().parallel_islands.value && m_default_object_config.wipe_tower && m_objects.size() == 1) {
-            is_separate_objects = false;
-        }
-        if (is_separate_objects) {
-            //throw new std::exception();
-            // FIXME: parallel_objects_step: end extruder on each pass isn't computed correctly.
-            // TODO: add extruder-switch minimizing option.
-            // Order object instances for sequential print.
-            std::vector<const PrintInstance *> instances_ordering;
-            if (config().complete_objects_sort.value == cosObject)
-                instances_ordering = this->sort_object_instances_by_model_order();
-            else if (config().complete_objects_sort.value == cosZ)
-                instances_ordering = this->sort_object_instances_by_max_z();
-            else if (config().complete_objects_sort.value == cosY)
-                instances_ordering = this->sort_object_instances_by_max_y();
-            else if (config().complete_objects_sort.value == cosNearest)
-                instances_ordering = chain_print_object_instances(*this);
-            // Find the 1st printing object, find its tool ordering and the initial extruder ID.
-            extruder_index_t previous_final_extruder = EXTRUDER_ID_UNKNOWN;
-            for (auto it = instances_ordering.begin(); it != instances_ordering.end(); ++it) {
-                m_tool_orderings.emplace_back(*(*it)->print_object, previous_final_extruder);
-                // last_extruder == -1 => nothign to print, so skip
-                if (m_tool_orderings.back().last_extruder() != EXTRUDER_ID_UNKNOWN) {
-                    previous_final_extruder = m_tool_orderings.back().last_extruder();
-                }
-            }
-            this->m_wipe_tower2.reset(new WipeTower2());
-        } else {
-            // Initialize the tool ordering, so it could be used by the G-code preview slider for planning tool
-            // changes and filament switches.
-            m_tool_orderings.emplace_back(*this, EXTRUDER_ID_UNKNOWN, /*prime_mmu*/ true /*false*/);
-            if (m_tool_orderings.empty() || m_tool_orderings.back().last_extruder() == EXTRUDER_ID_UNKNOWN)
-                throw Slic3r::SlicingError(
-                    "The print is empty. The model is not printable with current print settings.");
-
-            // add colorchange/pause/custom
-            m_tool_orderings.back().assign_custom_gcodes(*this);
-
-            // now create the wipe tower to move from extruder to the next one.
-            this->m_wipe_tower2.reset(new WipeTower2());
-            if (m_default_object_config.wipe_tower) {
-                this->m_wipe_tower2->set_config(&this->config(), &this->default_object_config(),
-                                                &this->default_region_config());
-
-                assert(m_tool_orderings.size() == 1);
-                PrintObjectPtrs objects;
-                objects.reserve(m_objects.size());
-                for (const PrintObjectUPtr &object : m_objects)
-                    objects.emplace_back(object.get());
-                this->m_wipe_tower2->init(this, objects, this->m_tool_orderings.back());
-
-                this->set_done(psWipeTower);
-                // fill wtdata
-                {
-                    std::scoped_lock<std::mutex> lock(m_wipe_tower_data_mutex);
-                    m_wipe_tower_data.height = -1;
-                    m_wipe_tower_data.z_and_depth_pairs.clear();
-                    for (auto &wt_layer : this->m_wipe_tower2->m_WTLayer_data) {
-                        m_wipe_tower_data.height = std::max(m_wipe_tower_data.height,
-                                                            (float) unscaled(wt_layer->extrusion_z));
-                        m_wipe_tower_data.z_and_depth_pairs.emplace_back((float) unscaled(wt_layer->extrusion_z),
-                                                                         (float) unscaled(
-                                                                             wt_layer->estimated_wipe_tower_length));
-                    }
-                    std::sort(m_wipe_tower_data.z_and_depth_pairs.begin(), m_wipe_tower_data.z_and_depth_pairs.end(),
-                              [](std::pair<float, float> &e1, std::pair<float, float> &e2) {
-                                  return e1.first < e2.first;
-                              });
-                }
-            }
-        }
-    }
-    
-    secondary_status_counter_reset();
-    _make_skirt_brim();
-
-    if (this->has_wipe_tower()) {
-        // These values have to be updated here, not during wipe tower generation.
-        // When the wipe tower is moved/rotated, it is not regenerated.
-        m_wipe_tower_data.position = { m_default_object_config.wipe_tower_x, m_default_object_config.wipe_tower_y };
-        m_wipe_tower_data.rotation_angle = m_default_object_config.wipe_tower_rotation_angle;
-    }
-    this->set_status(printstep_percent(psCheckConflict), _u8L("Checking line conflicts"));
-    PrintObjectPtrs objects;
-    objects.reserve(m_objects.size());
-    for (const PrintObjectUPtr &object : m_objects)
-        objects.emplace_back(object.get());
-    auto conflictRes = ConflictChecker::find_inter_of_lines_in_diff_objs(objects, m_wipe_tower_data);
-
-    m_conflict_result = conflictRes;
-    if (conflictRes.has_value())
-        BOOST_LOG_TRIVIAL(error) << boost::format("gcode path conflicts found between %1% and %2%") % conflictRes->_objName1 % conflictRes->_objName2;
-
-#ifdef _DEBUG
-    for (const PrintObjectUPtr &obj : m_objects)
-        for (const Layer &lay : obj->layers())
-            for (const LayerSliceIsland &layer_island_ptr : lay.islands())
-                for (const LayerRegionIsland &lri : layer_island_ptr.regions_islands())
-                    if(lri.has_extrusion(LayerRegionIsland::PERIMETERS))
-                        lri.extrusion(LayerRegionIsland::PERIMETERS).visit(ptvisitor);
-#endif
-    //simplify / make arc fitting
-    {
-        
-#if _DEBUG
-        class GetLoopsVisitor : public ExtrusionVisitorRecursive {
-        public:
-            using ExtrusionVisitorRecursive::use;
-            std::vector<ExtrusionLoop*> loops;
-            virtual void default_use(ExtrusionEntity& entity) override {
-                if (ExtrusionLoop *loop = dynamic_cast<ExtrusionLoop*>(&entity))
-                    loops.push_back(loop);
-                else
-                    ExtrusionVisitorRecursive::default_use(entity);
-            }
-        } get_loops;
-#endif
-        const bool spiral_mode = config().spiral_vase;
-        const bool enable_arc_fitting = config().arc_fitting.value != ArcFittingType::Disabled && !spiral_mode;
-        if (enable_arc_fitting) {
-            this->set_status(objectstep_percent(posSimplifyPath), L("Creating arcs"));
-        } else {
-            this->set_status(objectstep_percent(posSimplifyPath), L("Simplifying paths"));
-        }
-        secondary_status_counter_reset();
-        for (PrintObjectUPtr &obj : m_objects) {
-            obj->simplify_extrusion_path();
-        }
-        // The print-level brim and skirt live on the hidden auxiliary object.
-        // Object-local adhesion was already processed by the loop above.
-        PrintObject *auxiliary_object = m_auxiliary_object.get();
-        if (enable_arc_fitting && auxiliary_object != nullptr &&
-            has_auxiliary_layer(*auxiliary_object, layer_is_any_adhesion)) {
-            coordf_t scaled_resolution = scale_d(config().arc_fitting_resolution.get_effective_value(config().resolution.value));
-            if (scaled_resolution == 0) scaled_resolution = SCALED_EPSILON * 2 ;
-            const ConfigOptionFloatOrPercent& arc_fitting_tolerance = config().arc_fitting_tolerance;
-
-            this->set_status(0, L("Optimizing skirt & brim %s%%"), { std::to_string(0) }, PrintBase::SlicingStatus::SECONDARY_STATE);
-            std::atomic<int> atomic_count{ 0 };
-            GetPathsVisitor visitor;
-            visit_matching_auxiliary_layer_extrusions(*auxiliary_object, layer_is_any_adhesion, visitor);
-#if _DEBUG
-            visit_matching_auxiliary_layer_extrusions(*auxiliary_object, layer_is_any_adhesion, get_loops);
-            for (auto loop : get_loops.loops) assert(loop->is_counter_clockwise());
-#endif
-            tbb::parallel_for(
-                tbb::blocked_range<size_t>(0, visitor.paths.size()),
-                [this, &visitor, scaled_resolution, &arc_fitting_tolerance, &atomic_count](const tbb::blocked_range<size_t>& range) {
-                    assert(range.end() <= visitor.paths.size());
-                    for (size_t path_idx = range.begin(); path_idx < range.end(); ++path_idx) {
-                        const ExtrusionAttributes *attributes = visitor.paths[path_idx]->get_property<ExtrusionAttributes>();
-                        assert(attributes != nullptr);
-                        if (attributes != nullptr)
-                            SimplifyVisitor::simplify(*visitor.paths[path_idx], scaled_resolution, config().arc_fitting.value, scale_d(arc_fitting_tolerance.get_effective_value(attributes->width)));
-                        int nb_items_done = (++atomic_count);
-                        this->set_status(int((nb_items_done * 100) / (visitor.paths.size())), L("Optimizing skirt & brim %s%%"), { std::to_string(int(100*nb_items_done / double(visitor.paths.size()))) }, PrintBase::SlicingStatus::SECONDARY_STATE);
-                    }
-                }
-            );
-#if _DEBUG
-            get_loops.loops.clear();
-            visit_matching_auxiliary_layer_extrusions(*auxiliary_object, layer_is_any_adhesion, get_loops);
-            for (auto loop : get_loops.loops) {
-                assert(loop->is_counter_clockwise());
-            }
-#endif
-        }
-    }
-    
-#if _DEBUG
-    for (const PrintObjectUPtr &obj : m_objects) {
-        for (const std::unique_ptr<Layer> &l : obj->m_layers) {
-            for (const LayerSliceIsland &layer_island_ptr : l->islands())
-                for (const LayerRegionIsland &lri : layer_island_ptr.regions_islands())
-                    if (lri.has_extrusion(LayerRegionIsland::PERIMETERS)) {
-                        LoopAssertVisitor().traverse(lri.extrusion(LayerRegionIsland::PERIMETERS));
-                    }
-        }
-    }
-#endif
-
-    m_timestamp_last_change = std::time(0);
-    BOOST_LOG_TRIVIAL(info) << "Slicing process finished." << log_memory_info();
-    //notify gui that the slicing/preview structs are ready to be drawed
-    if (something_done)
-        this->set_status(printstep_percent(psGCodeExport), L("Slicing done"),
-                         SlicingStatus::FlagBits::SLICING_ENDED);
-}
-#endif
-
 bool has_brim_patch(const PrintObject &obj, ModelVolumeType brim_type)
 {
     bool found = false;
@@ -1986,251 +1770,6 @@ void ApiInternal::PrintAccess::rebuild_first_layer_convex_hull_after_skirt_brim(
     print.finalize_first_layer_convex_hull();
 }
 
-void Print::_make_skirt_brim() {
-
-    if (this->set_started(psSkirtBrim)) {
-        /*
-        Legacy entry point kept for callers that still expect psSkirtBrim state
-        transitions. Real brim/skirt generation is owned by STEP_SKIRT_BRIM
-        plugins and stored in auxiliary layers, so this method only applies the
-        host post-processing that is safe for that canonical storage.
-        */
-        this->set_status(printstep_percent(psSkirtBrim), L("Generating skirt and brim"));
-        ApiInternal::PrintAccess::normalize_skirt_brim_direction(*this);
-        ApiInternal::PrintAccess::rebuild_first_layer_convex_hull_after_skirt_brim(*this);
-        this->set_done(psSkirtBrim);
-    }
-
-}
-
-void Print::_make_skirt(const PrintObjectPtrs &objects, ExtrusionEntityCollection &out, std::optional<ExtrusionEntityCollection>& out_first_layer)
-{
-    assert(out.empty());
-    // First off we need to decide how tall the skirt must be.
-    // The skirt_height option from config is expressed in layers, but our
-    // object might have different layer heights, so we need to find the print_z
-    // of the highest layer involved.
-    // Note that unless has_infinite_skirt() == true
-    // the actual skirt might not reach this $skirt_height_z value since the print
-    // order of objects on each layer is not guaranteed and will not generally
-    // include the thickest object first. It is just guaranteed that a skirt is
-    // prepended to the first 'n' layers (with 'n' = skirt_height).
-    // $skirt_height_z in this case is the highest possible skirt height for safety.
-    coord_t skirt_height_z = 0.;
-    for (const PrintObject *object : objects) {
-        size_t skirt_layers = this->has_infinite_skirt() ?
-            object->layer_count() : 
-            std::min(size_t(m_config.skirt_height.value), object->layer_count());
-        skirt_height_z = std::max(skirt_height_z, object->m_layers[skirt_layers-1]->scaled_print_z());
-    }
-    // Collect points from all layers contained in skirt height.
-    Points points;
-    for (const PrintObject *object : objects) {
-        Points object_points;
-        // Get object layers up to skirt_height_z.
-        for (const std::unique_ptr<Layer> &layer : object->m_layers) {
-            if (layer->scaled_print_z() > skirt_height_z)
-                break;
-            for (const ExPolygon &expoly : layer->lslices())
-                // Collect the outer contour points only, ignore holes for the calculation of the convex hull.
-                append(object_points, expoly.contour.points);
-        }
-        // simplify
-        object_points = Slic3r::Geometry::convex_hull(object_points).points;
-        // Get support layers up to skirt_height_z.
-        for (const Layer &layer : object->auxiliary_layers()) {
-            if (layer.get_property<LayerSupportProperty>() == nullptr)
-                continue;
-            if (layer.scaled_print_z() > skirt_height_z)
-                break;
-            for (const LayerSliceIsland &island : layer.islands()) {
-                append(object_points, island.get_slice().contour.points);
-            }
-            // simplify
-            object_points = Slic3r::Geometry::convex_hull(object_points).points;
-        }
-        // if brim, it superseed object & support for first layer
-        if (config().skirt_distance_from_brim) {
-            // get first layer support
-            for (const Layer &support_layer : object->auxiliary_layers()) {
-                if (support_layer.get_property<LayerSupportProperty>() == nullptr)
-                    continue;
-                if (support_layer.scaled_print_z() != object->m_layers[0]->scaled_print_z())
-                    break;
-                Points support_points;
-                for (const LayerSliceIsland &island : support_layer.islands()) {
-                    append(support_points, island.get_slice().contour.points);
-                }
-                const Polygon hull_support = Slic3r::Geometry::convex_hull(support_points);
-                for (const Polygon& poly : offset(hull_support, scale_d(object->config().brim_width)))
-                    append(object_points, poly.points);
-                break;
-            }
-            // get object
-            for (const ExPolygon& expoly : object->m_layers[0]->lslices())
-                for (const Polygon& poly : offset(expoly.contour, scale_d(object->config().brim_width)))
-                    append(object_points, poly.points);
-            // get brim patchs
-            if (has_brim_patch(*object, ModelVolumeType::BRIM_PATCH)) {
-                assert(!object->instances().empty());
-                for (Polygon &poly : object->get_brim_patch(ModelVolumeType::BRIM_PATCH, &object->instances().front())) {
-                    // remove shift
-                    for (Point &pt : poly.points)
-                        pt -= object->instances().front().shift;
-                    append(object_points, poly.points);
-                }
-            }
-        }
-        // simplify
-        Polygon polygon = Slic3r::Geometry::convex_hull(object_points);
-        coord_t scaled_resolution_internal_coarse = std::min(std::max(SCALED_EPSILON * 10,
-                                                                      scale_i(this->config().resolution_internal)),
-                                                             this->skirt_flow(0).scaled_width());
-        if (!ensure_valid(polygon, scaled_resolution_internal_coarse)) {
-            assert(false);
-            return;
-        }
-        object_points = polygon.points;
-        // Repeat points for each object copy.
-        for (const PrintInstance &instance : object->instances()) {
-            Points copy_points = object_points;
-            for (Point &pt : copy_points)
-                pt += instance.shift;
-            append(points, copy_points);
-        }
-    }
-
-    // Include the wipe tower.
-    append(points, this->first_layer_wipe_tower_corners());
-
-    // Unless draft shield is enabled, include all brims as well.
-    if (config().draft_shield.value == dsDisabled)
-        append(points, m_first_layer_convex_hull.points);
-
-    if (points.size() < 3)
-        // At least three points required for a convex hull.
-        return;
-    
-    this->throw_if_canceled();
-    Polygon convex_hull = Slic3r::Geometry::convex_hull(points);
-    
-    // Skirt may be printed on several layers, having distinct layer heights,
-    // but loops must be aligned so can't vary width/spacing
-    
-    std::vector<extruder_index_t> extruders;
-    std::vector<double> extruders_e_per_mm;
-    {
-        std::set<extruder_index_t> set_extruders = this->object_extruders(objects);
-        append(set_extruders, this->support_material_extruders());
-        extruders.reserve(set_extruders.size());
-        extruders_e_per_mm.reserve(set_extruders.size());
-        for (extruder_index_t extruder_id : set_extruders) {
-            Flow   flow = this->skirt_flow(extruder_id);
-            double mm3_per_mm = flow.mm3_per_mm();
-            extruders.push_back(extruder_id);
-            extruders_e_per_mm.push_back(Extruder(extruder_id, m_config).e_per_mm(mm3_per_mm));
-        }
-    }
-
-    // Number of skirt loops per skirt layer.
-    size_t n_skirts = m_config.skirts.value;
-    size_t n_skirts_first_layer = n_skirts + m_config.skirt_brim.value;
-    if (this->has_infinite_skirt() && n_skirts == 0)
-        n_skirts = 1;
-    if (m_config.skirt_brim.value > 0)
-        out_first_layer.emplace();
-    // Initial offset of the brim inner edge from the object (possible with a support & raft).
-    // The skirt will touch the brim if the brim is extruded.
-    float distance = float(scale_d(m_config.skirt_distance.value) - this->skirt_flow(extruders[extruders.size() - 1]).spacing() / 2.);
-
-
-    size_t lines_per_extruder = (n_skirts + extruders.size() - 1) / extruders.size();
-    size_t current_lines_per_extruder = n_skirts - lines_per_extruder * (extruders.size() - 1);
-
-    // Draw outlines from outside to inside.
-    // Loop while we have less skirts than required or any extruder hasn't reached the min length if any.
-    std::vector<coordf_t> extruded_length(extruders.size(), 0.);
-    for (size_t i = std::max(n_skirts, n_skirts_first_layer), extruder_idx = 0, nb_skirts = 1; i > 0; -- i) {
-        bool first_layer_only = i <= (n_skirts_first_layer - n_skirts);
-        Flow   flow = this->skirt_flow(extruders[extruders.size() - (1+ extruder_idx)]);
-        float  spacing = flow.spacing();
-        double mm3_per_mm = flow.mm3_per_mm();
-        this->throw_if_canceled();
-        // Offset the skirt outside.
-        distance += float(scale_d(spacing/2));
-        // Generate the skirt centerline.
-        Polygon loop;
-        {
-            Polygons loops = offset(convex_hull, distance, ClipperLib::jtRound, float(flow.scaled_width() / 10));
-            //make sure the skirt is simple enough
-            Geometry::simplify_polygons(loops, flow.scaled_width() / 10, &loops);
-			if (loops.empty())
-				break;
-            assert(loops.size() == 1);
-			loop = loops.front();
-        }
-        distance += float(scale_d(spacing / 2));
-        // Extrude the skirt loop.
-        ExtrusionLoop eloop(elrSkirt);
-        eloop.paths().emplace_back(
-            ExtrusionAttributes{
-                ExtrusionRole::Skirt,
-                ExtrusionFlow{
-                    float(mm3_per_mm),        // this will be overridden at G-code export time
-                    flow.width(),
-                    float(unscaled(get_min_first_layer_height())) // this will be overridden at G-code export time
-                }
-            }, nullptr,
-            false
-        );
-        eloop.paths().back().polyline() = loop.split_at_first_point();
-        //we make it counter-clowkwise, as loop aren't reversed
-        //eloop.make_clockwise();
-        if(eloop.is_clockwise())
-            eloop.reverse();
-        if(!first_layer_only)
-            out.append(eloop);
-        if(out_first_layer)
-            out_first_layer->append(eloop);
-        if (m_config.min_skirt_length.value > 0 && !first_layer_only) {
-            // The skirt length is limited. Sum the total amount of filament length extruded, in mm.
-            extruded_length[extruder_idx] += unscaled(loop.length()) * extruders_e_per_mm[extruder_idx];
-            if (extruded_length[extruder_idx] < m_config.min_skirt_length.value) {
-                // Not extruded enough yet with the current extruder. Add another loop.
-                if (i == 1 && extruded_length[extruder_idx] > 0)
-                    ++ i;
-            } else {
-                assert(extruded_length[extruder_idx] >= m_config.min_skirt_length.value);
-                // Enough extruded with the current extruder. Extrude with the next one,
-                // until the prescribed number of skirt loops is extruded.
-                if (extruder_idx + 1 < extruders.size()) {
-                    if (nb_skirts < current_lines_per_extruder) {
-                        nb_skirts++;
-                    } else {
-                        current_lines_per_extruder = lines_per_extruder;
-                        nb_skirts = 1;
-                        ++extruder_idx;
-                    }
-                }
-            }
-        } else {
-            // The skirt lenght is not limited, extrude the skirt with the 1st extruder only.
-        }
-    }
-    DEBUG_VISIT(out, CheckOrientation(true))
-    // Brims were generated inside out, reverse to print the outmost contour first.
-    out.reverse();
-    if (out_first_layer)
-        out_first_layer->reverse();
-    DEBUG_VISIT(out, CheckOrientation(true))
-
-    // Remember the outer edge of the last skirt line extruded as m_skirt_convex_hull.
-    for (Polygon &poly : offset(convex_hull, distance + 0.5f * float(this->skirt_flow(extruders[extruders.size() - 1]).scaled_spacing()), ClipperLib::jtRound, float(scale_d(0.1))))
-        append(m_skirt_convex_hull, std::move(poly.points));
-}
-
-
-
 Polygons Print::first_layer_islands() const
 {
     Polygons islands;
@@ -2313,158 +1852,6 @@ void Print::finalize_first_layer_convex_hull()
     m_first_layer_convex_hull = Geometry::convex_hull(m_first_layer_convex_hull.points);
 }
 
-void Print::alert_when_supports_needed()
-{
-    if (this->set_started(psAlertWhenSupportsNeeded)) {
-        BOOST_LOG_TRIVIAL(debug) << "psAlertWhenSupportsNeeded - start";
-        set_status(printstep_percent(psAlertWhenSupportsNeeded), L("Alert if supports needed"));
-
-        auto issue_to_alert_message = [](SupportSpotsGenerator::SupportPointCause cause, bool critical) {
-            std::string message;
-            switch (cause) {
-            //TRN Alert when support is needed. Describes that the model has long bridging extrusions which may print badly 
-            case SupportSpotsGenerator::SupportPointCause::LongBridge: message = _u8L("Long bridging extrusions"); break;
-            //TRN Alert when support is needed. Describes bridge anchors/turns in the air, which will definitely print badly
-            case SupportSpotsGenerator::SupportPointCause::FloatingBridgeAnchor: message = _u8L("Floating bridge anchors"); break;
-            case SupportSpotsGenerator::SupportPointCause::FloatingExtrusion:
-                if (critical) {
-                     //TRN Alert when support is needed. Describes that the print has large overhang area which will print badly or not print at all.
-                    message = _u8L("Collapsing overhang");
-                } else {
-                    //TRN Alert when support is needed. Describes extrusions that are not supported enough and come out curled or loose.
-                    message = _u8L("Loose extrusions");
-                }
-                break;
-            //TRN Alert when support is needed. Describes that the print has low bed adhesion and may became loose.
-            case SupportSpotsGenerator::SupportPointCause::SeparationFromBed: message = _u8L("Low bed adhesion"); break;
-            //TRN Alert when support is needed. Describes that the object has part that is not connected to the bed and will not print at all without supports.
-            case SupportSpotsGenerator::SupportPointCause::UnstableFloatingPart: message = _u8L("Floating object part"); break;
-            //TRN Alert when support is needed. Describes that the object has thin part that may brake during printing 
-            case SupportSpotsGenerator::SupportPointCause::WeakObjectPart: message = _u8L("Thin fragile part"); break;
-            }
-
-            return message;
-        };
-
-        // TRN this translation rule is used to translate lists of uknown size on single line. The first argument is element of the list,
-        // the second argument may be element or rest of the list. For most languages, this does not need translation, but some use different 
-        // separator than comma and some use blank space in front of the separator.
-        auto single_line_list_rule = L("%1%, %2%");
-        auto multiline_list_rule   = "%1%\n%2%";
-
-        auto elements_to_translated_list = [](const std::vector<std::string> &translated_elements, std::string expansion_rule) {
-            if (expansion_rule.find("%1%") == expansion_rule.npos || expansion_rule.find("%2%") == expansion_rule.npos) {
-                BOOST_LOG_TRIVIAL(error) << "INCORRECT EXPANSION RULE FOR LIST TRANSLATION: " << expansion_rule
-                                         << " - IT SHOULD CONTAIN %1% and %2%!";
-                expansion_rule = "%1% %2%";
-            }
-            if (translated_elements.size() == 0) {
-                return std::string{};
-            }
-            if (translated_elements.size() == 1) {
-                return translated_elements.front();
-            }
-
-            std::string translated_list = expansion_rule;
-            for (int i = 0; i < int(translated_elements.size()) - 1; ++ i) {
-                auto first_elem = translated_list.find("%1%");
-                assert(first_elem != translated_list.npos);
-                translated_list.replace(first_elem, 3, translated_elements[i]);
-
-                // expand the translated list by another application of the same rule
-                auto second_elem = translated_list.find("%2%");
-                assert(second_elem != translated_list.npos);
-                if (i < int(translated_elements.size()) - 2) {
-                    translated_list.replace(second_elem, 3, expansion_rule);
-                } else {
-                    translated_list.replace(second_elem, 3, translated_elements[i + 1]);
-                }
-            }
-
-            return translated_list;
-        };
-
-        // vector of pairs of object and its issues, where each issue is a pair of type and critical flag
-        std::vector<std::pair<const PrintObject *, std::vector<std::pair<SupportSpotsGenerator::SupportPointCause, bool>>>> objects_isssues;
-
-        for (const PrintObjectUPtr &object : m_objects) {
-            std::unordered_set<const ModelObject *> checked_model_objects;
-            if (!object->has_support() && checked_model_objects.find(object->model_object()) == checked_model_objects.end()) {
-                if (object->m_shared_regions->generated_support_points.has_value()) {
-                    SupportSpotsGenerator::SupportPoints  supp_points = object->m_shared_regions->generated_support_points->support_points;
-                    SupportSpotsGenerator::PartialObjects partial_objects = object->m_shared_regions->generated_support_points
-                                                                                ->partial_objects;
-                    auto issues = SupportSpotsGenerator::gather_issues(supp_points, partial_objects);
-                    if (issues.size() > 0) {
-                        objects_isssues.emplace_back(object.get(), issues);
-                    }
-                }
-                checked_model_objects.emplace(object->model_object());
-            }
-        }
-
-        bool                                                                                                  recommend_brim = false;
-        std::map<std::pair<SupportSpotsGenerator::SupportPointCause, bool>, std::vector<const PrintObject *>> po_by_support_issues;
-        for (const auto &obj : objects_isssues) {
-            for (const auto &issue : obj.second) {
-                po_by_support_issues[issue].push_back(obj.first);
-                if (issue.first == SupportSpotsGenerator::SupportPointCause::SeparationFromBed && !obj.first->has_brim()) {
-                    recommend_brim = true;
-                }
-            }
-        }
-
-        std::vector<std::pair<std::string, std::vector<std::string>>> message_elements;
-        if (objects_isssues.size() > po_by_support_issues.size()) {
-            // there are more objects than causes, group by issues
-            for (const auto &issue : po_by_support_issues) {
-                auto &pair = message_elements.emplace_back(issue_to_alert_message(issue.first.first, issue.first.second),
-                                                           std::vector<std::string>{});
-                for (const auto &obj : issue.second) {
-                    pair.second.push_back(obj->m_model_object->name);
-                }
-            }
-        } else {
-            // more causes than objects, group by objects
-            for (const auto &obj : objects_isssues) {
-                auto &pair = message_elements.emplace_back(obj.first->model_object()->name,  std::vector<std::string>{});
-                for (const auto &issue : obj.second) {
-                    pair.second.push_back(issue_to_alert_message(issue.first, issue.second));
-                }
-            }
-        }
-
-        // first, gather sublements into single line list, store in first subelement
-        for (auto &pair : message_elements) {
-            pair.second.front() = elements_to_translated_list(pair.second, single_line_list_rule);
-        }
-
-        // then gather elements to create multiline list
-        std::vector<std::string> lines = {};
-        for (auto &pair : message_elements) {
-            lines.push_back(""); // empty line for readability
-            lines.push_back(pair.first);
-            lines.push_back(pair.second.front());
-        }
-
-        lines.push_back("");
-        lines.push_back(_u8L("Consider enabling supports."));
-        if (recommend_brim) {
-            lines.push_back(_u8L("Also consider enabling brim."));
-        }
-
-        // TRN Alert message for detected print issues. first argument is a list of detected issues.
-        auto message = Slic3r::format(_u8L("Detected print stability issues:\n%1%"), elements_to_translated_list(lines, multiline_list_rule));
-
-        if (objects_isssues.size() > 0) {
-            this->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, message);
-        }
-
-        BOOST_LOG_TRIVIAL(debug) << "psAlertWhenSupportsNeeded - end";
-        this->set_done(psAlertWhenSupportsNeeded);
-    }
-}
-
 bool Print::has_wipe_tower() const {
     if (config().nozzle_diameter.size() <= 1 || !m_default_object_config.wipe_tower || config().complete_objects ||
         config().spiral_vase.value) {
@@ -2539,7 +1926,7 @@ const WipeTowerData& Print::wipe_tower_data(const ConfigBase* config, double noz
 {
     std::scoped_lock<std::mutex> lock(m_wipe_tower_data_mutex);
     // If the wipe tower wasn't created yet, make sure the depth and brim_width members are set to default.
-    if (! is_step_done(psWipeTower) && config != &this->m_config) {
+    if (! is_step_done(STEP_WIPETOWER) && config != &this->m_config) {
         size_t extruders_cnt = config->option("nozzle_diameter")->size();
 
         // Calculating depth should take into account currently set wiping volumes.

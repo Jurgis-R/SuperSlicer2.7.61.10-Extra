@@ -251,7 +251,7 @@ def layer_adhesion_property(layer):
 
     The layer and its property container remain host-owned. The returned ctypes
     value is an independent copy and needs no release; changing its fields does
-    not update the layer. Use ``layer.properties().get_or_add()`` explicitly
+    not update the layer. Use ``layer.mutable_properties().get_or_add()`` explicitly
     when the current step is allowed to annotate the layer.
     """
     return layer.properties().get(LayerAdhesionProperty.key)
@@ -320,24 +320,8 @@ class DataTreeView:
 
 
 @abi_requires_headers("slic3r_data_tree.h")
-class PluginProperties:
-    """
-    Generic plugin-property view for data-tree objects.
-
-    Properties are small C payloads indexed by numeric property ids. A borrowed
-    const Layer or Surface may still return a mutable property container: this
-    only allows metadata annotations and does not make geometry mutable.
-
-    Use has()/get() for read-only code:
-
-        support = layer.properties().get(CLayerSupportProperty)
-        if support is not None:
-            print(support.interface_id)
-
-    Use get_or_add() only when the current step intentionally annotates the
-    object. Custom plugin properties must have been registered with the
-    orchestrator before they are created.
-    """
+class ConstPluginProperties:
+    """Borrow metadata for reading; typed payload reads are independent copies."""
 
     def __init__(self, api, handle) -> None:
         self.api = api
@@ -370,16 +354,20 @@ class PluginProperties:
         _validate_property_key(self, payload_cls_or_type)
         return _address(self.api.host.plugin_property_data(self.c_handle(), _payload_type(payload_cls_or_type)))
 
-    def data_mutable_address(self, payload_cls_or_type) -> int:
-        _validate_property_key(self, payload_cls_or_type)
-        return _address(self.api.host.plugin_property_data_mutable(self.c_handle(), _payload_type(payload_cls_or_type)))
-
     def get(self, payload_cls_or_key):
         _validate_property_key(self, payload_cls_or_key)
         payload_cls = _payload_class(payload_cls_or_key)
         if self.data_size(payload_cls_or_key) != ctypes.sizeof(payload_cls):
             return None
         return _payload_copy(payload_cls, self.data_address(payload_cls_or_key))
+
+@abi_requires_headers("slic3r_data_tree.h")
+class PluginProperties(ConstPluginProperties):
+    """Borrow writable metadata through an explicit editing capability."""
+
+    def data_mutable_address(self, payload_cls_or_type) -> int:
+        _validate_property_key(self, payload_cls_or_type)
+        return _address(self.api.host.plugin_property_data_mutable(self.c_handle(), _payload_type(payload_cls_or_type)))
 
     def get_mutable(self, payload_cls_or_key):
         _validate_property_key(self, payload_cls_or_key)
@@ -392,9 +380,13 @@ class PluginProperties:
         _validate_property_key(self, payload_cls_or_key)
         payload_cls = _payload_class(payload_cls_or_key)
         orch = _property_orchestrator(self.api, payload_cls_or_key, orchestrator)
+        if not self.valid():
+            raise RuntimeError("property creation requires a writable capability")
         ptr = self.api.host.plugin_property_get_or_add_data_mutable(
             orch, self.c_handle(), _payload_type(payload_cls_or_key)
         )
+        if not _address(ptr):
+            raise RuntimeError("native property creation was refused")
         return _payload_mutable(payload_cls, _address(ptr))
 
     def remove(self, payload_cls_or_type) -> bool:
@@ -1267,8 +1259,11 @@ class LayerRegion(DataTreeView):
             self.c_handle(), int(role)
         )
 
-    def properties(self) -> PluginProperties:
-        return PluginProperties(self.api, self.api.host.layer_region_get_properties(self.c_handle()))
+    def properties(self) -> ConstPluginProperties:
+        return ConstPluginProperties(self.api, self.api.host.layer_region_get_properties(self.c_handle()))
+
+    def mutable_properties(self) -> PluginProperties:
+        return PluginProperties(self.api, self.api.host.layer_region_get_properties_mutable(self.c_handle()))
 
     def slices(self) -> ExPolygonCollection:
         return ExPolygonCollection(self.api, self.api.host.layer_region_get_slices(self.c_handle()))
@@ -1294,8 +1289,11 @@ class LayerRegionIsland(DataTreeView):
     def extruder_id(self) -> int:
         return int(self.api.host.layer_region_island_extruder_id(self.c_handle()))
 
-    def properties(self) -> PluginProperties:
-        return PluginProperties(self.api, self.api.host.layer_region_island_get_properties(self.c_handle()))
+    def properties(self) -> ConstPluginProperties:
+        return ConstPluginProperties(self.api, self.api.host.layer_region_island_get_properties(self.c_handle()))
+
+    def mutable_properties(self) -> PluginProperties:
+        return PluginProperties(self.api, self.api.host.layer_region_island_get_properties_mutable(self.c_handle()))
 
     @abi_requires_headers("slic3r_data_tree.h")
     def region_count(self) -> int:
@@ -1363,8 +1361,11 @@ class LayerIsland(DataTreeView):
     def slice(self) -> ExPolygon:
         return ExPolygon(self.api, self.api.host.layer_island_get_slice(self.c_handle()))
 
-    def properties(self) -> PluginProperties:
-        return PluginProperties(self.api, self.api.host.layer_island_get_properties(self.c_handle()))
+    def properties(self) -> ConstPluginProperties:
+        return ConstPluginProperties(self.api, self.api.host.layer_island_get_properties(self.c_handle()))
+
+    def mutable_properties(self) -> PluginProperties:
+        return PluginProperties(self.api, self.api.host.layer_island_get_properties_mutable(self.c_handle()))
 
     def bounding_box(self):
         return self.api.host.layer_island_get_bounding_box(self.c_handle())
@@ -1520,8 +1521,11 @@ class Layer(DataTreeView):
         """
         return Object(self.api, self.api.host.layer_get_object(self.c_handle()))
 
-    def properties(self) -> PluginProperties:
-        return PluginProperties(self.api, self.api.host.layer_get_properties(self.c_handle()))
+    def properties(self) -> ConstPluginProperties:
+        return ConstPluginProperties(self.api, self.api.host.layer_get_properties(self.c_handle()))
+
+    def mutable_properties(self) -> PluginProperties:
+        return PluginProperties(self.api, self.api.host.layer_get_properties_mutable(self.c_handle()))
 
     def upper_layer(self) -> "Layer | None":
         return _optional(Layer, self.api, self.api.host.layer_get_upper_layer(self.c_handle()))
@@ -1604,8 +1608,11 @@ class Object(DataTreeView):
         self.api.host.object_get_name(self.c_handle(), output, len(output))
         return output.raw[:required].decode("utf-8", errors="replace")
 
-    def properties(self) -> PluginProperties:
-        return PluginProperties(self.api, self.api.host.object_get_properties(self.c_handle()))
+    def properties(self) -> ConstPluginProperties:
+        return ConstPluginProperties(self.api, self.api.host.object_get_properties(self.c_handle()))
+
+    def mutable_properties(self) -> PluginProperties:
+        return PluginProperties(self.api, self.api.host.object_get_properties_mutable(self.c_handle()))
 
     def config(self) -> Config:
         return Config(self.api, self.api.host.object_get_config(self.c_handle()))
@@ -2080,6 +2087,7 @@ def build_auxiliary_layer_regions_from_subject(
 
 __all__ = [
     "AuxiliaryLayerBuildResult",
+    "ConstPluginProperties",
     "Config",
     "ConfigOption",
     "ConfigPoint",

@@ -16,8 +16,14 @@ checked separately because it belongs to STEP_EXTRUSION_EDIT.
 
 #include "layer_extrusion_edit_transition_test_helpers.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 namespace {
 
@@ -99,6 +105,25 @@ TEST_CASE("CreateRetraction registers both transition providers",
     CHECK(terminal->get_priority() == -100);
     CHECK(terminal->get_exclusive_group() ==
           "extrusion_edit.terminal_retraction");
+
+    // Only the primary provider defines print_retract_length; the terminal
+    // provider reads it without publishing a definition of its own.
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : retraction->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "print_retract_length");
+    CHECK(terminal->get_defined_config_keys().empty());
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("print_retract_length");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coFloat);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+    CHECK(def->can_be_disabled);
+    CHECK(def->default_value->serialize() == "!0");
+    CHECK(PrintConfig::defaults().option("print_retract_length") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("print_retract_length") != nullptr);
 }
 
 TEST_CASE("CreateRetraction places semantic E events in compact phases",
@@ -516,8 +541,8 @@ TEST_CASE("Configured tool and filament scripts keep separate ordered owners",
     prepare_print(print, model);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
     config.nozzle_diameter.set(std::vector<double>{0.4, 0.4});
-    config.toolchange_gcode.value = "; toolchange";
-    config.start_filament_gcode.set(
+    config.option<ConfigOptionString>("toolchange_gcode")->value = "; toolchange";
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(
         std::vector<std::string>{"", "; start filament"});
 
     PrintingLayerGroup &layer = print.mutable_printing_plan().groups.front()

@@ -3,6 +3,20 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/*
+RemoveGapFillOnOverhangs.hpp
+============================
+
+Declares the remove gap fill on overhangs module (id
+"perimeter.module.remove_gap_fill_on_overhangs").
+
+After a node has produced its local extrusions, the module clips open gap-fill
+polylines out of the areas that have no lower island below them, where a thin
+free-hanging line would curl or fail to support the next layer. Closed perimeter
+loops and the area/fill-area tree are left unchanged. The plugin owns
+gap_fill_no_overhang and defines it, with its activation rule, in the .cpp.
+*/
+
 #ifndef plugins_perimeter_removegapfillonoverhangs_hpp_
 #define plugins_perimeter_removegapfillonoverhangs_hpp_
 
@@ -36,6 +50,8 @@ private:
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override;
+    int32_t defined_config_keys(const char **keys) const noexcept override;
+    void inilialize_impl(storage_handle *) const override;
     const char *progress_message_format_impl() const noexcept override;
     void run_impl(const plugin_run_context *run_ctx) const override;
 };

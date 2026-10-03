@@ -100,9 +100,9 @@ void validate_tree(const MutableExtrusionEntity &entity,
 
 // Validate one tree and its source configuration before a plugin mutates it.
 ExtrusionSettingsContext validated_settings_context(const Print &print,
-                                                    const PrintingToolGroup &tool_group,
-                                                    const PrintingExtrusion &extrusion,
-                                                    bool require_volumetric_flow);
+                                                     const PrintingToolGroup &tool_group,
+                                                     PrintingExtrusion extrusion,
+                                                     bool require_volumetric_flow);
 
 // Count the independently edited extrusion roots in one layer group.
 uint32_t extrusion_tree_count(const PrintingLayerGroup &layer_group);

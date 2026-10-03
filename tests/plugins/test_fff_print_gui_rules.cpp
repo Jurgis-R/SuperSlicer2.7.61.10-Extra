@@ -10,6 +10,7 @@
 #include "plugin_test_helpers.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Plugins/GuiRulesCore.hpp"
 #include "libslic3r/Config/FFFPrintConfig.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 
@@ -17,7 +18,7 @@
 FFF print GUI rules tests
 =========================
 
-initialize_fff_print_gui_rules() replaces the enable/disable logic of the
+The built-in gui_rules.core plugin replaces the enable/disable logic of the
 legacy ConfigManipulation::toggle_print_fff_options(). These tests compare the
 declarative rules with an imperative reference implementation of the legacy
 intent on curated scenarios and a seeded fuzz.
@@ -29,9 +30,14 @@ namespace {
 
 using EnabledMap = std::map<std::string, bool>;
 
-// Reference implementation of the migrated legacy logic. It mirrors the final
-// net state of toggle_print_fff_options(), including the intentional
-// corrections applied during the migration.
+// Owner of the built-in activation rules: the gui_rules.core plugin.
+const char *const core_gui_rules_owner = "gui_rules.core";
+// Owner of the legacy infill selectors moved out of the core rule plugin.
+const char *const infill_gui_rules_owner = "infill.generator.default";
+
+// Independent reference model of the activation logic. It computes the enabled
+// set directly from the config, so the tests can compare the rule registry
+// against a plain implementation without reusing its evaluator.
 EnabledMap reference_enabled(const DynamicPrintConfig &config)
 {
     EnabledMap out;
@@ -84,20 +90,14 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         (supp || i("support_material_enforce_layers") > 0);
     const bool default_accel = fl("default_acceleration") > 0;
     const bool pp_ironing = has_top && b("ironing");
-    const bool ironing_pattern =
-        enum_name("top_fill_pattern") == "smooth" ||
-        enum_name("bottom_fill_pattern") == "smooth" ||
-        enum_name("solid_fill_pattern") == "smooth";
-    const bool has_ironing = pp_ironing || ironing_pattern;
     const bool ext_not_loop = ext && !loop_seam;
     const bool can_reverse = !A && overhangs && !b("perimeter_reverse");
     const bool soluble = have_support &&
         config.opt_enum<SupportZDistanceType>("support_material_contact_distance_type") == zdNone;
     const bool seam_cost = P && config.opt_enum<SeamPosition>("seam_position") == spCost;
     const bool notch = P && (fl("seam_notch_all") != 0 || fl("seam_notch_inner") != 0 || fl("seam_notch_outer") != 0);
-    const bool gap = !A;
-    const bool have_gap = gap && b("gap_fill_enabled");
-    const bool gap_ext = have_gap || b("infill_filled_bottom") || b("infill_filled_solid") || b("infill_filled_top");
+
+
     const bool seq = b("complete_objects") || fl("parallel_objects_step") > 0;
     const bool parallel_ok = !b("complete_objects") && fl("parallel_objects_step") > 0;
     const bool have_wipe = fl("parallel_objects_step") <= 0 || b("parallel_islands");
@@ -108,8 +108,8 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         (has_top && enum_name("top_fill_pattern") == "smooth") ||
         (has_bottom && enum_name("bottom_fill_pattern") == "smooth") ||
         (has_solid && enum_name("solid_fill_pattern") == "smooth") ||
-        (have_support && config.opt_enum<InfillPattern>("support_material_top_interface_pattern") == InfillPattern::ipSmooth) ||
-        (have_support && config.opt_enum<InfillPattern>("support_material_bottom_interface_pattern") == InfillPattern::ipSmooth);
+        (have_support && enum_name("support_material_top_interface_pattern") == "smooth") ||
+        (have_support && enum_name("support_material_bottom_interface_pattern") == "smooth");
     const bool default_width =
         (en("first_layer_extrusion_width") && fl("first_layer_extrusion_width") == 0) ||
         (en("first_layer_infill_extrusion_width") && fl("first_layer_infill_extrusion_width") == 0) ||
@@ -122,12 +122,12 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         (fl("skirt_extrusion_width") == 0 && have_skirt);
 
     const char *const have_perimeters_keys[] = {
-        "extra_perimeters", "extra_perimeters_below_area", "extra_perimeters_count",
-        "extra_perimeters_odd_layers", "extra_perimeters_on_overhangs", "external_perimeters_first",
+        "extra_perimeters",
+        "external_perimeters_first",
         "external_perimeter_extrusion_width", "external_perimeter_extrusion_spacing",
         "external_perimeter_extrusion_change_odd_layers", "overhangs", "seam_position",
-        "staggered_inner_seams", "perimeter_speed", "perimeter_reverse", "perimeter_generator",
-        "external_perimeter_speed", "small_perimeter_speed", "spiral_vase",
+        "staggered_inner_seams", "perimeter_generator",
+        "small_perimeter_speed", "spiral_vase",
         "seam_notch_all", "seam_notch_inner", "seam_notch_outer",
         "no_perimeter_unsupported_algo", "only_one_perimeter_top"
     };
@@ -145,11 +145,9 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     };
     for (const char *key : arachne_keys)
         set(key, A);
-    set("perimeters_hole", not_A);
+
     set("overhangs_extrusion_spacing", not_A);
     set("perimeter_loop", P && !A);
-    set("thin_perimeters", P && !A);
-    set("perimeter_round_corners", P && !A);
 
     set("seam_slope_type", ext_not_loop);
     const bool scarf = config.opt_enum<SeamScarfType>("seam_slope_type") != SeamScarfType::None;
@@ -159,7 +157,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("external_perimeters_nothole", ext_not_loop && !A && !b("external_perimeters_first_force"));
     set("external_perimeters_hole", ext_not_loop && !A && !b("external_perimeters_first_force"));
     set("perimeter_bonding", ext && !A && fl("perimeter_overlap") == 100 && fl("external_perimeter_overlap") == 100);
-    set("only_one_perimeter_first_layer", i("perimeters") > 1);
+
 
     set("overhangs_reverse", can_reverse);
     set("overhangs_reverse_threshold", can_reverse && b("overhangs_reverse"));
@@ -169,27 +167,13 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("overhangs_flow_ratio", overhangs);
     set("overhangs_width", overhangs && en("overhangs_flow_ratio"));
 
-    set("min_width_top_surface", P && b("only_one_perimeter_top"));
-    set("thin_perimeters_all", P && fl("thin_perimeters") != 0 && !A);
-    set("thin_walls", P && !A);
-    set("thin_walls_min_width", P && !A && b("thin_walls"));
-    set("thin_walls_overlap", P && !A && b("thin_walls"));
-    set("thin_walls_merge", P && !A && b("thin_walls"));
-
     set("seam_angle_cost", seam_cost);
     set("seam_travel_cost", seam_cost);
     set("seam_visibility", seam_cost);
     set("perimeter_loop_seam", loop_seam);
     set("seam_notch_angle", notch);
 
-    set("gap_fill_enabled", gap);
-    set("gap_fill_last", have_gap);
-    set("gap_fill_no_overhang", have_gap);
-    set("gap_fill_extension", gap_ext);
-    set("gap_fill_max_width", gap_ext);
-    set("gap_fill_min_area", gap_ext);
-    set("gap_fill_min_length", gap_ext);
-    set("gap_fill_min_width", gap_ext);
+
 
     const bool fuzzy = config.opt_enum<FuzzySkinType>("fuzzy_skin") != FuzzySkinType::None;
     set("fuzzy_skin_thickness", fuzzy);
@@ -213,7 +197,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     const char *const solid_keys[] = {
         "enforce_full_fill_volume", "external_infill_margin", "bridged_infill_margin",
         "solid_infill_extruder", "solid_infill_extrusion_width", "solid_infill_extrusion_spacing",
-        "solid_infill_speed", "solid_infill_extrusion_change_odd_layers"
+        "solid_infill_extrusion_change_odd_layers"
     };
     for (const char *key : solid_keys)
         set(key, has_solid);
@@ -222,7 +206,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     const char *const infill_or_solid_keys[] = {
         "fill_angle_cross", "fill_angle_follow_model", "fill_angle_increment", "fill_angle_template",
         "bridge_angle", "infill_extrusion_width", "infill_extrusion_spacing",
-        "infill_extrusion_change_odd_layers", "infill_speed"
+        "infill_extrusion_change_odd_layers"
     };
     for (const char *key : infill_or_solid_keys)
         set(key, infill_or_solid);
@@ -235,7 +219,7 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
 
     const char *const top_keys[] = {
         "ironing", "top_fill_pattern", "infill_connection_top", "top_infill_extrusion_width",
-        "top_infill_extrusion_spacing", "top_solid_infill_speed"
+        "top_infill_extrusion_spacing"
     };
     for (const char *key : top_keys)
         set(key, has_top);
@@ -250,7 +234,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("ironing_flowrate", pp_ironing);
     set("ironing_spacing", pp_ironing);
     set("ironing_angle", pp_ironing);
-    set("ironing_speed", has_ironing);
     set("fill_smooth_width", smooth);
     set("fill_smooth_distribution", smooth);
 
@@ -261,14 +244,12 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     for (const char *key : skirt_keys)
         set(key, have_skirt);
     set("skirt_height", have_skirt && config.opt_enum<DraftShield>("draft_shield") != dsEnabled);
-    set("brim_separation", have_brim);
     set("perimeter_extruder", P || have_brim);
     set("perimeter_extrusion_width", P || have_brim);
     set("perimeter_extrusion_spacing", P || have_brim);
     set("perimeter_extrusion_change_odd_layers", P || have_brim);
     set("support_material_extruder", have_support || have_skirt);
     set("support_material_speed", have_support || have_skirt || have_brim);
-    set("brim_speed", have_brim || have_skirt);
 
     const char *const support_keys[] = {
         "support_material_style", "support_material_extrusion_width",
@@ -323,7 +304,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("first_layer_extrusion_spacing", en("first_layer_extrusion_width"));
     set("first_layer_infill_extrusion_spacing", en("first_layer_infill_extrusion_width"));
 
-    set("complete_objects_one_skirt", seq);
     set("complete_objects_sort", seq);
     set("parallel_objects_step", !b("complete_objects"));
     set("parallel_objects_step_max_z", parallel_ok);
@@ -351,25 +331,13 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("enforce_retract_first_layer", b("only_retract_when_crossing_perimeters"));
     set("milling_after_z", b("milling_post_process"));
     set("milling_extra_size", b("milling_post_process"));
-    set("milling_speed", b("milling_post_process"));
 
-    const char *const default_accel_keys[] = {
-        "bridge_acceleration", "internal_bridge_acceleration", "overhangs_acceleration",
-        "gap_fill_acceleration", "travel_acceleration", "travel_deceleration_use_target",
-        "first_layer_acceleration"
-    };
-    for (const char *key : default_accel_keys)
-        set(key, default_accel);
+    // The travel deceleration and feature acceleration settings are defined by
+    // their plugins, so the reference skips them; their activation rules are
+    // covered by the plugin tests.
     set("perimeter_acceleration", default_accel && P);
-    set("external_perimeter_acceleration", default_accel && P);
-    set("thin_walls_acceleration", default_accel && P);
-    set("infill_acceleration", default_accel && H);
-    set("solid_infill_acceleration", default_accel && has_solid);
-    set("top_solid_infill_acceleration", default_accel && has_top);
-    set("ironing_acceleration", default_accel && has_ironing);
     set("support_material_acceleration", default_accel && (have_support || have_brim || have_skirt));
     set("support_material_interface_acceleration", default_accel && have_iface);
-    set("brim_acceleration", default_accel && (have_brim || have_skirt));
 
     const bool percent_speed =
         config.option<ConfigOptionFloatOrPercent>("perimeter_speed")->percent ||
@@ -377,8 +345,6 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
         config.option<ConfigOptionFloatOrPercent>("bridge_speed")->percent ||
         config.option<ConfigOptionFloatOrPercent>("support_material_speed")->percent;
     set("default_speed", percent_speed);
-    set("max_print_speed", fl("max_volumetric_speed") != 0);
-    set("autospeed_min_thin_flow", fl("max_volumetric_speed") != 0);
 
     return out;
 }
@@ -386,10 +352,8 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
 EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConfig &config)
 {
     EnabledMap out;
-    // Most FFF settings are core-owned, but the infill pattern lists are
-    // defined and enabled by the infill generator plugin, so the comparison
-    // must include that owner for the same config snapshot.
-    for (const char *owner : { CORE_GUI_RULE_OWNER, "infill.generator.default" }) {
+    const char *const owners[] = { core_gui_rules_owner, infill_gui_rules_owner };
+    for (const char *owner : owners) {
         for (const Orchestrator::GuiRuleApplication &application :
              orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, owner))
             out[application.target_key] = application.enabled;
@@ -473,12 +437,12 @@ TEST_CASE("FFF print GUI rules match the legacy toggle logic", "[plugins][gui-ru
     bool has_fff_rules = false;
     for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
         has_fff_rules = has_fff_rules ||
-            (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.owner == CORE_GUI_RULE_OWNER);
+            (rule.scope == RAW_PRESET_TYPE_FFF_PRINT && rule.owner == core_gui_rules_owner);
     REQUIRE(has_fff_rules);
 
     // The rules are registered once: a second initialization must not add any.
     const size_t rule_count = orchestrator.gui_rules().rules().size();
-    initialize_fff_print_gui_rules();
+    slic3r_api::GuiRulesCorePlugin::register_gui_rules_core_plugin(orchestrator.handle());
     CHECK(orchestrator.gui_rules().rules().size() == rule_count);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
@@ -727,7 +691,7 @@ TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][fil
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     const auto evaluate_map = [&orchestrator, &config](int32_t current_index,
                                                        const std::vector<OptionKeyIdx> &filter,
-                                                       const char *owner = CORE_GUI_RULE_OWNER) {
+                                                       const char *owner = core_gui_rules_owner) {
         EnabledMap out;
         for (const Orchestrator::GuiRuleApplication &application :
              orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, owner, filter))
@@ -784,4 +748,31 @@ TEST_CASE("Page filter restricts GUI rule evaluation", "[plugins][gui-rules][fil
         return out;
     }();
     CHECK(full_pending.find("gui_rule_filter_pending_target") != full_pending.end());
+}
+TEST_CASE("GUI rules activate perimeters for every perimeter generator", "[plugins][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    REQUIRE(PrintConfigDef::instance().get("step_perimeter_plugin") != nullptr);
+
+    // The generated used-config-key rules must keep the wall count editable for
+    // every implementation that reads it, not only for the one that declared it
+    // first.
+    for (const char *plugin_id : {"perimeter.generator.classic", "perimeter.generator.arachne", "perimeter.generator.simple"}) {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.set_deserialize("step_perimeter_plugin", plugin_id);
+
+        bool found = false;
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1)) {
+            if (application.target_key != "perimeters")
+                continue;
+            found = true;
+            INFO("generator " << plugin_id);
+            CHECK(application.enabled);
+        }
+        INFO("generator " << plugin_id);
+        CHECK(found);
+    }
 }

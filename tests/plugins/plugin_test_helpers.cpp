@@ -35,10 +35,10 @@
 #include "libslic3r/Plugins/GCode/CustomGCodePerPrintZ.hpp"
 #include "libslic3r/Plugins/GCode/Firmware/BuiltinGCodeFirmwares.hpp"
 #include "libslic3r/Plugins/GCode/Thumbnail/BuiltinGCodeThumbnails.hpp"
-#include "libslic3r/Plugins/GCode/LegacyGCodeGenerator.hpp"
 #include "libslic3r/Plugins/GCode/PrintingPlanFileWriter.hpp"
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
+#include "libslic3r/Plugins/GuiRulesCore.hpp"
 #include "libslic3r/Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp"
 #include "libslic3r/Plugins/Infill/Lightning/LightningPattern.hpp"
 #include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
@@ -103,6 +103,7 @@
 #include "plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.hpp"
 #include "plugins_cpp/DenseInfill/DenseInfill.hpp"
 #include "plugins_cpp/ExtraPerimeterOverhangWave/ExtraPerimeterOverhangWave.hpp"
+#include "plugins_cpp/NozzleCleaning/NozzleCleaning.hpp"
 #include "plugins_cpp/Polyholes/Polyholes.hpp"
 
 namespace {
@@ -121,6 +122,7 @@ bool g_empty_option_list_error_reported = false;
 #ifdef SLIC3R_TEST_PYTHON_PLUGINS
 
 bool g_python_plugins_loaded = false;
+Slic3r::PluginPackageLoadReport g_python_invalid_clear_package_report;
 
 boost::filesystem::path current_executable_dir()
 {
@@ -199,6 +201,11 @@ bool load_python_plugins_for_tests(orchestrator_handle *orchestrator)
 
     using RegisterPluginFn = void (*)(orchestrator_handle *);
     reinterpret_cast<RegisterPluginFn>(proc)(orchestrator);
+    const Slic3r::PluginPackageLoadReport *report = Slic3r::Orchestrator::instance().plugin_package_load_report(
+        "python.test.clear.invalid_registration");
+    if (report == nullptr)
+        throw std::runtime_error("Invalid Python clear package was not discovered.");
+    g_python_invalid_clear_package_report = *report;
     return true;
 }
 
@@ -473,8 +480,6 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::SliceVolumePlugin::register_slice_volume_plugin(orchestrator_handle_value);
         slic3r_api::VaseMultiIslandConnectorPlugin::register_vase_multi_island_connector_plugin(
             orchestrator_handle_value);
-        slic3r_api::GCodeGeneration::LegacyGCodeGeneratorPlugin::register_legacy_gcode_generator_plugin(
-            orchestrator_handle_value);
         slic3r_api::GCodeGeneration::PrintingPlanFileWriterPlugin::register_printing_plan_file_writer_plugin(
             orchestrator_handle_value);
         slic3r_api::GCodeGeneration::SettingsGCodeScriptsPlugin::register_settings_gcode_scripts_plugin(
@@ -554,6 +559,7 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::SkirtBrim::DefaultBrimSkirtTrimPlugin::register_default_brim_skirt_trim_plugin(
             orchestrator_handle_value);
         slic3r_api::PolyholesPlugin::register_polyholes_plugin(orchestrator_handle_value);
+        slic3r_api::NozzleCleaningPlugin::register_nozzle_cleaning_plugin(orchestrator_handle_value);
         slic3r_api::Support::SupportDemandOverhangsPlugin::register_support_demand_overhangs_plugin(
             orchestrator_handle_value);
         slic3r_api::Support::SupportDemandPaintingPlugin::register_support_demand_painting_plugin(
@@ -562,6 +568,7 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::Support::SupportDemandBridgeRemovalPlugin::register_support_demand_bridge_removal_plugin(
             orchestrator_handle_value);
+        slic3r_api::GuiRulesCorePlugin::register_gui_rules_core_plugin(orchestrator_handle_value);
         slic3r_api::Perimeter::ArachnePerimeterGeneratorPlugin::register_arachne_perimeter_generator_plugin(
             orchestrator_handle_value);
         slic3r_api::Perimeter::ClassicPerimeterGeneratorPlugin::register_classic_perimeter_generator_plugin(
@@ -612,7 +619,6 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "standard_layer_height_generator");
         activate_plugin_or_fail(orchestrator, "slice_volume");
         activate_plugin_or_fail(orchestrator, "vase.multi_island_connector");
-        activate_plugin_or_fail(orchestrator, "gcode.legacy");
         activate_plugin_or_fail(orchestrator, "gcode.printing_plan_file_writer");
         activate_plugin_or_fail(orchestrator, "gcode.settings_scripts");
         activate_plugin_or_fail(orchestrator, "gcode.feature_gcode");
@@ -694,14 +700,19 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.acceleration.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.travel_deceleration.default");
         activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.fan.default");
+        activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.toolchange.default");
+        activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.retraction.default");
+        activate_plugin_or_fail(orchestrator, "layer_extrusion_edit.lift.default");
         activate_plugin_or_fail(orchestrator, "skirt_brim.brim.default");
         activate_plugin_or_fail(orchestrator, "skirt_brim.skirt.default");
         activate_plugin_or_fail(orchestrator, "skirt_brim.brim_skirt_trim.default");
         activate_plugin_or_fail(orchestrator, "polyholes");
+        activate_plugin_or_fail(orchestrator, "nozzle_cleaning");
         activate_plugin_or_fail(orchestrator, "support.demand.overhangs");
         activate_plugin_or_fail(orchestrator, "support.demand.painting");
         activate_plugin_or_fail(orchestrator, "support.demand.modifiers");
         activate_plugin_or_fail(orchestrator, "support.demand.bridge_removal");
+        activate_plugin_or_fail(orchestrator, "gui_rules.core");
         activate_plugin_or_fail(orchestrator, "perimeter.generator.arachne");
         activate_plugin_or_fail(orchestrator, "perimeter.generator.classic");
         activate_plugin_or_fail(orchestrator, "perimeter.generator.simple");
@@ -783,5 +794,13 @@ bool plugin_test_empty_option_list_error_reported()
     ensure_plugin_test_runtime_initialized();
     return g_empty_option_list_error_reported;
 }
+
+#ifdef SLIC3R_TEST_PYTHON_PLUGINS
+const PluginPackageLoadReport &python_invalid_clear_package_report()
+{
+    ensure_plugin_test_runtime_initialized();
+    return g_python_invalid_clear_package_report;
+}
+#endif
 
 } // namespace Slic3r::Test::Plugins

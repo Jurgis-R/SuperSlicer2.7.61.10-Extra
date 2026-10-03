@@ -1,6 +1,11 @@
 #include <catch2/catch.hpp>
 
 #include "perimeter_test_helpers.hpp"
+#include "plugin_test_helpers.hpp"
+#include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
+#include "libslic3r/Config/FFFPrintConfig.hpp"
+#include "libslic3r/Config/PrintConfig.hpp"
 
 namespace {
 using namespace Slic3r;
@@ -132,4 +137,43 @@ TEST_CASE("Extra perimeter below area module extends small islands", "[plugins][
         require_leaf_fill_area_consistency(extra_only_run);
         require_leaf_fill_area_consistency(below_run);
     }
+}
+TEST_CASE("Extra perimeter below area owns its setting and activation rule",
+          "[plugins][perimeter][below-area][gui-rules]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("perimeter.module.extra_perimeter_below_area");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "extra_perimeters_below_area");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("extra_perimeters_below_area");
+    REQUIRE(def != nullptr);
+    CHECK(def->container_type == ConfigOptionContainerType::Region);
+    CHECK(def->invalidates_step == STEP_PERIMETER);
+    CHECK(PrintConfig::defaults().option("extra_perimeters_below_area") == nullptr);
+    CHECK(PrintRegionConfig::defaults().option("extra_perimeters_below_area") != nullptr);
+
+    // Selecting another generator removes the generated implementation reason,
+    // so the plugin rule alone decides the result here.
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const auto enabled = [&orchestrator, &config]() {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1))
+            if (application.target_key == "extra_perimeters_below_area")
+                return application.enabled;
+        return false;
+    };
+
+    config.set_deserialize("step_perimeter_plugin", "perimeter.generator.simple");
+    config.option<ConfigOptionInt>("perimeters")->value = 0;
+    CHECK_FALSE(enabled());
+    config.option<ConfigOptionInt>("perimeters")->value = 2;
+    CHECK(enabled());
 }

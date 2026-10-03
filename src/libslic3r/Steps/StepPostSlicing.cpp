@@ -144,7 +144,8 @@ bool validate_layers(const Print &print, std::string &out_error, const bool requ
 
 } // namespace
 
-void clean_and_prepare(Print &) {}
+void clear(Print &) {}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string &out_error)
 {

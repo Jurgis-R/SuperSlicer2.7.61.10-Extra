@@ -254,9 +254,9 @@ void rebuild_island_overlap_graph(PrintObject &object)
 void run_perimeter_and_surface_steps(Print &print)
 {
     Orchestrator &orchestrator = Orchestrator::instance();
-    Steps::StepGeneratePerimeter::clean_and_prepare(print);
+    Steps::StepGeneratePerimeter::clear(print);
     Steps::StepGeneratePerimeter::run_step(orchestrator, print);
-    Steps::StepSurfaceGeneration::clean_and_prepare(print);
+    Steps::StepSurfaceGeneration::clear(print);
     Steps::StepSurfaceGeneration::run_step(orchestrator, print);
 
     std::string validation_error;

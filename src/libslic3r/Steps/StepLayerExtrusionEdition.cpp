@@ -62,8 +62,8 @@ run_ctx_layer_extrusion_edition make_layer_run_context(Print &print,
 
     run_ctx_layer_extrusion_edition payload = {};
     payload.print = reinterpret_cast<const print_handle *>(&print);
-    payload.plan = reinterpret_cast<const printing_plan_handle *>(&plan);
-    payload.group = reinterpret_cast<const printing_group_handle *>(&group);
+    payload.plan = reinterpret_cast<printing_plan_handle *>(&plan);
+    payload.group = reinterpret_cast<printing_group_handle *>(&group);
     payload.layer_group = reinterpret_cast<printing_layer_group_handle *>(&group.layers[location.layer_group_idx]);
     payload.group_idx = location.group_idx;
     payload.layer_group_idx = location.layer_group_idx;
@@ -129,7 +129,8 @@ void run_plugin(Orchestrator &orchestrator,
 
 } // namespace
 
-void clean_and_prepare(Print &) {}
+void clear(Print &) {}
+void prepare(Print &) {}
 
 bool validate_pre(const Print &print, std::string *error)
 {

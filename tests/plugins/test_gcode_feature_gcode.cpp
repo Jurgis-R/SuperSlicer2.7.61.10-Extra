@@ -73,15 +73,15 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     select_printing_plan_writer(print);
     configure_standard_firmware(print);
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.start_gcode.value.clear();
-    config.end_gcode.value.clear();
+    config.option<ConfigOptionString>("start_gcode")->value.clear();
+    config.option<ConfigOptionString>("end_gcode")->value.clear();
     config.before_layer_gcode.value.clear();
     config.layer_gcode.value.clear();
-    config.toolchange_gcode.value.clear();
-    config.between_objects_gcode.value.clear();
-    config.start_filament_gcode.set(std::vector<std::string>{""});
-    config.end_filament_gcode.set(std::vector<std::string>{""});
-    config.feature_gcode.value =
+    config.option<ConfigOptionString>("toolchange_gcode")->value.clear();
+    config.option<ConfigOptionString>("between_objects_gcode")->value.clear();
+    config.option<ConfigOptionStrings>("start_filament_gcode")->set(std::vector<std::string>{""});
+    config.option<ConfigOptionStrings>("end_filament_gcode")->set(std::vector<std::string>{""});
+    config.option<ConfigOptionString>("feature_gcode")->value =
         "; FEATURE [previous_extrusion_role]>[next_extrusion_role]";
 
     PrintingPlan &plan = print.mutable_printing_plan();
@@ -147,7 +147,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
             ArcPolyline(Points{Point(scale_i(5.0), scale_i(0.0)), Point(scale_i(6.0), scale_i(0.0))}),
             15.f, 400.f, -1.f, -1.f, -1.f, ExtrusionRole::InternalInfill));
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     const ExtrusionEntity &first_root = *first_tool.extrusions[0].root;
@@ -190,7 +190,7 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     // A second execution removes and recreates only this plugin's annotations.
     // The custom travel remains in the preserved second child and the feature
     // event remains the first child of exactly one ordered wrapper.
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK(first_root.child_count() == 0);
     REQUIRE(travel_root.child_count() == 2);
@@ -218,8 +218,8 @@ TEST_CASE("Feature G-code follows explicit role transitions without duplicating 
     CHECK(travel_move < infill_feature);
     CHECK(infill_feature < infill_move);
 
-    config.feature_gcode.value.clear();
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    config.option<ConfigOptionString>("feature_gcode")->value.clear();
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
     CHECK(first_root.get_property<ExtrusionPropertyCustomGcode>() == nullptr);
     CHECK(travel_root.child_count() == 0);
@@ -238,7 +238,7 @@ TEST_CASE("Feature G-code validates and normalizes rich extrusion roles",
     auto prepare_role = [](raw_extrusion_role raw_role) {
         std::unique_ptr<Print> print(new Print());
         PrintConfig &config = const_cast<PrintConfig &>(print->config());
-        config.feature_gcode.value = "; FEATURE [next_extrusion_role]";
+        config.option<ConfigOptionString>("feature_gcode")->value = "; FEATURE [next_extrusion_role]";
         PrintingPlan &plan = print->mutable_printing_plan();
         plan.groups.emplace_back();
         plan.groups.front().layers.emplace_back();
@@ -261,7 +261,7 @@ TEST_CASE("Feature G-code validates and normalizes rich extrusion roles",
     SECTION("Unsupported but structurally valid roles use Custom") {
         std::unique_ptr<Print> print = prepare_role(
             RAW_EXTRUSION_ROLE_PERIMETER | RAW_EXTRUSION_ROLE_SOLID);
-        Steps::StepExtrusionEdition::clean_and_prepare(*print);
+        Steps::StepExtrusionEdition::clear(*print);
         Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), *print);
         const ExtrusionEntity &root =
             *print->mutable_printing_plan().groups.front().layers.front().tool_groups.front().extrusions.front().root;
@@ -277,7 +277,7 @@ TEST_CASE("Feature G-code validates and normalizes rich extrusion roles",
         Orchestrator &orchestrator = Orchestrator::instance();
         orchestrator.reset_plugin_cancel();
         (void)orchestrator.consume_plugin_messages();
-        Steps::StepExtrusionEdition::clean_and_prepare(*print);
+        Steps::StepExtrusionEdition::clear(*print);
         CHECK_THROWS_AS(Steps::StepExtrusionEdition::run_step(orchestrator, *print), RuntimeError);
         CHECK(orchestrator.is_plugin_cancelled());
         bool found_role_error = false;
@@ -297,7 +297,7 @@ TEST_CASE("Feature G-code ignores retraction and wipe process roles",
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Print print;
     PrintConfig &config = const_cast<PrintConfig &>(print.config());
-    config.feature_gcode.value = "; FEATURE [previous_extrusion_role]>[next_extrusion_role]";
+    config.option<ConfigOptionString>("feature_gcode")->value = "; FEATURE [previous_extrusion_role]>[next_extrusion_role]";
     PrintingPlan &plan = print.mutable_printing_plan();
     plan.groups.emplace_back();
     plan.groups.front().layers.emplace_back();
@@ -326,11 +326,43 @@ TEST_CASE("Feature G-code ignores retraction and wipe process roles",
         ArcPolyline(Points{Point(scale_i(1.0), 0), Point(scale_i(2.0), 0)}),
         15.f, 400.f));
 
-    Steps::StepExtrusionEdition::clean_and_prepare(print);
+    Steps::StepExtrusionEdition::clear(print);
     Steps::StepExtrusionEdition::run_step(Orchestrator::instance(), print);
 
     REQUIRE(tool.extrusions.front().root->get_property<ExtrusionPropertyCustomGcode>() != nullptr);
     for (size_t extrusion_idx = 1; extrusion_idx + 1 < tool.extrusions.size(); ++extrusion_idx)
         CHECK(tool.extrusions[extrusion_idx].root->get_property<ExtrusionPropertyCustomGcode>() == nullptr);
     CHECK(tool.extrusions.back().root->get_property<ExtrusionPropertyCustomGcode>() == nullptr);
+}
+
+
+TEST_CASE("Feature G-code plugin owns its script setting",
+          "[plugins][gcode][feature-gcode][config]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+
+    Plugin *plugin = orchestrator.get_plugin("gcode.feature_gcode");
+    REQUIRE(plugin != nullptr);
+
+    std::vector<std::string> defined_keys;
+    for (const Plugin::DefinedConfigKey &key : plugin->get_defined_config_keys())
+        defined_keys.push_back(key.key);
+    CHECK(defined_keys.size() == 1);
+    CHECK(defined_keys.front() == "feature_gcode");
+
+    const ConfigOptionDef *def = PrintConfigDef::instance().get("feature_gcode");
+    REQUIRE(def != nullptr);
+    CHECK(def->type == coString);
+    CHECK(def->container_type == ConfigOptionContainerType::Plater);
+    CHECK(def->option_preset_type == RAW_PRESET_TYPE_FFF_PRINTER);
+    CHECK(def->invalidates_step == STEP_EXTRUSION_EDIT);
+    CHECK(def->multiline);
+    CHECK(def->full_width);
+    CHECK(def->cli == "feature-gcode");
+    CHECK(PrintConfig::defaults().option<ConfigOptionString>("feature_gcode")->value.empty());
+
+    // The script stays always editable: the plugin owns no activation rule.
+    for (const Orchestrator::PluginGuiRule &rule : orchestrator.gui_rules().rules())
+        CHECK(rule.owner != "gcode.feature_gcode");
 }
