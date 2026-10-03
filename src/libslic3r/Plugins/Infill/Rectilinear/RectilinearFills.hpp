@@ -12,10 +12,12 @@
 Rectilinear fill patterns for the plugin port
 =============================================
 
-Declaration of the rectilinear fill family. The implementation uses private
-mutable work buffers and the borrowed boundary views provided by the plugin
-connect helpers. FillSupportBase and FillRectilinearSawtooth are not part of
-this implementation.
+Shared raster and fill declarations used by the rectilinear pattern family.
+The implementation uses private mutable work buffers and borrowed boundary
+views provided by the plugin connect helpers. Sawtooth reuses FillRectilinear
+and publishes its Z-profile separately; rectiwithperimeter wraps the base
+filler, and supportbase overrides the boundary connection for sparse support
+paths. The canonical pattern-id list is declared by RectilinearPatterns.hpp.
 */
 
 #include <cassert>
@@ -192,6 +194,16 @@ public:
 
 protected:
     // The grid fill will keep the angle constant between the layers, see the implementation of Slic3r::Fill.
+    float _layer_angle(size_t idx) const override { return 0.f; }
+};
+
+class FillSupportBase : public FillRectilinear
+{
+public:
+    ~FillSupportBase() override = default;
+    Polylines fill_surface(const slic3r_api::ExPolygon &expolygon, const raw_infill_pattern_params &params) const override;
+
+protected:
     float _layer_angle(size_t idx) const override { return 0.f; }
 };
 

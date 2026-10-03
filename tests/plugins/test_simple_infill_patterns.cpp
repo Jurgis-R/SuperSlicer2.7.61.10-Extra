@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <initializer_list>
 #include <string>
@@ -11,6 +12,8 @@
 #include "plugin_test_helpers.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/plugin/c/steps/slic3r_step_infill.h"
+#include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/Layer.hpp"
@@ -35,6 +38,77 @@ using namespace Slic3r;
 using namespace Slic3r::Test::PerimeterPluginTests;
 
 namespace {
+
+constexpr const char *SUPPORT_BASE_SELECTOR = "tests.infill.supportbase_selector";
+const char *k_no_dependencies[] = { nullptr };
+
+class SupportBaseSelector final : public slic3r_api::PluginBase
+{
+public:
+    explicit SupportBaseSelector(orchestrator_handle *orchestrator) : PluginBase(orchestrator) {}
+
+    void reset()
+    {
+        m_run_count.store(0);
+        m_supportbase_resolution_count.store(0);
+        m_resolution_mismatch_count.store(0);
+    }
+    uint32_t run_count() const { return m_run_count.load(); }
+    uint32_t supportbase_resolution_count() const { return m_supportbase_resolution_count.load(); }
+    uint32_t resolution_mismatch_count() const { return m_resolution_mismatch_count.load(); }
+
+private:
+    const char *id_impl() const noexcept override { return SUPPORT_BASE_SELECTOR; }
+    const char *name_impl() const noexcept override { return "Support base selector"; }
+    const char *description_impl() const noexcept override
+    {
+        return "Redirects sparse recipes to the hidden support base pattern.";
+    }
+    slicing_step_t step_impl() const noexcept override { return INFILL_SURFACE_RECIPE_MODIFIER; }
+    const char *const *dependencies_impl() const noexcept override { return k_no_dependencies; }
+    int32_t priority_impl() const noexcept override { return 0; }
+
+    void run_impl(const plugin_run_context *run_ctx) const override
+    {
+        const run_ctx_infill_surface_recipe_modifier *ctx =
+            plugin_ctx_as_infill_surface_recipe_modifier(run_ctx);
+        if (ctx == nullptr || ctx->params == nullptr || ctx->generate_infill_ctx == nullptr ||
+            ctx->resolve_pattern_id == nullptr)
+            return;
+
+        // Support-base connection is defined only for sparse, non-bridge recipes.
+        if (ctx->params->flow.is_bridge != 0 || ctx->params->density >= 0.9999f)
+            return;
+
+        ctx->params->anchor_length = 2.f;
+        ctx->params->anchor_length_max = 5.f;
+        const infill_pattern_runtime_id resolved_pattern_id =
+            ctx->resolve_pattern_id(ctx->generate_infill_ctx, "supportbase");
+        const char *resolved_plugin_id = ctx->pattern_plugin_id != nullptr ?
+            ctx->pattern_plugin_id(ctx->generate_infill_ctx, resolved_pattern_id) : nullptr;
+        if (resolved_plugin_id != nullptr && std::string(resolved_plugin_id) == "supportbase")
+            ++m_supportbase_resolution_count;
+        else
+            ++m_resolution_mismatch_count;
+
+        ctx->params->pattern_id = resolved_pattern_id;
+        ctx->params->extrusion_role = RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL;
+        ++m_run_count;
+    }
+
+    mutable std::atomic_uint32_t m_run_count{ 0 };
+    mutable std::atomic_uint32_t m_supportbase_resolution_count{ 0 };
+    mutable std::atomic_uint32_t m_resolution_mismatch_count{ 0 };
+};
+
+SupportBaseSelector &support_base_selector()
+{
+    Orchestrator &orchestrator = Orchestrator::instance();
+    static SupportBaseSelector selector(reinterpret_cast<orchestrator_handle *>(&orchestrator));
+    if (orchestrator.get_plugin(SUPPORT_BASE_SELECTOR) == nullptr)
+        REQUIRE(orchestrator.register_plugin(selector.c_instance()));
+    return selector;
+}
 
 // Local copy of the perimeter test scope helper so the infill test can restrict
 // the active plugin set without touching the shared helper.
@@ -88,20 +162,30 @@ void run_until_infill(PreparedPerimeterPrint &prepared)
     Steps::StepGenerateInfill::run_step(orchestrator, prepared.print);
 }
 
-size_t count_infill_paths(const Print &print)
+size_t count_paths_in_bucket(const Print &print, const ExtrusionRole role)
 {
     size_t paths = 0;
     for (const PrintObject &object : print.objects())
         for (const Layer &layer : object.layers())
             for (const LayerSliceIsland &island : layer.islands())
                 for (const LayerRegionIsland &region_island : island.regions_islands()) {
-                    if (!region_island.has_extrusion(LayerRegionIsland::INFILLS))
+                    if (!region_island.has_extrusion(role))
                         continue;
-                    for (const ExtrusionEntity *entity : region_island.extrusion(LayerRegionIsland::INFILLS).entities())
+                    for (const ExtrusionEntity *entity : region_island.extrusion(role).entities())
                         paths += entity->is_collection() ?
                             static_cast<const ExtrusionEntityCollection *>(entity)->entities().size() : 1;
                 }
     return paths;
+}
+
+size_t count_infill_paths(const Print &print)
+{
+    return count_paths_in_bucket(print, LayerRegionIsland::INFILLS);
+}
+
+size_t count_support_paths(const Print &print)
+{
+    return count_paths_in_bucket(print, LayerRegionIsland::SUPPORT);
 }
 
 // Count infill paths that leave every fill surface of their region island. A
@@ -216,12 +300,39 @@ TEST_CASE("Simple infill pattern plugins register as infill pattern providers",
     for (const char *plugin_id : { "honeycomb", "3dhoneycomb", "hilbertcurve", "archimedeanchords",
                                    "octagramspiral", "rectilinear", "alignedrectilinear", "monotonic",
                                    "monotoniclines", "grid", "triangles", "stars", "cubic",
-                                   "scatteredrectilinear" }) {
+                                   "scatteredrectilinear", "supportbase" }) {
         INFO(plugin_id);
         const Plugin *plugin = orchestrator.get_plugin(plugin_id);
         REQUIRE(plugin != nullptr);
         CHECK(plugin->get_step() == INFILL_PATTERN);
     }
+}
+
+TEST_CASE("Support base resolves through STEP_INFILL and generates extrusion",
+          "[plugins][infill][patterns][supportbase]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    SupportBaseSelector &selector = support_base_selector();
+    selector.reset();
+
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, pattern_test_config("grid"));
+
+    ScopedActivePlugins active({
+        SIMPLE_PERIMETER_GENERATOR,
+        INITIAL_TYPED_SURFACE_BUILDER,
+        "infill.generator.default",
+        "grid",
+        "rectilinear",
+        "supportbase",
+        SUPPORT_BASE_SELECTOR
+    });
+    run_until_infill(prepared);
+
+    CHECK(selector.run_count() > 0);
+    CHECK(selector.supportbase_resolution_count() == selector.run_count());
+    CHECK(selector.resolution_mismatch_count() == 0);
+    CHECK(count_support_paths(prepared.print) > 0);
 }
 
 TEST_CASE("Simple infill patterns generate extrusion through STEP_INFILL",

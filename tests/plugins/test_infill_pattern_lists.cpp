@@ -51,6 +51,10 @@ bool has_value(const std::vector<std::string> &values, const std::string &value)
 TEST_CASE("Infill pattern lists are plugin-defined enums", "[plugins][infill][options]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    const Plugin *support_base = orchestrator.get_plugin("supportbase");
+    REQUIRE(support_base != nullptr);
+    CHECK(support_base->get_step() == INFILL_PATTERN);
 
     for (const char *key : { "fill_pattern", "top_fill_pattern", "bottom_fill_pattern",
                              "solid_fill_pattern", "bridge_fill_pattern" }) {
@@ -91,6 +95,11 @@ TEST_CASE("Infill pattern lists are plugin-defined enums", "[plugins][infill][op
     CHECK(has_value(option_values("top_fill_pattern"), "sawtooth"));
     CHECK_FALSE(has_value(option_values("bottom_fill_pattern"), "sawtooth"));
     CHECK_FALSE(has_value(option_values("solid_fill_pattern"), "grid"));
+    CHECK_FALSE(has_value(sparse, "supportbase"));
+    CHECK_FALSE(has_value(option_values("top_fill_pattern"), "supportbase"));
+    CHECK_FALSE(has_value(option_values("bottom_fill_pattern"), "supportbase"));
+    CHECK_FALSE(has_value(option_values("solid_fill_pattern"), "supportbase"));
+    CHECK_FALSE(has_value(option_values("bridge_fill_pattern"), "supportbase"));
 
     const std::vector<std::string> bridge = option_values("bridge_fill_pattern");
     REQUIRE(bridge.size() == 2);

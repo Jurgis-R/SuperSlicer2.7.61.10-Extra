@@ -27,11 +27,11 @@
 Rectilinear fill algorithms for the plugin
 ===========================================
 
-The rectilinear family uses private mutable work buffers for rasterization,
-offsets, and path generation. API `ExPolygon` views and raw infill recipes are
-adapted at the pattern boundary; generated paths are published through the
-plugin API. FillSupportBase and FillRectilinearSawtooth are not part of this
-implementation.
+This file provides the shared raster and fill implementations using private
+mutable work buffers. API `ExPolygon` views and raw infill recipes are adapted
+at the pattern boundary; generated paths are published through the plugin API.
+Sawtooth adds its Z-profile in RectilinearSawtooth.cpp, while
+rectiwithperimeter adds its perimeter wrapper in RectilinearWithPerimeter.cpp.
 */
 
 namespace slic3r_api { namespace Infill { namespace RectilinearPatternsPlugin {
@@ -3112,6 +3112,44 @@ Polylines FillCubic::fill_surface(const slic3r_api::ExPolygon &expolygon, const 
         polylines_out))
         BOOST_LOG_TRIVIAL(error) << "FillCubic::fill_surface() failed to fill a region.";
     return polylines_out; 
+}
+
+Polylines FillSupportBase::fill_surface(const slic3r_api::ExPolygon &expolygon,
+                                        const raw_infill_pattern_params &params) const
+{
+    assert(!is_full_infill(params));
+
+    Polylines polylines_out;
+    const std::pair<float, Point> rotate_vector = this->_infill_direction(expolygon, params);
+    ExPolygonWithOffset poly_with_offset(
+        this->plugin_storage,
+        expolygon,
+        -rotate_vector.first,
+        scale_i(this->overlap - 0.5 * this->get_spacing()));
+    if (poly_with_offset.n_contours > 0) {
+        Polylines fill_lines;
+        const coord_t line_spacing = _line_spacing_for_density(params);
+        make_fill_lines(poly_with_offset,
+                        rotate_vector.second.rotated(-rotate_vector.first),
+                        0., 0, line_spacing, 0, fill_lines, params);
+        assert_valid(fill_lines);
+
+        connect_base_support(this->plugin_storage,
+                             std::move(fill_lines),
+                             poly_with_offset.polygons_outer,
+                             poly_with_offset.bounding_box_outer(),
+                             polylines_out,
+                             _line_spacing_for_density(params),
+                             params);
+
+        const double cos_angle = cos(rotate_vector.first);
+        const double sin_angle = sin(rotate_vector.first);
+        for (Polyline &polyline : polylines_out)
+            for (Point &point : polyline.points)
+                point.rotate(cos_angle, sin_angle);
+    }
+    ensure_valid(polylines_out, params.fill_resolution);
+    return polylines_out;
 }
 
 

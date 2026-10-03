@@ -92,6 +92,8 @@ Use the view helpers instead of internal slicer types:
   clipping and offsetting;
 - `scale_i()`, `scale_d()` and `unscaled()` from `slic3r_def.h` for unit
   conversion;
+- `slic3r_safe_rand()` from `slic3r_utils.h` for thread-safe inclusive random
+  values when a pattern needs a host-seeded random sequence;
 - the `c_bounding_box` helpers from `GeometryViews.hpp` (`bounding_box_empty()`,
   `bounding_box_rotate()`, `bounding_box_merge_rotated()`,
   `bounding_box_merge_aligned()`, ...) to build a pattern frame.
@@ -173,9 +175,13 @@ correction.
 
 ## Rectilinear family port
 
+The family exposes twelve stable plugin ids:
 `rectilinear`, `alignedrectilinear`, `monotonic`, `monotoniclines`, `grid`,
-`triangles`, `stars`, `cubic` and `scatteredrectilinear` are ported from
-`FillRectilinear.cpp` into `Plugins/Infill/Rectilinear`:
+`triangles`, `stars`, `cubic`, `scatteredrectilinear`, `sawtooth`,
+`rectiwithperimeter` and `supportbase`. All twelve ids share the raster /
+multi-sweep code ported from `FillRectilinear.cpp` into
+`Plugins/Infill/Rectilinear`; `sawtooth`, `rectiwithperimeter` and `supportbase`
+add or replace a stage on top of it:
 
 - `RectilinearFills.cpp` implements the raster / multi-sweep algorithms on
   private work buffers while receiving the boundary as an API `ExPolygon` view
@@ -189,8 +195,19 @@ correction.
   patterns publish their group without `SORTABLE` / `REVERSIBLE` so the path
   order and direction survive `STEP_ORDERING`; the other patterns stay
   sortable.
-- Transient Clipper operations use the `plugin_storage` supplied by the host;
-  no private storage shim is required.
+- `rectiwithperimeter` and `supportbase` are registered as `INFILL_PATTERN`
+  providers but intentionally do not join any user option list. `supportbase`
+  is selected by its stable plugin id for sparse support-base recipes.
+  `rectiwithperimeter` is reachable through direct plugin-id selection, while
+  normal brim and preset paths continue to use the core `Fill` implementation.
+- `sawtooth` reuses the rectilinear XY raster and publishes a Z-profiled
+  extrusion tree. Its z-hop offsets use `slic3r_safe_rand()`, and the
+  generator sets `C_INFILL_FLAG_DONT_ADJUST` for the sawtooth recipe so later
+  flow normalization does not alter the generated profile.
+
+The legacy pattern adapters (`LegacyInfillPatterns.cpp`), brim, support and the
+wipe tower still instantiate the legacy core `Fill` classes. Dense infill uses
+recipe modifiers and post-infill plugins instead of those core fillers.
 
 ## Limits
 

@@ -27,8 +27,9 @@ Rectilinear pattern plugins
 ===========================
 
 The ordinary rectilinear patterns use the ported FillRectilinear family
-(RectilinearFills.hpp). Rectilinear-with-perimeter uses its dedicated helper,
-while Sawtooth uses the same XY filler with a publisher for its Z-profiled
+(RectilinearFills.hpp). Support Base uses the same rasterizer with its
+dedicated support connector, and Rectilinear-with-perimeter uses its own
+helper. Sawtooth uses the same XY filler with a publisher for its Z-profiled
 extrusion tree. The plugin boundary passes the surface API view, the raw
 infill recipe, and publishes the generated paths.
 
@@ -78,6 +79,7 @@ enum class PatternKind
     Cubic,
     ScatteredRectilinear,
     Sawtooth,
+    SupportBase,
     RectilinearWithPerimeter
 };
 
@@ -93,7 +95,7 @@ struct PatternDefinition
 
 // Declaration order defines the familiar config UI order. The explicit
 // priority keeps the order stable with the patterns that are still legacy.
-const std::array<PatternDefinition, 11> k_patterns = {{
+const std::array<PatternDefinition, 12> k_patterns = {{
     { "rectilinear", "Rectilinear", "Classic rectilinear infill pattern.", 0, PatternKind::Rectilinear, k_all_five },
     { "monotonic", "Monotonic", "Monotonic solid infill pattern.", 1, PatternKind::Monotonic, k_all_five },
     { "alignedrectilinear", "Aligned Rectilinear", "Rectilinear infill aligned across layers.", 2,
@@ -110,6 +112,8 @@ const std::array<PatternDefinition, 11> k_patterns = {{
       PatternKind::ScatteredRectilinear, k_sparse_only },
     { "sawtooth", "Sawtooth", "Sawtooth rectilinear infill pattern.", 22,
       PatternKind::Sawtooth, k_top_only },
+    { "supportbase", "Support Base", "Sparse support base pattern.", 25,
+      PatternKind::SupportBase, k_no_lists },
 }};
 
 std::unique_ptr<rect_fills::FillRectilinear> make_pattern(PatternKind kind)
@@ -125,6 +129,7 @@ std::unique_ptr<rect_fills::FillRectilinear> make_pattern(PatternKind kind)
     case PatternKind::Cubic:                    return std::make_unique<rect_fills::FillCubic>();
     case PatternKind::ScatteredRectilinear:     return std::make_unique<rect_fills::FillScatteredRectilinear>();
     case PatternKind::Sawtooth:                 return std::make_unique<rect_fills::FillRectilinear>();
+    case PatternKind::SupportBase:              return std::make_unique<rect_fills::FillSupportBase>();
     case PatternKind::RectilinearWithPerimeter: return std::make_unique<rect_fills::FillRectilinear>();
     }
     return nullptr;

@@ -22,11 +22,12 @@
 Rectilinear patterns port
 =========================
 
-The nine rectilinear patterns (rectilinear, aligned rectilinear, monotonic,
-monotonic lines, grid, triangles, stars, cubic and scattered rectilinear) are a
-verbatim port of FillRectilinear.cpp. These tests run the core and the ported
-implementations on the same surfaces, angle and density, and require the same
-set of extruded segments, the same number of paths and the same total length.
+The ten rectilinear patterns (rectilinear, aligned rectilinear, monotonic,
+monotonic lines, grid, triangles, stars, cubic, support base and scattered
+rectilinear) are a verbatim port of FillRectilinear.cpp. These tests run the
+core and the ported implementations on the same surfaces, angle and density,
+and require the same set of extruded segments, the same number of paths and the
+same total length.
 
 The comparison is a multiset of segments: path ordering belongs to the later
 STEP_ORDERING stage, so the general comparison does not require a path order.
@@ -172,6 +173,7 @@ std::unique_ptr<rect_fills::FillRectilinear> make_ported_pattern(const PatternCa
     case Slic3r::ipTriangles:             return std::make_unique<rect_fills::FillTriangles>();
     case Slic3r::ipStars:                 return std::make_unique<rect_fills::FillStars>();
     case Slic3r::ipCubic:                 return std::make_unique<rect_fills::FillCubic>();
+    case Slic3r::ipSupportBase:           return std::make_unique<rect_fills::FillSupportBase>();
     case Slic3r::ipScatteredRectilinear:  return std::make_unique<rect_fills::FillScatteredRectilinear>();
     default:                              return nullptr;
     }
@@ -193,6 +195,7 @@ TEST_CASE("Rectilinear fill port matches the core line geometry", "[plugins][inf
         { "triangles", Slic3r::ipTriangles, false },
         { "stars", Slic3r::ipStars, false },
         { "cubic", Slic3r::ipCubic, false },
+        { "supportbase", Slic3r::ipSupportBase, false },
         { "scatteredrectilinear", Slic3r::ipScatteredRectilinear, false },
     };
     const std::vector<std::string> surfaces = { "square", "hole", "lshape", "headstick", "dirtyholes" };
@@ -206,7 +209,8 @@ TEST_CASE("Rectilinear fill port matches the core line geometry", "[plugins][inf
     for (const PatternCase &pattern_case : pattern_cases) {
         const bool multi_sweep = pattern_case.pattern == Slic3r::ipGrid || pattern_case.pattern == Slic3r::ipTriangles ||
                                  pattern_case.pattern == Slic3r::ipStars || pattern_case.pattern == Slic3r::ipCubic;
-        const std::vector<float> &densities = multi_sweep ? sparse_densities : all_densities;
+        const bool support_base = pattern_case.pattern == Slic3r::ipSupportBase;
+        const std::vector<float> &densities = multi_sweep || support_base ? sparse_densities : all_densities;
         for (const std::string &surface_name : surfaces) {
             for (const coord_t spacing : spacings) {
                 for (const float density : densities) {
@@ -224,6 +228,10 @@ TEST_CASE("Rectilinear fill port matches the core line geometry", "[plugins][inf
                         core_params.density = density;
                         core_params.dont_adjust = false;
                         core_params.monotonic = pattern_case.monotonic;
+                        if (support_base) {
+                            core_params.anchor_length = 2.f;
+                            core_params.anchor_length_max = 5.f;
+                        }
 
                         std::unique_ptr<Slic3r::Fill> core_fill(Slic3r::Fill::new_from_type(pattern_case.pattern));
                         REQUIRE(core_fill != nullptr);
@@ -244,6 +252,10 @@ TEST_CASE("Rectilinear fill port matches the core line geometry", "[plugins][inf
                         ported_params.fill_resolution = scale_i(0.0125);
                         ported_params.anchor_length = 1000.f;
                         ported_params.anchor_length_max = 1000.f;
+                        if (support_base) {
+                            ported_params.anchor_length = 2.f;
+                            ported_params.anchor_length_max = 5.f;
+                        }
 
                         std::unique_ptr<rect_fills::FillRectilinear> ported_fill = make_ported_pattern(pattern_case);
                         REQUIRE(ported_fill != nullptr);
