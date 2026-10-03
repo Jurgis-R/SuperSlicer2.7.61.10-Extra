@@ -6,7 +6,7 @@
 #define slic3r_clipper_h_
 
 #define SLIC3R_PLUGIN_API_CLIPPER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 0u
+#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 1u
 
 #include "slic3r_def.h"
 #include "slic3r_geometry.h"
@@ -256,6 +256,11 @@ SLIC3R_HOST_API polyline_collection_handle *clipper_diff_polyline_expolygons(sto
                                                                              const polyline_handle *subject,
                                                                              const expolygon_collection_handle *clip);
 
+// Batch difference returns storage-owned, unordered paths; a null/empty mask copies subjects.
+SLIC3R_HOST_API polyline_collection_handle *clipper_diff_polylines_expolygons(storage_handle *storage,
+                                                                          const polyline_collection_handle *subject,
+                                                                          const expolygon_collection_handle *clip);
+
 /*
 Clip an open polyline by polygonal areas and return the pieces inside clip.
 
@@ -271,6 +276,12 @@ by storage and must be released with storage_free() when no longer needed.
 SLIC3R_HOST_API polyline_collection_handle *clipper_intersection_polyline_expolygons(
     storage_handle *storage,
     const polyline_handle *subject,
+    const expolygon_collection_handle *clip);
+
+// Batch intersection returns storage-owned, unordered paths; a null/empty mask gives an empty result.
+SLIC3R_HOST_API polyline_collection_handle *clipper_intersection_polylines_expolygons(
+    storage_handle *storage,
+    const polyline_collection_handle *subject,
     const expolygon_collection_handle *clip);
 
 #ifdef __cplusplus

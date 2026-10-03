@@ -73,6 +73,7 @@ from slic3r_geometry_views import (
     Polygon,
     PolygonCollection,
     Polyline,
+    PolylineCollection,
     StoredExPolygonCollection,
     StoredPolygonCollection,
     StoredPolylineCollection,
@@ -548,6 +549,42 @@ def clipper_intersection_polyline_expolygons(
 
 
 @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+def clipper_diff_polylines_expolygons(
+    storage, subject: PolylineCollection, clip: ExPolygonCollection
+) -> StoredPolylineCollection:
+    """Return storage-owned batch fragments outside clip without modifying either input; result order is unspecified."""
+    storage_address = _require_handle(storage, "storage")
+    if subject.api is not clip.api:
+        raise ValueError("subject and clip must use the same API instance")
+    if subject.empty():
+        return StoredPolylineCollection(subject.api, storage_address)
+    result = subject.api.host.clipper_diff_polylines_expolygons(
+        _void_p(storage_address), subject.c_handle(), clip.c_handle()
+    )
+    return StoredPolylineCollection.adopt_owned(
+        subject.api, storage_address, _require_handle(result, "clipped polyline collection result")
+    )
+
+
+@abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+def clipper_intersection_polylines_expolygons(
+    storage, subject: PolylineCollection, clip: ExPolygonCollection
+) -> StoredPolylineCollection:
+    """Return storage-owned batch fragments inside clip without modifying either input; result order is unspecified."""
+    storage_address = _require_handle(storage, "storage")
+    if subject.api is not clip.api:
+        raise ValueError("subject and clip must use the same API instance")
+    if subject.empty():
+        return StoredPolylineCollection(subject.api, storage_address)
+    result = subject.api.host.clipper_intersection_polylines_expolygons(
+        _void_p(storage_address), subject.c_handle(), clip.c_handle()
+    )
+    return StoredPolylineCollection.adopt_owned(
+        subject.api, storage_address, _require_handle(result, "clipped polyline collection result")
+    )
+
+
+@abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
 def clipper_clip_expolygons_with_subject_bbox(
     storage, src: ExPolygonCollection, bbox: CBoundingBox
 ) -> StoredExPolygonCollection:
@@ -663,6 +700,22 @@ class ClipperContext:
             self.storage(), subject, clip
         )
 
+    def diff_polylines_expolygons(
+        self, subject: PolylineCollection, clip: ExPolygonCollection
+    ) -> StoredPolylineCollection:
+        """Use this context's storage for the whole batch, not one host call per subject."""
+        if subject.api is not self.api or clip.api is not self.api:
+            raise ValueError("subject and clip must use this context's API instance")
+        return clipper_diff_polylines_expolygons(self.storage(), subject, clip)
+
+    def intersection_polylines_expolygons(
+        self, subject: PolylineCollection, clip: ExPolygonCollection
+    ) -> StoredPolylineCollection:
+        """Use this context's storage for the whole batch, not one host call per subject."""
+        if subject.api is not self.api or clip.api is not self.api:
+            raise ValueError("subject and clip must use this context's API instance")
+        return clipper_intersection_polylines_expolygons(self.storage(), subject, clip)
+
     def clip_expolygons_with_subject_bbox(
         self, src: ExPolygonCollection, bbox: CBoundingBox
     ) -> StoredExPolygonCollection:
@@ -692,10 +745,12 @@ __all__ = [
     "clipper_clip_shapes_with_subject_bbox",
     "clipper_diff",
     "clipper_diff_polyline_expolygons",
+    "clipper_diff_polylines_expolygons",
     "clipper_diff_with_safety_offset",
     "clipper_execute",
     "clipper_intersection",
     "clipper_intersection_polyline_expolygons",
+    "clipper_intersection_polylines_expolygons",
     "clipper_intersection_with_safety_offset",
     "clipper_offset",
     "clipper_offset2",

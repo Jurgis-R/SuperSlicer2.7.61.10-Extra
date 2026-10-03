@@ -19,6 +19,9 @@
 
 namespace Slic3r {
 
+// Borrowed subject collections remain read-only while core clipping owns its temporary paths.
+static const Polylines *to_polylines(const polyline_collection_handle *handle);
+
 /* ---- ABI handle casts ------------------------------------------------
 The public headers expose opaque C handles. Internally they are pointers to the
 native Slic3r objects or to the ApiClipper::ClipperShapes interface.
@@ -38,6 +41,10 @@ static const Polyline *to_polyline(const polyline_handle *handle) {
 
 static Polylines *to_polylines(polyline_collection_handle *handle) {
     return reinterpret_cast<Polylines *>(handle);
+}
+
+static const Polylines *to_polylines(const polyline_collection_handle *handle) {
+    return reinterpret_cast<const Polylines *>(handle);
 }
 
 static const Polygons *to_polygons(const polygon_collection_handle *handle) {
@@ -521,6 +528,22 @@ polyline_collection_handle *clipper_diff_polyline_expolygons(storage_handle *sto
     return out_handle;
 }
 
+polyline_collection_handle *clipper_diff_polylines_expolygons(storage_handle *storage,
+                                                             const polyline_collection_handle *subject,
+                                                             const expolygon_collection_handle *clip)
+{
+    if (storage == nullptr || subject == nullptr)
+        return nullptr;
+
+    polyline_collection_handle *out_handle = storage_new_polylines(storage);
+    Slic3r::Polylines &out = *Slic3r::to_polylines(out_handle);
+    if (clip == nullptr || Slic3r::to_expolygons(clip)->empty())
+        out = *Slic3r::to_polylines(subject);
+    else if (!Slic3r::to_polylines(subject)->empty())
+        out = Slic3r::diff_pl(*Slic3r::to_polylines(subject), *Slic3r::to_expolygons(clip));
+    return out_handle;
+}
+
 polyline_collection_handle *clipper_intersection_polyline_expolygons(storage_handle *storage,
                                                                      const polyline_handle *subject,
                                                                      const expolygon_collection_handle *clip)
@@ -532,6 +555,20 @@ polyline_collection_handle *clipper_intersection_polyline_expolygons(storage_han
     Slic3r::Polylines &out = *Slic3r::to_polylines(out_handle);
     if (clip != nullptr && !Slic3r::to_expolygons(clip)->empty())
         out = Slic3r::intersection_pl(*Slic3r::to_polyline(subject), *Slic3r::to_expolygons(clip));
+    return out_handle;
+}
+
+polyline_collection_handle *clipper_intersection_polylines_expolygons(storage_handle *storage,
+                                                                     const polyline_collection_handle *subject,
+                                                                     const expolygon_collection_handle *clip)
+{
+    if (storage == nullptr || subject == nullptr)
+        return nullptr;
+
+    polyline_collection_handle *out_handle = storage_new_polylines(storage);
+    Slic3r::Polylines &out = *Slic3r::to_polylines(out_handle);
+    if (!Slic3r::to_polylines(subject)->empty() && clip != nullptr && !Slic3r::to_expolygons(clip)->empty())
+        out = Slic3r::intersection_pl(*Slic3r::to_polylines(subject), *Slic3r::to_expolygons(clip));
     return out_handle;
 }
 

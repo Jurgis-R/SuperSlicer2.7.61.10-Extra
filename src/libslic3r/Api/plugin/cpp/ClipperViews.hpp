@@ -76,6 +76,8 @@ StoredPolygonCollection only when a flat list of polygons is enough. For open
 paths, use clipper_diff_polyline_expolygons() or
 clipper_intersection_polyline_expolygons(); converting an open polyline through
 ClipperOperand and back to polygons is not the same operation.
+Use clipper_diff_polylines_expolygons() or clipper_intersection_polylines_expolygons()
+for a whole PolylineCollection in one batch; output collection order is unspecified.
 */
 
 /* ========================= generic read-only / stored views ========================= */
@@ -547,6 +549,18 @@ inline StoredPolylineCollection clipper_diff_polyline_expolygons(storage_handle 
     return StoredPolylineCollection::adopt(storage, ::clipper_diff_polyline_expolygons(storage, subject.handle(), clip.handle()));
 }
 
+// A single batch preserves the core clipping decisions across all subjects; result collection order is unspecified.
+inline StoredPolylineCollection clipper_diff_polylines_expolygons(storage_handle *storage,
+                                                                  const PolylineCollection &subject,
+                                                                  const ExPolygonCollection &clip)
+{
+    if (subject.empty())
+        return StoredPolylineCollection(storage);
+    if (clip.empty())
+        return subject.clone(storage);
+    return StoredPolylineCollection::adopt(storage, ::clipper_diff_polylines_expolygons(storage, subject.handle(), clip.handle()));
+}
+
 inline StoredPolylineCollection clipper_intersection_polyline_expolygons(storage_handle *storage,
                                                                          const Polyline &subject,
                                                                          const ExPolygonCollection &clip)
@@ -554,6 +568,16 @@ inline StoredPolylineCollection clipper_intersection_polyline_expolygons(storage
     if (subject.empty() || clip.empty())
         return StoredPolylineCollection(storage);
     return StoredPolylineCollection::adopt(storage, ::clipper_intersection_polyline_expolygons(storage, subject.handle(), clip.handle()));
+}
+
+// Open subjects retain their bends; polygon materialization through ClipperOperand cannot represent this result.
+inline StoredPolylineCollection clipper_intersection_polylines_expolygons(storage_handle *storage,
+                                                                          const PolylineCollection &subject,
+                                                                          const ExPolygonCollection &clip)
+{
+    if (subject.empty() || clip.empty())
+        return StoredPolylineCollection(storage);
+    return StoredPolylineCollection::adopt(storage, ::clipper_intersection_polylines_expolygons(storage, subject.handle(), clip.handle()));
 }
 
 inline StoredExPolygonCollection clipper_clip_expolygons_with_subject_bbox(storage_handle *storage,

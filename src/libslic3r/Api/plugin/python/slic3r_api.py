@@ -754,6 +754,24 @@ class Slic3rAPI:
         )
 
     @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+    def clipper_diff_polylines_expolygons(
+        self, storage_address: int, subject: PolylineCollection, clip: ExPolygonCollection
+    ) -> StoredPolylineCollection:
+        """Return a storage-owned batch result; inputs must belong to this API instance."""
+        if subject.api is not self or clip.api is not self:
+            raise ValueError("subject and clip must use this API instance")
+        return clipper_diff_polylines_expolygons(storage_address, subject, clip)
+
+    @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+    def clipper_intersection_polylines_expolygons(
+        self, storage_address: int, subject: PolylineCollection, clip: ExPolygonCollection
+    ) -> StoredPolylineCollection:
+        """Return a storage-owned batch result; inputs must belong to this API instance."""
+        if subject.api is not self or clip.api is not self:
+            raise ValueError("subject and clip must use this API instance")
+        return clipper_intersection_polylines_expolygons(storage_address, subject, clip)
+
+    @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
     def clipper_clip_expolygons_with_subject_bbox(
         self,
         storage_address: int,
