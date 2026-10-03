@@ -6,6 +6,7 @@ add_executable(${_TEST_NAME}_tests
     ../../src/plugins_cpp/ExtraPerimeterOverhangWave/ExtraPerimeterOverhangWave.cpp
     ../../src/plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.cpp
     ../../src/plugins_cpp/Polyholes/Polyholes.cpp
+    clipper_offset_test_helpers.cpp
     gcode_test_helpers.cpp
     perimeter_test_helpers.cpp
     plugin_test_helpers.cpp
@@ -16,8 +17,10 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_queries.cpp
     test_public_kdtree.cpp
     test_clipper_views.cpp
+    test_clipper_offset2_parity.cpp
     test_clipper_offset_contacts.cpp
     test_clipper_offset_parity.cpp
+    test_clipper_offset_strategies.cpp
 
     test_deferred_callback_exception.cpp
     test_extrusion_continuity.cpp

@@ -250,6 +250,27 @@ TEST_CASE("ClipperOperand bounding_box reads raw Clipper points", "[plugins][cli
     check_bbox(unioned.bounding_box(), -2., -5., 40., 12.);
 }
 
+TEST_CASE("Clipper offset grows a polygon list of clockwise rings like ClipperOffset", "[plugins][clipper]")
+{
+    // Polygon lists keep the grouped ClipperOffset: painted facet slivers may
+    // have any orientation, and a clockwise lowest ring reverses every ring,
+    // so the set grows instead of being read as holes without a contour.
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    slic3r_api::ClipperContext clipper(storage);
+    Polygon first = rectangle_mm(0., 0., 10., 10.);
+    Polygon second = rectangle_mm(20., 0., 30., 10.);
+    first.make_clockwise();
+    second.make_clockwise();
+    slic3r_api::ClipperOperand clockwise = clipper(view(first));
+    clockwise += clipper(view(second));
+
+    const slic3r_api::ClipperOperand grown =
+        slic3r_api::clipper_offset(clockwise, scale_d(1.), CLIPPER_JOIN_MITER, 3.);
+    CHECK(grown.to_expolygon_collection().size() == 2);
+    check_bbox(grown.bounding_box(), -1., -1., 31., 11.);
+}
+
 
 TEST_CASE("Public LineDistancer index matches exhaustive queries and owns its data", "[plugins][line-distancer]")
 {

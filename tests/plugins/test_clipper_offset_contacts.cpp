@@ -16,28 +16,30 @@
  * shared edges, not shared vertices.  Any later union of the cleaned rings
  * removes them.
  *
- * `slic3r_api::clipper_offset` implements `positive_fill_checked_union`.  This
- * file rebuilds it and the alternatives below directly with ClipperLib; the
- * contacts report counts vertices lying on another ring, or on a non-adjacent
- * edge of their own ring.  A bridge always shows as two collinear edges
- * overlapping along a positive length, which is cheap to detect by sorting the
- * edges along their support lines:
+ * `slic3r_api::clipper_offset` offsets several rings one by one, keeps
+ * `positive_fill_checked_union` for a lone ring, and checks every result for
+ * bridges (see test_clipper_offset_strategies.cpp).  This file rebuilds the grouped
+ * variants below directly with ClipperLib to document where the bridges come
+ * from; the contacts report counts vertices lying on another ring, or on a
+ * non-adjacent edge of their own ring.  A bridge always shows as two collinear
+ * edges overlapping along a positive length, which is cheap to detect by
+ * sorting the edges along their support lines:
  *
  * | variant | passes | description |
  * |---------|--------|-------------|
- * | grouped_offset | offset | one ClipperOffset over all rings, PolyTree output, the former API |
+ * | grouped_offset | offset | one ClipperOffset over all rings, PolyTree output |
  * | positive_fill_offset | offset | same, cleaned with a positive-fill union instead of the bounding rectangle |
- * | union_after | offset + union | API offset to Paths, then a non-zero union |
- * | checked_union_after | offset (+ union) | API offset, non-zero union only when two edges overlap |
- * | positive_fill_checked_union | offset (+ union) | positive-fill offset, then the same checked union: the API |
+ * | union_after | offset + union | grouped offset to Paths, then a non-zero union |
+ * | checked_union_after | offset (+ union) | grouped offset, non-zero union only when two edges overlap |
+ * | positive_fill_checked_union | offset (+ union) | positive-fill offset, then the same checked union: the API for a lone ring |
  * | ring_difference | ring offsets + difference | legacy ring offsets, difference straight to a PolyTree |
  * | legacy_offset_ex | ring offsets + difference + union | `Slic3r::offset_ex(ExPolygon)` |
  *
- * The `[plugins]` tests check that the API matches its rebuild, that every
- * variant covers the legacy area on the divergent cases, and that the
- * positive-fill clean-up covers the same area as the current one on concave
- * shapes for every join type.  The hidden `[clipper-offset-contacts-report]`
- * test prints topology and timing per variant and writes one SVG per case,
+ * The `[plugins]` tests check that the API gives exactly the legacy rings on
+ * the divergent cases, that every variant covers the legacy area there, and
+ * that the positive-fill clean-up and the API cover the same area as the
+ * grouped offset on concave shapes for every join type.  The hidden
+ * `[clipper-offset-contacts-report]` test prints topology and timing per variant and writes one SVG per case,
  * `clipper_offset_contacts_<case>.svg`, in the working directory: the input
  * followed by one panel per variant, with contact vertices in red.
  */
@@ -51,7 +53,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <numeric>
+#include <random>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -62,21 +64,17 @@
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/ExPolygon.hpp"
+#include "libslic3r/Int128.hpp"
 #include "libslic3r/Polygon.hpp"
 #include "libslic3r/SVG.hpp"
+#include "clipper_offset_test_helpers.hpp"
+// Last: it includes clipper.hpp, which must follow clipper_z.hpp from the headers above.
+#include "libslic3r/Api/host/ClipperShapes.hpp"
 
 namespace {
 
 using namespace Slic3r;
-
-using CanonicalRing = std::vector<std::pair<coord_t, coord_t>>;
-
-struct CanonicalExPolygon {
-    CanonicalRing contour;
-    std::vector<CanonicalRing> holes;
-};
-
-using CanonicalShape = std::vector<CanonicalExPolygon>;
+using namespace clipper_offset_test;
 
 struct ContactCase {
     std::string name;
@@ -101,23 +99,6 @@ const std::array<Variant, 7> all_variants = {
     Variant::GroupedOffset, Variant::PositiveFillOffset, Variant::UnionAfter, Variant::CheckedUnionAfter,
     Variant::PositiveFillCheckedUnion, Variant::RingDifference, Variant::Legacy};
 
-// One edge placed on its support line: the reduced direction and the line
-// offset identify the line, the projections bound the edge along it.
-struct LineEdge {
-    int64_t direction_x;
-    int64_t direction_y;
-    int64_t offset;
-    int64_t begin;
-    int64_t end;
-};
-
-// Vertices lying on another ring, or on a non-adjacent edge of their own ring.
-struct Contacts {
-    Slic3r::Points points;
-    // Rings touching themselves: zero-width bridges inside one ring.
-    size_t self_touching_rings = 0;
-};
-
 struct Topology {
     size_t islands = 0;
     size_t holes = 0;
@@ -139,23 +120,8 @@ ContactCase checkerboard_case(const std::string &name, double delta_mm, size_t c
 // Concave shapes shrunk with every join type, for clean-up area equivalence.
 std::vector<ContactCase> concave_cases();
 
-// Counter-clockwise star centred on (x, y) with alternating radii in millimetres.
-Slic3r::Polygon star_mm(double x, double y, double outer_radius, double inner_radius, size_t tips);
-
-// Counter-clockwise comb: a base bar with teeth of equal width and gap.
-Slic3r::Polygon comb_mm(double tooth_width, size_t teeth, double tooth_height);
-
-// Build a counter-clockwise rectangle from millimetre bounds.
-Slic3r::Polygon rectangle_mm(double min_x, double min_y, double max_x, double max_y);
-
-// Build an ExPolygon from a contour and clockwise copies of the holes.
-Slic3r::ExPolygon with_holes(const Slic3r::Polygon &contour, const Slic3r::Polygons &holes);
-
 // Offset one case through the public API and materialize the result.
 Slic3r::ExPolygons api_offset(const ContactCase &contact_case);
-
-// Convert an API ExPolygon collection back to native ExPolygons.
-Slic3r::ExPolygons to_native(const slic3r_api::ExPolygonCollection &collection);
 
 // Run one variant on one case.
 Slic3r::ExPolygons run_variant(Variant variant, const ContactCase &contact_case);
@@ -171,12 +137,6 @@ Slic3r::ExPolygons grouped_offset_then_union(const ContactCase &contact_case);
 // positive fill, then a non-zero union of its rings only when two of their
 // edges overlap.
 Slic3r::ExPolygons grouped_offset_then_checked_union(const ContactCase &contact_case, bool positive_fill);
-
-// Whether two edges of the tree overlap along a positive length.
-bool has_overlapping_edges(const ClipperLib::PolyTree &tree);
-
-// Append the edges of a node contour and of all its descendants.
-void collect_edges(const ClipperLib::PolyNode &node, std::vector<LineEdge> &edges);
 
 // Offset the contour and every hole separately, subtract into a PolyTree.
 Slic3r::ExPolygons ring_difference(const ContactCase &contact_case);
@@ -195,15 +155,6 @@ ClipperLib::JoinType native_join(clipper_join_type_t join);
 // Island, hole and contact counts of a result.
 Topology topology(const Slic3r::ExPolygons &expolygons);
 
-// Area covered by exactly one of the two results, in square millimetres.
-double symmetric_area_mm2(const Slic3r::ExPolygons &first, const Slic3r::ExPolygons &second);
-
-// Order-, start- and hole-order-independent form preserving every coordinate.
-CanonicalShape canonical(const Slic3r::ExPolygons &expolygons);
-CanonicalRing canonical_ring(const Slic3r::Polygon &polygon);
-bool operator==(const CanonicalExPolygon &first, const CanonicalExPolygon &second);
-bool operator<(const CanonicalExPolygon &first, const CanonicalExPolygon &second);
-
 // Median and minimum time per call, variants interleaved batch by batch.
 std::vector<VariantTiming> time_variants(const ContactCase &contact_case, size_t batches);
 
@@ -218,13 +169,14 @@ void print_rings(const Slic3r::ExPolygons &expolygons);
 // Draw the input and every variant result side by side.
 void write_svg(const ContactCase &contact_case, const std::vector<Slic3r::ExPolygons> &results);
 
-// Vertices of a result touching another ring or a non-adjacent edge of their own.
-Contacts find_contacts(const Slic3r::ExPolygons &expolygons);
-
-// Whether a point lies on the closed segment [a, b].
-bool on_segment(const Slic3r::Point &point, const Slic3r::Point &a, const Slic3r::Point &b);
-
 const char *variant_name(Variant variant);
+
+// Random triangles with edges on a few shared lines, some of them overlapping
+// or touching, within coordinates of +/- extent / 2.
+ClipperLib::Paths random_line_triangles(std::mt19937_64 &rng, int64_t extent);
+
+// Exhaustive exact search: two edges on one line overlapping along a positive length.
+bool brute_force_overlap(const ClipperLib::Paths &rings);
 
 std::vector<ContactCase> divergence_cases()
 {
@@ -292,60 +244,6 @@ std::vector<ContactCase> concave_cases()
     return cases;
 }
 
-Slic3r::Polygon star_mm(double x, double y, double outer_radius, double inner_radius, size_t tips)
-{
-    Slic3r::Polygon polygon;
-    for (size_t index = 0; index < 2 * tips; ++index) {
-        const double angle = PI * double(index) / double(tips);
-        const double radius = index % 2 == 0 ? outer_radius : inner_radius;
-        polygon.points.emplace_back(scale_i(x + radius * std::cos(angle)), scale_i(y + radius * std::sin(angle)));
-    }
-    return polygon;
-}
-
-Slic3r::Polygon comb_mm(double tooth_width, size_t teeth, double tooth_height)
-{
-    // Base bar from y = 0 to y = 2, teeth rising from its top edge.
-    const double width = tooth_width * double(2 * teeth - 1);
-    Slic3r::Polygon polygon;
-    polygon.points.emplace_back(scale_i(0.), scale_i(0.));
-    polygon.points.emplace_back(scale_i(width), scale_i(0.));
-    for (size_t tooth = teeth; tooth > 0; --tooth) {
-        const double right = tooth_width * double(2 * tooth - 1);
-        const double left = right - tooth_width;
-        if (tooth != teeth)
-            polygon.points.emplace_back(scale_i(right), scale_i(2.));
-        polygon.points.emplace_back(scale_i(right), scale_i(2. + tooth_height));
-        polygon.points.emplace_back(scale_i(left), scale_i(2. + tooth_height));
-        if (tooth != 1)
-            polygon.points.emplace_back(scale_i(left), scale_i(2.));
-    }
-    return polygon;
-}
-
-Slic3r::Polygon rectangle_mm(double min_x, double min_y, double max_x, double max_y)
-{
-    Slic3r::Polygon polygon({
-        Slic3r::Point(scale_i(min_x), scale_i(min_y)),
-        Slic3r::Point(scale_i(max_x), scale_i(min_y)),
-        Slic3r::Point(scale_i(max_x), scale_i(max_y)),
-        Slic3r::Point(scale_i(min_x), scale_i(max_y))
-    });
-    polygon.make_counter_clockwise();
-    return polygon;
-}
-
-Slic3r::ExPolygon with_holes(const Slic3r::Polygon &contour, const Slic3r::Polygons &holes)
-{
-    Slic3r::ExPolygon result(contour);
-    for (const Slic3r::Polygon &hole : holes) {
-        Slic3r::Polygon oriented_hole(hole);
-        oriented_hole.make_clockwise();
-        result.holes.push_back(std::move(oriented_hole));
-    }
-    return result;
-}
-
 Slic3r::ExPolygons api_offset(const ContactCase &contact_case)
 {
     Slic3r::PluginStorage plugin_storage;
@@ -360,25 +258,6 @@ Slic3r::ExPolygons api_offset(const ContactCase &contact_case)
         operand, scale_d(contact_case.delta_mm), contact_case.join, contact_case.limit);
     slic3r_api::StoredExPolygonCollection result = offset.to_expolygon_collection();
     return to_native(result.readonly());
-}
-
-Slic3r::ExPolygons to_native(const slic3r_api::ExPolygonCollection &collection)
-{
-    Slic3r::ExPolygons result;
-    result.reserve(collection.size());
-    for (const slic3r_api::ExPolygon source : collection) {
-        Slic3r::ExPolygon native;
-        for (const c_point point : source.contour().points())
-            native.contour.points.emplace_back(point.x, point.y);
-        for (const slic3r_api::Polygon source_hole : source.holes()) {
-            Slic3r::Polygon hole;
-            for (const c_point point : source_hole.points())
-                hole.points.emplace_back(point.x, point.y);
-            native.holes.push_back(std::move(hole));
-        }
-        result.push_back(std::move(native));
-    }
-    return result;
 }
 
 Slic3r::ExPolygons run_variant(Variant variant, const ContactCase &contact_case)
@@ -437,7 +316,7 @@ Slic3r::ExPolygons grouped_offset_then_checked_union(const ContactCase &contact_
     offsetter.AddPaths(ring_paths(contact_case.input), native_join(contact_case.join), ClipperLib::etClosedPolygon);
     ClipperLib::PolyTree tree;
     offsetter.Execute(tree, scale_d(contact_case.delta_mm));
-    if (!has_overlapping_edges(tree))
+    if (!Slic3r::ApiClipper::has_overlapping_edges(tree))
         return expolygons_from_tree(tree);
 
     ClipperLib::Paths rings;
@@ -447,57 +326,6 @@ Slic3r::ExPolygons grouped_offset_then_checked_union(const ContactCase &contact_
     ClipperLib::PolyTree cleaned;
     clipper.Execute(ClipperLib::ctUnion, cleaned, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
     return expolygons_from_tree(cleaned);
-}
-
-bool has_overlapping_edges(const ClipperLib::PolyTree &tree)
-{
-    std::vector<LineEdge> edges;
-    for (const ClipperLib::PolyNode *child : tree.Childs)
-        collect_edges(*child, edges);
-    std::sort(edges.begin(), edges.end(), [](const LineEdge &first, const LineEdge &second) {
-        return std::tie(first.direction_x, first.direction_y, first.offset, first.begin) <
-               std::tie(second.direction_x, second.direction_y, second.offset, second.begin);
-    });
-    // Edges of one line are sorted by their start: one overlaps an earlier edge
-    // when it starts before the furthest end reached so far on that line.
-    int64_t furthest_end = 0;
-    for (size_t index = 0; index < edges.size(); ++index) {
-        const LineEdge &current = edges[index];
-        const bool same_line = index > 0 && current.direction_x == edges[index - 1].direction_x &&
-                               current.direction_y == edges[index - 1].direction_y &&
-                               current.offset == edges[index - 1].offset;
-        if (same_line && current.begin < furthest_end)
-            return true;
-        furthest_end = same_line ? std::max(furthest_end, current.end) : current.end;
-    }
-    return false;
-}
-
-void collect_edges(const ClipperLib::PolyNode &node, std::vector<LineEdge> &edges)
-{
-    const ClipperLib::Path &contour = node.Contour;
-    for (size_t index = 0; index < contour.size(); ++index) {
-        const ClipperLib::IntPoint &a = contour[index];
-        const ClipperLib::IntPoint &b = contour[(index + 1) % contour.size()];
-        int64_t direction_x = b.x() - a.x();
-        int64_t direction_y = b.y() - a.y();
-        const int64_t divisor = std::gcd(direction_x, direction_y);
-        if (divisor == 0)
-            continue;
-        // Orient every direction the same way so opposite edges share a line.
-        direction_x /= divisor;
-        direction_y /= divisor;
-        if (direction_x < 0 || (direction_x == 0 && direction_y < 0)) {
-            direction_x = -direction_x;
-            direction_y = -direction_y;
-        }
-        const int64_t projection_a = direction_x * a.x() + direction_y * a.y();
-        const int64_t projection_b = direction_x * b.x() + direction_y * b.y();
-        edges.push_back({direction_x, direction_y, direction_x * a.y() - direction_y * a.x(),
-                         std::min(projection_a, projection_b), std::max(projection_a, projection_b)});
-    }
-    for (const ClipperLib::PolyNode *child : node.Childs)
-        collect_edges(*child, edges);
 }
 
 Slic3r::ExPolygons ring_difference(const ContactCase &contact_case)
@@ -574,103 +402,6 @@ Topology topology(const Slic3r::ExPolygons &expolygons)
     result.contacts = contacts.points.size();
     result.self_touching_rings = contacts.self_touching_rings;
     return result;
-}
-
-Contacts find_contacts(const Slic3r::ExPolygons &expolygons)
-{
-    std::vector<const Slic3r::Polygon *> rings;
-    for (const Slic3r::ExPolygon &expolygon : expolygons) {
-        rings.push_back(&expolygon.contour);
-        for (const Slic3r::Polygon &hole : expolygon.holes)
-            rings.push_back(&hole);
-    }
-
-    Contacts result;
-    for (const Slic3r::Polygon *ring : rings) {
-        bool self_touching = false;
-        const size_t count = ring->points.size();
-        for (size_t vertex = 0; vertex < count; ++vertex)
-            for (const Slic3r::Polygon *other : rings) {
-                const size_t other_count = other->points.size();
-                for (size_t edge = 0; edge < other_count; ++edge) {
-                    const size_t next = (edge + 1) % other_count;
-                    // A vertex always lies on its two own edges.
-                    if (other == ring && (edge == vertex || next == vertex))
-                        continue;
-                    if (on_segment(ring->points[vertex], other->points[edge], other->points[next])) {
-                        result.points.push_back(ring->points[vertex]);
-                        self_touching |= other == ring;
-                    }
-                }
-            }
-        if (self_touching)
-            ++result.self_touching_rings;
-    }
-    std::sort(result.points.begin(), result.points.end());
-    result.points.erase(std::unique(result.points.begin(), result.points.end()), result.points.end());
-    return result;
-}
-
-bool on_segment(const Slic3r::Point &point, const Slic3r::Point &a, const Slic3r::Point &b)
-{
-    const int64_t cross = int64_t(b.x() - a.x()) * int64_t(point.y() - a.y()) -
-                          int64_t(b.y() - a.y()) * int64_t(point.x() - a.x());
-    return cross == 0 && std::min(a.x(), b.x()) <= point.x() && point.x() <= std::max(a.x(), b.x()) &&
-           std::min(a.y(), b.y()) <= point.y() && point.y() <= std::max(a.y(), b.y());
-}
-
-double symmetric_area_mm2(const Slic3r::ExPolygons &first, const Slic3r::ExPolygons &second)
-{
-    const Slic3r::Polygons first_polygons = Slic3r::to_polygons(first);
-    const Slic3r::Polygons second_polygons = Slic3r::to_polygons(second);
-    double area = 0.;
-    for (const Slic3r::ExPolygon &expolygon : Slic3r::diff_ex(first_polygons, second_polygons))
-        area += std::abs(expolygon.area());
-    for (const Slic3r::ExPolygon &expolygon : Slic3r::diff_ex(second_polygons, first_polygons))
-        area += std::abs(expolygon.area());
-    const double scale = scale_d(1.);
-    return area / (scale * scale);
-}
-
-CanonicalShape canonical(const Slic3r::ExPolygons &expolygons)
-{
-    CanonicalShape result;
-    result.reserve(expolygons.size());
-    for (const Slic3r::ExPolygon &expolygon : expolygons) {
-        CanonicalExPolygon canonical_expolygon;
-        canonical_expolygon.contour = canonical_ring(expolygon.contour);
-        for (const Slic3r::Polygon &hole : expolygon.holes)
-            canonical_expolygon.holes.push_back(canonical_ring(hole));
-        std::sort(canonical_expolygon.holes.begin(), canonical_expolygon.holes.end());
-        result.push_back(std::move(canonical_expolygon));
-    }
-    std::sort(result.begin(), result.end());
-    return result;
-}
-
-CanonicalRing canonical_ring(const Slic3r::Polygon &polygon)
-{
-    CanonicalRing result;
-    if (polygon.points.empty())
-        return result;
-
-    const size_t first = size_t(std::min_element(polygon.points.begin(), polygon.points.end()) - polygon.points.begin());
-    result.reserve(polygon.points.size());
-    for (size_t offset = 0; offset < polygon.points.size(); ++offset) {
-        const Slic3r::Point &point = polygon.points[(first + offset) % polygon.points.size()];
-        result.emplace_back(point.x(), point.y());
-    }
-    return result;
-}
-
-bool operator==(const CanonicalExPolygon &first, const CanonicalExPolygon &second)
-{
-    return first.contour == second.contour && first.holes == second.holes;
-}
-
-bool operator<(const CanonicalExPolygon &first, const CanonicalExPolygon &second)
-{
-    return std::tie(first.contour, first.holes) < std::tie(second.contour, second.holes);
 }
 
 std::vector<VariantTiming> time_variants(const ContactCase &contact_case, size_t batches)
@@ -789,15 +520,99 @@ const char *variant_name(Variant variant)
     return "";
 }
 
+ClipperLib::Paths random_line_triangles(std::mt19937_64 &rng, int64_t extent)
+{
+    // Two base lines, the second one parallel to the first and one unit away
+    // along x, so near-coincident lines must not be confused with one line.
+    std::uniform_int_distribution<int64_t> coordinate(-extent / 2, extent / 2);
+    std::uniform_int_distribution<int64_t> component(-1000, 1000);
+    int64_t dx = 0;
+    int64_t dy = 0;
+    while (dx == 0 && dy == 0) {
+        dx = component(rng);
+        dy = component(rng);
+    }
+    // Short segments at 31 positions per line: some overlap, some only touch.
+    std::uniform_int_distribution<int64_t> step(-15, 15);
+    std::uniform_int_distribution<int64_t> length(1, 3);
+    const int64_t base_x = coordinate(rng) / 4;
+    const int64_t base_y = coordinate(rng) / 4;
+    std::uniform_int_distribution<int> line_choice(0, 1);
+
+    ClipperLib::Paths rings;
+    for (int triangle = 0; triangle < 6; ++triangle) {
+        const int64_t shift = line_choice(rng);
+        const int64_t first = step(rng);
+        const int64_t second = first + (line_choice(rng) == 0 ? length(rng) : -length(rng));
+        ClipperLib::Path ring{
+            ClipperLib::IntPoint(base_x + shift + first * dx, base_y + first * dy),
+            ClipperLib::IntPoint(base_x + shift + second * dx, base_y + second * dy),
+            ClipperLib::IntPoint(coordinate(rng), coordinate(rng))};
+        if (line_choice(rng) == 0)
+            std::reverse(ring.begin(), ring.end());
+        rings.push_back(std::move(ring));
+    }
+    return rings;
+}
+
+bool brute_force_overlap(const ClipperLib::Paths &rings)
+{
+    std::vector<std::pair<ClipperLib::IntPoint, ClipperLib::IntPoint>> edges;
+    for (const ClipperLib::Path &ring : rings)
+        for (size_t index = 0; index < ring.size(); ++index)
+            if (ring[index] != ring[(index + 1) % ring.size()])
+                edges.emplace_back(ring[index], ring[(index + 1) % ring.size()]);
+
+    for (size_t first = 0; first < edges.size(); ++first)
+        for (size_t second = first + 1; second < edges.size(); ++second) {
+            const ClipperLib::IntPoint &a = edges[first].first;
+            const ClipperLib::IntPoint &b = edges[first].second;
+            const int64_t dx = b.x() - a.x();
+            const int64_t dy = b.y() - a.y();
+            const ClipperLib::IntPoint &p = edges[second].first;
+            const ClipperLib::IntPoint &q = edges[second].second;
+            if (Int128::sign_determinant_2x2_filtered(dx, dy, p.x() - a.x(), p.y() - a.y()) != 0 ||
+                Int128::sign_determinant_2x2_filtered(dx, dy, q.x() - a.x(), q.y() - a.y()) != 0)
+                continue;
+            // Along the first edge, [a, b] and [p, q] overlap on a positive
+            // length when the second edge reaches past a and starts before b.
+            const bool past_a = Int128::sign_determinant_2x2_filtered(dx, -dy, p.y() - a.y(), p.x() - a.x()) > 0 ||
+                                Int128::sign_determinant_2x2_filtered(dx, -dy, q.y() - a.y(), q.x() - a.x()) > 0;
+            const bool before_b = Int128::sign_determinant_2x2_filtered(dx, -dy, p.y() - b.y(), p.x() - b.x()) < 0 ||
+                                  Int128::sign_determinant_2x2_filtered(dx, -dy, q.y() - b.y(), q.x() - b.x()) < 0;
+            if (past_a && before_b)
+                return true;
+        }
+    return false;
+}
+
 } // namespace
+
+TEST_CASE("Clipper bridge detection matches an exhaustive exact search", "[plugins][clipper][clipper-offset-contacts]")
+{
+    // Extents up to 2^45 units (35 km) keep the products of coordinates far
+    // beyond 64 bits, as on plates several metres wide and more.
+    std::mt19937_64 rng(0xb51d6eu);
+    size_t overlapping = 0;
+    size_t separate = 0;
+    for (int64_t extent : {int64_t(1) << 24, int64_t(5000) * 1000000, int64_t(1) << 45})
+        for (int trial = 0; trial < 400; ++trial) {
+            const ClipperLib::Paths rings = random_line_triangles(rng, extent);
+            const bool expected = brute_force_overlap(rings);
+            INFO("extent " << extent << " trial " << trial);
+            CHECK(Slic3r::ApiClipper::has_overlapping_edges(rings) == expected);
+            ++(expected ? overlapping : separate);
+        }
+    CHECK(overlapping > 100);
+    CHECK(separate > 100);
+}
 
 TEST_CASE("Clipper offset contacts: variants cover the legacy area", "[plugins][clipper][clipper-offset-contacts]")
 {
     for (const ContactCase &contact_case : divergence_cases()) {
         INFO(contact_case.name);
-        CHECK(canonical(run_variant(Variant::PositiveFillCheckedUnion, contact_case)) ==
-              canonical(api_offset(contact_case)));
         const Slic3r::ExPolygons legacy = run_variant(Variant::Legacy, contact_case);
+        CHECK(canonical(api_offset(contact_case)) == canonical(legacy));
         for (Variant variant : all_variants) {
             INFO(variant_name(variant));
             CHECK(symmetric_area_mm2(run_variant(variant, contact_case), legacy) == Approx(0.).margin(1e-9));
@@ -811,7 +626,7 @@ TEST_CASE("Clipper offset contacts: variants cover the legacy area", "[plugins][
     }
 }
 
-TEST_CASE("Clipper offset contacts: positive-fill clean-up covers the same area",
+TEST_CASE("Clipper offset contacts: positive-fill clean-up and API cover the same area",
           "[plugins][clipper][clipper-offset-contacts]")
 {
     for (const ContactCase &contact_case : concave_cases()) {
@@ -819,8 +634,7 @@ TEST_CASE("Clipper offset contacts: positive-fill clean-up covers the same area"
                                << " limit " << contact_case.limit);
         CHECK(symmetric_area_mm2(run_variant(Variant::PositiveFillOffset, contact_case),
                                  run_variant(Variant::GroupedOffset, contact_case)) == Approx(0.).margin(1e-9));
-        CHECK(canonical(run_variant(Variant::PositiveFillCheckedUnion, contact_case)) ==
-              canonical(api_offset(contact_case)));
+        CHECK(canonical(api_offset(contact_case)) == canonical(run_variant(Variant::Legacy, contact_case)));
     }
 }
 

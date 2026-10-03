@@ -26,6 +26,10 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include <utility>
 #include <vector>
 
+// PrintConfig.hpp hash macros call boost::hash_combine without its definition;
+// Release builds of this file need it to instantiate the template.
+#include <boost/container_hash/hash.hpp>
+
 #include "plugin_test_helpers.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintRegion.hpp"

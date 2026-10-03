@@ -3514,6 +3514,15 @@ void ClipperOffset::Execute(PolyTree& solution, double delta)
 }
 //------------------------------------------------------------------------------
 
+void ClipperOffset::ExecuteRaw(Paths& solution, double delta)
+{
+  FixOrientations();
+  DoOffset(delta);
+  solution = std::move(m_destPolys);
+  m_destPolys.clear();
+}
+//------------------------------------------------------------------------------
+
 void ClipperOffset::DoOffset(double delta)
 {
   m_destPolys.clear();

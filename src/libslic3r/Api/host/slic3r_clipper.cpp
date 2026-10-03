@@ -4,11 +4,10 @@
 ///|/
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <memory>
-#include <numeric>
-#include <tuple>
 #include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_clipper.h"
@@ -26,21 +25,19 @@ namespace Slic3r {
 // Borrowed subject collections remain read-only while core clipping owns its temporary paths.
 static const Polylines *to_polylines(const polyline_collection_handle *handle);
 
-// One offset edge placed on its support line: the reduced direction and the
-// line offset identify the line, the projections bound the edge along it.
-struct LineEdge {
-    int64_t direction_x;
-    int64_t direction_y;
-    int64_t offset;
-    int64_t begin;
-    int64_t end;
-};
+// Offset normalized closed rings (contours counter-clockwise, holes clockwise):
+// each ring whose offset emits a spike is cleaned alone, the others are offset
+// raw, then one positive-fill union.
+static ClipperLib::PolyTree offset_closed_rings(const ClipperLib::Paths &rings, double delta,
+                                                ClipperLib::JoinType join_type, double miter_limit);
 
-// Whether two edges of the offset result overlap along a positive length.
-static bool has_overlapping_edges(const ClipperLib::PolyTree &tree);
+// Apply the join limit, the ClipperUtils shortest-edge rule and the cheaper
+// positive-fill clean-up of negative offsets.
+static void configure_offsetter(ClipperLib::ClipperOffset &offsetter, double delta,
+                                ClipperLib::JoinType join_type, double miter_limit);
 
-// Append the edges of a node contour and of all its descendants.
-static void collect_line_edges(const ClipperLib::PolyNode &node, std::vector<LineEdge> &edges);
+// Whether ClipperOffset emits at least one spike loop when offsetting the ring.
+static bool has_offset_spike(const ClipperLib::Path &ring, double delta);
 
 // Unite the rings of an offset result with a non-zero fill.
 static ClipperLib::PolyTree united_polytree(ClipperLib::PolyTree tree);
@@ -184,66 +181,111 @@ static ClipperLib::Paths safety_offset_paths(const ApiClipper::ClipperShapes &cl
     return out;
 }
 
-/* ---- Offset clean-up -------------------------------------------------
-ClipperOffset unites all its raw offset rings in one pass. When a contour and a
-hole, or two holes, meet exactly along an edge, that union keeps the contact as
-a zero-width bridge: an edge walked twice in opposite directions, or a hole
-sharing an edge with its contour. A second union of the result splits it like
-the native per-ring offset_ex() does. A bridge always shows as two collinear
-edges overlapping along a positive length, so the edges are sorted along their
-support lines and the second union only runs when such an overlap exists.
+/* ---- Offset strategy -------------------------------------------------
+At every vertex where the offset turns against the ring (a convex vertex of a
+shrinking ring, a concave vertex of a growing one), ClipperOffset emits a small
+self-intersecting loop, a "spike", and its final union removes the loops.
+
+Offsetting all rings with one ClipperOffset resolves every spike in a single
+union whose sweep line crosses the whole shape, so each spike costs as much as
+the shape is wide.
+
+Several rings are therefore offset one by one, like the native ClipperUtils
+offsets. A ring with a spike is cleaned by its own small union. A ring without
+spike is convex in the offset direction, so its raw offset is already a simple
+polygon and skips that union. One positive-fill union then merges every ring:
+contours count +1 and holes -1, so islands that meet merge, while a hole that
+grows past its contour stays outside.
+
+This needs normalized rings, which ExPolygon and PolyTree sources guarantee. A
+raw polygon list may hold slivers of any orientation, such as projected facets:
+a clockwise sliver offset outwards turns inside out, and in a grouped union its
+raw loop still counts +1, so the whole set grows. Cleaned alone it would be read
+as a vanishing hole, so raw polygon and path lists keep the grouped
+ClipperOffset. A lone ring keeps it too: cleaning it alone then uniting it
+again would run two unions for nothing.
+
+Both paths can leave a zero-width bridge: an edge walked twice in opposite
+directions, or a hole sharing an edge with its contour. Clipper joins output
+rings that touch along an edge, so it happens when overlapping raw spike loops
+or an exact collapse (a feature exactly twice the offset wide) leave a
+zero-width remnant. A bridge always shows as two collinear edges overlapping
+along a positive length: the edges are sorted along their support lines, and a
+second non-zero union, which splits the rings there, only runs when such an
+overlap exists (ApiClipper::has_overlapping_edges).
 */
 
-static bool has_overlapping_edges(const ClipperLib::PolyTree &tree)
+static ClipperLib::PolyTree offset_closed_rings(const ClipperLib::Paths &rings, double delta,
+                                                ClipperLib::JoinType join_type, double miter_limit)
 {
-    std::vector<LineEdge> edges;
-    for (const ClipperLib::PolyNode *child : tree.Childs)
-        collect_line_edges(*child, edges);
-    std::sort(edges.begin(), edges.end(), [](const LineEdge &first, const LineEdge &second) {
-        return std::tie(first.direction_x, first.direction_y, first.offset, first.begin) <
-               std::tie(second.direction_x, second.direction_y, second.offset, second.begin);
-    });
-
-    // Edges of one line are sorted by their start: one overlaps an earlier edge
-    // when it starts before the furthest end reached so far on that line.
-    int64_t furthest_end = 0;
-    for (size_t index = 0; index < edges.size(); ++index) {
-        const LineEdge &current = edges[index];
-        const bool same_line = index > 0 && current.direction_x == edges[index - 1].direction_x &&
-                               current.direction_y == edges[index - 1].direction_y &&
-                               current.offset == edges[index - 1].offset;
-        if (same_line && current.begin < furthest_end)
-            return true;
-        furthest_end = same_line ? std::max(furthest_end, current.end) : current.end;
+    ClipperLib::ClipperOffset offsetter;
+    configure_offsetter(offsetter, delta, join_type, miter_limit);
+    ClipperLib::Paths offset_paths;
+    ClipperLib::Paths ring_paths;
+    for (const ClipperLib::Path &ring : rings) {
+        // ClipperOffset turns a lone clockwise ring counter-clockwise, so a
+        // hole is offset with the opposite sign and its result reversed to
+        // keep the -1 winding of a hole.
+        const bool contour = ClipperLib::Orientation(ring);
+        const double ring_delta = contour ? delta : -delta;
+        offsetter.Clear();
+        offsetter.AddPath(ring, join_type, ClipperLib::etClosedPolygon);
+        if (has_offset_spike(ring, delta))
+            offsetter.Execute(ring_paths, ring_delta);
+        else
+            offsetter.ExecuteRaw(ring_paths, ring_delta);
+        for (ClipperLib::Path &path : ring_paths) {
+            if (!contour)
+                std::reverse(path.begin(), path.end());
+            offset_paths.push_back(std::move(path));
+        }
     }
-    return false;
+
+    ClipperLib::Clipper clipper;
+    clipper.AddPaths(offset_paths, ClipperLib::ptSubject, true);
+    ClipperLib::PolyTree result;
+    clipper.Execute(ClipperLib::ctUnion, result, ClipperLib::pftPositive, ClipperLib::pftPositive);
+    return result;
 }
 
-static void collect_line_edges(const ClipperLib::PolyNode &node, std::vector<LineEdge> &edges)
+static void configure_offsetter(ClipperLib::ClipperOffset &offsetter, double delta,
+                                ClipperLib::JoinType join_type, double miter_limit)
 {
-    const ClipperLib::Path &contour = node.Contour;
-    for (size_t index = 0; index < contour.size(); ++index) {
-        const ClipperLib::IntPoint &a = contour[index];
-        const ClipperLib::IntPoint &b = contour[(index + 1) % contour.size()];
-        int64_t direction_x = b.x() - a.x();
-        int64_t direction_y = b.y() - a.y();
-        const int64_t divisor = std::gcd(direction_x, direction_y);
-        if (divisor == 0)
+    if (join_type == ClipperLib::jtRound)
+        offsetter.ArcTolerance = miter_limit;
+    else
+        offsetter.MiterLimit = miter_limit;
+    // Keep the same shortest-edge heuristic as ClipperUtils offsets.
+    offsetter.ShortestEdgeLength = std::abs(delta * ClipperOffsetShortestEdgeFactor);
+    // Same area as the bounding-rectangle clean-up of negative offsets, cheaper.
+    offsetter.ShrinkWithPositiveFill = true;
+}
+
+static bool has_offset_spike(const ClipperLib::Path &ring, double delta)
+{
+    // Same test as ClipperOffset::OffsetPoint, on the ring as given: a nearly
+    // collinear vertex emits one point, any other vertex emits a spike when its
+    // turn (sign of the cross product) opposes the offset sign.
+    const size_t count = ring.size();
+    for (size_t index = 0; index < count; ++index) {
+        const ClipperLib::IntPoint &previous = ring[(index + count - 1) % count];
+        const ClipperLib::IntPoint &point = ring[index];
+        const ClipperLib::IntPoint &next = ring[(index + 1) % count];
+        const double ax = double(point.x() - previous.x());
+        const double ay = double(point.y() - previous.y());
+        const double bx = double(next.x() - point.x());
+        const double by = double(next.y() - point.y());
+        const double lengths = std::hypot(ax, ay) * std::hypot(bx, by);
+        if (lengths == 0.)
             continue;
-        // Orient every direction the same way so opposite edges share a line.
-        direction_x /= divisor;
-        direction_y /= divisor;
-        if (direction_x < 0 || (direction_x == 0 && direction_y < 0)) {
-            direction_x = -direction_x;
-            direction_y = -direction_y;
-        }
-        const int64_t projection_a = direction_x * a.x() + direction_y * a.y();
-        const int64_t projection_b = direction_x * b.x() + direction_y * b.y();
-        edges.push_back({direction_x, direction_y, direction_x * a.y() - direction_y * a.x(),
-                         std::min(projection_a, projection_b), std::max(projection_a, projection_b)});
+        const double sin_a = (ax * by - ay * bx) / lengths;
+        const double cos_a = (ax * bx + ay * by) / lengths;
+        if (std::abs(sin_a * delta) < 1. && cos_a > 0.)
+            continue;
+        if (sin_a * delta < 0.)
+            return true;
     }
-    for (const ClipperLib::PolyNode *child : node.Childs)
-        collect_line_edges(*child, edges);
+    return false;
 }
 
 static ClipperLib::PolyTree united_polytree(ClipperLib::PolyTree tree)
@@ -462,7 +504,9 @@ clipper_shapes_handle *clipper_concat_replace(storage_handle *storage,
 
 /* ---- Offset operations ------------------------------------------------
 ClipperOffset works from raw Paths, so every ClipperShapes implementation first
-materializes itself as Paths. The result is again kept as a PolyTree-backed
+materializes itself as Paths. Several closed rings from an ExPolygon or PolyTree
+source are offset ring by ring (see "Offset strategy"); a lone ring, raw polygon
+or path lists and open or closed-line paths use one grouped ClipperOffset. The result is again kept as a PolyTree-backed
 ClipperShapes so it can be chained or converted later.
 */
 
@@ -477,20 +521,23 @@ clipper_shapes_handle *clipper_offset(storage_handle *storage,
     if (storage == nullptr || subject_shapes == nullptr)
         return nullptr;
 
-    Slic3r::ClipperLib::ClipperOffset offsetter;
-    if (Slic3r::to_join_type(join_type) == Slic3r::ClipperLib::jtRound)
-        offsetter.ArcTolerance = miter_limit;
-    else
-        offsetter.MiterLimit = miter_limit;
-    // Keep the same shortest-edge heuristic as ClipperUtils offsets.
-    offsetter.ShortestEdgeLength = std::abs(delta * Slic3r::ClipperOffsetShortestEdgeFactor);
-    // Same area as the bounding-rectangle clean-up of negative offsets, cheaper.
-    offsetter.ShrinkWithPositiveFill = true;
-    offsetter.AddPaths(subject_shapes->to_paths(), Slic3r::to_join_type(join_type), Slic3r::to_end_type(end_type));
-
+    const Slic3r::ClipperLib::JoinType native_join = Slic3r::to_join_type(join_type);
+    const Slic3r::ClipperLib::EndType native_end = Slic3r::to_end_type(end_type);
+    const Slic3r::ClipperLib::Paths rings = subject_shapes->to_paths();
+    // PolyTree-backed shapes also list the empty contour of the tree root.
+    const std::ptrdiff_t ring_count = std::count_if(rings.begin(), rings.end(),
+        [](const Slic3r::ClipperLib::Path &ring) { return !ring.empty(); });
     Slic3r::ClipperLib::PolyTree result;
-    offsetter.Execute(result, delta);
-    if (Slic3r::has_overlapping_edges(result))
+    if (native_end == Slic3r::ClipperLib::etClosedPolygon && subject_shapes->has_normalized_rings() &&
+        ring_count > 1) {
+        result = Slic3r::offset_closed_rings(rings, delta, native_join, miter_limit);
+    } else {
+        Slic3r::ClipperLib::ClipperOffset offsetter;
+        Slic3r::configure_offsetter(offsetter, delta, native_join, miter_limit);
+        offsetter.AddPaths(rings, native_join, native_end);
+        offsetter.Execute(result, delta);
+    }
+    if (Slic3r::ApiClipper::has_overlapping_edges(result))
         result = Slic3r::united_polytree(std::move(result));
     return Slic3r::store_shape(storage, Slic3r::ApiClipper::make_polytree_shapes(std::move(result)));
 }

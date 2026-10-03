@@ -551,6 +551,9 @@ public:
   }
   void Execute(Paths& solution, double delta);
   void Execute(PolyTree& solution, double delta);
+  // Raw offset paths before the clean-up union: they may self-intersect and
+  // must be united by the caller with a positive fill.
+  void ExecuteRaw(Paths& solution, double delta);
   void Clear();
   double MiterLimit;
   double ArcTolerance;
