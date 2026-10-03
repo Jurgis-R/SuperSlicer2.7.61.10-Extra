@@ -545,6 +545,18 @@ class ExtrusionPolylineMutableMixin:
         array, count = _array_from_points(points)
         return bool(self.api.host.extrusion_polyline_set_points(self.mutable_c_handle(), array, count))
 
+    def set_polyline(self, polyline) -> bool:
+        """Replace the local polyline from an API polyline view.
+
+        Borrows the point array from the source view, so no intermediate CPoint
+        copy is built. Only straight points are written; arc data and Z offsets
+        are cleared like set_points().
+        """
+        view = polyline.view()
+        return bool(self.api.host.extrusion_polyline_set_points(
+            self.mutable_c_handle(), view.array, int(view.size)
+        ))
+
     def set_segment(self, idx: int, segment: CExtrusionSegment) -> bool:
         return bool(self.api.host.extrusion_polyline_set_segment(self.mutable_c_handle(), int(idx), ctypes.byref(segment)))
 

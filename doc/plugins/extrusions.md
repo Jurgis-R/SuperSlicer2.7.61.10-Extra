@@ -542,6 +542,7 @@ view; no cast or wrapper conversion is required.
 | Append copy | `append_child_copy()` | `extrusion_insert_child_copy()` | `add_child_copy()` |
 | Append move | `append_child_move()` | `extrusion_insert_child_move()` | `add_child_move()` |
 | Set straight geometry | `set_points()` | `extrusion_polyline_set_points()` | `set_points()` |
+| Set straight geometry from a polyline | `set_polyline()` | `extrusion_polyline_set_points()` | `set_polyline()` |
 | Preserve arcs and Z | `set_segments()` | `extrusion_polyline_set_segments()` | `set_segments()` |
 | Direct property lookup | `entity.get(key)` | `extrusion_property_data()` | `entity.property(Payload)` |
 

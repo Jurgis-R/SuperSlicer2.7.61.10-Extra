@@ -454,6 +454,11 @@ class Slic3rAPI:
         """Round one scaled coordinate using the pinned C++ Z-step formula."""
         return check_z_step(value, z_step)
 
+    @abi_requires_headers("slic3r_utils.h")
+    def safe_rand(self, max_value: int = 2**31 - 1) -> int:
+        """Return the host's inclusive thread-safe random integer."""
+        return int(self.host.slic3r_safe_rand(int(max_value)))
+
     def add_ui_fragment(self, target_file: str, fragment_id: str, ui_fragment: str, priority: int = 0) -> int:
         return self.host.orchestrator_add_ui_fragment(
             self.orchestrator,

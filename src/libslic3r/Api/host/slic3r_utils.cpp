@@ -30,6 +30,10 @@ void slic3r_parallel_for_storage(uint32_t begin,
     });
 }
 
+int32_t slic3r_safe_rand(int32_t max)
+{
+    return Slic3r::safe_rand(max);
+}
 
 /* release all objects that were created in the storage */
 void storage_clear(storage_handle *me) {

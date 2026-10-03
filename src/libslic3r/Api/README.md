@@ -21,6 +21,7 @@ Developer guides:
 - [Using Unified Extrusion Entities](/doc/plugins/extrusions.md)
 - [GUI Activation Rules](../../../doc/plugins/gui-rules.md)
 - [Plugin-defined Option Lists](../../../doc/plugins/plugin-option-lists.md)
+- [Writing an Infill Pattern Plugin](../../../doc/plugins/infill-pattern-plugin.md)
 - [Package ABI Compatibility](../../../doc/plugins/package-abi.md)
 
 Useful C++ entry points:
