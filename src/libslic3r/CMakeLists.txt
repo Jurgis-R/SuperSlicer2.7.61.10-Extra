@@ -168,6 +168,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/PluginPropertyKey.hpp
 	Api/plugin/cpp/properties/DataTreeProperties.hpp
 	Api/plugin/cpp/properties/ExtrusionProperties.hpp
+	Api/plugin/cpp/properties/PrintingExtrusionScopeProperty.hpp
 	Api/plugin/cpp/gcode/EncodableState.hpp
 	Api/plugin/cpp/gcode/DefaultExtruder.cpp
 	Api/plugin/cpp/gcode/DefaultExtruder.hpp
@@ -214,6 +215,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/cpp/PluginBase.hpp
 	Api/plugin/cpp/PluginContext.hpp
 	Api/plugin/cpp/PrintingEntityPropertyTraversal.hpp
+	Api/plugin/cpp/PrintingExtrusionScopeViews.hpp
 	Api/plugin/cpp/PrintingPlanViews.hpp
 	Api/plugin/cpp/PrintingPlanTimeEstimator.cpp
 	Api/plugin/cpp/PrintingPlanTimeEstimator.hpp

@@ -95,6 +95,7 @@
 #include "plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.hpp"
 #include "plugins_cpp/DenseInfill/DenseInfill.hpp"
 #include "plugins_cpp/ExtraPerimeterOverhangWave/ExtraPerimeterOverhangWave.hpp"
+#include "plugins_cpp/NozzleCleaning/NozzleCleaning.hpp"
 #include "plugins_cpp/Polyholes/Polyholes.hpp"
 
 namespace {
@@ -528,6 +529,7 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::SkirtBrim::DefaultBrimSkirtTrimPlugin::register_default_brim_skirt_trim_plugin(
             orchestrator_handle_value);
         slic3r_api::PolyholesPlugin::register_polyholes_plugin(orchestrator_handle_value);
+        slic3r_api::NozzleCleaningPlugin::register_nozzle_cleaning_plugin(orchestrator_handle_value);
         slic3r_api::Support::SupportDemandOverhangsPlugin::register_support_demand_overhangs_plugin(
             orchestrator_handle_value);
         slic3r_api::Support::SupportDemandPaintingPlugin::register_support_demand_painting_plugin(
@@ -678,6 +680,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "skirt_brim.skirt.default");
         activate_plugin_or_fail(orchestrator, "skirt_brim.brim_skirt_trim.default");
         activate_plugin_or_fail(orchestrator, "polyholes");
+        activate_plugin_or_fail(orchestrator, "nozzle_cleaning");
         activate_plugin_or_fail(orchestrator, "support.demand.overhangs");
         activate_plugin_or_fail(orchestrator, "support.demand.painting");
         activate_plugin_or_fail(orchestrator, "support.demand.modifiers");
