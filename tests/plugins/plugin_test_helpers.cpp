@@ -40,6 +40,7 @@
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
+#include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
@@ -486,6 +487,7 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins(
             orchestrator_handle_value);
+        slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin(orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin(orchestrator_handle_value);

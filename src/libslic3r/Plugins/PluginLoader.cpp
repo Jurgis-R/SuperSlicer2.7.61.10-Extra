@@ -94,6 +94,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
+#include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
 #include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
@@ -684,6 +685,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::DefaultInfillGeneratorPlugin::register_default_infill_generator_plugin);
     register_builtin_plugin(orchestrator, "legacy_infill_patterns",
         slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins);
+    register_builtin_plugin(orchestrator, "gyroid",
+        slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin);
     register_builtin_plugin(orchestrator, "infill.post_process.gap_fill",
         slic3r_api::Infill::PostInfillGapFillPlugin::register_post_infill_gap_fill_plugin);
     register_builtin_plugin(orchestrator, "ordering.default",

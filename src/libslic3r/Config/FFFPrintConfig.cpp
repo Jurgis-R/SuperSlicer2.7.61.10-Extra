@@ -127,7 +127,6 @@ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(InfillPattern, {
     {"concentric",          ipConcentric},
     {"honeycomb",           ipHoneycomb},
     {"3dhoneycomb",         ip3DHoneycomb},
-    {"gyroid",              ipGyroid},
     {"hilbertcurve",        ipHilbertCurve},
     {"archimedeanchords",   ipArchimedeanChords},
     {"octagramspiral",      ipOctagramSpiral},

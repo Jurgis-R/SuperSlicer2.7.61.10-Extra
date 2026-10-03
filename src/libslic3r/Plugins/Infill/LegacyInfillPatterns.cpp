@@ -77,7 +77,7 @@ struct LegacyPatternDefinition
     Slic3r::InfillPattern pattern;
 };
 
-const std::array<LegacyPatternDefinition, 26> k_legacy_patterns = {{
+const std::array<LegacyPatternDefinition, 25> k_legacy_patterns = {{
     {"rectilinear", "Rectilinear", "Classic rectilinear infill pattern.", Slic3r::ipRectilinear},
     {"monotonic", "Monotonic", "Monotonic solid infill pattern.", Slic3r::ipMonotonic},
     {"alignedrectilinear", "Aligned Rectilinear", "Rectilinear infill aligned across layers.", Slic3r::ipAlignedRectilinear},
@@ -90,7 +90,6 @@ const std::array<LegacyPatternDefinition, 26> k_legacy_patterns = {{
     {"concentric", "Concentric", "Concentric infill pattern.", Slic3r::ipConcentric},
     {"honeycomb", "Honeycomb", "Honeycomb infill pattern.", Slic3r::ipHoneycomb},
     {"3dhoneycomb", "3D Honeycomb", "3D honeycomb infill pattern.", Slic3r::ip3DHoneycomb},
-    {"gyroid", "Gyroid", "Gyroid infill pattern.", Slic3r::ipGyroid},
     {"hilbertcurve", "Hilbert Curve", "Hilbert curve infill pattern.", Slic3r::ipHilbertCurve},
     {"archimedeanchords", "Archimedean Chords", "Archimedean chords infill pattern.", Slic3r::ipArchimedeanChords},
     {"octagramspiral", "Octagram Spiral", "Octagram spiral infill pattern.", Slic3r::ipOctagramSpiral},
@@ -156,7 +155,6 @@ const char *const *pattern_option_memberships(Slic3r::InfillPattern pattern)
     case Slic3r::ipLine:
     case Slic3r::ipHoneycomb:
     case Slic3r::ip3DHoneycomb:
-    case Slic3r::ipGyroid:
     case Slic3r::ipAdaptiveCubic:
     case Slic3r::ipSupportCubic:
     case Slic3r::ipScatteredRectilinear:

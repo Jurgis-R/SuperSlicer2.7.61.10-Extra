@@ -196,7 +196,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
         { "concentric",          "Concentric" },
         { "honeycomb",           "Honeycomb" },
         { "3dhoneycomb",         "3D Honeycomb" },
-        { "gyroid",              "Gyroid" },
         { "hilbertcurve",        "Hilbert Curve" },
         { "archimedeanchords",   "Archimedean Chords" },
         { "octagramspiral",      "Octagram Spiral" },

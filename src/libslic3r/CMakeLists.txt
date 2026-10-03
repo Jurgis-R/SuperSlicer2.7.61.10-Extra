@@ -283,6 +283,8 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/ArachneInfill.hpp
 	Plugins/Infill/DefaultInfillGenerator.cpp
 	Plugins/Infill/DefaultInfillGenerator.hpp
+	Plugins/Infill/GyroidPattern.cpp
+	Plugins/Infill/GyroidPattern.hpp
 	Plugins/Infill/LegacyInfillPatterns.cpp
 	Plugins/Infill/LegacyInfillPatterns.hpp
 	Plugins/Infill/PatternPluginHelpers.hpp
@@ -593,8 +595,6 @@ set(SLIC3R_SOURCES
     Fill/FillEnsuring.hpp
     Fill/FillHoneycomb.cpp
     Fill/FillHoneycomb.hpp
-    Fill/FillGyroid.cpp
-    Fill/FillGyroid.hpp
     Fill/FillPlanePath.cpp
     Fill/FillPlanePath.hpp
     Fill/FillLine.cpp
