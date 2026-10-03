@@ -386,9 +386,14 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
 EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConfig &config)
 {
     EnabledMap out;
-    for (const Orchestrator::GuiRuleApplication &application :
-         orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, CORE_GUI_RULE_OWNER))
-        out[application.target_key] = application.enabled;
+    // Most FFF settings are core-owned, but the infill pattern lists are
+    // defined and enabled by the infill generator plugin, so the comparison
+    // must include that owner for the same config snapshot.
+    for (const char *owner : { CORE_GUI_RULE_OWNER, "infill.generator.default" }) {
+        for (const Orchestrator::GuiRuleApplication &application :
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, owner))
+            out[application.target_key] = application.enabled;
+    }
     return out;
 }
 

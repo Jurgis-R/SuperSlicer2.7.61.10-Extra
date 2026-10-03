@@ -148,16 +148,14 @@ TEST_CASE("STRING_EQUALS compares serialized option values", "[plugins][gui-rule
     clause.condition_string_value = "smooth";
 
     raw_gui_rule rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
     rule.target_key = "solid_fill_pattern";
-    rule.rule_group = group;
     rule.clauses = &clause;
     rule.clause_count = 1;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, group) == Orchestrator::GuiRuleRegistration::Added);
 
     const auto target_enabled = [&orchestrator, group](const DynamicPrintConfig &config) {
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, -1, group))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, -1, group))
             if (application.target_key == "solid_fill_pattern")
                 return application.enabled;
         return false;
@@ -176,6 +174,8 @@ TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", 
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
 
+    // Each rule gets its own owner so the evaluation can be restricted to one
+    // case, which replaces the former rule-group filter.
     const char *const indexed_group = "test.string_equals_vector.indexed";
     const char *const any_group = "test.string_equals_vector.any";
     const char *const current_group = "test.string_equals_vector.current";
@@ -187,34 +187,29 @@ TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", 
     clause.condition_string_value = "PETG";
 
     raw_gui_rule rule = raw_gui_rule_init();
-    rule.action = RAW_GUI_RULE_ACTION_ENABLE_ANY;
     rule.clauses = &clause;
     rule.clause_count = 1;
 
     // An explicit index reads exactly that vector item.
     clause.condition_index = 1;
     rule.target_key = "fill_aligned_z";
-    rule.rule_group = indexed_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, indexed_group) == Orchestrator::GuiRuleRegistration::Added);
 
     // An explicit index outside the vector never matches.
     clause.condition_index = 7;
     rule.target_key = "fill_angle";
-    rule.rule_group = out_of_range_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, out_of_range_group) == Orchestrator::GuiRuleRegistration::Added);
 
     // INDEX_ALL without a current item is true when any item matches.
     clause.condition_index = RAW_GUI_RULE_INDEX_ALL;
     rule.target_key = "infill_every_layers";
-    rule.rule_group = any_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, any_group) == Orchestrator::GuiRuleRegistration::Added);
 
     // INDEX_CURRENT follows the extruder item currently processed.
     clause.condition_index = RAW_GUI_RULE_INDEX_CURRENT;
     rule.target_key = "filament_type";
     rule.target_index = RAW_GUI_RULE_INDEX_CURRENT;
-    rule.rule_group = current_group;
-    CHECK(orchestrator.add_gui_rule(&rule) == Orchestrator::GuiRuleRegistration::Added);
+    CHECK(orchestrator.gui_rules().add(&rule, current_group) == Orchestrator::GuiRuleRegistration::Added);
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     REQUIRE(config.option("filament_type")->is_vector());
@@ -228,7 +223,7 @@ TEST_CASE("STRING_EQUALS resolves the vector item selected by condition_index", 
     };
     const auto enabled_for = [&orchestrator, &config](const char *group, const char *target, int current_index) {
         for (const Orchestrator::GuiRuleApplication &application :
-             orchestrator.evaluate_gui_rules(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, group))
+             orchestrator.gui_rules().evaluate(config, RAW_PRESET_TYPE_FFF_PRINT, current_index, group))
             if (application.target_key == target)
                 return application.enabled;
         return false;

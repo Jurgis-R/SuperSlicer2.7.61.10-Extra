@@ -242,10 +242,9 @@ void register_infill_pattern_rules(orchestrator_handle *orchestrator)
     using slic3r_api::true_;
 
     const auto add_rule = [orchestrator](const char *key, const slic3r_api::GuiCondition &condition) {
-        slic3r_api::GuiRule::enable_any({ key })
+        slic3r_api::GuiRule::activate(key)
             .when(condition)
             .scope(RAW_PRESET_TYPE_FFF_PRINT)
-            .group(Slic3r::FFF_PRINT_GUI_RULE_GROUP)
             .add_to(orchestrator);
     };
 
