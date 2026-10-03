@@ -283,6 +283,7 @@ set(SLIC3R_SOURCES
 	Plugins/Infill/DefaultInfillGenerator.hpp
 	Plugins/Infill/LegacyInfillPatterns.cpp
 	Plugins/Infill/LegacyInfillPatterns.hpp
+	Plugins/Infill/PatternPluginHelpers.hpp
 	Plugins/Infill/PostInfillGapFill.cpp
 	Plugins/Infill/PostInfillGapFill.hpp
 	Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.cpp

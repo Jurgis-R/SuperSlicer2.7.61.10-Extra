@@ -194,20 +194,25 @@ Slic3r::FillParams fill_params_from_raw(const raw_infill_pattern_params &raw,
     params.bridge_offset = raw.bridge_offset;
     params.flow_mult = raw.flow_mult;
     params.connection = static_cast<Slic3r::InfillConnection>(raw.connection);
-    params.add_gap_fill = raw.add_gap_fill != 0;
+    const uint16_t infill_flags = raw.infill_flags;
+    params.add_gap_fill = (infill_flags & C_INFILL_FLAG_ADD_GAP_FILL) != 0;
     params.anchor_length = raw.anchor_length;
     params.anchor_length_max = raw.anchor_length_max;
     params.fill_resolution = raw.fill_resolution;
-    params.dont_adjust = raw.dont_adjust != 0;
-    params.monotonic = raw.monotonic != 0;
-    params.fill_exactly = raw.fill_exactly != 0;
-    params.complete = raw.complete != 0;
+    params.dont_adjust = (infill_flags & C_INFILL_FLAG_DONT_ADJUST) != 0;
+    params.monotonic = (infill_flags & C_INFILL_FLAG_MONOTONIC) != 0;
+    // Sparse surfaces are never volume-corrected, even at 100% density, so the
+    // legacy self-correction only runs for solid surfaces. The post-infill
+    // corrector enforces the same rule through its stamp gate.
+    params.fill_exactly = (infill_flags & C_INFILL_FLAG_FILL_EXACTLY) != 0 &&
+                          (raw.surface_type & RAW_SURFACE_TYPE_DENS_SOLID) != 0;
+    params.complete = (infill_flags & C_INFILL_FLAG_COMPLETE) != 0;
     params.role = Slic3r::ExtrusionRole(static_cast<Slic3r::ExtrusionRoleModifier>(raw.extrusion_role));
     params.flow = flow_from_raw(raw.flow);
     params.priority = raw.priority;
     params.config = &region_config;
     params.extruder = raw.extruder;
-    params.use_arachne = raw.use_arachne != 0;
+    params.use_arachne = (infill_flags & C_INFILL_FLAG_USE_ARACHNE) != 0;
     params.layer_height = float(raw.layer_height);
     params.max_sparse_infill_spacing = raw.max_sparse_infill_spacing;
     return params;
@@ -291,7 +296,8 @@ private:
         filler->layer_id = ctx->params->layer_id;
         filler->z = ctx->params->z;
         filler->angle = float(ctx->params->angle);
-        filler->can_angle_cross = float(ctx->params->can_angle_cross != 0);
+        filler->can_angle_cross =
+            float((ctx->params->infill_flags & C_INFILL_FLAG_CAN_ANGLE_CROSS) != 0);
         filler->link_max_length = ctx->params->link_max_length;
         filler->loop_clipping = ctx->params->loop_clipping;
         filler->overlap = ctx->params->overlap;

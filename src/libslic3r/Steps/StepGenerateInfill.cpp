@@ -49,6 +49,27 @@ struct InfillStepHostContext
     std::map<infill_pattern_runtime_id, Plugin *> pattern_plugins_by_runtime_id;
     std::map<Plugin *, plugin_host_context> pattern_host_contexts;
 
+    // Discovery result reported by the generator during its setup_run() phase.
+    // The host owns a copy of every group so the arrays stay valid until the
+    // per-pattern initialization call.
+    struct HostAssignment
+    {
+        const layer_island_handle *layer_island = nullptr;
+        const layer_region_island_handle *region_island = nullptr;
+        raw_infill_pattern_params params = {};
+        std::vector<const surface_handle *> surfaces;
+    };
+
+    struct HostObjectInit
+    {
+        const object_handle *object = nullptr;
+        std::vector<HostAssignment> assignments;
+        // Built once before the pattern setup call; points into assignments.
+        std::vector<raw_infill_pattern_assignment> raw_assignments;
+    };
+
+    std::map<infill_pattern_runtime_id, std::vector<HostObjectInit>> pattern_assignments;
+
     // Recipe modifiers are called as a priority-ordered chain for every fill
     // surface. They share the same mutable raw_infill_pattern_params so each
     // modifier sees the changes made by the previous one.
@@ -129,6 +150,40 @@ const char *pattern_plugin_id_callback(const run_ctx_generate_infill *ctx,
         return "";
 
     return found->second->get_id().c_str();
+}
+
+// Collect the work groups the generator discovered for one pattern plugin in
+// the object currently processed by setup_run(). The host copies everything it
+// needs, so the generator keeps ownership of its own arrays.
+int32_t report_pattern_assignments_callback(const run_ctx_generate_infill *ctx,
+                                            infill_pattern_runtime_id pattern_id,
+                                            const raw_infill_pattern_assignment *assignments,
+                                            uint32_t assignment_count)
+{
+    InfillStepHostContext *host = host_from_context(ctx);
+    if (host == nullptr || ctx->object == nullptr || pattern_id == INFILL_PATTERN_RUNTIME_ID_INVALID ||
+        (assignment_count != 0 && assignments == nullptr))
+        return 0;
+
+    std::vector<InfillStepHostContext::HostObjectInit> &objects = host->pattern_assignments[pattern_id];
+    if (objects.empty() || objects.back().object != ctx->object) {
+        objects.emplace_back();
+        objects.back().object = ctx->object;
+    }
+    InfillStepHostContext::HostObjectInit &target = objects.back();
+
+    for (uint32_t index = 0; index < assignment_count; ++index) {
+        const raw_infill_pattern_assignment &source = assignments[index];
+        InfillStepHostContext::HostAssignment assignment;
+        assignment.layer_island = source.layer_island;
+        assignment.region_island = source.region_island;
+        if (source.params != nullptr)
+            assignment.params = *source.params;
+        if (source.surfaces != nullptr)
+            assignment.surfaces.assign(source.surfaces, source.surfaces + source.surface_count);
+        target.assignments.emplace_back(std::move(assignment));
+    }
+    return 1;
 }
 
 // Convert the runtime id present in raw_infill_pattern_params back to the
@@ -367,10 +422,10 @@ void prepare_pattern_plugins(InfillStepHostContext &host)
     assert(host.print != nullptr);
 
     // INFILL_PATTERN plugins are service plugins, not standalone slicing
-    // steps. The selected STEP_INFILL generator calls them once per generated
-    // surface through generate_pattern_callback(). We still run their setup()
-    // here so they can size progress counters and cache per-print state before
-    // the generator starts asking for individual patterns.
+    // steps. The generator reports the work groups it discovered during its
+    // setup_run() phase, and initialize_pattern_plugins() calls setup() once
+    // per used pattern with that payload. This function only assigns runtime
+    // ids and prepares the per-pattern host contexts.
     const size_t run_count = count_candidate_surfaces(*host.print);
     infill_pattern_runtime_id next_runtime_id = 1;
     for (Plugin *plugin : host.orchestrator->get_active_plugins_for_step(INFILL_PATTERN)) {
@@ -389,11 +444,69 @@ void prepare_pattern_plugins(InfillStepHostContext &host)
                 *host.orchestrator, INFILL_PATTERN, *plugin, *host.print, execution_error);
         plugin_host.object_count = run_count;
         host.pattern_host_contexts.emplace(plugin, plugin_host);
+    }
+}
 
+// Call setup() once per pattern plugin that the generator actually uses. The
+// payload lists every object of the print and the work groups discovered for
+// that pattern, so the plugin can precompute per-object state and parallelize
+// the initialization itself.
+void initialize_pattern_plugins(InfillStepHostContext &host)
+{
+    assert(host.orchestrator != nullptr);
+    assert(host.print != nullptr);
+
+    for (std::pair<const infill_pattern_runtime_id, std::vector<InfillStepHostContext::HostObjectInit>> &entry :
+         host.pattern_assignments) {
+        const std::map<infill_pattern_runtime_id, Plugin *>::const_iterator selected =
+            host.pattern_plugins_by_runtime_id.find(entry.first);
+        if (selected == host.pattern_plugins_by_runtime_id.end() || selected->second == nullptr)
+            continue;
+        Plugin *plugin = selected->second;
+
+        uint32_t surface_count = 0;
+        for (InfillStepHostContext::HostObjectInit &object : entry.second) {
+            object.raw_assignments.clear();
+            object.raw_assignments.reserve(object.assignments.size());
+            for (InfillStepHostContext::HostAssignment &assignment : object.assignments) {
+                raw_infill_pattern_assignment raw = {};
+                raw.layer_island = assignment.layer_island;
+                raw.region_island = assignment.region_island;
+                raw.params = &assignment.params;
+                raw.surfaces = assignment.surfaces.empty() ? nullptr : assignment.surfaces.data();
+                raw.surface_count = uint32_t(assignment.surfaces.size());
+                surface_count += raw.surface_count;
+                object.raw_assignments.emplace_back(raw);
+            }
+        }
+
+        std::vector<raw_infill_pattern_object_init> objects;
+        objects.reserve(entry.second.size());
+        for (const InfillStepHostContext::HostObjectInit &object : entry.second) {
+            raw_infill_pattern_object_init raw = {};
+            raw.object = object.object;
+            raw.assignments = object.raw_assignments.empty() ? nullptr : object.raw_assignments.data();
+            raw.assignment_count = uint32_t(object.raw_assignments.size());
+            objects.emplace_back(raw);
+        }
+
+        run_ctx_infill_pattern_init payload = {};
+        payload.print = reinterpret_cast<const print_handle *>(host.print);
+        payload.objects = objects.empty() ? nullptr : objects.data();
+        payload.object_count = uint32_t(objects.size());
+
+        std::map<Plugin *, plugin_host_context>::iterator host_context = host.pattern_host_contexts.find(plugin);
+        assert(host_context != host.pattern_host_contexts.end());
+        if (host_context == host.pattern_host_contexts.end())
+            continue;
+
+        std::atomic_bool &execution_error = execution_error_for(host.pattern_execution_errors, *plugin);
         plugin_run_context setup_context =
-            host.orchestrator->prepare_plugin_run_context(INFILL_PATTERN, plugin, &host.pattern_host_contexts.find(plugin)->second);
-        plugin->setup(setup_context, uint32_t(run_count));
-        Detail::throw_if_plugin_stopped(*host.orchestrator, *host.print, INFILL_PATTERN, *plugin, execution_error, "setup");
+            host.orchestrator->prepare_plugin_run_context(INFILL_PATTERN, plugin, &host_context->second);
+        setup_context.data = &payload;
+        plugin->setup(setup_context, surface_count);
+        Detail::throw_if_plugin_stopped(
+            *host.orchestrator, *host.print, INFILL_PATTERN, *plugin, execution_error, "initialize_object");
     }
 }
 
@@ -454,6 +567,36 @@ void clear_infill_outputs(Print &print)
     }
 }
 
+void prepare_generator_for_object(Orchestrator &orchestrator,
+                                  Plugin &plugin,
+                                  Print &print,
+                                  PrintObject &object,
+                                  plugin_host_context &host_context,
+                                  InfillStepHostContext &infill_context,
+                                  std::atomic_bool &execution_error)
+{
+    plugin_run_context run_context =
+        orchestrator.prepare_plugin_run_context(STEP_INFILL, &plugin, &host_context);
+
+    // Discovery pass: the generator resolves every fill surface recipe, groups
+    // surfaces that share one recipe and reports the groups so the host can
+    // initialize the used pattern plugins before any extrusion is generated.
+    run_ctx_generate_infill payload = {};
+    payload.print = reinterpret_cast<const print_handle *>(&print);
+    payload.object = reinterpret_cast<const object_handle *>(&object);
+    payload.host_context = &infill_context;
+    payload.resolve_pattern_id = &resolve_pattern_id_callback;
+    payload.pattern_plugin_id = &pattern_plugin_id_callback;
+    payload.generate_pattern = &generate_pattern_callback;
+    payload.modify_surface_recipe = &modify_surface_recipe_callback;
+    payload.append_region_island_extrusion = &append_region_island_extrusion_callback;
+    payload.report_pattern_assignments = &report_pattern_assignments_callback;
+    run_context.data = &payload;
+
+    plugin.setup_run(run_context);
+    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, plugin, execution_error, "setup_run");
+}
+
 void run_generator_for_object(Orchestrator &orchestrator,
                               Plugin &plugin,
                               Print &print,
@@ -477,10 +620,9 @@ void run_generator_for_object(Orchestrator &orchestrator,
     payload.generate_pattern = &generate_pattern_callback;
     payload.modify_surface_recipe = &modify_surface_recipe_callback;
     payload.append_region_island_extrusion = &append_region_island_extrusion_callback;
+    payload.report_pattern_assignments = &report_pattern_assignments_callback;
     run_context.data = &payload;
 
-    plugin.setup_run(run_context);
-    Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, plugin, execution_error, "setup_run");
     plugin.run(run_context);
     Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, plugin, execution_error, "run");
 }
@@ -537,6 +679,21 @@ void run_step(Orchestrator &orchestrator, Print &print)
     plugin->setup(setup_context, uint32_t(print.objects().size()));
     Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, *plugin, execution_error, "setup");
 
+    // Discovery: the generator resolves every fill surface recipe and reports
+    // its work groups. This must finish for every object before the used
+    // pattern plugins are initialized.
+    for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx) {
+        host_context.object_idx = object_idx;
+        if (setup_context.is_cancelled != nullptr && setup_context.is_cancelled(setup_context.host_context))
+            Detail::throw_if_plugin_stopped(orchestrator, print, STEP_INFILL, *plugin, execution_error, "setup_run");
+        prepare_generator_for_object(
+            orchestrator, *plugin, print, print.object(object_idx), host_context, infill_context, execution_error);
+    }
+
+    // Per-object initialization of every pattern plugin the generator uses.
+    initialize_pattern_plugins(infill_context);
+
+    // Generation uses the recipes cached by the discovery pass.
     for (size_t object_idx = 0; object_idx < print.objects().size(); ++object_idx) {
         host_context.object_idx = object_idx;
         if (setup_context.is_cancelled != nullptr && setup_context.is_cancelled(setup_context.host_context))

@@ -5,7 +5,7 @@
 #ifndef slic3r_step_infill_h_
 #define slic3r_step_infill_h_
 
-#define SLIC3R_PLUGIN_API_STEP_INFILL_MAJOR 1u
+#define SLIC3R_PLUGIN_API_STEP_INFILL_MAJOR 2u
 #define SLIC3R_PLUGIN_API_STEP_INFILL_MINOR 0u
 
 #include "slic3r_step_common.h"
@@ -25,6 +25,44 @@ the host to resolve a string id for the current active pattern set.
 typedef uint32_t infill_pattern_runtime_id;
 
 #define INFILL_PATTERN_RUNTIME_ID_INVALID ((infill_pattern_runtime_id)0)
+
+/*
+Boolean recipe options, grouped in one bitmask.
+
+raw_infill_pattern_params::infill_flags stores a combination of these values.
+The same bits are stored in the infill extrusion property
+(c_extrusion_property_infill) so post-infill plugins can read the flags of the
+surface that produced a subtree without re-reading the configuration.
+*/
+typedef enum c_infill_flag {
+    /* The surface may split its area into normal infill plus a gap-fill pass. */
+    C_INFILL_FLAG_ADD_GAP_FILL = 1u << 0,
+    /* The pipeline can produce gap fill, for patterns that leave residuals. */
+    C_INFILL_FLAG_GAP_FILL_ENABLED = 1u << 1,
+    /* The fill flow must not adjust the spacing. */
+    C_INFILL_FLAG_DONT_ADJUST = 1u << 2,
+    /* The pattern must keep its paths monotonic. */
+    C_INFILL_FLAG_MONOTONIC = 1u << 3,
+    /* The surface requests an enforced full fill volume. */
+    C_INFILL_FLAG_FILL_EXACTLY = 1u << 4,
+    /* The pattern must fill the surface completely. */
+    C_INFILL_FLAG_COMPLETE = 1u << 5,
+    /* The pattern runs through the Arachne variable-width path. */
+    C_INFILL_FLAG_USE_ARACHNE = 1u << 6,
+    /* The pattern frame may cross the fill angle. */
+    C_INFILL_FLAG_CAN_ANGLE_CROSS = 1u << 7
+} c_infill_flag;
+
+/*
+Connection policy for generated infill paths. The numeric values match the
+serialized legacy InfillConnection values used by the host recipe.
+*/
+typedef enum c_infill_connection {
+    C_INFILL_CONNECTION_CONNECTED = 0,
+    C_INFILL_CONNECTION_HOLES = 1,
+    C_INFILL_CONNECTION_OUTER_SHELL = 2,
+    C_INFILL_CONNECTION_NOT_CONNECTED = 3
+} c_infill_connection;
 
 /*
 Parameters prepared by STEP_INFILL before it calls one INFILL_PATTERN plugin.
@@ -54,24 +92,17 @@ typedef struct raw_infill_pattern_params {
 
     float density;
     float flow_mult;
-    int32_t connection;
+    c_infill_connection connection;
 
     /*
-    add_gap_fill is the exact per-surface decision that old FillParams exposed:
-    a solid/full pattern may split its own area into normal infill plus a gap
-    fill pass. gap_fill_enabled is the broader pipeline state, useful to
+    Bitmask of c_infill_flag values. It replaces the individual boolean fields
+    the legacy FillParams exposed. C_INFILL_FLAG_ADD_GAP_FILL is the exact
+    per-surface decision that old FillParams exposed;
+    C_INFILL_FLAG_GAP_FILL_ENABLED is the broader pipeline state, useful to
     pattern implementations that want to leave narrow residuals for a later
     post-process instead of trying to cover every sliver themselves.
     */
-    int32_t add_gap_fill;
-    int32_t gap_fill_enabled;
-
-    int32_t dont_adjust;
-    int32_t monotonic;
-    int32_t fill_exactly;
-    int32_t complete;
-    int32_t use_arachne;
-    int32_t can_angle_cross;
+    uint16_t infill_flags;
 
     uint32_t extruder;
     int32_t priority;
@@ -92,6 +123,14 @@ typedef struct raw_infill_pattern_params {
     float anchor_length;
     float anchor_length_max;
     float max_sparse_infill_spacing;
+
+    /*
+    Scaled bounding box of the whole object being filled. Legacy Fill
+    implementations used it to align sparse patterns across layers and to
+    rotate the pattern frame around the object center; plugins that do not need
+    cross-layer alignment can ignore it.
+    */
+    c_bounding_box object_bounding_box;
 } raw_infill_pattern_params;
 
 /*
@@ -174,16 +213,84 @@ typedef int32_t (*infill_append_region_island_extrusion_fn)(
     extrusion_entity_handle *extrusion);
 
 /*
+One work group discovered by a STEP_INFILL generator for one INFILL_PATTERN
+plugin: all surfaces of one LayerRegionIsland that share the same resolved
+recipe.
+
+The generator owns this data. It stays valid from the discovery pass until the
+generator run for the same object completes; pattern plugins must copy anything
+they need beyond their setup() call.
+*/
+typedef struct raw_infill_pattern_assignment {
+    const layer_island_handle *layer_island;
+    const layer_region_island_handle *region_island;
+    const raw_infill_pattern_params *params;
+    const surface_handle *const *surfaces;
+    uint32_t surface_count;
+} raw_infill_pattern_assignment;
+
+/* One object and the work groups it contains for one pattern plugin. */
+typedef struct raw_infill_pattern_object_init {
+    const object_handle *object;
+    const raw_infill_pattern_assignment *assignments;
+    uint32_t assignment_count;
+} raw_infill_pattern_object_init;
+
+/*
+Per-print initialization payload delivered to an INFILL_PATTERN plugin.
+
+A generator reports its discovery result through
+run_ctx_generate_infill::report_pattern_assignments() during its setup_run()
+phase. The host aggregates the groups per pattern plugin and calls setup() once
+with this payload before any generator run. The plugin may process the objects
+in parallel; the data only describes work that the current print will generate.
+*/
+typedef struct run_ctx_infill_pattern_init {
+    const print_handle *print;
+    const raw_infill_pattern_object_init *objects;
+    uint32_t object_count;
+} run_ctx_infill_pattern_init;
+
+static inline const run_ctx_infill_pattern_init *
+plugin_ctx_as_infill_pattern_init(const plugin_run_context *ctx)
+{
+    if (!ctx || ctx->step != INFILL_PATTERN)
+        return NULL;
+    return (const run_ctx_infill_pattern_init *)ctx->data;
+}
+
+/*
+Report the work groups one STEP_INFILL generator discovered for one pattern
+plugin in one object.
+
+Generators call this once per used pattern during their setup_run() phase. The
+host copies the groups into its own storage, so the arrays only need to be valid
+for the duration of the call. Unused patterns are never reported and therefore
+do not receive an initialization call.
+*/
+typedef int32_t (*infill_report_pattern_assignments_fn)(
+    const struct run_ctx_generate_infill *ctx,
+    infill_pattern_runtime_id pattern_id,
+    const raw_infill_pattern_assignment *assignments,
+    uint32_t assignment_count);
+
+/*
 Payload for STEP_INFILL.
 
 Normal usage:
-- iterate the object layers, islands, region islands and fill surfaces;
-- build one raw_infill_pattern_params for each fill surface to generate;
-- call modify_surface_recipe() to let recipe modules adjust the per-surface
-  recipe;
+- setup_run() phase: walk the object, build one raw_infill_pattern_params per
+  fill surface, apply modify_surface_recipe(), group surfaces that share one
+  recipe and report each group with report_pattern_assignments(). The host then
+  initializes every used INFILL_PATTERN plugin once for the print;
+- run() phase: iterate the object layers, islands, region islands and fill
+  surfaces;
 - call generate_pattern() to delegate line creation to the selected
   INFILL_PATTERN plugin;
 - call append_region_island_extrusion() to publish non-empty output.
+
+A generator may keep the recipes it discovered between setup_run() and run()
+instead of recomputing them; the reported params must stay valid until the run
+for that object completes.
 
 host_context is an opaque pointer reserved for the host callbacks. Plugins must
 pass the original run_ctx_generate_infill pointer back to callbacks and must not
@@ -199,6 +306,13 @@ typedef struct run_ctx_generate_infill {
     infill_generate_pattern_fn generate_pattern;
     infill_modify_surface_recipe_fn modify_surface_recipe;
     infill_append_region_island_extrusion_fn append_region_island_extrusion;
+    /*
+    Discovery reporting used during setup_run(). The generator walks the object,
+    resolves every fill surface recipe, groups surfaces that share one recipe,
+    and reports each group for its pattern plugin. The host aggregates the
+    groups and initializes the used patterns before the first run.
+    */
+    infill_report_pattern_assignments_fn report_pattern_assignments;
 } run_ctx_generate_infill;
 
 static inline const run_ctx_generate_infill *
@@ -213,10 +327,13 @@ plugin_ctx_as_generate_infill(const plugin_run_context *ctx)
 Payload for INFILL_PATTERN service plugins.
 
 Normal usage:
-- read surface and no_overlap_areas as the geometry to fill;
-- read params as the already-resolved process settings;
-- write generated extrusion into output;
-- return with output empty when this surface produces no extrusion.
+- setup() receives a run_ctx_infill_pattern_init describing every object and
+  work group this plugin will fill in the current print. Use it to precompute
+  per-object state (grids, bounding boxes, synchronization) before any run;
+- setup_run() is called once per surface with the run_ctx_infill_pattern below;
+- run() reads surface and no_overlap_areas as the geometry to fill, reads params
+  as the already-resolved process settings, writes generated extrusion into
+  output, and returns with output empty when this surface produces no extrusion.
 
 output is a mutable, storage-independent extrusion entity borrowed from the
 host. It starts empty for each call and is valid only during the call. The host
@@ -296,6 +413,9 @@ plugin_ctx_as_infill_surface_recipe_modifier(const plugin_run_context *ctx)
 
 #ifdef __cplusplus
 }
+
+static_assert(sizeof(c_infill_connection) == sizeof(int32_t),
+              "c_infill_connection must have the raw int32_t ABI representation");
 #endif
 
 #endif // slic3r_step_infill_h_

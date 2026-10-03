@@ -8,7 +8,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
+#include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "libslic3r/Api/plugin/c/slic3r_config_def.h"
 #include "libslic3r/Api/plugin/c/slic3r_orchestrator.h"
@@ -35,37 +39,48 @@ it once per PrintObject after earlier steps have classified the layer-region
 islands into fill surfaces. It does not choose one fixed infill algorithm:
 each surface selects a pattern plugin through its configured pattern id.
 
-setup_run_impl() counts the surfaces that may receive infill so progress can
-be reported before generation starts. run_impl() then visits layers, islands,
-region islands, and their fill surfaces. For each usable surface,
-make_recipe() resolves its flow, density, pattern, connection, bridge data,
-and overlap area. The optional recipe callback may change those values before
-the selected pattern plugin generates an extrusion subtree.
+setup_run_impl() performs a discovery pass over the object: it visits layers,
+islands, region islands, and their fill surfaces. For each usable surface,
+make_surface_recipe() resolves its flow, density, pattern, connection, bridge
+data, and overlap area; the optional recipe callback may change those values.
+Surfaces of one region island that end up with identical raw parameters are
+grouped, and every group is reported to the host through
+report_pattern_assignments() so the used pattern plugins can be initialized
+once for the print. The recipes are kept in m_object_caches until run().
 
-The generated subtree is kept only when the pattern and density are valid. It
-receives an ExtrusionPropertyInfill containing the source surface id, then the
-plugin publishes it through append_region_island_extrusion(). Gap fill is not
-generated here; it is deliberately left for the post-infill step.
+run_impl() replays the cached groups instead of recomputing the recipes. Each
+surface still results in one pattern call, and the generated subtree is kept
+only when the pattern and density are valid. It receives an
+ExtrusionPropertyInfill containing the source surface id, the raw fill recipe
+and, when the recipe requests an enforced full fill volume, the free area the
+surface expects. The plugin publishes that subtree through
+append_region_island_extrusion() and a STEP_POST_INFILL plugin later turns the
+area and the recipe into a flow correction. Gap fill is not generated here; it
+is deliberately left for the post-infill step.
 
 The normal call flow is:
 
     DefaultInfillGenerator::setup_run_impl()
-    `-- count_candidate_surfaces(object)
-        `-- publish the progress total
-
-    DefaultInfillGenerator::run_impl()
     `-- walk object.layers()
         `-- walk layer.islands()
             `-- walk island.regions_islands()
                 `-- walk region_island.fill_surfaces()
                     |-- skip empty or void surfaces
-                    |-- make_recipe(...)
-                    |   `-- resolve surface settings and no-overlap areas
-                    |-- resolve_pattern_id()
-                    |-- modify_surface_recipe() when provided
-                    |-- generate_pattern()
-                    |-- attach ExtrusionPropertyInfill::source_surface_id
-                    `-- append_region_island_extrusion()
+                    |-- make_surface_recipe(...)
+                    |   |-- resolve surface settings and no-overlap areas
+                    |   |-- resolve_pattern_id()
+                    |   `-- modify_surface_recipe() when provided
+                    |-- skip invalid pattern or density
+                    `-- append to the group sharing the same raw parameters
+    `-- report_pattern_assignments() per pattern
+        `-- publish the progress total
+
+    DefaultInfillGenerator::run_impl()
+    `-- replay m_object_caches[object]
+        |-- generate_pattern() per surface
+        |-- attach ExtrusionPropertyInfill::source_surface_id
+        |-- attach ExtrusionPropertyInfill::area_to_fill_mm2 when requested
+        `-- append_region_island_extrusion()
 
 The generator works through the public step context and callbacks. It reads
 the existing print data but leaves ownership and direct publication of the
@@ -73,6 +88,36 @@ result to the host API.
 */
 
 namespace slic3r_api { namespace Infill { namespace DefaultInfillGeneratorPlugin {
+
+// One surface kept in a work group, with the free area and the area to fill
+// computed once during the discovery pass.
+struct DefaultInfillSurfaceWork
+{
+    const Slic3r::Surface *surface = nullptr;
+    Slic3r::ExPolygons no_overlap_areas;
+    double area_to_fill_mm2 = 0.;
+};
+
+// Surfaces of one region island that share the same raw pattern parameters.
+// They are filled by separate pattern calls but initialized as one unit.
+struct DefaultInfillWorkGroup
+{
+    const Slic3r::Layer *layer = nullptr;
+    const Slic3r::LayerSliceIsland *island = nullptr;
+    const Slic3r::LayerRegionIsland *region_island = nullptr;
+    const Slic3r::LayerRegion *region = nullptr;
+    infill_pattern_runtime_id pattern_id = INFILL_PATTERN_RUNTIME_ID_INVALID;
+    raw_infill_pattern_params params = {};
+    std::vector<DefaultInfillSurfaceWork> surfaces;
+};
+
+// Recipes discovered by setup_run() for one object. The pattern plugins receive
+// pointers into this cache, so it must stay alive until run() for the object.
+struct DefaultInfillObjectWorkCache
+{
+    std::vector<DefaultInfillWorkGroup> groups;
+};
+
 namespace {
 
 const char *k_default_infill_generator_id = "infill.generator.default";
@@ -281,6 +326,10 @@ struct SurfaceInfillRecipe
     std::string pattern_plugin_id;
     raw_infill_pattern_params raw = {};
     Slic3r::ExPolygons no_overlap_areas;
+    // Free-of-perimeter-overlap area this surface expects, or 0 when no volume
+    // correction was requested. It is not part of raw, so grouping stays
+    // byte-identical.
+    double area_to_fill_mm2 = 0.;
 };
 
 c_flow to_c_flow(const Slic3r::Flow &flow)
@@ -438,13 +487,15 @@ Slic3r::ExPolygons make_no_overlap_areas(const Slic3r::LayerSliceIsland &island,
     return result;
 }
 
-SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
-                                const Slic3r::PrintObject &object,
-                                const Slic3r::Layer &layer,
-                                const Slic3r::LayerSliceIsland &island,
-                                const Slic3r::LayerRegion &region,
-                                const Slic3r::Surface &surface,
-                                const plugin_run_context *run_ctx)
+SurfaceInfillRecipe make_surface_recipe(const run_ctx_generate_infill &ctx,
+                                        const Slic3r::Print &print,
+                                        const Slic3r::PrintObject &object,
+                                        const Slic3r::Layer &layer,
+                                        const Slic3r::LayerSliceIsland &island,
+                                        const Slic3r::LayerRegionIsland &region_island,
+                                        const Slic3r::LayerRegion &region,
+                                        const Slic3r::Surface &surface,
+                                        const plugin_run_context *run_ctx)
 {
     const Slic3r::PrintRegionConfig &region_config = region.region().config();
     const bool bridge = layer.id() > 0 && surface.has_mod_bridge();
@@ -455,6 +506,9 @@ SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
         normal_flow_for_surface(layer, region, extrusion_role, surface);
 
     SurfaceInfillRecipe recipe;
+    // Grouping relies on the full raw parameter bytes, so padding must be
+    // deterministic. Zero the struct before assigning the individual members.
+    std::memset(&recipe.raw, 0, sizeof(recipe.raw));
     recipe.pattern_plugin_id = pattern_id;
     recipe.raw.surface_type = static_cast<raw_surface_type>(surface.surface_type);
     recipe.raw.extrusion_role = raw_role_for_surface(surface, bridge);
@@ -465,28 +519,32 @@ SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
     recipe.raw.flow_mult = surface.has_pos_top() ?
         float(region_config.fill_top_flow_ratio.get_effective_value(1)) :
         1.f;
-    recipe.raw.connection = int32_t(connection_for_surface(surface, bridge, region_config));
+    recipe.raw.connection = static_cast<c_infill_connection>(connection_for_surface(surface, bridge, region_config));
 
     // Gap fill is now a post-infill responsibility. Pattern plugins should
     // generate their normal fill only and leave narrow residuals for the later
-    // post-process plugin.
-    recipe.raw.add_gap_fill = 0;
-    recipe.raw.gap_fill_enabled = 0;
-
-    recipe.raw.dont_adjust = 0;
-    recipe.raw.monotonic = pattern_id == "monotonic" || pattern_id == "monotoniclines" ? 1 : 0;
-    recipe.raw.fill_exactly = region_config.enforce_full_fill_volume.get_bool() ? 1 : 0;
-    recipe.raw.complete = 0;
-    recipe.raw.use_arachne = (region_config.perimeter_generator == Slic3r::PerimeterGeneratorType::Arachne &&
-                              pattern_id == "concentric") ||
-                             pattern_id == "ensuring" ? 1 : 0;
-    recipe.raw.can_angle_cross = region_config.fill_angle_cross ? 1 : 0;
+    // post-process plugin, so C_INFILL_FLAG_ADD_GAP_FILL and
+    // C_INFILL_FLAG_GAP_FILL_ENABLED stay clear.
+    uint16_t infill_flags = 0;
+    if (pattern_id == "monotonic" || pattern_id == "monotoniclines")
+        infill_flags |= C_INFILL_FLAG_MONOTONIC;
+    if (region_config.enforce_full_fill_volume.get_bool())
+        infill_flags |= C_INFILL_FLAG_FILL_EXACTLY;
+    if ((region_config.perimeter_generator == Slic3r::PerimeterGeneratorType::Arachne &&
+         pattern_id == "concentric") ||
+        pattern_id == "ensuring")
+        infill_flags |= C_INFILL_FLAG_USE_ARACHNE;
+    if (region_config.fill_angle_cross)
+        infill_flags |= C_INFILL_FLAG_CAN_ANGLE_CROSS;
+    recipe.raw.infill_flags = infill_flags;
     recipe.raw.extruder = region.region().extruder(extrusion_role, object);
     recipe.raw.priority = int32_t(surface.priority);
     recipe.raw.spacing = bridge || surface.has_fill_solid() ?
         flow.spacing() :
         region.region().flow(object, Slic3r::frInfill, float(layer.unscaled_height()), layer.id()).spacing();
     recipe.raw.angle = compute_fill_angle_for_layer(region_config, layer.id());
+    if (object.config().fill_angle_follow_model)
+        recipe.raw.angle += float(object.trafo().rotation().eulerAngles(0, 1, 2).z());
     recipe.raw.bridge_angle = surface.bridge_angle;
     recipe.raw.bridge_type = int32_t(static_cast<uint8_t>(region_config.bridge_type.value));
     recipe.raw.layer_height = layer.unscaled_height();
@@ -497,6 +555,9 @@ SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
         std::max(SCALED_EPSILON, Slic3r::scale_i(print.config().resolution_internal.value)));
     recipe.raw.anchor_length = 1000.f;
     recipe.raw.anchor_length_max = 1000.f;
+    const Slic3r::BoundingBox &object_bounding_box = object.bounding_box();
+    recipe.raw.object_bounding_box.min = { object_bounding_box.min.x(), object_bounding_box.min.y() };
+    recipe.raw.object_bounding_box.max = { object_bounding_box.max.x(), object_bounding_box.max.y() };
 
     if (!surface.has_fill_solid() && !bridge) {
         recipe.raw.anchor_length = float(region_config.infill_anchor);
@@ -525,54 +586,6 @@ SurfaceInfillRecipe make_recipe(const Slic3r::Print &print,
         0;
     recipe.no_overlap_areas = make_no_overlap_areas(island, surface, region_config, recipe.raw.overlap, run_ctx);
 
-    return recipe;
-}
-
-const Slic3r::LayerRegion *primary_region(const Slic3r::LayerRegionIsland &region_island)
-{
-    if (region_island.regions().empty())
-        return nullptr;
-    return *region_island.regions().begin();
-}
-
-bool surface_needs_infill(const Slic3r::Surface &surface)
-{
-    return !surface.empty() && !surface.has_fill_void();
-}
-
-uint32_t count_candidate_surfaces(const plugin_run_context *run_ctx, const Slic3r::PrintObject &object)
-{
-    uint32_t count = 0;
-    for (const Slic3r::Layer &layer : object.layers()) {
-        throw_if_cancelled(run_ctx);
-        for (const Slic3r::LayerSliceIsland &island : layer.islands()) {
-            throw_if_cancelled(run_ctx);
-            for (const Slic3r::LayerRegionIsland &region_island : island.regions_islands()) {
-                throw_if_cancelled(run_ctx);
-                for (const Slic3r::Surface &surface : region_island.fill_surfaces()) {
-                    throw_if_cancelled(run_ctx);
-                    if (surface_needs_infill(surface))
-                        ++count;
-                }
-            }
-        }
-    }
-    return count;
-}
-
-void generate_surface(const run_ctx_generate_infill &ctx,
-                      const Slic3r::Print &print,
-                      const Slic3r::PrintObject &object,
-                      const Slic3r::Layer &layer,
-                      const Slic3r::LayerSliceIsland &island,
-                      const Slic3r::LayerRegionIsland &region_island,
-                      const Slic3r::LayerRegion &region,
-                      const Slic3r::Surface &surface,
-                      const plugin_run_context *run_ctx)
-{
-    throw_if_cancelled(run_ctx);
-    SurfaceInfillRecipe recipe = make_recipe(print, object, layer, island, region, surface, run_ctx);
-
     // Config stores the selected pattern as a stable plugin id string. The
     // infill ABI uses a compact runtime id so recipe modifiers can switch
     // patterns without editing caller-owned text buffers.
@@ -593,33 +606,95 @@ void generate_surface(const run_ctx_generate_infill &ctx,
                                   &recipe.raw);
         throw_if_cancelled(run_ctx);
     }
-    if (recipe.raw.pattern_id == INFILL_PATTERN_RUNTIME_ID_INVALID || recipe.raw.density <= 0.f)
-        return;
 
+    // Enforce full fill volume: measure the free area this surface expects, so
+    // a STEP_POST_INFILL plugin can compute the volume target and correct the
+    // generated extrusion. Sparse surfaces are never corrected, even at 100%
+    // density, so the gate requires a solid surface on top of the legacy
+    // FillParams check (FillBase.cpp:437): !dont_adjust && full_infill() &&
+    // !flow.bridge() && fill_exactly.
+    recipe.area_to_fill_mm2 = 0;
+    if ((recipe.raw.infill_flags & C_INFILL_FLAG_FILL_EXACTLY) != 0 &&
+        (recipe.raw.infill_flags & C_INFILL_FLAG_DONT_ADJUST) == 0 && !bridge &&
+        surface.has_fill_solid() &&
+        recipe.raw.density > 0.9999f && recipe.raw.density < 1.0001f) {
+        // An empty free area means the whole surface is available, like the
+        // legacy fallback in compute_unscaled_volume_to_fill().
+        if (recipe.no_overlap_areas.empty())
+            recipe.area_to_fill_mm2 = Slic3r::unscaled(Slic3r::unscaled(surface.area()));
+        else
+            for (const Slic3r::ExPolygon &expoly : recipe.no_overlap_areas)
+                recipe.area_to_fill_mm2 += Slic3r::unscaled(Slic3r::unscaled(expoly.area()));
+    }
+
+    return recipe;
+}
+
+const Slic3r::LayerRegion *primary_region(const Slic3r::LayerRegionIsland &region_island)
+{
+    if (region_island.regions().empty())
+        return nullptr;
+    return *region_island.regions().begin();
+}
+
+bool surface_needs_infill(const Slic3r::Surface &surface)
+{
+    return !surface.empty() && !surface.has_fill_void();
+}
+
+// Byte-exact key used to group surfaces that share one raw recipe. Padding is
+// deterministic because make_surface_recipe() zeroes the struct first.
+std::string params_key(const raw_infill_pattern_params &params)
+{
+    return std::string(reinterpret_cast<const char *>(&params), sizeof(params));
+}
+
+void generate_surface_from_recipe(const run_ctx_generate_infill &ctx,
+                                  const Slic3r::Layer &layer,
+                                  const Slic3r::LayerSliceIsland &island,
+                                  const Slic3r::LayerRegionIsland &region_island,
+                                  const Slic3r::LayerRegion &region,
+                                  const Slic3r::Surface &surface,
+                                  infill_pattern_runtime_id pattern_id,
+                                  const raw_infill_pattern_params &params,
+                                  const Slic3r::ExPolygons &no_overlap_areas,
+                                  double area_to_fill_mm2,
+                                  const plugin_run_context *run_ctx)
+{
     Slic3r::ExtrusionEntityCollection output;
     output.set_can_sort_reverse(false, false);
 
     throw_if_cancelled(run_ctx);
     const int32_t generated = ctx.generate_pattern(&ctx,
-                                                   recipe.raw.pattern_id,
+                                                   pattern_id,
                                                    reinterpret_cast<const layer_handle *>(&layer),
                                                    reinterpret_cast<const layer_island_handle *>(&island),
                                                    reinterpret_cast<const layer_region_island_handle *>(&region_island),
                                                    reinterpret_cast<const layer_region_handle *>(&region),
                                                    reinterpret_cast<const surface_handle *>(&surface),
-                                                   reinterpret_cast<const expolygon_collection_handle *>(&recipe.no_overlap_areas),
-                                                   &recipe.raw,
+                                                   reinterpret_cast<const expolygon_collection_handle *>(&no_overlap_areas),
+                                                   &params,
                                                    reinterpret_cast<extrusion_entity_handle *>(&output));
     throw_if_cancelled(run_ctx);
     if (!generated || output.empty())
         return;
 
     // Keep a direct link from the extrusion subtree to the Surface recipe that
-    // produced it. The property is inherited by every child path, so later
-    // post-infill plugins can split or reorder paths and still recover the
-    // source surface id from the closest parent.
+    // produced it, together with useful data for next plugins. The property is inherited by
+    // every child path, so later post-infill plugins can split or reorder paths
+    // and still recover the recipe from the closest parent.
     throw_if_cancelled(run_ctx);
-    output.get_or_add_property<Slic3r::ExtrusionPropertyInfill>().source_surface_id = surface.id();
+    Slic3r::ExtrusionPropertyInfill &infill_property =
+        output.get_or_add_property<Slic3r::ExtrusionPropertyInfill>();
+    infill_property.source_surface_id = surface.id();
+    infill_property.area_to_fill_mm2 = area_to_fill_mm2;
+    infill_property.height = params.flow.height;
+    infill_property.spacing = params.flow.spacing;
+    infill_property.spacing_ratio = params.flow.spacing_ratio;
+    infill_property.density = params.density;
+    infill_property.flow_mult = params.flow_mult;
+    infill_property.surface_type = params.surface_type;
+    infill_property.infill_flags = params.infill_flags;
 
     // The data tree is read-only from the plugin point of view, but this host
     // callback is explicitly the publication channel. The const_cast is limited
@@ -628,7 +703,7 @@ void generate_surface(const run_ctx_generate_infill &ctx,
     throw_if_cancelled(run_ctx);
     ctx.append_region_island_extrusion(
         reinterpret_cast<layer_region_island_handle *>(const_cast<Slic3r::LayerRegionIsland *>(&region_island)),
-        recipe.raw.extrusion_role,
+        params.extrusion_role,
         reinterpret_cast<extrusion_entity_handle *>(&output));
 }
 
@@ -702,11 +777,101 @@ void DefaultInfillGenerator::setup_run_impl(const plugin_run_context *run_ctx) c
 {
     throw_if_cancelled(run_ctx);
     const run_ctx_generate_infill *ctx = plugin_ctx_as_generate_infill(run_ctx);
-    if (ctx == nullptr || ctx->object == nullptr)
+    if (ctx == nullptr || ctx->print == nullptr || ctx->object == nullptr)
         return;
 
-    const Slic3r::PrintObject *object = reinterpret_cast<const Slic3r::PrintObject *>(ctx->object);
-    progress().add_max(count_candidate_surfaces(run_ctx, *object));
+    const Slic3r::Print &print = *reinterpret_cast<const Slic3r::Print *>(ctx->print);
+    const Slic3r::PrintObject &object = *reinterpret_cast<const Slic3r::PrintObject *>(ctx->object);
+
+    // Discovery pass. Surfaces of one region island are grouped by their full
+    // raw parameters, so a group is exactly the set of surfaces that one
+    // pattern initialization must cover. The groups are kept for run().
+    std::shared_ptr<DefaultInfillObjectWorkCache> cache = std::make_shared<DefaultInfillObjectWorkCache>();
+    uint32_t surface_count = 0;
+    for (const Slic3r::Layer &layer : object.layers()) {
+        throw_if_cancelled(run_ctx);
+        for (const Slic3r::LayerSliceIsland &island : layer.islands()) {
+            throw_if_cancelled(run_ctx);
+            for (const Slic3r::LayerRegionIsland &region_island : island.regions_islands()) {
+                throw_if_cancelled(run_ctx);
+                const Slic3r::LayerRegion *region = primary_region(region_island);
+                if (region == nullptr)
+                    continue;
+
+                std::map<std::string, size_t> group_index_by_key;
+                for (const Slic3r::Surface &surface : region_island.fill_surfaces()) {
+                    throw_if_cancelled(run_ctx);
+                    if (!surface_needs_infill(surface))
+                        continue;
+
+                    SurfaceInfillRecipe recipe =
+                        make_surface_recipe(*ctx, print, object, layer, island, region_island, *region, surface, run_ctx);
+                    if (recipe.raw.pattern_id == INFILL_PATTERN_RUNTIME_ID_INVALID || recipe.raw.density <= 0.f)
+                        continue;
+
+                    ++surface_count;
+                    const std::string key = params_key(recipe.raw);
+                    const std::map<std::string, size_t>::const_iterator found = group_index_by_key.find(key);
+                    size_t group_index;
+                    if (found == group_index_by_key.end()) {
+                        group_index = cache->groups.size();
+                        group_index_by_key.emplace(key, group_index);
+                        cache->groups.emplace_back();
+                        DefaultInfillWorkGroup &group = cache->groups.back();
+                        group.layer = &layer;
+                        group.island = &island;
+                        group.region_island = &region_island;
+                        group.region = region;
+                        group.pattern_id = recipe.raw.pattern_id;
+                        group.params = recipe.raw;
+                    } else {
+                        group_index = found->second;
+                    }
+
+                    DefaultInfillSurfaceWork work;
+                    work.surface = &surface;
+                    work.no_overlap_areas = std::move(recipe.no_overlap_areas);
+                    work.area_to_fill_mm2 = recipe.area_to_fill_mm2;
+                    cache->groups[group_index].surfaces.emplace_back(std::move(work));
+                }
+            }
+        }
+    }
+
+    progress().add_max(surface_count);
+
+    // Report the groups per pattern plugin. The host copies everything, but
+    // the params pointers must stay valid until run() for this object, which is
+    // guaranteed by storing the cache in m_object_caches.
+    if (ctx->report_pattern_assignments != nullptr) {
+        std::map<infill_pattern_runtime_id, std::vector<raw_infill_pattern_assignment>> assignments_by_pattern;
+        std::vector<std::vector<const surface_handle *>> surface_lists;
+        surface_lists.reserve(cache->groups.size());
+        for (const DefaultInfillWorkGroup &group : cache->groups) {
+            std::vector<const surface_handle *> surfaces;
+            surfaces.reserve(group.surfaces.size());
+            for (const DefaultInfillSurfaceWork &work : group.surfaces)
+                surfaces.emplace_back(reinterpret_cast<const surface_handle *>(work.surface));
+            surface_lists.emplace_back(std::move(surfaces));
+
+            raw_infill_pattern_assignment assignment = {};
+            assignment.layer_island = reinterpret_cast<const layer_island_handle *>(group.island);
+            assignment.region_island = reinterpret_cast<const layer_region_island_handle *>(group.region_island);
+            assignment.params = &group.params;
+            assignment.surfaces = surface_lists.back().data();
+            assignment.surface_count = uint32_t(surface_lists.back().size());
+            assignments_by_pattern[group.pattern_id].emplace_back(assignment);
+        }
+
+        for (const std::pair<const infill_pattern_runtime_id, std::vector<raw_infill_pattern_assignment>> &entry :
+             assignments_by_pattern) {
+            if (entry.second.empty())
+                continue;
+            ctx->report_pattern_assignments(ctx, entry.first, entry.second.data(), uint32_t(entry.second.size()));
+        }
+    }
+
+    m_object_caches[&object] = std::move(cache);
 }
 
 void DefaultInfillGenerator::run_impl(const plugin_run_context *run_ctx) const
@@ -721,20 +886,50 @@ void DefaultInfillGenerator::run_impl(const plugin_run_context *run_ctx) const
 
     const Slic3r::Print &print = *reinterpret_cast<const Slic3r::Print *>(ctx->print);
     const Slic3r::PrintObject &object = *reinterpret_cast<const Slic3r::PrintObject *>(ctx->object);
+
+    const std::map<const Slic3r::PrintObject *, std::shared_ptr<DefaultInfillObjectWorkCache>>::iterator cached =
+        m_object_caches.find(&object);
+    if (cached != m_object_caches.end() && cached->second) {
+        for (const DefaultInfillWorkGroup &group : cached->second->groups) {
+            for (const DefaultInfillSurfaceWork &work : group.surfaces) {
+                throw_if_cancelled(run_ctx);
+                generate_surface_from_recipe(*ctx, *group.layer, *group.island, *group.region_island, *group.region,
+                                             *work.surface, group.pattern_id, group.params, work.no_overlap_areas,
+                                             work.area_to_fill_mm2, run_ctx);
+                progress().increment();
+            }
+        }
+        // The recipes are no longer needed once the object has been filled.
+        m_object_caches.erase(cached);
+        return;
+    }
+
+    // Defensive fallback for a generator run without a prior discovery pass:
+    // rebuild each recipe on the fly.
     for (const Slic3r::Layer &layer : object.layers()) {
+        throw_if_cancelled(run_ctx);
         for (const Slic3r::LayerSliceIsland &island : layer.islands()) {
+            throw_if_cancelled(run_ctx);
             for (const Slic3r::LayerRegionIsland &region_island : island.regions_islands()) {
+                throw_if_cancelled(run_ctx);
                 const Slic3r::LayerRegion *region = primary_region(region_island);
                 if (region == nullptr)
                     continue;
 
                 for (const Slic3r::Surface &surface : region_island.fill_surfaces()) {
+                    throw_if_cancelled(run_ctx);
                     if (!surface_needs_infill(surface))
                         continue;
 
-                    throw_if_cancelled(run_ctx);
-                    generate_surface(*ctx, print, object, layer, island, region_island, *region, surface, run_ctx);
+                    SurfaceInfillRecipe recipe =
+                        make_surface_recipe(*ctx, print, object, layer, island, region_island, *region, surface, run_ctx);
                     progress().increment();
+                    if (recipe.raw.pattern_id == INFILL_PATTERN_RUNTIME_ID_INVALID || recipe.raw.density <= 0.f)
+                        continue;
+
+                    generate_surface_from_recipe(*ctx, layer, island, region_island, *region, surface,
+                                                 recipe.raw.pattern_id, recipe.raw, recipe.no_overlap_areas,
+                                                 recipe.area_to_fill_mm2, run_ctx);
                 }
             }
         }

@@ -302,6 +302,22 @@ bool ExtrusionPrinter::print_properties(const ExtrusionEntity &entity, const cha
         this->begin_property(first_property, "infill");
         this->begin_property_field(first_field, "source_surface_id");
         ss << property->source_surface_id;
+        this->begin_property_field(first_field, "area_to_fill_mm2");
+        ss << property->area_to_fill_mm2;
+        this->begin_property_field(first_field, "height");
+        ss << property->height;
+        this->begin_property_field(first_field, "spacing");
+        ss << property->spacing;
+        this->begin_property_field(first_field, "spacing_ratio");
+        ss << property->spacing_ratio;
+        this->begin_property_field(first_field, "density");
+        ss << property->density;
+        this->begin_property_field(first_field, "flow_mult");
+        ss << property->flow_mult;
+        this->begin_property_field(first_field, "surface_type");
+        ss << property->surface_type;
+        this->begin_property_field(first_field, "infill_flags");
+        ss << property->infill_flags;
         ss << "}";
     }
 

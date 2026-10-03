@@ -54,6 +54,7 @@ add_executable(${_TEST_NAME}_tests
     test_gcode_script_processor.cpp
     test_gcode_settings_scripts.cpp
     test_gui_rule_helpers.cpp
+    test_infill_pattern_init.cpp
     test_infill_pattern_lists.cpp
     test_layer_extrusion_edit_entry_state.cpp
     test_layer_extrusion_edit_lift.cpp
