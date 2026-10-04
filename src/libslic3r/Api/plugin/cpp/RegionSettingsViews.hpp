@@ -299,12 +299,20 @@ public:
 
     std::tuple<StoredExPolygonCollection, StoredExPolygonCollection>
     split_to_inside_outside(const ExPolygonCollection &subject) const {
-        return std::make_tuple(intersections(subject), diff(subject));
+        if (is_accept_all())
+            return std::make_tuple(intersections(subject), diff(subject));
+        ClipperContext clip(m_storage);
+        auto [inside, outside] = clipper_split(clip(subject), clip(m_expolygons->readonly()));
+        return std::make_tuple(inside.to_expolygon_collection(), outside.to_expolygon_collection());
     }
 
     std::tuple<StoredExPolygonCollection, StoredExPolygonCollection>
     split_to_inside_outside(const ExPolygon &subject) const {
-        return std::make_tuple(intersections(subject), diff(subject));
+        if (is_accept_all())
+            return std::make_tuple(intersections(subject), diff(subject));
+        StoredExPolygonCollection single(m_storage);
+        single.push_back(subject);
+        return split_to_inside_outside(single.readonly());
     }
 
     std::tuple<StoredPolylineCollection, StoredPolylineCollection>

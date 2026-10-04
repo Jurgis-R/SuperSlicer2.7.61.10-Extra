@@ -62,6 +62,13 @@ class GeometryClipperHost:
     def clipper_intersection_polyline_expolygons(self, storage, subject, clip):
         return self._result("polyline_intersection", storage, subject, clip)
 
+    def clipper_split(self, storage, subject, clip, inside, outside):
+        self.calls.append(("split", tuple(address(arg) for arg in (storage, subject, clip))))
+        inside._obj.value = self.next_handle + 1
+        outside._obj.value = self.next_handle + 2
+        self.next_handle += 2
+        return 1
+
     def clipper_split_polyline_expolygons(self, storage, subject, clip, inside, outside):
         self.calls.append(("polyline_split", tuple(address(arg) for arg in (storage, subject, clip))))
         if self.fail_next:
@@ -248,6 +255,19 @@ class PythonGeometryClipperViewTests(unittest.TestCase):
         api.host.fail_next = True
         with self.assertRaises(ValueError):
             api.clipper_split_polyline_expolygons(9, subject, clip)
+
+    def test_operand_split_returns_two_owned_operands(self):
+        api = self.make_api()
+        subject = self.clipper.ClipperOperand.adopt_owned(api, 9, 41)
+        clip = self.clipper.ClipperOperand.adopt_owned(api, 9, 42)
+
+        inside, outside = api.clipper(9).split(subject, clip)
+
+        self.assertEqual(api.host.calls, [("split", (9, 41, 42))])
+        for result in (inside, outside):
+            self.assertIsInstance(result, self.clipper.ClipperOperand)
+            self.assertEqual(result.storage(), 9)
+        self.assertNotEqual(inside.handle(), outside.handle())
 
     def test_helpers_reject_invalid_storage_api_and_native_results(self):
         api = self.make_api()

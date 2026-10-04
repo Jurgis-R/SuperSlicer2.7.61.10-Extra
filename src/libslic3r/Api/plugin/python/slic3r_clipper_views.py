@@ -368,6 +368,26 @@ def clipper_intersection(storage_or_subject, subject_or_clip, clip=None) -> Clip
     return ClipperOperand.adopt_owned(api, storage, handle)
 
 
+def clipper_split(storage_or_subject, subject_or_clip, clip=None) -> tuple[ClipperOperand, ClipperOperand]:
+    """
+    Return ``(inside, outside)``: ``subject`` intersection ``clip`` and
+    ``subject`` - ``clip``, computed from the same inputs so that they
+    share their boundary along ``clip``. Both are new operands owned by the
+    storage. Accepts ``(storage, subject, clip)`` or ``(subject, clip)``.
+    """
+    api, storage, subject, other = _binary_args(storage_or_subject, subject_or_clip, clip)
+    inside = ctypes.c_void_p()
+    outside = ctypes.c_void_p()
+    if not api.host.clipper_split(
+        _void_p(storage), subject.c_handle(), other.c_handle(), ctypes.byref(inside), ctypes.byref(outside)
+    ):
+        raise ValueError("clipper_split failed")
+    return (
+        ClipperOperand.adopt_owned(api, storage, _require_handle(inside.value, "inside clipper result")),
+        ClipperOperand.adopt_owned(api, storage, _require_handle(outside.value, "outside clipper result")),
+    )
+
+
 def clipper_diff_with_safety_offset(storage_or_subject, subject_or_clip, clip=None) -> ClipperOperand:
     api, storage, subject, other = _binary_args(storage_or_subject, subject_or_clip, clip)
     handle = api.host.clipper_diff_with_safety_offset(_void_p(storage), subject.c_handle(), other.c_handle())
@@ -652,6 +672,10 @@ class ClipperContext:
     def intersection(self, subject: ClipperOperand, clip: ClipperOperand) -> ClipperOperand:
         return clipper_intersection(self.storage(), subject, clip)
 
+    def split(self, subject: ClipperOperand, clip: ClipperOperand) -> tuple[ClipperOperand, ClipperOperand]:
+        """Return ``(inside, outside)`` operands sharing their boundary along clip."""
+        return clipper_split(self.storage(), subject, clip)
+
     def diff_with_safety_offset(self, subject: ClipperOperand, clip: ClipperOperand) -> ClipperOperand:
         return clipper_diff_with_safety_offset(self.storage(), subject, clip)
 
@@ -752,6 +776,7 @@ __all__ = [
     "clipper_intersection_with_safety_offset",
     "clipper_offset",
     "clipper_offset2",
+    "clipper_split",
     "clipper_split_polyline_expolygons",
     "clipper_union",
     "clipper_union2",

@@ -259,6 +259,34 @@ clipper_shapes_handle *clipper_intersection(storage_handle *storage,
     return clipper_execute(storage, CLIPPER_OPERATION_INTERSECTION, subject, clip);
 }
 
+int32_t clipper_split(storage_handle *storage,
+                      const clipper_shapes_handle *subject,
+                      const clipper_shapes_handle *clip,
+                      clipper_shapes_handle **inside,
+                      clipper_shapes_handle **outside)
+{
+    const Slic3r::ApiClipper::ClipperShapes *subject_shapes = Slic3r::to_shapes(subject);
+    const Slic3r::ApiClipper::ClipperShapes *clip_shapes = Slic3r::to_shapes(clip);
+    if (storage == nullptr || subject_shapes == nullptr || inside == nullptr || outside == nullptr)
+        return 0;
+
+    // Each operation runs on its own Clipper fed with the same inputs, so the two results are cut along
+    // the same clip edges. add_to_clipper() keeps the kind of each adapter: a polyline operand stays
+    // an open path, as in clipper_intersection() and clipper_diff().
+    auto run = [&](Slic3r::ClipperLib::ClipType clip_type) {
+        Slic3r::ClipperLib::Clipper clipper;
+        subject_shapes->add_to_clipper(clipper, Slic3r::ClipperLib::ptSubject, true);
+        if (clip_shapes != nullptr)
+            clip_shapes->add_to_clipper(clipper, Slic3r::ClipperLib::ptClip, true);
+        Slic3r::ClipperLib::PolyTree result;
+        clipper.Execute(clip_type, result, Slic3r::ClipperLib::pftNonZero, Slic3r::ClipperLib::pftNonZero);
+        return Slic3r::store_shape(storage, Slic3r::ApiClipper::make_polytree_shapes(std::move(result)));
+    };
+    *inside = run(Slic3r::ClipperLib::ctIntersection);
+    *outside = run(Slic3r::ClipperLib::ctDifference);
+    return 1;
+}
+
 clipper_shapes_handle *clipper_diff_with_safety_offset(storage_handle *storage,
                                                        const clipper_shapes_handle *subject,
                                                        const clipper_shapes_handle *clip)

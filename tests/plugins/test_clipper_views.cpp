@@ -328,6 +328,45 @@ TEST_CASE("Polyline set split matches intersection and diff", "[plugins][clipper
     CHECK(sorted(outside) == sorted(diff_pl(lines, clip)));
 }
 
+TEST_CASE("ClipperOperand split matches intersection and diff", "[plugins][clipper]")
+{
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    slic3r_api::ClipperContext clipper(storage);
+    const ExPolygon subject = rectangle_with_two_holes();
+    const Polygon clip = rectangle_mm(6., -5., 30., 9.);
+
+    auto area = [](const slic3r_api::ClipperOperand &operand) {
+        double out = 0.;
+        for (const slic3r_api::ExPolygon expolygon : operand.to_expolygon_collection())
+            out += expolygon.area();
+        return out;
+    };
+    auto [inside, outside] = slic3r_api::clipper_split(clipper(view(subject)), clipper(view(clip)));
+    CHECK(area(inside) == Approx(area(slic3r_api::clipper_intersection(clipper(view(subject)), clipper(view(clip))))));
+    CHECK(area(outside) == Approx(area(slic3r_api::clipper_diff(clipper(view(subject)), clipper(view(clip))))));
+    CHECK(area(inside) + area(outside) == Approx(subject.area()));
+    // The clip cuts through the second hole: a notch on the inside, a notch and the first hole outside.
+    CHECK(inside.path_count() == 1);
+    CHECK(outside.path_count() == 2);
+
+    // An empty clip leaves the whole subject outside.
+    auto [nothing_inside, all_outside] = slic3r_api::clipper_split(clipper(view(subject)), clipper.empty());
+    CHECK(nothing_inside.empty());
+    CHECK(area(all_outside) == Approx(subject.area()));
+
+    // A polyline operand stays an open path, as with the separate operations: a two-point line
+    // crossing the square is not taken as a degenerate polygon.
+    const Polyline line({point_mm(-5., 10.), point_mm(25., 10.)});
+    const slic3r_api::Polyline line_view(reinterpret_cast<const polyline_handle *>(&line));
+    const Polygon square = rectangle_mm(5., 5., 15., 15.);
+    auto [line_inside, line_outside] = slic3r_api::clipper_split(clipper(line_view), clipper(view(square)));
+    CHECK(line_inside.path_count() == 1);
+    CHECK(line_outside.path_count() == 2);
+    CHECK(line_inside.path_count() == slic3r_api::clipper_intersection(clipper(line_view), clipper(view(square))).path_count());
+    CHECK(line_outside.path_count() == slic3r_api::clipper_diff(clipper(line_view), clipper(view(square))).path_count());
+}
+
 TEST_CASE("Clipper polyline pieces cut less than SCALED_EPSILON apart are glued back", "[plugins][clipper]")
 {
     const coord_t half = scale_i(5.);

@@ -143,6 +143,22 @@ StoredExPolygonCollection intersection_collection(storage_handle *storage,
     return clipper_intersection(clipper(subject), clipper(clip_areas)).to_expolygon_collection();
 }
 
+// Returns {subject inside clip_areas, subject outside clip_areas}, computed together so that both
+// parts share their boundary.
+std::tuple<StoredExPolygonCollection, StoredExPolygonCollection> split_collection(storage_handle *storage,
+                                                                                  const ExPolygonCollection &subject,
+                                                                                  const ExPolygonCollection &clip_areas)
+{
+    if (subject.empty())
+        return std::make_tuple(StoredExPolygonCollection(storage), StoredExPolygonCollection(storage));
+    if (clip_areas.empty())
+        return std::make_tuple(StoredExPolygonCollection(storage), subject.clone(storage));
+
+    ClipperContext clipper(storage);
+    auto [inside, outside] = clipper_split(clipper(subject), clipper(clip_areas));
+    return std::make_tuple(inside.to_expolygon_collection(), outside.to_expolygon_collection());
+}
+
 void append_surface_group(StoredSurfaceCollection &surfaces,
                           const ExPolygonCollection &areas,
                           raw_surface_type type)
@@ -234,8 +250,7 @@ StoredSurfaceCollection promote_sparse_inside_zone(storage_handle *storage,
             continue;
         }
 
-        StoredExPolygonCollection solid = intersection_collection(storage, source.readonly(), promotion_zone);
-        StoredExPolygonCollection residual = diff_collection(storage, source.readonly(), solid.readonly());
+        auto [solid, residual] = split_collection(storage, source.readonly(), promotion_zone);
         append_surface_group(output, solid.readonly(), solid_version(surface.type()));
         append_surface_group(output, residual.readonly(), surface.type());
     }
@@ -288,9 +303,9 @@ void append_thin_width_result(StoredSurfaceCollection &output,
     ClipperContext clipper(storage);
     StoredExPolygonCollection wide_sparse =
         clipper_offset2(clipper(source), -double(half_width), double(half_width)).to_expolygon_collection();
-    wide_sparse = intersection_collection(storage, wide_sparse.readonly(), source);
+    auto [kept_sparse, thin_solid] = split_collection(storage, source, wide_sparse.readonly());
+    wide_sparse = std::move(kept_sparse);
 
-    StoredExPolygonCollection thin_solid = diff_collection(storage, source, wide_sparse.readonly());
     append_surface_group(output, thin_solid.readonly(), solid_version(source_type));
     append_surface_group(output, wide_sparse.readonly(), source_type);
 }

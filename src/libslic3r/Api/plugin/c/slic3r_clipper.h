@@ -100,6 +100,25 @@ SLIC3R_HOST_API clipper_shapes_handle *clipper_diff(storage_handle *storage,
 SLIC3R_HOST_API clipper_shapes_handle *clipper_intersection(storage_handle *storage,
                                                            const clipper_shapes_handle *subject,
                                                            const clipper_shapes_handle *clip);
+
+/*
+subject intersection clip and subject - clip at once: *inside receives the part
+of subject inside clip and *outside the part outside it, as two new
+storage-owned shapes (release each with storage_free()). Both are computed from
+the same inputs, so they share their boundary along clip. Each operand keeps
+its kind: a polyline subject is clipped as an open path, as with
+clipper_intersection() and clipper_diff(). Each side is
+cleaned at SCALED_EPSILON like any Clipper result, so the two may differ from
+an exact tiling by less than that distance. clip == NULL gives an empty *inside
+and the union of subject in *outside.
+Returns 1 on success. Returns 0 and leaves both outputs unchanged when storage,
+subject, inside or outside is NULL.
+*/
+SLIC3R_HOST_API int32_t clipper_split(storage_handle *storage,
+                                      const clipper_shapes_handle *subject,
+                                      const clipper_shapes_handle *clip,
+                                      clipper_shapes_handle **inside,
+                                      clipper_shapes_handle **outside);
 /*
 Run a boolean operation after applying the Clipper safety offset to clip only.
 

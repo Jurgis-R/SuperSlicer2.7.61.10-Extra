@@ -330,10 +330,9 @@ void process_complex_volume_regions_with_clipping(
                     // parent then loses that same source area so following
                     // regions do not see duplicated material.
                     throw_if_cancelled(run_ctx);
-                    this_slice.expolygons =
-                        clipper_intersection(clipper(parent_slice.expolygons), clipper(source)).to_expolygon_collection();
-                    throw_if_cancelled(run_ctx);
-                    parent_slice.expolygons = clipper_diff(clipper(parent_slice.expolygons), clipper(source)).to_expolygon_collection();
+                    auto [inside, outside] = clipper_split(clipper(parent_slice.expolygons), clipper(source));
+                    this_slice.expolygons = inside.to_expolygon_collection();
+                    parent_slice.expolygons = outside.to_expolygon_collection();
                     throw_if_cancelled(run_ctx);
                 }
 

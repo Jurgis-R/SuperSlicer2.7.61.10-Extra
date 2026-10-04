@@ -421,6 +421,31 @@ inline ClipperOperand clipper_intersection(storage_handle *storage, const Clippe
     return ClipperOperand::adopt(storage, ::clipper_intersection(storage, subject.handle(), clip.handle()));
 }
 
+// Returns {inside, outside}: subject intersection clip and subject - clip, computed from the same
+// inputs so that they share their boundary along clip. Both are storage-owned operands.
+inline std::tuple<ClipperOperand, ClipperOperand> clipper_split(storage_handle *storage,
+                                                                const ClipperOperand &subject,
+                                                                const ClipperOperand &clip)
+{
+    if (subject.empty())
+        return std::make_tuple(ClipperOperand::create_empty(storage), ClipperOperand::create_empty(storage));
+    if (clip.empty())
+        return std::make_tuple(ClipperOperand::create_empty(storage),
+                               ClipperOperand::adopt(storage, ::clipper_union(storage, subject.handle())));
+    clipper_shapes_handle *inside = nullptr;
+    clipper_shapes_handle *outside = nullptr;
+    const int32_t split = ::clipper_split(storage, subject.handle(), clip.handle(), &inside, &outside);
+    assert(split == 1);
+    (void)split;
+    return std::make_tuple(ClipperOperand::adopt(storage, inside), ClipperOperand::adopt(storage, outside));
+}
+
+inline std::tuple<ClipperOperand, ClipperOperand> clipper_split(const ClipperOperand &subject, const ClipperOperand &clip) {
+    assert(subject.storage() != nullptr);
+    assert(clip.storage() == subject.storage());
+    return clipper_split(subject.storage(), subject, clip);
+}
+
 inline ClipperOperand clipper_diff(const ClipperOperand &subject, const ClipperOperand &clip) {
     assert(subject.storage() != nullptr);
     assert(clip.storage() == subject.storage());

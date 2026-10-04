@@ -130,6 +130,22 @@ StoredExPolygonCollection intersection_collection(storage_handle *storage,
     return clipper_intersection(clipper(subject), clipper(clip_areas)).to_expolygon_collection();
 }
 
+// Returns {subject inside clip_areas, subject outside clip_areas}, computed together so that both
+// parts share their boundary.
+std::tuple<StoredExPolygonCollection, StoredExPolygonCollection> split_collection(storage_handle *storage,
+                                                                                  const ExPolygonCollection &subject,
+                                                                                  const ExPolygonCollection &clip_areas)
+{
+    if (subject.empty())
+        return std::make_tuple(StoredExPolygonCollection(storage), StoredExPolygonCollection(storage));
+    if (clip_areas.empty())
+        return std::make_tuple(StoredExPolygonCollection(storage), subject.clone(storage));
+
+    ClipperContext clipper(storage);
+    auto [inside, outside] = clipper_split(clipper(subject), clipper(clip_areas));
+    return std::make_tuple(inside.to_expolygon_collection(), outside.to_expolygon_collection());
+}
+
 void append_surface_group(StoredSurfaceCollection &surfaces,
                           const ExPolygonCollection &areas,
                           raw_surface_type type)
@@ -368,10 +384,7 @@ void append_projected_margin_result(StoredSurfaceCollection &out,
     if (source.empty())
         return;
 
-    StoredExPolygonCollection solid =
-        intersection_collection(storage, source, projected_rings);
-    StoredExPolygonCollection residual =
-        diff_collection(storage, source, solid.readonly());
+    auto [solid, residual] = split_collection(storage, source, projected_rings);
 
     append_surface_group(out, solid.readonly(), k_internal_solid);
     append_surface_group(out, residual.readonly(), residual_type);
