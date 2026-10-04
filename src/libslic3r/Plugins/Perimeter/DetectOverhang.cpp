@@ -325,10 +325,14 @@ void merge_tiny_fragments(std::vector<Fragment> &fragments)
     // path creates almost-zero extrusion moves. Merging it into a neighbor
     // preserves the centerline order and merely lets the neighbor's overhang
     // classification cover an unprintably small distance.
+    // A fragment shorter than min_length as a whole cannot be collapsed; it
+    // keeps its points so the loop below merges it into a neighbor. Dropping it
+    // would leave a gap between its neighbors and open a split loop.
     fragments.erase(
         std::remove_if(fragments.begin(), fragments.end(),
                        [](Fragment &fragment) {
-                           return !collapse_tiny_segments(fragment) || fragment.entity.point_count() < 2;
+                           collapse_tiny_segments(fragment);
+                           return fragment.entity.point_count() < 2;
                        }),
         fragments.end());
 
@@ -819,9 +823,12 @@ void replace_root_leaf_with_fragments(MutableExtrusionEntity root, std::vector<F
     // does not revisit these freshly inserted children during the same pass.
     const bool was_reversible = (root.flags() & RAW_EXTRUSION_FLAG_REVERSIBLE) != 0;
     root.clear_content();
-    root.set_flags(was_reversible ? RAW_EXTRUSION_FLAG_REVERSIBLE : 0);
     for (Fragment &fragment : fragments)
         root.append_child_move(fragment.entity.mutable_view());
+    // Set the flags after the children: the first appended child turns the
+    // empty node into a sortable collection. The fragments must stay an
+    // ordered sequence, so a split loop is still a loop.
+    root.set_flags(was_reversible ? RAW_EXTRUSION_FLAG_REVERSIBLE : 0);
 }
 
 class DetectOverhangVisitor : public ExtrusionTreeVisitor<>
