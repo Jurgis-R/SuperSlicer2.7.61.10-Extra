@@ -187,8 +187,9 @@ public:
 
     ClipperLib::Paths to_paths() const override
     {
+        // Start from the root's children: the root is a container with an empty contour.
         Polygons polygons;
-        traverse_pt(&m_tree, &polygons);
+        traverse_pt(m_tree.Childs, &polygons);
         ClipperLib::Paths out;
         out.reserve(polygons.size());
         for (const Polygon &polygon : polygons)
@@ -199,7 +200,7 @@ public:
     Polygons to_polygons() const override
     {
         Polygons out;
-        traverse_pt(&m_tree, &out);
+        traverse_pt(m_tree.Childs, &out);
         return out;
     }
 

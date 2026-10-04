@@ -94,6 +94,8 @@ TEST_CASE("ClipperOperand path_count counts raw non-empty paths", "[plugins][cli
     slic3r_api::ClipperOperand unioned = slic3r_api::clipper_union(concatenated);
     CHECK(unioned.path_count() == 2);
     CHECK(!unioned.empty());
+    // A Clipper result is a PolyTree whose root has an empty contour; only its children are paths.
+    CHECK(unioned.to_polygon_collection().size() == 2);
 }
 
 TEST_CASE("ClipperOperand concatenation treats null operands as empty", "[plugins][clipper]")
