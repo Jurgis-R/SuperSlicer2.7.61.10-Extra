@@ -278,8 +278,8 @@ class PythonPrintHelperTests(unittest.TestCase):
         )
         return (
             coord
-            // int(self.generated.SCALED_EPSILON)
-            * int(self.generated.SCALED_EPSILON)
+            // int(self.generated.SCALED_LAYER_Z_STEP)
+            * int(self.generated.SCALED_LAYER_Z_STEP)
         )
 
     def test_e_per_mm_and_z_step_match_the_cxx_formulas(self):
