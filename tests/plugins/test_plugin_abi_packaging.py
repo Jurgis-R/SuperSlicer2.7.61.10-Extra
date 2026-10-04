@@ -304,6 +304,7 @@ class AbiPackagingTests(unittest.TestCase):
                 "clipper_clip_expolygons_with_subject_bbox",
                 "clipper_diff_polyline_expolygons",
                 "clipper_intersection_polyline_expolygons",
+                "clipper_split_polyline_expolygons",
             ):
                 with self.subTest(clipper_helper=clipper_helper):
                     self.assertIn(

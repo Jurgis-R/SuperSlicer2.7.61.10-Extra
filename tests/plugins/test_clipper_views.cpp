@@ -4,6 +4,8 @@
 #include <future>
 #include <iostream>
 #include <random>
+#include <set>
+#include <algorithm>
 #include "libslic3r/Api/plugin/cpp/LineDistancer.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
@@ -245,6 +247,129 @@ TEST_CASE("Clipper polyline outputs keep their ends and drop close interior poin
     REQUIRE(tiny.size() == 1);
     CHECK(tiny.front().size() == 2);
     CHECK(tiny.front().length() == Approx(double(SCALED_EPSILON / 2)));
+}
+
+TEST_CASE("Clipper polyline split matches diff and intersection and shares cut points", "[plugins][clipper]")
+{
+    // A slanted line crossing a square with a hole: inside pieces on both sides of
+    // the hole, outside pieces before, in the hole and after.
+    ExPolygon area(rectangle_mm(5., -5., 15., 5.));
+    area.holes.push_back(rectangle_mm(8., -5. + 3., 12., 5. - 3.));
+    area.holes.back().make_clockwise();
+    const ExPolygons clip{area};
+    const Polyline subject({point_mm(0., -1.), point_mm(20., 1.)});
+
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    const slic3r_api::Polyline subject_view(reinterpret_cast<const polyline_handle *>(&subject));
+    const slic3r_api::ExPolygonCollection clip_view(reinterpret_cast<const expolygon_collection_handle *>(&clip));
+    auto [inside, outside] = slic3r_api::clipper_split_polyline_expolygons(storage, subject_view, clip_view);
+
+    // Collect each piece as its list of points, sorted so that piece order does not matter.
+    auto pieces = [](const slic3r_api::StoredPolylineCollection &collection) {
+        std::vector<std::vector<std::pair<coord_t, coord_t>>> out;
+        for (uint32_t idx = 0; idx < collection.size(); ++idx) {
+            std::vector<std::pair<coord_t, coord_t>> points;
+            for (uint32_t pt_idx = 0; pt_idx < collection[idx].size(); ++pt_idx)
+                points.emplace_back(collection[idx][pt_idx].x, collection[idx][pt_idx].y);
+            out.push_back(std::move(points));
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    REQUIRE(inside.size() == 2);
+    REQUIRE(outside.size() == 3);
+    CHECK(pieces(inside) == pieces(slic3r_api::clipper_intersection_polyline_expolygons(storage, subject_view, clip_view)));
+    CHECK(pieces(outside) == pieces(slic3r_api::clipper_diff_polyline_expolygons(storage, subject_view, clip_view)));
+
+    // Every cut point ends one piece on each side; only the subject ends belong to one side.
+    std::multiset<std::pair<coord_t, coord_t>> inside_ends;
+    std::multiset<std::pair<coord_t, coord_t>> outside_ends;
+    for (const std::vector<std::pair<coord_t, coord_t>> &piece : pieces(inside)) {
+        inside_ends.insert(piece.front());
+        inside_ends.insert(piece.back());
+    }
+    for (const std::vector<std::pair<coord_t, coord_t>> &piece : pieces(outside)) {
+        outside_ends.insert(piece.front());
+        outside_ends.insert(piece.back());
+    }
+    outside_ends.erase(outside_ends.find({subject.front().x(), subject.front().y()}));
+    outside_ends.erase(outside_ends.find({subject.back().x(), subject.back().y()}));
+    CHECK(inside_ends == outside_ends);
+
+    // Without clip area, everything is outside.
+    const ExPolygons no_clip;
+    const slic3r_api::ExPolygonCollection no_clip_view(reinterpret_cast<const expolygon_collection_handle *>(&no_clip));
+    auto [nothing_inside, all_outside] = slic3r_api::clipper_split_polyline_expolygons(storage, subject_view, no_clip_view);
+    CHECK(nothing_inside.empty());
+    REQUIRE(all_outside.size() == 1);
+    CHECK(all_outside[0].size() == 2);
+}
+
+TEST_CASE("Polyline set split matches intersection and diff", "[plugins][clipper]")
+{
+    // Two parallel lines crossing a square: each is cut into one inside and two outside pieces.
+    const Polylines lines{Polyline({point_mm(0., 2.), point_mm(20., 3.)}), Polyline({point_mm(0., 6.), point_mm(20., 7.)})};
+    const Polygons clip{rectangle_mm(5., 0., 15., 10.)};
+    auto sorted = [](Polylines polylines) {
+        std::vector<Points> out;
+        for (Polyline &polyline : polylines)
+            out.push_back(std::move(polyline.points));
+        std::sort(out.begin(), out.end(), [](const Points &a, const Points &b) {
+            return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+                                                [](const Point &l, const Point &r) { return l.x() < r.x() || (l.x() == r.x() && l.y() < r.y()); });
+        });
+        return out;
+    };
+    auto [inside, outside] = split_pl(lines, clip);
+    CHECK(inside.size() == 2);
+    CHECK(outside.size() == 4);
+    CHECK(sorted(inside) == sorted(intersection_pl(lines, clip)));
+    CHECK(sorted(outside) == sorted(diff_pl(lines, clip)));
+}
+
+TEST_CASE("Clipper polyline pieces cut less than SCALED_EPSILON apart are glued back", "[plugins][clipper]")
+{
+    const coord_t half = scale_i(5.);
+    const Polyline line({Point(0, 0), Point(2 * half, 0)});
+    // A vertical strip SCALED_EPSILON / 2 wide crossing the middle of the line.
+    const Polygon thin_strip({Point(half, -half), Point(half + SCALED_EPSILON / 2, -half),
+                              Point(half + SCALED_EPSILON / 2, half), Point(half, half)});
+
+    // diff: the two outside pieces become one again, from end to end.
+    const Polylines outside = diff_pl(line, thin_strip);
+    REQUIRE(outside.size() == 1);
+    CHECK(outside.front().length() == Approx(double(2 * half)).epsilon(1e-6));
+
+    // intersection: two areas separated by a gap SCALED_EPSILON / 2 wide give one piece.
+    const ExPolygons two_areas{ExPolygon(rectangle_mm(-1., -1., 5., 1.)),
+                               ExPolygon(Polygon({Point(half + SCALED_EPSILON / 2, scale_i(-1.)), Point(scale_i(11.), scale_i(-1.)),
+                                                  Point(scale_i(11.), scale_i(1.)), Point(half + SCALED_EPSILON / 2, scale_i(1.))}))};
+    const Polylines inside = intersection_pl(line, two_areas);
+    REQUIRE(inside.size() == 1);
+    CHECK(inside.front().length() == Approx(double(2 * half)).epsilon(1e-6));
+
+    // split: the outside is glued and the tiny inside piece between the two cuts is dropped.
+    auto [split_inside, split_outside] = split_pl(line, ExPolygons{ExPolygon(thin_strip)});
+    CHECK(split_inside.empty());
+    REQUIRE(split_outside.size() == 1);
+    CHECK(split_outside.front().length() == Approx(double(2 * half)).epsilon(1e-6));
+
+    // Ends close in the plane but far apart along the subject are not glued: this path comes back
+    // SCALED_EPSILON / 2 above its start after a 34 mm detour inside the clip.
+    const Polyline detour({point_mm(-5., 0.), point_mm(10., 0.), point_mm(10., 10.), Point(0, SCALED_EPSILON / 2),
+                           Point(scale_i(-5.), SCALED_EPSILON / 2)});
+    const ExPolygons detour_clip{ExPolygon(rectangle_mm(0., -1., 20., 20.))};
+    CHECK(diff_pl(detour, detour_clip).size() == 2);
+    auto [detour_inside, detour_outside] = split_pl(detour, detour_clip);
+    REQUIRE(detour_inside.size() == 1);
+    CHECK(detour_inside.front().length() == Approx(scale_d(20. + std::sqrt(200.))).epsilon(1e-4));
+    CHECK(detour_outside.size() == 2);
+
+    // A loop given as a polyline keeps its start: its two ends are never glued together.
+    const Polyline loop({Point(0, 0), Point(2 * half, 0), Point(2 * half, 2 * half), Point(0, 2 * half), Point(0, 0)});
+    const Polygon right_side({Point(half, -half), Point(3 * half, -half), Point(3 * half, 3 * half), Point(half, 3 * half)});
+    CHECK(diff_pl(loop, right_side).size() == 2);
 }
 
 

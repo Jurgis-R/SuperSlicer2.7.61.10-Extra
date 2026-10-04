@@ -510,6 +510,13 @@ Slic3r::Polylines  intersection_pl(const Slic3r::Polylines &subject, const Slic3
 Slic3r::Polylines  intersection_pl(const Slic3r::Polylines &subject, const Slic3r::ExPolygon &clip);
 Slic3r::Polylines  intersection_pl(const Slic3r::Polylines &subject, const Slic3r::ExPolygons &clip);
 Slic3r::Polylines  intersection_pl(const Slic3r::Polygons &subject, const Slic3r::Polygons &clip);
+// Both intersection_pl() and diff_pl() of one polyline, computed from the same prepared Clipper input:
+// returns {inside, outside}. The two sides are cut at the same points, so every end of a piece that is
+// not an end of subject is also an end of a piece on the other side.
+// When the subject is a single polyline, intersection_pl() and diff_pl() glue back two pieces cut less
+// than SCALED_EPSILON apart. split_pl() then also drops the tiny piece between them on the other side.
+std::pair<Slic3r::Polylines, Slic3r::Polylines> split_pl(const Slic3r::Polyline &subject, const Slic3r::ExPolygons &clip);
+std::pair<Slic3r::Polylines, Slic3r::Polylines> split_pl(const Slic3r::Polylines &subject, const Slic3r::Polygons &clip);
 
 inline Slic3r::Lines intersection_ln(const Slic3r::Lines &subject, const Slic3r::Polygons &clip)
 {

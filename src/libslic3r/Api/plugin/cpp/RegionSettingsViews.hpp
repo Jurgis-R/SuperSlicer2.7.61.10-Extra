@@ -309,7 +309,9 @@ public:
 
     std::tuple<StoredPolylineCollection, StoredPolylineCollection>
     split_to_inside_outside(const Polyline &subject) const {
-        return std::make_tuple(intersections(subject), diff(subject));
+        if (is_accept_all())
+            return std::make_tuple(intersections(subject), diff(subject));
+        return clipper_split_polyline_expolygons(m_storage, subject, m_expolygons->readonly());
     }
 
     void append_intersections_to(StoredExPolygonCollection &dst, const ExPolygonCollection &subject) const {

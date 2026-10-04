@@ -541,4 +541,28 @@ polyline_collection_handle *clipper_intersection_polyline_expolygons(storage_han
     return out_handle;
 }
 
+int32_t clipper_split_polyline_expolygons(storage_handle *storage,
+                                          const polyline_handle *subject,
+                                          const expolygon_collection_handle *clip,
+                                          polyline_collection_handle **inside,
+                                          polyline_collection_handle **outside)
+{
+    if (storage == nullptr || subject == nullptr || inside == nullptr || outside == nullptr)
+        return 0;
+
+    polyline_collection_handle *inside_handle = storage_new_polylines(storage);
+    polyline_collection_handle *outside_handle = storage_new_polylines(storage);
+    if (clip == nullptr || Slic3r::to_expolygons(clip)->empty()) {
+        Slic3r::to_polylines(outside_handle)->push_back(*Slic3r::to_polyline(subject));
+    } else {
+        std::pair<Slic3r::Polylines, Slic3r::Polylines> split =
+            Slic3r::split_pl(*Slic3r::to_polyline(subject), *Slic3r::to_expolygons(clip));
+        *Slic3r::to_polylines(inside_handle) = std::move(split.first);
+        *Slic3r::to_polylines(outside_handle) = std::move(split.second);
+    }
+    *inside = inside_handle;
+    *outside = outside_handle;
+    return 1;
+}
+
 } // extern "C"

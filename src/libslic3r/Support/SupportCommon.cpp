@@ -1445,10 +1445,12 @@ static void modulate_extrusion_by_overlapping_layers(
         Polygons polygons_trimming      = offset(union_ex(overlapping_layer.polygons), scale_d(0.5 * extrusion_width));
         ensure_valid(polygons_trimming, this_layer.resolution);
         assert_valid(polygons_trimming);
-        frag.polylines = intersection_pl(path_fragments.back().polylines, polygons_trimming);
+        // Both sides are cut at the same points.
+        std::pair<Polylines, Polylines> split = split_pl(path_fragments.back().polylines, polygons_trimming);
+        frag.polylines = std::move(split.first);
         ensure_valid(frag.polylines, this_layer.resolution);
         assert_valid(frag.polylines);
-        path_fragments.back().polylines = diff_pl(path_fragments.back().polylines, polygons_trimming);
+        path_fragments.back().polylines = std::move(split.second);
         assert_valid(path_fragments.back().polylines);
         // Adjust the extrusion parameters for a reduced layer height and a non-bridging flow (nozzle_dmr = -1, does not matter).
         assert(this_layer.scaled_print_z() > overlapping_layer.scaled_print_z());

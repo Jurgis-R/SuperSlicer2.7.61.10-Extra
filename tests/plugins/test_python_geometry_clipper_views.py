@@ -62,6 +62,16 @@ class GeometryClipperHost:
     def clipper_intersection_polyline_expolygons(self, storage, subject, clip):
         return self._result("polyline_intersection", storage, subject, clip)
 
+    def clipper_split_polyline_expolygons(self, storage, subject, clip, inside, outside):
+        self.calls.append(("polyline_split", tuple(address(arg) for arg in (storage, subject, clip))))
+        if self.fail_next:
+            self.fail_next = False
+            return 0
+        inside._obj.value = self.next_handle + 1
+        outside._obj.value = self.next_handle + 2
+        self.next_handle += 2
+        return 1
+
     def clipper_clip_expolygons_with_subject_bbox(self, storage, src, bbox):
         self.calls.append(("clip_expolygons_bbox", (address(storage), address(src)), bbox))
         if self.fail_next:
@@ -217,6 +227,27 @@ class PythonGeometryClipperViewTests(unittest.TestCase):
         for result in (outside, inside, bounded):
             self.assertEqual(result.storage(), 9)
             self.assertTrue(result.free_from_storage())
+
+    def test_polyline_split_returns_two_storage_owned_results(self):
+        api = self.make_api()
+        subject = self.geometry.Polyline(api, 21)
+        clip = self.geometry.ExPolygonCollection(api, 22)
+
+        inside, outside = api.clipper(9).split_polyline_expolygons(subject, clip)
+
+        self.assertEqual(api.host.calls, [("polyline_split", (9, 21, 22))])
+        for result in (inside, outside):
+            self.assertIsInstance(result, self.geometry.StoredPolylineCollection)
+            self.assertEqual(result.storage(), 9)
+        self.assertNotEqual(inside.handle(), outside.handle())
+        handles = [inside.handle(), outside.handle()]
+        self.assertTrue(inside.free_from_storage())
+        self.assertTrue(outside.free_from_storage())
+        self.assertEqual(api.host.freed, [(9, handle) for handle in handles])
+
+        api.host.fail_next = True
+        with self.assertRaises(ValueError):
+            api.clipper_split_polyline_expolygons(9, subject, clip)
 
     def test_helpers_reject_invalid_storage_api_and_native_results(self):
         api = self.make_api()

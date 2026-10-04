@@ -5,6 +5,8 @@
 #ifndef slic3r_Api_plugin_cpp_ClipperViews_hpp_
 #define slic3r_Api_plugin_cpp_ClipperViews_hpp_
 
+#include <tuple>
+
 #include "libslic3r/Api/plugin/c/slic3r_clipper.h"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 
@@ -73,8 +75,10 @@ Choosing output form
 --------------------
 Use StoredExPolygonCollection when contour/hole topology matters. Use
 StoredPolygonCollection only when a flat list of polygons is enough. For open
-paths, use clipper_diff_polyline_expolygons() or
-clipper_intersection_polyline_expolygons(); converting an open polyline through
+paths, use clipper_diff_polyline_expolygons(),
+clipper_intersection_polyline_expolygons(), or
+clipper_split_polyline_expolygons() when both sides are needed: they are then cut
+at the same points. Converting an open polyline through
 ClipperOperand and back to polygons is not the same operation.
 */
 
@@ -563,6 +567,21 @@ inline StoredPolylineCollection clipper_intersection_polyline_expolygons(storage
     if (subject.empty() || clip.empty())
         return StoredPolylineCollection(storage);
     return StoredPolylineCollection::adopt(storage, ::clipper_intersection_polyline_expolygons(storage, subject.handle(), clip.handle()));
+}
+
+// Returns {inside, outside}: the pieces of subject inside clip and the pieces outside it, cut at the
+// same points. Both collections are owned by storage.
+inline std::tuple<StoredPolylineCollection, StoredPolylineCollection>
+clipper_split_polyline_expolygons(storage_handle *storage, const Polyline &subject, const ExPolygonCollection &clip)
+{
+    if (subject.empty())
+        return std::make_tuple(StoredPolylineCollection(storage), StoredPolylineCollection(storage));
+    polyline_collection_handle *inside = nullptr;
+    polyline_collection_handle *outside = nullptr;
+    const int32_t split = ::clipper_split_polyline_expolygons(storage, subject.handle(), clip.handle(), &inside, &outside);
+    assert(split == 1);
+    (void)split;
+    return std::make_tuple(StoredPolylineCollection::adopt(storage, inside), StoredPolylineCollection::adopt(storage, outside));
 }
 
 inline StoredExPolygonCollection clipper_clip_expolygons_with_subject_bbox(storage_handle *storage,

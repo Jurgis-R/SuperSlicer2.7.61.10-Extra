@@ -6,7 +6,7 @@
 #define slic3r_clipper_h_
 
 #define SLIC3R_PLUGIN_API_CLIPPER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 0u
+#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 1u
 
 #include "slic3r_def.h"
 #include "slic3r_geometry.h"
@@ -248,7 +248,9 @@ SLIC3R_HOST_API clipper_shapes_handle *clipper_clip_shapes_with_subject_bbox(sto
 /*
 Clip an open polyline by polygonal areas and return the remaining open pieces.
 
-This is the polyline equivalent of subject - clip. It is intentionally exposed
+This is the polyline equivalent of subject - clip. Two pieces cut less than
+SCALED_EPSILON apart (by a clip thinner than that) are glued back into one.
+It is intentionally exposed
 as a direct helper instead of a generic ClipperOperand conversion because open
 paths materialize as polylines, not as polygon/expolygon collections.
 
@@ -262,7 +264,9 @@ SLIC3R_HOST_API polyline_collection_handle *clipper_diff_polyline_expolygons(sto
 /*
 Clip an open polyline by polygonal areas and return the pieces inside clip.
 
-This is the polyline equivalent of subject intersection clip. It is mostly used
+This is the polyline equivalent of subject intersection clip. Two pieces cut
+less than SCALED_EPSILON apart (by a gap thinner than that between clip areas)
+are glued back into one. It is mostly used
 by post-process plugins that need to split one extrusion into "inside this
 region setting" and "outside this region setting" fragments while keeping the
 original extrusion order.
@@ -275,6 +279,31 @@ SLIC3R_HOST_API polyline_collection_handle *clipper_intersection_polyline_expoly
     storage_handle *storage,
     const polyline_handle *subject,
     const expolygon_collection_handle *clip);
+
+/*
+Clip an open polyline by polygonal areas and return both sides at once: the
+pieces inside clip (as clipper_intersection_polyline_expolygons()) and the
+pieces outside it (as clipper_diff_polyline_expolygons()).
+
+Both sides are computed from the same prepared input, so they are cut at the
+same points: every end of a piece that is not an end of subject is also an end
+of a piece on the other side. When two cuts are less than SCALED_EPSILON apart,
+the tiny piece between them is dropped and the two pieces around it are glued
+back into one, so both sides still tile subject. A piece shorter than
+SCALED_EPSILON at an end of subject is kept; the caller decides what to do with
+it. The order and direction of the pieces are unspecified.
+
+*inside and *outside receive new polyline collections owned by storage; release
+each with storage_free() when no longer needed. clip == NULL or an empty
+collection gives an empty *inside and a copy of subject in *outside.
+Returns 1 on success. Returns 0 and leaves both outputs unchanged when storage,
+subject, inside or outside is NULL.
+*/
+SLIC3R_HOST_API int32_t clipper_split_polyline_expolygons(storage_handle *storage,
+                                                          const polyline_handle *subject,
+                                                          const expolygon_collection_handle *clip,
+                                                          polyline_collection_handle **inside,
+                                                          polyline_collection_handle **outside);
 
 #ifdef __cplusplus
 }

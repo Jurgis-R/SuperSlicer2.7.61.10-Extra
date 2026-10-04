@@ -732,8 +732,9 @@ void append_region_fragments(storage_handle *storage,
             continue;
         }
 
-        StoredPolylineCollection supported_polylines =
-            clipper_intersection_polyline_expolygons(storage, region_polyline, supported_area);
+        // Both sides are cut at the same points, so the fragments tile the region polyline.
+        auto [supported_polylines, overhang_polylines] =
+            clipper_split_polyline_expolygons(storage, region_polyline, supported_area);
         throw_if_cancelled(run_ctx);
         for (const Polyline supported : supported_polylines)
         {
@@ -741,9 +742,6 @@ void append_region_fragments(storage_handle *storage,
             append_supported_fragment(storage, source, supported, source_points, effective_attributes, config, fragments);
         }
 
-        StoredPolylineCollection overhang_polylines =
-            clipper_diff_polyline_expolygons(storage, region_polyline, supported_area);
-        throw_if_cancelled(run_ctx);
         for (const Polyline overhang : overhang_polylines)
         {
             throw_if_cancelled(run_ctx);

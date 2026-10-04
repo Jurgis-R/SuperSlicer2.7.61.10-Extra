@@ -97,6 +97,7 @@ from slic3r_clipper_views import (
     clipper_diff,
     clipper_intersection,
     clipper_offset,
+    clipper_split_polyline_expolygons,
     clipper_union,
 )
 from slic3r_datatree_views import Config, ConfigOption, LayerIsland, LayerRegion, LayerRegionIsland
@@ -428,6 +429,8 @@ class RegionSettingsClip:
         """
         if isinstance(subject, ClipperOperand) and self.is_accept_all():
             return subject, ClipperOperand.create_empty(self.api, self._storage)
+        if isinstance(subject, Polyline) and not self.is_accept_all():
+            return clipper_split_polyline_expolygons(self._storage, subject, self._expolygons)
         return self.intersections(subject), self.diff(subject)
 
     def append_intersections_to(self, dst, subject) -> None:
