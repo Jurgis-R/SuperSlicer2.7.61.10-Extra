@@ -39,8 +39,17 @@
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
 #include "libslic3r/Plugins/GuiRulesCore.hpp"
+#include "libslic3r/Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp"
+#include "libslic3r/Plugins/Infill/Lightning/LightningPattern.hpp"
+#include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
-#include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
+#include "libslic3r/Plugins/Infill/EnsuringPattern.hpp"
+#include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
+#include "libslic3r/Plugins/Infill/PostFullFillVolume.hpp"
+#include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
+#include "libslic3r/Plugins/Infill/Rectilinear/RectilinearPatterns.hpp"
+#include "libslic3r/Plugins/Infill/SimpleInfillPatterns.hpp"
+#include "libslic3r/Plugins/Infill/SmoothPattern.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetractionLift.hpp"
@@ -491,7 +500,25 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::FlatAreaLayerHeightPlugin::register_flat_area_layer_height_plugin(orchestrator_handle_value);
         slic3r_api::Infill::DefaultInfillGeneratorPlugin::register_default_infill_generator_plugin(
             orchestrator_handle_value);
-        slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins(
+        slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_adaptive_cubic_pattern_plugin(
+            orchestrator_handle_value);
+        slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_support_cubic_pattern_plugin(
+            orchestrator_handle_value);
+        slic3r_api::Infill::Lightning::register_lightning_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_line_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_concentric_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_smooth_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_ensuring_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_honeycomb_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_honeycomb_3d_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_hilbert_curve_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_archimedean_chords_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_octagram_spiral_pattern_plugin(orchestrator_handle_value);
+        slic3r_api::Infill::register_rectilinear_pattern_plugins(orchestrator_handle_value);
+        slic3r_api::Infill::PostInfillGapFillPlugin::register_post_infill_gap_fill_plugin(
+            orchestrator_handle_value);
+        slic3r_api::Infill::PostFullFillVolumePlugin::register_post_full_fill_volume_plugin(
             orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
@@ -647,8 +674,6 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "adaptivecubic");
         activate_plugin_or_fail(orchestrator, "supportcubic");
         activate_plugin_or_fail(orchestrator, "smooth");
-        activate_plugin_or_fail(orchestrator, "smoothhilbert");
-        activate_plugin_or_fail(orchestrator, "smoothtriple");
         activate_plugin_or_fail(orchestrator, "rectiwithperimeter");
         activate_plugin_or_fail(orchestrator, "scatteredrectilinear");
         activate_plugin_or_fail(orchestrator, "sawtooth");

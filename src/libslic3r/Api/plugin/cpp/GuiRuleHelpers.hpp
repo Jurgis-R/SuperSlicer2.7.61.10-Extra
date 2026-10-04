@@ -225,7 +225,7 @@ inline GuiCondition perimeter_generator_is_not_arachne()
 // Fill pattern selectors: the smooth pattern value is shared by the top,
 // bottom and solid fill selectors.
 inline GuiCondition fill_pattern_is_smooth(std::string key)
-    { return int_equals(std::move(key), 19); }
+    { return int_equals(std::move(key), 18); }
 
 class GuiRule
 {

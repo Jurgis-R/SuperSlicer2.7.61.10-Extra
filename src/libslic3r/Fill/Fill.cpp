@@ -1212,7 +1212,6 @@ Polylines Layer::_generate_sparse_infill_polylines_for_anchoring(const LayerSlic
         case ipConcentric:
         case ipHoneycomb:
         case ip3DHoneycomb:
-        case ipGyroid:
         case ipHilbertCurve:
         case ipArchimedeanChords:
         case ipOctagramSpiral: break;

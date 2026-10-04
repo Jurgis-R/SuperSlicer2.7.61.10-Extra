@@ -644,6 +644,19 @@ public:
     bool set_points(const std::vector<c_point> &points) {
         return set_points(points.empty() ? nullptr : points.data(), static_cast<uint32_t>(points.size()));
     }
+    /*
+    Replace the local polyline from another API polyline view.
+
+    This borrows the point array from the source view, so it avoids the
+    std::vector<c_point> copy performed by set(PolylineLike) and by
+    set_points(polyline.points()). Only straight points are written: previous
+    arc data and Z offsets are cleared, like set_points(). Use set_segments()
+    when they must be preserved.
+    */
+    bool set_polyline(const Polyline &polyline) {
+        const multipoint_const_view points = polyline.view();
+        return set_points(points.array, points.size);
+    }
     bool set_segment(uint32_t idx, const c_extrusion_segment &segment) {
         return extrusion_polyline_set_segment(self().mutable_handle(), idx, &segment) != 0;
     }
@@ -683,7 +696,8 @@ public:
     Replace the local polyline from a simple object exposing points().
 
     This intentionally writes only straight points. Use set_segments() when arc
-    metadata or explicit Z offsets must be preserved.
+    metadata or explicit Z offsets must be preserved. For API polyline views,
+    prefer set_polyline() which borrows the point array instead of copying it.
     */
     template<class PolylineLike> bool set(const PolylineLike &polyline) {
         return set_points(polyline.points());
@@ -1276,6 +1290,22 @@ private:
 inline MedialAxisExtrusionFactory medial_axis_extrusion(raw_extrusion_role role, c_flow flow)
 {
     return MedialAxisExtrusionFactory(role, flow);
+}
+
+// Convert one variable-width centerline, one width per point, with thick_polyline_extrusion().
+// Returns nothing when the centerline produces no extrusion.
+inline std::optional<StoredExtrusionEntity> thick_polyline_extrusion(storage_handle *storage,
+                                                                     const std::vector<c_point> &points,
+                                                                     const std::vector<coord_t> &widths,
+                                                                     const c_thick_polyline_extrusion_params &params)
+{
+    if (points.size() != widths.size())
+        throw std::invalid_argument("A thick polyline needs one width per point.");
+    extrusion_entity_handle *handle =
+        ::thick_polyline_extrusion(storage, points.data(), widths.data(), uint32_t(points.size()), &params);
+    if (handle == nullptr)
+        return std::nullopt;
+    return StoredExtrusionEntity::adopt(storage, handle);
 }
 
 inline MedialAxisExtrusionFactory medial_axis_thin_wall(c_flow flow)

@@ -7,9 +7,12 @@ add_executable(${_TEST_NAME}_tests
     ../../src/plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.cpp
     ../../src/plugins_cpp/NozzleCleaning/NozzleCleaning.cpp
     ../../src/plugins_cpp/Polyholes/Polyholes.cpp
+    clipper_offset_test_helpers.cpp
     gcode_test_helpers.cpp
     perimeter_test_helpers.cpp
     plugin_test_helpers.cpp
+    test_adaptive_cubic_pattern.cpp
+    test_lightning_pattern.cpp
     test_auxiliary_layer_helpers.cpp
     test_bridge_detector_cancellation.cpp
     mesh_queries_c_fixture.c
@@ -17,11 +20,16 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_queries.cpp
     test_public_kdtree.cpp
     test_clipper_views.cpp
+    test_clipper_offset2_parity.cpp
+    test_clipper_offset_contacts.cpp
+    test_clipper_offset_parity.cpp
+    test_clipper_offset_strategies.cpp
     test_config_translations.cpp
     test_deferred_callback_exception.cpp
     test_extrusion_continuity.cpp
     test_extrusion_ordered_leaf.cpp
     test_extrusion_split_by_areas.cpp
+    test_extrusion_views.cpp
     test_fff_print_gui_rules.cpp
     test_plugin_activation_config.cpp
     test_plugin_api_compatibility.cpp
@@ -37,6 +45,19 @@ add_executable(${_TEST_NAME}_tests
     test_seam_placer_cost.cpp
     test_seam_placer_fixed_direction.cpp
     test_seam_placer_service.cpp
+    test_simple_infill_patterns.cpp
+    test_line_pattern.cpp
+    test_arachne_infill.cpp
+    test_concentric_pattern.cpp
+    test_smooth_pattern.cpp
+    test_post_full_fill_volume.cpp
+    test_rectilinear_edge_grid.cpp
+    test_rectilinear_clipper.cpp
+    test_rectilinear_work_buffers.cpp
+    test_rectilinear_connect.cpp
+    test_rectilinear_fills.cpp
+    test_rectilinear_sawtooth.cpp
+    test_rectilinear_with_perimeter.cpp
     test_gcode_default_firmware_session.cpp
     test_gcode_custom_gcode_per_print_z.cpp
     test_gcode_feature_gcode.cpp
@@ -50,6 +71,8 @@ add_executable(${_TEST_NAME}_tests
     test_gcode_settings_scripts.cpp
     test_gui_rule_explanations.cpp
     test_gui_rule_helpers.cpp
+    test_gyroid_pattern.cpp
+    test_infill_pattern_init.cpp
     test_infill_pattern_lists.cpp
     test_layer_extrusion_edit_entry_state.cpp
     test_layer_extrusion_edit_lift.cpp

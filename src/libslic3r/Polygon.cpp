@@ -945,8 +945,10 @@ bool remove_sticks(Polygon &poly)
         poly.points.pop_back();
         modified = true;
     }
-    while (poly.points.size() >= 3 && is_stick(poly.points.back(), poly.points.front(), poly.points[1]))
+    while (poly.points.size() >= 3 && is_stick(poly.points.back(), poly.points.front(), poly.points[1])) {
         poly.points.erase(poly.points.begin());
+        modified = true;
+    }
     return modified;
 }
 

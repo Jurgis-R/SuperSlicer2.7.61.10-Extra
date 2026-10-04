@@ -43,9 +43,18 @@ class PropertyHost:
         self.generic_payloads = {}
         self.children = {1: [2], 2: []}
         self.freed = []
+        self.polyline_set = None
 
     def storage_free(self, storage, handle):
         self.freed.append((address(storage), address(handle)))
+        return 1
+
+    def extrusion_polyline_set_points(self, entity, points, count):
+        self.polyline_set = (
+            address(entity),
+            ctypes.cast(points, ctypes.c_void_p).value,
+            int(count),
+        )
         return 1
 
     def orchestrator_register_property(self, orchestrator, name, byte_count, alignment):
@@ -122,6 +131,14 @@ class FakeValue:
 
     def __eq__(self, other):
         return isinstance(other, FakeValue) and self.value == other.value
+
+
+class FakePolylineView:
+    def __init__(self, view):
+        self._view = view
+
+    def view(self):
+        return self._view
 
 
 class FakeArea:
@@ -206,6 +223,21 @@ class PythonExtrusionRegionViewTests(unittest.TestCase):
         self.assertEqual(entity.address, 901)
         self.assertTrue(entity.free_from_storage())
         self.assertEqual(api.host.freed, [(12, 901)])
+
+    def test_set_polyline_borrows_the_source_point_array(self):
+        api = self.make_api()
+        points = (self.generated.CPoint * 3)(
+            self.generated.CPoint(0, 0),
+            self.generated.CPoint(1000000, 5),
+            self.generated.CPoint(2000000, 0),
+        )
+        view = self.generated.MultipointConstView(points, 3, 0)
+        entity = self.extrusions.MutableExtrusionEntity(api, 42)
+
+        self.assertTrue(entity.set_polyline(FakePolylineView(view)))
+
+        # The wrapper must forward the borrowed array, not a rebuilt copy.
+        self.assertEqual(api.host.polyline_set, (42, ctypes.addressof(points), 3))
 
     def test_dynamic_property_key_is_typed_and_orchestrator_bound(self):
         api = self.make_api()

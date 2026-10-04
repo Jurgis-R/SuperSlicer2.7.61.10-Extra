@@ -9,6 +9,7 @@
 #include "libslic3r/Fill/FillRectilinear.hpp"
 
 #include <oneapi/tbb/parallel_for.h>
+#include <tuple>
 
 #ifdef LIGHTNING_DISTANCE_FIELD_DEBUG_OUTPUT
 #include "libslic3r/SVG.hpp"
@@ -73,9 +74,9 @@ DistanceField::DistanceField(const coord_t& radius, const Polygons& current_outl
     }
     std::stable_sort(m_unsupported_points.begin(), m_unsupported_points.end(), [&radius](const UnsupportedCell &a, const UnsupportedCell &b) {
         constexpr coord_t prime_for_hash = 191;
-        return std::abs(b.dist_to_boundary - a.dist_to_boundary) > radius ?
-               a.dist_to_boundary < b.dist_to_boundary :
-               (PointHash{}(a.loc) % prime_for_hash) < (PointHash{}(b.loc) % prime_for_hash);
+        // Fixed bands keep the dispersed priority without a pair-dependent, cyclic comparison.
+        return std::make_tuple(a.dist_to_boundary / radius, PointHash{}(a.loc) % prime_for_hash) <
+               std::make_tuple(b.dist_to_boundary / radius, PointHash{}(b.loc) % prime_for_hash);
         });
 
     m_unsupported_points_erased.resize(m_unsupported_points.size());

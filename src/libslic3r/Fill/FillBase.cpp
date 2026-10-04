@@ -33,7 +33,6 @@
 #include "FillAdaptive.hpp"
 #include "FillConcentric.hpp"
 #include "FillEnsuring.hpp"
-#include "FillGyroid.hpp"
 #include "FillHoneycomb.hpp"
 #include "FillLightning.hpp"
 #include "FillLine.hpp"
@@ -62,7 +61,6 @@ Fill* Fill::new_from_type(const InfillPattern type)
     case ipConcentric:          return new FillConcentric();
     case ipHoneycomb:           return new FillHoneycomb();
     case ip3DHoneycomb:         return new Fill3DHoneycomb();
-    case ipGyroid:              return new FillGyroid();
     case ipRectilinear:         return new FillRectilinear();
     case ipAlignedRectilinear:  return new FillAlignedRectilinear();
     case ipMonotonic:           return new FillMonotonic();
@@ -77,8 +75,6 @@ Fill* Fill::new_from_type(const InfillPattern type)
     case ipHilbertCurve:        return new FillHilbertCurve();
     case ipOctagramSpiral:      return new FillOctagramSpiral();
     case ipSmooth:              return new FillSmooth();
-    case ipSmoothTriple:        return new FillSmoothTriple();
-    case ipSmoothHilbert:       return new FillSmoothHilbert();
     case ipRectiWithPerimeter:  return new FillWithPerimeter(new FillRectilinear());
     case ipSawtooth:            return new FillRectilinearSawtooth();
     case ipAdaptiveCubic:       return new FillAdaptive::Filler();
@@ -977,6 +973,66 @@ void connect_infill(const Polylines& infill_ordered, const ExPolygon& boundary, 
 
 }
 
+// Return the segment containing the point reached after clipping a polyline
+// from either end. The segment index always names [idx_segment, idx_segment + 1).
+struct SegmentPoint {
+    size_t idx_segment = std::numeric_limits<size_t>::max();
+    double t;
+    Vec2d  point;
+
+    bool valid() const { return idx_segment != std::numeric_limits<size_t>::max(); }
+};
+
+static inline SegmentPoint clip_start_segment_and_point(const Points& polyline, double distance)
+{
+    assert(polyline.size() >= 2);
+    assert(distance > 0.);
+    SegmentPoint out;
+    if (polyline.size() >= 2) {
+        Vec2d pt_prev = polyline.front().cast<double>();
+        for (size_t i = 1; i < polyline.size(); ++i) {
+            Vec2d pt = polyline[i].cast<double>();
+            Vec2d v = pt - pt_prev;
+            double l = v.norm();
+            if (l > distance) {
+                out.idx_segment = i - 1;
+                out.t = distance / l;
+                out.point = pt_prev + out.t * v;
+                break;
+            }
+            distance -= l;
+            pt_prev = pt;
+        }
+    }
+    return out;
+}
+
+static inline SegmentPoint clip_end_segment_and_point(const Points& polyline, double distance)
+{
+    assert(polyline.size() >= 2);
+    assert(distance > 0.);
+    SegmentPoint out;
+    if (polyline.size() >= 2) {
+        Vec2d pt_next = polyline.back().cast<double>();
+        for (int i = int(polyline.size()) - 2; i >= 0; --i) {
+            Vec2d pt = polyline[i].cast<double>();
+            Vec2d v = pt - pt_next;
+            double l = v.norm();
+            if (l > distance) {
+                out.idx_segment = i;
+                out.t = distance / l;
+                out.point = pt_next + out.t * v;
+                // Store the parameter referenced to the starting point of a segment.
+                out.t = 1. - out.t;
+                break;
+            }
+            distance -= l;
+            pt_next = pt;
+        }
+    }
+    return out;
+}
+
 namespace PrusaSimpleConnect {
 
     struct ContourPointData {
@@ -1049,78 +1105,15 @@ namespace PrusaSimpleConnect {
         append(pl1.points, std::move(pl2.points));
     }
 
-    // Return an index of start of a segment and a point of the clipping point at distance from the end of polyline.
-    struct SegmentPoint {
-        // Segment index, defining a line <idx_segment, idx_segment + 1).
-        size_t idx_segment = std::numeric_limits<size_t>::max();
-        // Parameter of point in <0, 1) along the line <idx_segment, idx_segment + 1)
-        double t;
-        Vec2d  point;
-
-        bool valid() const { return idx_segment != std::numeric_limits<size_t>::max(); }
-    };
-
-    static inline SegmentPoint clip_start_segment_and_point(const Points& polyline, double distance)
-    {
-        assert(polyline.size() >= 2);
-        assert(distance > 0.);
-        // Initialized to "invalid".
-        SegmentPoint out;
-        if (polyline.size() >= 2) {
-            Vec2d pt_prev = polyline.front().cast<double>();
-            for (size_t i = 1; i < polyline.size(); ++i) {
-                Vec2d pt = polyline[i].cast<double>();
-                Vec2d v = pt - pt_prev;
-                double l2 = v.squaredNorm();
-                if (l2 > distance* distance) {
-                    out.idx_segment = i;
-                    out.t = distance / sqrt(l2);
-                    out.point = pt_prev + out.t * v;
-                    break;
-                }
-                distance -= sqrt(l2);
-                pt_prev = pt;
-            }
-        }
-        return out;
-    }
-
-    static inline SegmentPoint clip_end_segment_and_point(const Points& polyline, double distance)
-    {
-        assert(polyline.size() >= 2);
-        assert(distance > 0.);
-        // Initialized to "invalid".
-        SegmentPoint out;
-        if (polyline.size() >= 2) {
-            Vec2d pt_next = polyline.back().cast<double>();
-            for (int i = int(polyline.size()) - 2; i >= 0; --i) {
-                Vec2d pt = polyline[i].cast<double>();
-                Vec2d v = pt - pt_next;
-                double l2 = v.squaredNorm();
-                if (l2 > distance* distance) {
-                    out.idx_segment = i;
-                    out.t = distance / sqrt(l2);
-                    out.point = pt_next + out.t * v;
-                    // Store the parameter referenced to the starting point of a segment.
-                    out.t = 1. - out.t;
-                    break;
-                }
-                distance -= sqrt(l2);
-                pt_next = pt;
-            }
-        }
-        return out;
-    }
-
     // Optimized version with the precalculated v1 = p1b - p1a and l1_2 = v1.squaredNorm().
-    // Assumption: l1_2 < EPSILON.
+    // Assumption: l1_2 > EPSILON.
     static inline double segment_point_distance_squared(const Vec2d& p1a, const Vec2d& p1b, const Vec2d& v1, const double l1_2, const Vec2d& p2)
     {
         assert(l1_2 > EPSILON);
         Vec2d  v12 = p2 - p1a;
         double t = v12.dot(v1);
         return (t <= 0.) ? v12.squaredNorm() :
-            (t >= l1_2) ? (p2 - p1a).squaredNorm() :
+            (t >= l1_2) ? (p2 - p1b).squaredNorm() :
             ((t / l1_2) * v1 - v12).squaredNorm();
     }
 
@@ -1835,69 +1828,6 @@ static void take_limited(
         pl1.reverse();
         append(pl1.points, pl_tmp);
     }
-}
-
-// Return an index of start of a segment and a point of the clipping point at distance from the end of polyline.
-struct SegmentPoint {
-    // Segment index, defining a line <idx_segment, idx_segment + 1).
-    size_t idx_segment = std::numeric_limits<size_t>::max();
-    // Parameter of point in <0, 1) along the line <idx_segment, idx_segment + 1)
-    double t;
-    Vec2d  point;
-
-    bool valid() const { return idx_segment != std::numeric_limits<size_t>::max(); }
-};
-
-static inline SegmentPoint clip_start_segment_and_point(const Points& polyline, double distance)
-{
-    assert(polyline.size() >= 2);
-    assert(distance > 0.);
-    // Initialized to "invalid".
-    SegmentPoint out;
-    if (polyline.size() >= 2) {
-        Vec2d pt_prev = polyline.front().cast<double>();
-        for (size_t i = 1; i < polyline.size(); ++i) {
-            Vec2d pt = polyline[i].cast<double>();
-            Vec2d v = pt - pt_prev;
-            double l = v.norm();
-            if (l > distance) {
-                out.idx_segment = i - 1;
-                out.t = distance / l;
-                out.point = pt_prev + out.t * v;
-                break;
-            }
-            distance -= l;
-            pt_prev = pt;
-        }
-    }
-    return out;
-}
-
-static inline SegmentPoint clip_end_segment_and_point(const Points& polyline, double distance)
-{
-    assert(polyline.size() >= 2);
-    assert(distance > 0.);
-    // Initialized to "invalid".
-    SegmentPoint out;
-    if (polyline.size() >= 2) {
-        Vec2d pt_next = polyline.back().cast<double>();
-        for (int i = int(polyline.size()) - 2; i >= 0; --i) {
-            Vec2d pt = polyline[i].cast<double>();
-            Vec2d v = pt - pt_next;
-            double l = v.norm();
-            if (l > distance) {
-                out.idx_segment = i;
-                out.t = distance / l;
-                out.point = pt_next + out.t * v;
-                // Store the parameter referenced to the starting point of a segment.
-                out.t = 1. - out.t;
-                break;
-            }
-            distance -= l;
-            pt_next = pt;
-        }
-    }
-    return out;
 }
 
 // Calculate intersection of a line with a thick segment.

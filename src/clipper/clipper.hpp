@@ -541,7 +541,7 @@ class ClipperOffset
 {
 public:
   ClipperOffset(double miterLimit = 2.0, double roundPrecision = 0.25, double shortestEdgeLength = 0.) :
-    MiterLimit(miterLimit), ArcTolerance(roundPrecision), ShortestEdgeLength(shortestEdgeLength), m_lowest(-1, 0) {}
+    MiterLimit(miterLimit), ArcTolerance(roundPrecision), ShortestEdgeLength(shortestEdgeLength), ShrinkWithPositiveFill(false), m_lowest(-1, 0) {}
   ~ClipperOffset() { Clear(); }
   void AddPath(const Path& path, JoinType joinType, EndType endType);
   template<typename PathsProvider>
@@ -551,10 +551,18 @@ public:
   }
   void Execute(Paths& solution, double delta);
   void Execute(PolyTree& solution, double delta);
+  // Raw offset paths before the clean-up union: they may self-intersect and
+  // must be united by the caller with a positive fill.
+  void ExecuteRaw(Paths& solution, double delta);
   void Clear();
   double MiterLimit;
   double ArcTolerance;
   double ShortestEdgeLength;
+  // Clean up negative offsets with a positive-fill union of the offset paths,
+  // as Clipper2 does, instead of a negative-fill union of their complement in
+  // a bounding rectangle. Both cover the same area; the positive fill skips the
+  // rectangle and is cheaper.
+  bool ShrinkWithPositiveFill;
 
 private:
   Paths m_destPolys;

@@ -40,7 +40,7 @@ class GeometryClipperHost:
         self.freed = []
         self.fail_next = False
         self.polyline_sizes = {21: 2, 32: 2}
-        self.polyline_collection_sizes = {}
+        self.polyline_collection_sizes = {51: 3, 52: 0}
 
     def _result(self, name, *arguments):
         self.calls.append((name, tuple(address(arg) for arg in arguments)))
@@ -61,6 +61,12 @@ class GeometryClipperHost:
 
     def clipper_intersection_polyline_expolygons(self, storage, subject, clip):
         return self._result("polyline_intersection", storage, subject, clip)
+
+    def clipper_diff_polylines_expolygons(self, storage, subject, clip):
+        return self._result("polylines_diff", storage, subject, clip)
+
+    def clipper_intersection_polylines_expolygons(self, storage, subject, clip):
+        return self._result("polylines_intersection", storage, subject, clip)
 
     def clipper_clip_expolygons_with_subject_bbox(self, storage, src, bbox):
         self.calls.append(("clip_expolygons_bbox", (address(storage), address(src)), bbox))
@@ -239,6 +245,79 @@ class PythonGeometryClipperViewTests(unittest.TestCase):
         api.host.fail_next = True
         with self.assertRaises(ValueError):
             self.geometry.convex_hull(5, polygon)
+
+    def test_batch_clipping_dispatches_once_and_owns_results(self):
+        for operation in ("diff", "intersection"):
+            for facade in ("function", "api", "context"):
+                with self.subTest(operation=operation, facade=facade):
+                    api = self.make_api()
+                    subject = self.geometry.PolylineCollection(api, 51)
+                    clip = self.geometry.ExPolygonCollection(api, 22)
+                    name = f"clipper_{operation}_polylines_expolygons"
+                    if facade == "function":
+                        result = getattr(self.clipper, name)(9, subject, clip)
+                    elif facade == "api":
+                        result = getattr(api, name)(9, subject, clip)
+                    else:
+                        result = getattr(api.clipper(9), f"{operation}_polylines_expolygons")(subject, clip)
+                    self.assertIsInstance(result, self.geometry.StoredPolylineCollection)
+                    self.assertEqual(result.storage(), 9)
+                    self.assertEqual(api.host.calls, [(f"polylines_{operation}", (9, 51, 22))])
+                    handle = result.handle()
+                    self.assertTrue(result.free_from_storage())
+                    self.assertFalse(result.free_from_storage())
+                    self.assertEqual(api.host.freed, [(9, handle)])
+                    self.assertEqual(subject.handle(), 51)
+                    self.assertEqual(clip.handle(), 22)
+
+    def test_batch_clipping_short_circuits_empty_subjects(self):
+        for operation in ("diff", "intersection"):
+            with self.subTest(operation=operation):
+                api = self.make_api()
+                subject = self.geometry.PolylineCollection(api, 52)
+                clip = self.geometry.ExPolygonCollection(api, 22)
+                with getattr(api, f"clipper_{operation}_polylines_expolygons")(9, subject, clip) as result:
+                    self.assertTrue(result.empty())
+                self.assertEqual(api.host.calls, [])
+                self.assertEqual(len(api.host.freed), 1)
+
+    def test_batch_clipping_rejects_invalid_storage_api_and_native_results(self):
+        for operation in ("diff", "intersection"):
+            with self.subTest(operation=operation):
+                api = self.make_api()
+                other_api = self.make_api()
+                subject = self.geometry.PolylineCollection(api, 51)
+                clip = self.geometry.ExPolygonCollection(api, 22)
+                foreign_clip = self.geometry.ExPolygonCollection(other_api, 22)
+                foreign_subject = self.geometry.PolylineCollection(other_api, 51)
+                name = f"clipper_{operation}_polylines_expolygons"
+                function = getattr(self.clipper, name)
+                with self.assertRaises(ValueError):
+                    function(0, subject, clip)
+                with self.assertRaises(ValueError):
+                    function(9, subject, foreign_clip)
+                with self.assertRaises(ValueError):
+                    getattr(api, name)(9, foreign_subject, clip)
+                with self.assertRaises(ValueError):
+                    getattr(api.clipper(9), f"{operation}_polylines_expolygons")(subject, foreign_clip)
+                with self.assertRaises(ValueError):
+                    getattr(api.clipper(9), f"{operation}_polylines_expolygons")(foreign_subject, foreign_clip)
+                self.assertEqual(api.host.calls, [])
+                api.host.fail_next = True
+                with self.assertRaises(ValueError):
+                    function(9, subject, clip)
+                self.assertEqual(api.host.freed, [])
+
+    def test_generated_bindings_include_batch_clipping_signatures(self):
+        signatures = {name: (result, arguments) for name, result, arguments in self.generated.C_FUNCTION_SIGNATURES}
+        for operation in ("diff", "intersection"):
+            name = f"clipper_{operation}_polylines_expolygons"
+            with self.subTest(name=name):
+                self.assertIn(name, signatures)
+                self.assertEqual(signatures[name], (ctypes.c_void_p, [ctypes.c_void_p] * 3))
+                self.assertIn(name, self.clipper.__all__)
+                self.assertTrue(callable(getattr(self.api_module, name)))
+        self.assertEqual(self.generated.SLIC3R_PLUGIN_API_CLIPPER_MINOR, 1)
 
     def test_polyline_difference_short_circuits_an_empty_subject(self):
         api = self.make_api()

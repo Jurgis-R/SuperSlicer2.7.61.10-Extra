@@ -256,8 +256,8 @@ class ExtrusionPropertyInfill : public c_extrusion_property_infill
 public:
     static constexpr extrusion_property_type property_type = extrusion_property_type_infill;
 
-    ExtrusionPropertyInfill() : c_extrusion_property_infill{ 0 } {}
-    explicit ExtrusionPropertyInfill(uint64_t surface_id) : c_extrusion_property_infill{ surface_id } {}
+    ExtrusionPropertyInfill() : c_extrusion_property_infill{} {}
+    explicit ExtrusionPropertyInfill(uint64_t surface_id) : c_extrusion_property_infill{} { this->source_surface_id = surface_id; }
 
     ExtrusionPropertyUPtr clone() const;
 };

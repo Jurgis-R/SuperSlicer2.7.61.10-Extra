@@ -66,7 +66,7 @@ using namespace Slic3r;
 // enums; plugins read the mirrored values instead of the configuration headers.
 static_assert(int(Slic3r::PerimeterGeneratorType::Classic) == 0, "perimeter generator selector changed");
 static_assert(int(Slic3r::PerimeterGeneratorType::Arachne) == 1, "perimeter generator selector changed");
-static_assert(int(Slic3r::InfillPattern::ipSmooth) == 19, "infill pattern selector changed");
+static_assert(int(Slic3r::InfillPattern::ipSmooth) == 18, "infill pattern selector changed");
 
 // Shared conjunctions used by several rules below.
 const GuiCondition has_top = any_of({

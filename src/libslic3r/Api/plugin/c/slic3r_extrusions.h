@@ -6,7 +6,7 @@
 #define slic3r_extrusion_h_
 
 #define SLIC3R_PLUGIN_API_EXTRUSIONS_MAJOR 1u
-#define SLIC3R_PLUGIN_API_EXTRUSIONS_MINOR 0u
+#define SLIC3R_PLUGIN_API_EXTRUSIONS_MINOR 1u
 
 /*
 Developer guide:
@@ -351,6 +351,60 @@ SLIC3R_HOST_API extrusion_entity_handle *expolygon_medial_axis_extrusion(
     storage_handle *storage,
     const expolygon_handle *src,
     const c_medial_axis_extrusion_params *params);
+
+/*
+Flags for c_thick_polyline_extrusion_params.
+
+CAN_REVERSE lets the ordering step reverse the whole generated entity.
+FLOW_FROM_SPACING builds the base flow from flow.spacing, flow.spacing_ratio,
+flow.height and flow.nozzle_diameter instead of from flow.width, like a Flow
+created with Flow::new_from_spacing().
+*/
+#define THICK_POLYLINE_EXTRUSION_CAN_REVERSE       ((uint32_t)(1u << 0))
+#define THICK_POLYLINE_EXTRUSION_FLOW_FROM_SPACING ((uint32_t)(1u << 1))
+
+/*
+Conversion of one variable-width centerline, such as an Arachne wall line, into
+extrusion. widths[i] is the scaled width at points[i]: a spacing between neighbor
+centerlines for every role except thin walls, where it is the extrusion width.
+*/
+typedef struct c_thick_polyline_extrusion_params {
+    raw_extrusion_role role;
+    c_flow flow;
+
+    /*
+    Maximum segment length used when the width changes along the centerline.
+    A value of 0 means 1/8 of the base flow width. The effective value must be
+    greater than SCALED_EPSILON.
+    */
+    coord_t variable_width_resolution;
+
+    /*
+    Width variation tolerated before a new extrusion with a different flow
+    starts. A value of 0 means 1/20 of the base flow width.
+    */
+    coord_t width_change_tolerance;
+
+    /* Final multiplier of the volume per millimeter and of the width. */
+    float flow_mult;
+
+    uint32_t flags;
+} c_thick_polyline_extrusion_params;
+
+/*
+Convert one variable-width centerline into a storage-owned extrusion entity:
+a loop when the centerline closes on itself, a multi-path when the width
+changes, otherwise a single path. Consecutive points must be distinct.
+
+Returns NULL when the centerline has fewer than two points or produces no
+extrusion.
+*/
+SLIC3R_HOST_API extrusion_entity_handle *thick_polyline_extrusion(
+    storage_handle *storage,
+    const c_point *points,
+    const coord_t *widths,
+    uint32_t count,
+    const c_thick_polyline_extrusion_params *params);
 
 
 #ifdef __cplusplus

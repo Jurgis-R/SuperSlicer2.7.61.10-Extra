@@ -281,12 +281,71 @@ set(SLIC3R_SOURCES
 	Plugins/GuiRulesCore.hpp
 	Plugins/GuiRulesExample.cpp
 	Plugins/GuiRulesExample.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveFill.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveFill.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveHooks.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveOctree.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptiveOctree.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptivePaths.hpp
+	Plugins/Infill/AdaptiveCubic/AdaptivePreparation.cpp
+	Plugins/Infill/AdaptiveCubic/AdaptivePreparation.hpp
+	Plugins/Infill/ArachneInfill.cpp
+	Plugins/Infill/ArachneInfill.hpp
+	Plugins/Infill/ArchimedeanChordsPattern.cpp
+	Plugins/Infill/ConcentricPattern.cpp
+	Plugins/Infill/ConcentricPattern.hpp
+	Plugins/Infill/InfillChaining.cpp
+	Plugins/Infill/InfillPaths.hpp
+	Plugins/Infill/InfillWorkBuffers.hpp
+	Plugins/Infill/Lightning/LightningDistanceField.cpp
+	Plugins/Infill/Lightning/LightningDistanceField.hpp
+	Plugins/Infill/Lightning/LightningFill.cpp
+	Plugins/Infill/Lightning/LightningFill.hpp
+	Plugins/Infill/Lightning/LightningGenerator.cpp
+	Plugins/Infill/Lightning/LightningGenerator.hpp
+	Plugins/Infill/Lightning/LightningGeometry.hpp
+	Plugins/Infill/Lightning/LightningLayer.cpp
+	Plugins/Infill/Lightning/LightningLayer.hpp
+	Plugins/Infill/Lightning/LightningPattern.cpp
+	Plugins/Infill/Lightning/LightningPattern.hpp
+	Plugins/Infill/Lightning/LightningPreparation.cpp
+	Plugins/Infill/Lightning/LightningPreparation.hpp
+	Plugins/Infill/Lightning/LightningTreeNode.cpp
+	Plugins/Infill/Lightning/LightningTreeNode.hpp
 	Plugins/Infill/DefaultInfillGenerator.cpp
 	Plugins/Infill/DefaultInfillGenerator.hpp
-	Plugins/Infill/LegacyInfillPatterns.cpp
-	Plugins/Infill/LegacyInfillPatterns.hpp
+	Plugins/Infill/EnsuringPattern.cpp
+	Plugins/Infill/EnsuringPattern.hpp
+	Plugins/Infill/GyroidPattern.cpp
+	Plugins/Infill/GyroidPattern.hpp
+	Plugins/Infill/HilbertCurvePattern.cpp
+	Plugins/Infill/Honeycomb3DPattern.cpp
+	Plugins/Infill/HoneycombPattern.cpp
+	Plugins/Infill/LinePattern.cpp
+	Plugins/Infill/OctagramSpiralPattern.cpp
+	Plugins/Infill/PatternPluginHelpers.hpp
+	Plugins/Infill/PostFullFillVolume.cpp
+	Plugins/Infill/PostFullFillVolume.hpp
+	Plugins/Infill/Rectilinear/RectilinearEdgeGrid.cpp
+	Plugins/Infill/Rectilinear/RectilinearClipper.hpp
+	Plugins/Infill/Rectilinear/RectilinearConnect.hpp
+	Plugins/Infill/Rectilinear/RectilinearEdgeGrid.hpp
+	Plugins/Infill/Rectilinear/RectilinearFills.cpp
+	Plugins/Infill/Rectilinear/RectilinearFills.hpp
+	Plugins/Infill/Rectilinear/RectilinearPatterns.cpp
+	Plugins/Infill/Rectilinear/RectilinearPatterns.hpp
+	Plugins/Infill/Rectilinear/RectilinearSawtooth.cpp
+	Plugins/Infill/Rectilinear/RectilinearSawtooth.hpp
+	Plugins/Infill/Rectilinear/RectilinearWithPerimeter.cpp
+	Plugins/Infill/Rectilinear/RectilinearWithPerimeter.hpp
+	Plugins/Infill/Rectilinear/RectilinearWorkBuffers.hpp
 	Plugins/Infill/PostInfillGapFill.cpp
 	Plugins/Infill/PostInfillGapFill.hpp
+	Plugins/Infill/SimpleInfillPatterns.hpp
+	Plugins/Infill/SmoothPattern.cpp
+	Plugins/Infill/SmoothPattern.hpp
 	Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.cpp
 	Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp
 	Plugins/LayerExtrusionEdit/CreateRetraction.cpp
@@ -594,8 +653,6 @@ set(SLIC3R_SOURCES
     Fill/FillEnsuring.hpp
     Fill/FillHoneycomb.cpp
     Fill/FillHoneycomb.hpp
-    Fill/FillGyroid.cpp
-    Fill/FillGyroid.hpp
     Fill/FillPlanePath.cpp
     Fill/FillPlanePath.hpp
     Fill/FillLine.cpp

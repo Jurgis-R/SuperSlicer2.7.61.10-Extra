@@ -6,7 +6,7 @@
 #define slic3r_extrusion_property_h_
 
 #define SLIC3R_PLUGIN_API_EXTRUSION_PROPERTY_MAJOR 2u
-#define SLIC3R_PLUGIN_API_EXTRUSION_PROPERTY_MINOR 0u
+#define SLIC3R_PLUGIN_API_EXTRUSION_PROPERTY_MINOR 1u
 
 #include <stdint.h>
 
@@ -31,6 +31,10 @@ same rule: they must be trivially copyable raw data. If a property needs text or
 larger binary data, store that data on the extrusion entity with
 extrusion_property_store_data_aligned(), passing the address of the
 extrusion_data_id field that will reference the data.
+
+Payloads evolve append-only: a new field is only added at the end of a
+structure, which needs a MINOR version bump, while moving, resizing or removing
+an existing field needs a MAJOR one.
 
 Developer guide: [Using Plugin Properties](/doc/plugins/properties.md)
 
@@ -369,9 +373,34 @@ Property type: EXTRUSION_PROPERTY_TYPE_INFILL.
 Stored on the root extrusion tree generated for one Surface. Descendant
 extrusions inherit it, so post-infill plugins can still recover the Surface
 that produced a path after splitting or regrouping the tree.
+
+The payload carries the raw fill recipe of the source Surface, so a
+STEP_POST_INFILL plugin can reproduce the legacy Fill::fill_surface_extrusion()
+accounting without re-reading the configuration:
+
+- area_to_fill_mm2 is the free-of-perimeter-overlap area in mm2, or 0 when no
+  volume correction was requested for this surface.
+- height, spacing and spacing_ratio describe the recipe flow. height and
+  spacing are scaled coordinates, spacing_ratio is dimensionless.
+- density and flow_mult are the recipe values; flow_mult is already baked into
+  the mm3_per_mm of the generated leaves.
+- surface_type stores the raw_surface_type bits of the source Surface.
+- infill_flags stores c_infill_flag bits (steps/slic3r_step_infill.h).
+
+The host stamps the payload at STEP_INFILL publication time. Patterns must
+neither read nor set it; "infill.post_process.full_fill_volume" is the built-in
+consumer.
 */
 typedef struct c_extrusion_property_infill {
     uint64_t source_surface_id;
+    double   area_to_fill_mm2;
+    coord_t  height;
+    coord_t  spacing;
+    float    spacing_ratio;
+    float    density;
+    float    flow_mult;
+    uint16_t surface_type;
+    uint16_t infill_flags;
 } c_extrusion_property_infill;
 
 /*
