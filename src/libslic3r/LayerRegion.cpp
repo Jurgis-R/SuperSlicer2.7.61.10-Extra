@@ -252,7 +252,7 @@ void LayerRegion::slices_to_fill_surfaces_clipped(coord_t opening_offset)
     m_fill_surfaces.surfaces.clear();
     for (auto const& [srf_type, expoly] : polygons_by_surface) {
         if (!expoly.empty()) {
-            for (ExPolygon &expoly_to_test : ensure_valid(intersection_ex(expoly, fill_expolygons()))) {
+            for (ExPolygon &expoly_to_test : intersection_ex(expoly, fill_expolygons())) {
                 ExPolygons expolys_to_test = expoly_to_test.simplify(
                     std::max(SCALED_EPSILON, scale_i(this->layer()->object()->print()->config().resolution.value)));
                 if (!opening_ex(expolys_to_test, opening_offset).empty()) {
@@ -518,7 +518,6 @@ static Surfaces expand_merge_surfaces(
     // without the following closing operation, those regions will stay unfilled and cause small holes in the expanded surface.
     // look for narrow_ensure_vertical_wall_thickness_region_radius filter.
     expanded = closing_ex(expanded, closing_radius);
-    ensure_valid(expanded/*, scaled_resolution*/);
     // Trim the shells by the expanded expolygons.
     if (expanded_into_shells)
         shells = diff_ex(shells, expanded);
@@ -690,7 +689,6 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
         if (layer_solid_thickness > 0) {
             solid_templ.set_scaled_thickness(layer_solid_thickness);
         }
-        ensure_valid(shells/*, scaled_resolution*/);
         m_fill_surfaces.append(std::move(shells), solid_templ);
     } else {
         //assert(layer_solid_thickness == 0);
@@ -701,7 +699,6 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
         if (layer_sparse_thickness > 0) {
             sparse_templ.set_scaled_thickness(layer_sparse_thickness);
         }
-        ensure_valid(sparse/*, scaled_resolution*/);
         m_fill_surfaces.append(std::move(sparse), sparse_templ);
     } else {
         // assert(layer_sparse_thickness == 0);
@@ -1219,7 +1216,7 @@ void LayerRegion::process_external_surfaces_old(const Layer *lower_layer, const 
             surfaces_append(
                 new_surfaces,
                 // Don't use a safety offset as fill_boundaries were already united using the safety offset.
-                ensure_valid(intersection_ex(expolys, fill_boundaries)/*, scaled_resolution*/),
+                intersection_ex(expolys, fill_boundaries),
                 s1);
             //s1.clear();
         }
@@ -1242,7 +1239,7 @@ void LayerRegion::process_external_surfaces_old(const Layer *lower_layer, const 
         }
         ExPolygons new_expolys = diff_ex(expolys, new_expolygons);
         new_expolygons = union_ex(new_expolygons, new_expolys);
-        surfaces_append(new_surfaces, ensure_valid(std::move(new_expolys)/*, scaled_resolution*/), s1);
+        surfaces_append(new_surfaces, std::move(new_expolys), s1);
         //s1.clear();
     }
     
@@ -1317,8 +1314,6 @@ void LayerRegion::prepare_fill_surfaces()
                     if (intersect.size() == 1 && cut.empty())
                         continue;
                     if (!intersect.empty()) {
-                        ensure_valid(intersect/*, scaled_resolution*/);
-                        ensure_valid(cut/*, scaled_resolution*/);
                         //not possible to have empty cut with more than one intersect
                         assert(!cut.empty());
                         surface->expolygon = std::move(intersect[0]);
@@ -1362,8 +1357,7 @@ void LayerRegion::trim_surfaces(const Polygons &trimming_polygons)
         surface.expolygon.assert_valid();
     }
 #endif /* NDEBUG */
-    coordf_t scaled_resolution = std::max(SCALED_EPSILON, scale_i(this->layer()->object()->print()->config().resolution.value));
-    this->m_slices.set(ensure_valid(intersection_ex(this->slices().surfaces, trimming_polygons)/*, scaled_resolution*/), stPosInternal | stDensSparse);
+    this->m_slices.set(intersection_ex(this->slices().surfaces, trimming_polygons), stPosInternal | stDensSparse);
     for(auto &srf : this->m_slices) srf.expolygon.assert_valid();
 }
 

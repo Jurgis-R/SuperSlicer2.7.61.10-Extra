@@ -863,9 +863,6 @@ ExPolygons Layer::merged(coordf_t offset_scaled) const
     expolygons = union_ex(expolygons);
 	if (offset_scaled2 != 0.f)
         expolygons = offset_ex(expolygons, offset_scaled2);
-
-    // with +- offset, you can have dupicated points. ensure_valid will remove them.
-    ensure_valid(expolygons);
     return expolygons;
 }
 
@@ -1063,9 +1060,6 @@ void Layer::make_perimeters() {
         }
         // create all fill_no_overlap_expolygon for LayerRegion (to simplify some computation afterwards)
         lregion.m_fill_no_overlap_expolygons = intersection_ex(lregion.get_raw_slices(), all_fill_no_overlap_expolygon);
-        if (lregion.m_fill_no_overlap_expolygons == lregion.get_raw_slices()) {
-            ensure_valid(lregion.m_fill_no_overlap_expolygons);
-        }
     }
     BOOST_LOG_TRIVIAL(trace) << "Generating perimeters for layer " << this->id() << " - Done";
 

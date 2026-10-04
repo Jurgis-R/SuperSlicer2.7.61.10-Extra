@@ -782,7 +782,6 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
     wave_filled_area.ensure_valid();
     StoredExPolygonCollection residual_overhangs =
         clipper_diff(clipper(overhangs), clipper(wave_filled_area)).to_expolygon_collection();
-    residual_overhangs.ensure_valid();
 
     // Any leftover inside the overhang domain is owned by this post-process:
     // tiny leftovers disappear, printable leftovers become square-flow gap
@@ -792,9 +791,7 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
         storage, out.extra_perimeters, residual_overhangs, input, lower_layer_distancer, run_ctx);
     out.filled_area =
         clipper_union2(clipper(wave_filled_area), clipper(residual_overhangs)).to_expolygon_collection();
-    out.filled_area.ensure_valid();
     out.unfilled_area = clipper_diff(clipper(infill_area), clipper(out.filled_area)).to_expolygon_collection();
-    out.unfilled_area.ensure_valid();
     return out;
 }
 

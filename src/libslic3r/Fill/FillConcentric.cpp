@@ -75,7 +75,6 @@ FillConcentric::_fill_surface_single(
     // generate paths from the outermost to the innermost, to avoid
     // adhesion problems of the first central tiny loops
     loops = union_pt_chained_outside_in(loops);
-    ensure_valid(loops/*, params.fill_resolution / 10*/);
 
     // split paths using a nearest neighbor search
     size_t iPathFirst = polylines_out.size();

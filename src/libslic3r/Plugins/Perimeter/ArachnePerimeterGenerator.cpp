@@ -416,8 +416,6 @@ int32_t generate_node(void *generator_context,
     Slic3r::ExPolygons fill_areas = Slic3r::offset_ex(
         fill_no_overlap, 0.25 * double(inner_flow.scaled_spacing()));
     throw_if_cancelled(context->run_ctx);
-    fill_areas = Slic3r::ensure_valid(std::move(fill_areas));
-    throw_if_cancelled(context->run_ctx);
     fill_no_overlap = Slic3r::ensure_valid(std::move(fill_no_overlap));
 
     throw_if_cancelled(context->run_ctx);

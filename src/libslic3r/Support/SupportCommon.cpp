@@ -554,7 +554,6 @@ SupportGeneratorLayersPtr generate_raft_base(
                 raft = diff(raft, trimming);
             if (! interface_polygons.empty())
                 columns_base->polygons = ensure_valid(diff(columns_base->polygons, interface_polygons), support_params.resolution);
-            ensure_valid(raft);
             ensure_valid(columns_base->polygons);
         }
         if (! brim.empty()) {

@@ -96,7 +96,6 @@ StoredExPolygonCollection offset_area(storage_handle *storage,
     throw_if_cancelled(run_ctx);
     StoredExPolygonCollection out = clipper_offset(subject, delta).to_expolygon_collection();
     throw_if_cancelled(run_ctx);
-    out.ensure_valid();
     return out;
 }
 

@@ -296,7 +296,6 @@ ClipperOperand bridge_areas_for_island(storage_handle *storage,
                                                           CLIPPER_JOIN_SQUARE,
                                                           0.);
     StoredExPolygonCollection lower_support = lower_support_operand.to_expolygon_collection();
-    lower_support.ensure_valid();
 
     for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count(); ++region_island_idx) {
         const LayerRegionIsland region_island = island.region_island(region_island_idx);

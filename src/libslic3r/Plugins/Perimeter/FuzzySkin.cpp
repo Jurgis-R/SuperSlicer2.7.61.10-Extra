@@ -361,7 +361,6 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
         ClipperContext clipper(storage);
         clip.area = clipper_union(clipper(clip.area.readonly())).to_expolygon_collection();
         throw_if_cancelled(run_ctx);
-        clip.area.ensure_valid();
         accepted_area.append_copy_from(clip.area.readonly());
         partition.params.push_back(clip.params);
         partition.areas.push_back(std::move(clip.area));
@@ -381,7 +380,6 @@ FuzzyPartition build_fuzzy_partition(storage_handle *storage,
     StoredExPolygonCollection disabled_area =
         clipper_diff(clipper(island_area.readonly()), clipper(accepted_area.readonly())).to_expolygon_collection();
     throw_if_cancelled(run_ctx);
-    disabled_area.ensure_valid();
     partition.params.push_back(FuzzyParameters{});
     partition.areas.push_back(std::move(disabled_area));
     return partition;
@@ -837,8 +835,6 @@ StoredExPolygonCollection painting_polygons_for_island(storage_handle *storage,
     if (!clipped.empty()) {
         throw_if_cancelled(run_ctx);
         out = clipper_union(clipped).to_expolygon_collection();
-        throw_if_cancelled(run_ctx);
-        out.ensure_valid();
     }
     return out;
 }

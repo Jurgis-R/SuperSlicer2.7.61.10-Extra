@@ -1186,12 +1186,8 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs(storage_handle
     out.filled_area =
         clipper_diff(clipper(inset_overhang_area), clipper(inset_overhang_area_left_unfilled)).to_expolygon_collection();
     throw_if_cancelled(run_ctx);
-    out.filled_area.ensure_valid();
-    throw_if_cancelled(run_ctx);
     out.unfilled_area =
         clipper_union2(clipper(inset_anchors), clipper(inset_overhang_area_left_unfilled)).to_expolygon_collection();
-    throw_if_cancelled(run_ctx);
-    out.unfilled_area.ensure_valid();
     throw_if_cancelled(run_ctx);
     return out;
 }

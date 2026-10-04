@@ -385,8 +385,6 @@ void process_complex_volume_regions_with_clipping(
             dst.append_move_from(std::move(slice.expolygons));
             throw_if_cancelled(run_ctx);
             dst = clipper_union(clipper(dst)).to_expolygon_collection();
-            throw_if_cancelled(run_ctx);
-            dst.ensure_valid();
         }
     }
 }

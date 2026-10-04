@@ -275,8 +275,6 @@ StoredExPolygonCollection gap_fill_no_overhang_area(const PerimeterGenerationCon
         ClipperContext clipper(storage);
         throw_if_cancelled(run_ctx);
         forbidden_area = clipper_union(clipper(forbidden_area)).to_expolygon_collection();
-        throw_if_cancelled(run_ctx);
-        forbidden_area.ensure_valid();
     }
     return forbidden_area;
 }
