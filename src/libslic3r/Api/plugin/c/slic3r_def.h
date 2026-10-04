@@ -109,8 +109,9 @@ SLIC3R_CONSTEXPR_STATIC double UNSCALING_FACTOR = 1000000.; // 1 / SCALING_FACTO
 // for a threshold of a cross product of two non-normalized vectors etc.
 SLIC3R_CONSTEXPR_STATIC double EPSILON = 1e-4;
 // Smallest meaningful distance between two points (128 nm). It is a power of two so that
-// SCALED_EPSILON multiples and divisions are shifts by SCALED_EPSILON_EXPONENT. It stays
-// far above the rounding artefacts of the 1 nm integer grid used by Clipper.
+// SCALED_EPSILON multiples and divisions are shifts by SCALED_EPSILON_EXPONENT. Clipper
+// computes at 1 nm and its output is cleaned at this distance (see clipper.cpp), so
+// rounding artefacts of the integer grid stay far below it.
 // The value is spelled out because C does not accept a const variable in a constant initializer.
 SLIC3R_CONSTEXPR_STATIC int SCALED_EPSILON_EXPONENT = 7;
 SLIC3R_CONSTEXPR_STATIC coord_t SCALED_EPSILON = 128; // 1 << SCALED_EPSILON_EXPONENT

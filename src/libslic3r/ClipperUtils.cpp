@@ -1660,6 +1660,8 @@ Polylines _clipper_pl_open(ClipperLib::ClipType clipType, PathsProvider1 &&subje
     // init Clipper
     ClipperLib::Clipper clipper;
     clipper.Clear();
+    // The coordinates are scaled up, so is the distance at which output vertices are merged.
+    clipper.CleanDistance(double(SCALED_EPSILON) * CLIPPER_OFFSET_SCALE);
 
     // add polygons
     clipper.AddPaths(input_subject, ClipperLib::ptSubject, false);

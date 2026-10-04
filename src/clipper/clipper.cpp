@@ -49,6 +49,7 @@
 #include <functional>
 #include <assert.h>
 #include <libslic3r/Int128.hpp>
+#include <libslic3r/Api/plugin/c/slic3r_def.h>
 
 #ifdef CLIPPERLIB_NAMESPACE_PREFIX
 namespace CLIPPERLIB_NAMESPACE_PREFIX {
@@ -1075,6 +1076,10 @@ Clipper::Clipper(int initOptions) :
   m_HasOpenPaths = false;
 #ifdef CLIPPERLIB_USE_XYZ  
   m_ZFill = 0;
+  // Every vertex of a Z build carries data (extrusion ids): none is merged by default.
+  m_CleanDistance = 0.;
+#else
+  m_CleanDistance = double(SCALED_EPSILON);
 #endif
 }
 //------------------------------------------------------------------------------
@@ -1103,7 +1108,10 @@ bool Clipper::Execute(ClipType clipType, Paths &solution,
   m_ClipType = clipType;
   m_UsingPolyTree = false;
   bool succeeded = ExecuteInternal();
-  if (succeeded) BuildResult(solution);
+  if (succeeded) {
+    CleanOutPolygons();
+    BuildResult(solution);
+  }
   DisposeAllOutRecs();
   return succeeded;
 }
@@ -1117,7 +1125,10 @@ bool Clipper::Execute(ClipType clipType, PolyTree& polytree,
   m_ClipType = clipType;
   m_UsingPolyTree = true;
   bool succeeded = ExecuteInternal();
-  if (succeeded) BuildResult2(polytree);
+  if (succeeded) {
+    CleanOutPolygons();
+    BuildResult2(polytree);
+  }
   DisposeAllOutRecs();
   return succeeded;
 }
@@ -4016,6 +4027,103 @@ void CleanPolygons(const Paths& in_polys, Paths& out_polys, double distance)
 void CleanPolygons(Paths& polys, double distance)
 {
   CleanPolygons(polys, polys, distance);
+}
+//------------------------------------------------------------------------------
+
+// Removes the output vertices that Clipper's 1-unit rounding leaves closer than
+// m_CleanDistance, directly on the OutPt rings before the result is built.
+//
+// Closed loops follow the CleanPolygon() rules. For each vertex, in this order:
+// - closer than m_CleanDistance to the previous vertex: the vertex is removed;
+// - its two neighbours are that close (a spike): the vertex and the next one go;
+// - closer than m_CleanDistance to the line through its neighbours: the vertex is
+//   removed, unless collinear vertices must be kept (PreserveCollinear or
+//   StrictlySimple, the same rule as FixupOutPolygon()).
+// After a removal the previous vertex is checked again, so the loop ends when a
+// full turn removes nothing. A loop left with fewer than three vertices is
+// released; BuildResult2() then attaches its children to the next owner up.
+// Each removal moves the boundary by less than m_CleanDistance, but successive
+// removals along a gentle curve can add up.
+//
+// Open paths (polylines) keep both ends, which are usually cut points on a clip
+// boundary. An interior vertex closer than m_CleanDistance to the previous kept
+// vertex is removed, then the interior vertices too close to the last end. A
+// polyline shorter than m_CleanDistance keeps its two ends: whether such a piece
+// matters is the caller's decision. Almost collinear vertices are kept, as they
+// may belong to an extrusion path.
+void Clipper::CleanOutPolygons()
+{
+  if (m_CleanDistance <= 0.)
+    return;
+  const double distSqrd = m_CleanDistance * m_CleanDistance;
+  const bool preserveCol = m_PreserveCollinear || m_StrictSimple;
+  // Unlinks one vertex from its ring and returns it to the free list.
+  auto excludeOutPt = [this](OutPt *op) {
+    op->Prev->Next = op->Next;
+    op->Next->Prev = op->Prev;
+    this->DisposeOutPt(op);
+  };
+  for (OutRec &outRec : m_PolyOuts)
+  {
+    if (!outRec.Pts)
+      continue;
+    if (outRec.IsOpen)
+    {
+      // Pts is the first end and Pts->Prev the last one; the ring link from the
+      // last end back to the first is not a segment of the polyline.
+      OutPt *first = outRec.Pts;
+      OutPt *last = first->Prev;
+      OutPt *kept = first;
+      for (OutPt *pp = first->Next; pp != last;)
+      {
+        OutPt *next = pp->Next;
+        if (PointsAreClose(pp->Pt, kept->Pt, distSqrd))
+          excludeOutPt(pp);
+        else
+          kept = pp;
+        pp = next;
+      }
+      while (last->Prev != first && PointsAreClose(last->Prev->Pt, last->Pt, distSqrd))
+        excludeOutPt(last->Prev);
+      continue;
+    }
+    // The bottom point may be removed; it is not used once the solution is built.
+    outRec.BottomPt = nullptr;
+    OutPt *lastOK = nullptr;
+    OutPt *pp = outRec.Pts;
+    for (;;)
+    {
+      if (pp->Prev == pp || pp->Prev == pp->Next)
+      {
+        // One or two vertices left: release the loop.
+        this->DisposeOutPts(pp);
+        outRec.Pts = nullptr;
+        break;
+      }
+      const bool closeToPrev = PointsAreClose(pp->Pt, pp->Prev->Pt, distSqrd);
+      const bool spike = !closeToPrev && PointsAreClose(pp->Prev->Pt, pp->Next->Pt, distSqrd);
+      if (closeToPrev || spike ||
+          (!preserveCol && SlopesNearCollinear(pp->Prev->Pt, pp->Pt, pp->Next->Pt, distSqrd)))
+      {
+        if (spike)
+          excludeOutPt(pp->Next);
+        OutPt *prev = pp->Prev;
+        excludeOutPt(pp);
+        pp = prev;
+        lastOK = nullptr;
+      }
+      else if (pp == lastOK)
+      {
+        outRec.Pts = pp;
+        break;
+      }
+      else
+      {
+        if (!lastOK) lastOK = pp;
+        pp = pp->Next;
+      }
+    }
+  }
 }
 //------------------------------------------------------------------------------
 

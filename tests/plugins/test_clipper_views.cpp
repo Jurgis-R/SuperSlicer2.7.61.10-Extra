@@ -8,6 +8,8 @@
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/Polygon.hpp"
 
@@ -159,6 +161,90 @@ TEST_CASE("ClipperOperand bounding_box reads raw Clipper points", "[plugins][cli
 
     slic3r_api::ClipperOperand unioned = slic3r_api::clipper_union(concatenated);
     check_bbox(unioned.bounding_box(), -2., -5., 40., 12.);
+}
+
+// Clipper rounds intersections to 1 unit; its outputs are cleaned at SCALED_EPSILON so that
+// callers never see vertices closer than that, from the host helpers or from the plugin API.
+TEST_CASE("Clipper outputs merge vertices closer than SCALED_EPSILON", "[plugins][clipper]")
+{
+    // A 10 mm square whose bottom edge has a vertex SCALED_EPSILON / 2 outside its line, and
+    // whose bottom-right corner is doubled by a vertex SCALED_EPSILON / 4 away from it.
+    const coord_t side = scale_i(10.);
+    Polygon noisy_square({
+        Point(0, 0),
+        Point(side / 2, -SCALED_EPSILON / 2),
+        Point(side - SCALED_EPSILON / 4, 0),
+        Point(side, SCALED_EPSILON / 4),
+        Point(side, side),
+        Point(0, side)
+    });
+    REQUIRE(noisy_square.is_counter_clockwise());
+
+    ExPolygons unioned = union_ex(Polygons{noisy_square});
+    REQUIRE(unioned.size() == 1);
+    CHECK(unioned.front().contour.size() == 4);
+    CHECK(unioned.front().holes.empty());
+
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    slic3r_api::ClipperContext clipper(storage);
+    slic3r_api::ClipperOperand api_unioned = slic3r_api::clipper_union(clipper(view(noisy_square)));
+    REQUIRE(api_unioned.path_count() == 1);
+    slic3r_api::StoredPolygonCollection api_polygons = api_unioned.to_polygon_collection();
+    REQUIRE(api_polygons.size() == 1);
+    CHECK(api_polygons[0].size() == 4);
+}
+
+TEST_CASE("Clipper outputs drop slivers thinner than SCALED_EPSILON", "[plugins][clipper]")
+{
+    // Subtracting a copy shifted by `shift` along X leaves a vertical strip `shift` wide.
+    const coord_t side = scale_i(10.);
+    const Polygon square = rectangle_mm(0., 0., 10., 10.);
+    auto shifted_square = [&square](const coord_t shift) {
+        Polygon shifted = square;
+        shifted.translate(shift, 0);
+        return shifted;
+    };
+
+    CHECK(diff_ex(Polygons{square}, Polygons{shifted_square(SCALED_EPSILON / 2)}).empty());
+    const ExPolygons wide_strip = diff_ex(Polygons{square}, Polygons{shifted_square(4 * SCALED_EPSILON)});
+    REQUIRE(wide_strip.size() == 1);
+    CHECK(wide_strip.front().contour.size() == 4);
+    CHECK(wide_strip.front().contour.bounding_box().size().x() == 4 * SCALED_EPSILON);
+    CHECK(wide_strip.front().contour.bounding_box().size().y() == side);
+
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    slic3r_api::ClipperContext clipper(storage);
+    const Polygon thin_shift = shifted_square(SCALED_EPSILON / 2);
+    const Polygon wide_shift = shifted_square(4 * SCALED_EPSILON);
+    CHECK(slic3r_api::clipper_diff(clipper(view(square)), clipper(view(thin_shift))).empty());
+    CHECK(slic3r_api::clipper_diff(clipper(view(square)), clipper(view(wide_shift))).path_count() == 1);
+}
+
+TEST_CASE("Clipper polyline outputs keep their ends and drop close interior points", "[plugins][clipper]")
+{
+    // The clip covers x >= 5 mm. The polyline has an interior vertex SCALED_EPSILON / 4
+    // before that boundary and slightly off its line, so the cut point lands next to it.
+    const coord_t half = scale_i(5.);
+    const Polygon clip = rectangle_mm(5., -5., 15., 5.);
+    const Polyline polyline({Point(0, 0), Point(half - SCALED_EPSILON / 4, 10), Point(2 * half, 20)});
+
+    const Polylines outside = diff_pl(polyline, clip);
+    REQUIRE(outside.size() == 1);
+    REQUIRE(outside.front().size() == 2);
+    CHECK((outside.front().front() == Point(0, 0) || outside.front().back() == Point(0, 0)));
+    const Polylines inside = intersection_pl(polyline, clip);
+    REQUIRE(inside.size() == 1);
+    CHECK(inside.front().size() == 2);
+
+    // A piece shorter than SCALED_EPSILON keeps its two ends.
+    const Polygon thin_clip({Point(half, -half), Point(half + SCALED_EPSILON / 2, -half),
+                             Point(half + SCALED_EPSILON / 2, half), Point(half, half)});
+    const Polylines tiny = intersection_pl(Polyline({Point(0, 0), Point(2 * half, 0)}), thin_clip);
+    REQUIRE(tiny.size() == 1);
+    CHECK(tiny.front().size() == 2);
+    CHECK(tiny.front().length() == Approx(double(SCALED_EPSILON / 2)));
 }
 
 
