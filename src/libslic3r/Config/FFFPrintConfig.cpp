@@ -122,7 +122,6 @@ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(InfillPattern, {
     {"stars",               ipStars},
     {"cubic",               ipCubic},
     {"line",                ipLine},
-    {"monotoniclines",      ipMonotonicLines },
     {"concentric",          ipConcentric},
     {"honeycomb",           ipHoneycomb},
     {"3dhoneycomb",         ip3DHoneycomb},

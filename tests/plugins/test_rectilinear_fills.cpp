@@ -168,7 +168,6 @@ std::unique_ptr<rect_fills::FillRectilinear> make_ported_pattern(const PatternCa
     case Slic3r::ipRectilinear:           return std::make_unique<rect_fills::FillRectilinear>();
     case Slic3r::ipAlignedRectilinear:    return std::make_unique<rect_fills::FillAlignedRectilinear>();
     case Slic3r::ipMonotonic:             return std::make_unique<rect_fills::FillMonotonic>();
-    case Slic3r::ipMonotonicLines:        return std::make_unique<rect_fills::FillMonotonicLines>();
     case Slic3r::ipGrid:                  return std::make_unique<rect_fills::FillGrid>();
     case Slic3r::ipTriangles:             return std::make_unique<rect_fills::FillTriangles>();
     case Slic3r::ipStars:                 return std::make_unique<rect_fills::FillStars>();
@@ -190,7 +189,6 @@ TEST_CASE("Rectilinear fill port matches the core line geometry", "[plugins][inf
         { "rectilinear", Slic3r::ipRectilinear, false },
         { "alignedrectilinear", Slic3r::ipAlignedRectilinear, false },
         { "monotonic", Slic3r::ipMonotonic, true },
-        { "monotoniclines", Slic3r::ipMonotonicLines, true },
         { "grid", Slic3r::ipGrid, false },
         { "triangles", Slic3r::ipTriangles, false },
         { "stars", Slic3r::ipStars, false },

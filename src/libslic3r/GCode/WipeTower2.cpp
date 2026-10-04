@@ -876,7 +876,7 @@ void WipeTowerLayer::init(const std::vector<const Layer *> layers,
         //                    infill_areas.back().contour.points.front().y() ?
         //                                                                  infill_areas[0] :
         //                                                                  infill_areas[1];
-        //            std::unique_ptr<Fill> filler(Fill::new_from_type(ipMonotonicLines));
+        //            std::unique_ptr<Fill> filler(Fill::new_from_type(ipMonotonic));
         //            filler->angle = Geometry::deg2rad(45.f);
         //            FillParams params;
         //            params.role = ExtrusionRole::WipeTower;
@@ -1673,7 +1673,7 @@ bool WipeTowerLayer::finish_layer(ExtrusionEntityCollection &collection, extrude
         Surface surface(stPosBottom | stDensSolid, ExPolygon(offset_expoly));
         if (extrusion_z == extrusion_height) {
             // infill
-            filler.reset(Fill::new_from_type(ipMonotonicLines));
+            filler.reset(Fill::new_from_type(ipMonotonic));
             filler->angle = Geometry::deg2rad(45.f);
             params.density = 1.f;
         } else {

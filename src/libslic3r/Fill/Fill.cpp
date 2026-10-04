@@ -1202,7 +1202,6 @@ Polylines Layer::_generate_sparse_infill_polylines_for_anchoring(const LayerSlic
         case ipSawtooth:
         case ipScatteredRectilinear:
         case ipMonotonic:
-        case ipMonotonicLines:
         case ipAlignedRectilinear:
         case ipGrid:
         case ipTriangles:

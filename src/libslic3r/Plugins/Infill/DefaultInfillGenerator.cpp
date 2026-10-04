@@ -205,7 +205,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
     static const key_value_string_pair_t k_top_patterns[] = {
         { "rectilinear",         "Rectilinear" },
         { "monotonic",           "Monotonic" },
-        { "monotoniclines",      "Monotonic Lines" },
         { "alignedrectilinear",  "Aligned Rectilinear" },
         { "concentric",          "Concentric" },
         { "sawtooth",            "Sawtooth" },
@@ -214,7 +213,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
     static const key_value_string_pair_t k_bottom_patterns[] = {
         { "rectilinear",         "Rectilinear" },
         { "monotonic",           "Monotonic" },
-        { "monotoniclines",      "Monotonic Lines" },
         { "alignedrectilinear",  "Aligned Rectilinear" },
         { "concentric",          "Concentric" },
         { "smooth",              "Ironing" },
@@ -223,7 +221,6 @@ void create_infill_pattern_options(orchestrator_handle *orchestrator)
         { "ensuring",            "Ensuring" },
         { "rectilinear",         "Rectilinear" },
         { "monotonic",           "Monotonic" },
-        { "monotoniclines",      "Monotonic Lines" },
         { "alignedrectilinear",  "Aligned Rectilinear" },
         { "concentric",          "Concentric" },
         { "smooth",              "Ironing" },
@@ -514,7 +511,7 @@ SurfaceInfillRecipe make_surface_recipe(const run_ctx_generate_infill &ctx,
     // post-process plugin, so C_INFILL_FLAG_ADD_GAP_FILL and
     // C_INFILL_FLAG_GAP_FILL_ENABLED stay clear.
     uint16_t infill_flags = 0;
-    if (pattern_id == "monotonic" || pattern_id == "monotoniclines")
+    if (pattern_id == "monotonic")
         infill_flags |= C_INFILL_FLAG_MONOTONIC;
     if (pattern_id == "sawtooth")
         infill_flags |= C_INFILL_FLAG_DONT_ADJUST;

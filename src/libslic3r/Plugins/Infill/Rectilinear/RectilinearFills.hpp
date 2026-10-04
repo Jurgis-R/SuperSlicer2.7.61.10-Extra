@@ -149,14 +149,6 @@ public:
     bool no_sort() const override { return true; }
 };
 
-class FillMonotonicLines : public FillMonotonic
-{
-public:
-    ~FillMonotonicLines() override = default;
-    Polylines fill_surface(const slic3r_api::ExPolygon &expolygon, const raw_infill_pattern_params &params) const override;
-    bool no_sort() const override { return true; }
-};
-
 class FillGrid : public FillRectilinear
 {
 public:

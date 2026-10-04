@@ -660,7 +660,6 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "stars");
         activate_plugin_or_fail(orchestrator, "cubic");
         activate_plugin_or_fail(orchestrator, "line");
-        activate_plugin_or_fail(orchestrator, "monotoniclines");
         activate_plugin_or_fail(orchestrator, "concentric");
         activate_plugin_or_fail(orchestrator, "honeycomb");
         activate_plugin_or_fail(orchestrator, "3dhoneycomb");

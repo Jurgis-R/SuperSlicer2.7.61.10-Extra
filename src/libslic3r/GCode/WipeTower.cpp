@@ -1583,7 +1583,7 @@ WipeTower::ToolChangeResult WipeTower::finish_layer()
             infill_areas = diff_ex(wt_contour, wt_rectangle);
             if (infill_areas.size() == 2) {
                 ExPolygon& bottom_expoly = infill_areas.front().contour.points.front().y() < infill_areas.back().contour.points.front().y() ? infill_areas[0] : infill_areas[1];
-                std::unique_ptr<Fill> filler(Fill::new_from_type(ipMonotonicLines));
+                std::unique_ptr<Fill> filler(Fill::new_from_type(ipMonotonic));
                 filler->angle = Geometry::deg2rad(45.f);
                 FillParams params;
                 params.density = 1.f;

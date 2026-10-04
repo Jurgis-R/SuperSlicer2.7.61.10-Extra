@@ -439,7 +439,7 @@ void init()
 //key_translation_map["single"]="retract_lift_below";
 //key_translation_map["single"]="wipe";
     //pattern
-    value_translation_map["fill_pattern"]["monotonicline"] = "monotoniclines"; //2.7
+    value_translation_map["fill_pattern"]["monotonicline"] = "monotonic"; //2.7, was monotoniclines (identical patterns)
     value_translation_map["fill_pattern"]["zig-zag"] = "rectilinear";
     value_translation_map["fill_pattern"]["tri-hexagon"] = "stars";
     //value_translation_map["fill_pattern"]["rectilinear-grid"] = "???"; //can't convert let the config_substitutions emit the warning

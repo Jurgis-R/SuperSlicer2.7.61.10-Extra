@@ -73,15 +73,6 @@ public:
     bool no_sort() const override { return true; }
 };
 
-class FillMonotonicLines : public FillMonotonic
-{
-public:
-    Fill* clone() const override { return new FillMonotonicLines(*this); }
-    ~FillMonotonicLines() override = default;
-    Polylines fill_surface(const Surface *surface, const FillParams &params) const override;
-    bool no_sort() const override { return true; }
-};
-
 class FillGrid : public FillRectilinear
 {
 public:

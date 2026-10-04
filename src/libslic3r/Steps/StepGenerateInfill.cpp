@@ -114,6 +114,12 @@ infill_pattern_runtime_id resolve_pattern_id_callback(const run_ctx_generate_inf
     if (selected != host->pattern_runtime_ids_by_plugin_id.end())
         return selected->second;
 
+    // The monotoniclines pattern was removed because it was identical to
+    // monotonic. Presets may still store its id; resolve it to monotonic so
+    // they keep slicing with the same result instead of the generic fallback.
+    if (requested_id == "monotoniclines")
+        return resolve_pattern_id_callback(ctx, "monotonic");
+
     // Presets can outlive plugin activation changes. Falling back keeps the
     // slice usable, while the warning tells the user that the selected pattern
     // id is no longer available in the active plugin set.

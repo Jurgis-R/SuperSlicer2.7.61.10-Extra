@@ -70,7 +70,7 @@ enum InfillPattern : uint8_t{
     ipAlignedRectilinear,
     ipGrid,
     ipTriangles, ipStars, ipCubic,
-    ipLine, ipMonotonicLines,
+    ipLine,
     ipConcentric,
     ipHoneycomb, ip3DHoneycomb,
     ipHilbertCurve, ipArchimedeanChords, ipOctagramSpiral,

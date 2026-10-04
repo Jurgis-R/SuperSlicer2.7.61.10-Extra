@@ -72,7 +72,6 @@ enum class PatternKind
     Rectilinear,
     AlignedRectilinear,
     Monotonic,
-    MonotonicLines,
     Grid,
     Triangles,
     Stars,
@@ -95,7 +94,7 @@ struct PatternDefinition
 
 // Declaration order defines the familiar config UI order. The explicit
 // priority keeps the order stable with the patterns that are still legacy.
-const std::array<PatternDefinition, 12> k_patterns = {{
+const std::array<PatternDefinition, 11> k_patterns = {{
     { "rectilinear", "Rectilinear", "Classic rectilinear infill pattern.", 0, PatternKind::Rectilinear, k_all_five },
     { "monotonic", "Monotonic", "Monotonic solid infill pattern.", 1, PatternKind::Monotonic, k_all_five },
     { "alignedrectilinear", "Aligned Rectilinear", "Rectilinear infill aligned across layers.", 2,
@@ -104,8 +103,6 @@ const std::array<PatternDefinition, 12> k_patterns = {{
     { "triangles", "Triangles", "Triangular infill pattern.", 4, PatternKind::Triangles, k_sparse_only },
     { "stars", "Stars", "Star-shaped triangular infill pattern.", 5, PatternKind::Stars, k_sparse_only },
     { "cubic", "Cubic", "Cubic infill pattern.", 6, PatternKind::Cubic, k_sparse_only },
-    { "monotoniclines", "Monotonic Lines", "Monotonic line infill pattern.", 8, PatternKind::MonotonicLines,
-      k_top_bottom_solid },
     { "rectiwithperimeter", "Rectilinear with Perimeter", "Rectilinear infill with perimeter-aware filling.", 20,
       PatternKind::RectilinearWithPerimeter, k_no_lists },
     { "scatteredrectilinear", "Scattered Rectilinear", "Scattered rectilinear infill pattern.", 21,
@@ -122,7 +119,6 @@ std::unique_ptr<rect_fills::FillRectilinear> make_pattern(PatternKind kind)
     case PatternKind::Rectilinear:              return std::make_unique<rect_fills::FillRectilinear>();
     case PatternKind::AlignedRectilinear:       return std::make_unique<rect_fills::FillAlignedRectilinear>();
     case PatternKind::Monotonic:                return std::make_unique<rect_fills::FillMonotonic>();
-    case PatternKind::MonotonicLines:           return std::make_unique<rect_fills::FillMonotonicLines>();
     case PatternKind::Grid:                     return std::make_unique<rect_fills::FillGrid>();
     case PatternKind::Triangles:                return std::make_unique<rect_fills::FillTriangles>();
     case PatternKind::Stars:                    return std::make_unique<rect_fills::FillStars>();
