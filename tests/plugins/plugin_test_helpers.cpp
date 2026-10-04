@@ -77,6 +77,7 @@
 #include "libslic3r/Plugins/Perimeter/RemoveGapFillOnOverhangs.hpp"
 #include "libslic3r/Plugins/Perimeter/SeparateHoleContour.hpp"
 #include "libslic3r/Plugins/Perimeter/SimplePerimeterGenerator.hpp"
+#include "libslic3r/Plugins/Slicing/MaxOverhangThreshold.hpp"
 #include "libslic3r/Plugins/Slicing/OverhangSlopeFill.hpp"
 #include "libslic3r/Plugins/Slicing/SliceVolume.hpp"
 #include "libslic3r/Plugins/Slicing/StandardLayerHeightGenerator.hpp"
@@ -470,6 +471,7 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::StandardLayerHeightGeneratorPlugin::register_standard_layer_height_generator_plugin(
             orchestrator_handle_value);
         slic3r_api::SliceVolumePlugin::register_slice_volume_plugin(orchestrator_handle_value);
+        slic3r_api::MaxOverhangThresholdPlugin::register_max_overhang_threshold_plugin(orchestrator_handle_value);
         slic3r_api::OverhangSlopeFillPlugin::register_overhang_slope_fill_plugin(orchestrator_handle_value);
         slic3r_api::VaseMultiIslandConnectorPlugin::register_vase_multi_island_connector_plugin(
             orchestrator_handle_value);
@@ -593,6 +595,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "bridge_detector.default");
         activate_plugin_or_fail(orchestrator, "standard_layer_height_generator");
         activate_plugin_or_fail(orchestrator, "slice_volume");
+        activate_plugin_or_fail(orchestrator, "max_overhang_threshold");
         activate_plugin_or_fail(orchestrator, "overhang_slope_fill");
         activate_plugin_or_fail(orchestrator, "vase.multi_island_connector");
         activate_plugin_or_fail(orchestrator, "gcode.printing_plan_file_writer");

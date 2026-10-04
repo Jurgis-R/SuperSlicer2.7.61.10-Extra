@@ -146,6 +146,9 @@ The caller shall always keep using the returned handle value:
 
     first = clipper_concat_replace(storage, first, second);
 
+A null first or second is treated as an empty operand: a null second returns
+first unchanged, and a null first returns a new handle with the paths of second.
+
 Important limitation:
 - this only updates the handle value returned to the caller;
 - if other variables still store the old first pointer, they are not updated and

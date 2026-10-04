@@ -96,6 +96,43 @@ TEST_CASE("ClipperOperand path_count counts raw non-empty paths", "[plugins][cli
     CHECK(!unioned.empty());
 }
 
+TEST_CASE("ClipperOperand concatenation treats null operands as empty", "[plugins][clipper]")
+{
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    slic3r_api::ClipperContext clipper(storage);
+    Polygon polygon = rectangle_mm(0., 0., 10., 10.);
+
+    // clipper() is a null view; accumulating into it and appending it are no-ops.
+    slic3r_api::ClipperOperand accumulated = clipper();
+    accumulated += clipper();
+    CHECK(accumulated.empty());
+    accumulated += clipper(view(polygon));
+    CHECK(accumulated.path_count() == 1);
+    accumulated += clipper();
+    CHECK(accumulated.path_count() == 1);
+    accumulated += clipper.empty();
+    CHECK(accumulated.path_count() == 1);
+
+    slic3r_api::ClipperOperand null_operand = clipper();
+    CHECK((null_operand + accumulated).path_count() == 1);
+    CHECK((accumulated + null_operand).path_count() == 1);
+    CHECK((null_operand + clipper()).empty());
+
+    // Null views can be moved like owned ones.
+    slic3r_api::ClipperOperand moved(std::move(null_operand));
+    CHECK(moved.empty());
+    moved = clipper();
+    CHECK(moved.empty());
+
+    // The C call keeps the first handle when there is nothing to append.
+    clipper_shapes_handle *raw = ::clipper_shapes_from_polygon(storage, view(polygon).handle());
+    raw = ::clipper_concat_replace(storage, raw, nullptr);
+    REQUIRE(raw != nullptr);
+    CHECK(::clipper_shapes_path_count(raw) == 1);
+    CHECK(storage_free(storage, raw));
+}
+
 TEST_CASE("ClipperOperand bounding_box reads raw Clipper points", "[plugins][clipper]")
 {
     PluginStorage plugin_storage;

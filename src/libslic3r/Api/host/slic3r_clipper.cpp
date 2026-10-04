@@ -340,8 +340,14 @@ clipper_shapes_handle *clipper_concat_replace(storage_handle *storage,
                                               clipper_shapes_handle *first,
                                               const clipper_shapes_handle *second)
 {
-    if (storage == nullptr || first == nullptr || second == nullptr)
+    if (storage == nullptr)
         return nullptr;
+    // A null handle is an empty operand: keep first when there is nothing to
+    // append, and copy second when there is nothing to append to.
+    if (second == nullptr)
+        return first;
+    if (first == nullptr)
+        return clipper_concat(storage, nullptr, second);
 
     Slic3r::PluginStorage *plugin_storage = Slic3r::to_storage(storage);
     Slic3r::ApiClipper::ClipperShapes *first_shapes = Slic3r::to_shapes(first);

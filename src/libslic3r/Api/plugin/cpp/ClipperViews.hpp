@@ -184,7 +184,8 @@ public:
         : MutableHandleView<clipper_shapes_handle>()
         , m_storage(other.m_storage)
         , m_owner(other.m_owner) {
-        set_handle(other.raw_mutable_handle());
+        if (other.raw_handle() != nullptr)
+            set_handle(other.raw_mutable_handle());
         other.clear_handle();
         other.m_owner = false;
     }
@@ -317,7 +318,10 @@ public:
         if (other.m_storage != m_storage)
             return *this;
         free_from_storage();
-        set_handle(other.raw_mutable_handle());
+        if (other.raw_handle() != nullptr)
+            set_handle(other.raw_mutable_handle());
+        else
+            clear_handle();
         other.clear_handle();
         m_owner = other.m_owner;
         other.m_owner = false;
@@ -333,7 +337,9 @@ public:
         assert(second.m_storage == m_storage);
         if (second.m_storage != m_storage)
             return ClipperOperand(m_storage);
-        return ClipperOperand(m_storage, ::clipper_concat(m_storage, handle(), second.handle()), true);
+        // Null views are empty operands; the host returns null only when both are.
+        clipper_shapes_handle *result = ::clipper_concat(m_storage, raw_handle(), second.raw_handle());
+        return result != nullptr ? ClipperOperand(m_storage, result, true) : create_empty(m_storage);
     }
     ClipperOperand operator+(const ClipperOperand &b) {
         return this->concat(b);
@@ -345,6 +351,9 @@ public:
         assert(m_storage);
         assert(second.m_storage == m_storage);
         if (second.m_storage != m_storage)
+            return;
+        // Nothing to append, including from a null view such as ClipperContext::operator()().
+        if (second.empty())
             return;
         if (m_owner && is_mutable()) {
             // if we're the owner, we can reuse the handle and maybe avoid an allocation.
