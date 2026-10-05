@@ -12,6 +12,8 @@ void register_regional_seam_test_provider(orchestrator_handle *orchestrator);
 void register_gcode_reader_test_providers(orchestrator_handle *orchestrator);
 // Register support toolpath role providers before generated selector options are finalized.
 void register_support_toolpath_test_providers(orchestrator_handle *orchestrator);
+// Register recording support families before generated selector options are finalized.
+void register_support_step_test_providers(orchestrator_handle *orchestrator);
 // Initialize providers and immutable test configuration definitions once.
 void ensure_plugin_test_runtime_initialized();
 bool python_plugin_test_runtime_available();
