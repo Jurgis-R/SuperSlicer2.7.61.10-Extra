@@ -10,8 +10,7 @@
 
 #include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/Polygon.hpp"
-
-#include <clipper/clipper.hpp>
+#include "libslic3r/clipper.hpp"
 
 namespace Slic3r {
 class BoundingBox;
@@ -88,6 +87,14 @@ public:
     virtual BoundingBox bounding_box() const = 0;
 
     /*
+    Whether the closed paths are contours and holes by construction: contours
+    counter-clockwise, each hole clockwise inside its contour. ExPolygon and
+    PolyTree sources are; raw polygon and path lists may hold any orientation,
+    for example thin projected facets that only grow as a whole.
+    */
+    virtual bool has_normalized_rings() const { return false; }
+
+    /*
     Concatenate with another shape for the "append then maybe union later" use
     case.
 
@@ -98,6 +105,15 @@ public:
     */
     virtual ClipperShapes *concat(const ClipperShapes &other, Slic3r::PluginStorage &storage);
 };
+
+/*
+Whether two edges of the closed rings overlap along a positive length: the mark
+of a zero-width bridge, where an edge is walked twice in opposite directions or
+a hole shares an edge with its contour. Touching at a single point is not an
+overlap. The test is exact for any coordinate.
+*/
+bool has_overlapping_edges(const ClipperLib::PolyTree &tree);
+bool has_overlapping_edges(const ClipperLib::Paths &rings);
 
 std::unique_ptr<ClipperShapes> make_path_list_shapes(ClipperLib::Paths paths);
 std::unique_ptr<ClipperShapes> make_polytree_shapes(ClipperLib::PolyTree tree);

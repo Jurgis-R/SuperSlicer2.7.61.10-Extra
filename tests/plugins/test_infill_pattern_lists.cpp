@@ -51,6 +51,17 @@ bool has_value(const std::vector<std::string> &values, const std::string &value)
 TEST_CASE("Infill pattern lists are plugin-defined enums", "[plugins][infill][options]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    const Plugin *support_base = orchestrator.get_plugin("supportbase");
+    const Plugin *support_cubic = orchestrator.get_plugin("supportcubic");
+    const Plugin *lightning = orchestrator.get_plugin("lightning");
+    REQUIRE(support_base != nullptr);
+    REQUIRE(support_cubic != nullptr);
+    REQUIRE(lightning != nullptr);
+    CHECK(lightning->get_step() == INFILL_PATTERN);
+    CHECK(lightning->get_priority() == 23);
+    CHECK(support_base->get_step() == INFILL_PATTERN);
+    CHECK(support_cubic->get_step() == INFILL_PATTERN);
 
     for (const char *key : { "fill_pattern", "top_fill_pattern", "bottom_fill_pattern",
                              "solid_fill_pattern", "bridge_fill_pattern" }) {
@@ -69,12 +80,42 @@ TEST_CASE("Infill pattern lists are plugin-defined enums", "[plugins][infill][op
     const std::vector<std::string> sparse = option_values("fill_pattern");
     CHECK(has_value(sparse, "stars"));
     CHECK(has_value(sparse, "gyroid"));
+    CHECK(has_value(sparse, "supportcubic"));
+    CHECK(std::count(sparse.begin(), sparse.end(), "lightning") == 1);
+    for (const char *key : {"top_fill_pattern", "bottom_fill_pattern", "solid_fill_pattern", "bridge_fill_pattern"})
+        CHECK_FALSE(has_value(option_values(key), "lightning"));
     CHECK_FALSE(has_value(sparse, "ensuring"));
+
+    // Patterns provided by standalone plugins still join the lists they belong
+    // to. The generator no longer declares them in its base lists.
+    CHECK(has_value(sparse, "honeycomb"));
+    CHECK(has_value(sparse, "3dhoneycomb"));
+    CHECK(has_value(sparse, "hilbertcurve"));
+    CHECK(has_value(sparse, "archimedeanchords"));
+    CHECK(has_value(sparse, "octagramspiral"));
+    CHECK(has_value(option_values("top_fill_pattern"), "hilbertcurve"));
+    CHECK(has_value(option_values("bottom_fill_pattern"), "archimedeanchords"));
+    CHECK(has_value(option_values("solid_fill_pattern"), "octagramspiral"));
+
+    // Each contribution is applied once even when several plugins contribute
+    // to the same list.
+    CHECK(std::count(sparse.begin(), sparse.end(), "honeycomb") == 1);
+    CHECK(std::count(sparse.begin(), sparse.end(), "gyroid") == 1);
 
     // Each slot keeps its own subset instead of sharing one merged list.
     CHECK(has_value(option_values("top_fill_pattern"), "sawtooth"));
     CHECK_FALSE(has_value(option_values("bottom_fill_pattern"), "sawtooth"));
     CHECK_FALSE(has_value(option_values("solid_fill_pattern"), "grid"));
+    CHECK_FALSE(has_value(sparse, "supportbase"));
+    CHECK_FALSE(has_value(option_values("top_fill_pattern"), "supportbase"));
+    CHECK_FALSE(has_value(option_values("bottom_fill_pattern"), "supportbase"));
+    CHECK_FALSE(has_value(option_values("solid_fill_pattern"), "supportbase"));
+    CHECK_FALSE(has_value(option_values("bridge_fill_pattern"), "supportbase"));
+    CHECK_FALSE(has_value(option_values("top_fill_pattern"), "supportcubic"));
+    CHECK_FALSE(has_value(option_values("bottom_fill_pattern"), "supportcubic"));
+    CHECK_FALSE(has_value(option_values("solid_fill_pattern"), "supportcubic"));
+    CHECK_FALSE(has_value(option_values("bridge_fill_pattern"), "supportcubic"));
+    CHECK(std::count(sparse.begin(), sparse.end(), "supportcubic") == 1);
 
     const std::vector<std::string> bridge = option_values("bridge_fill_pattern");
     REQUIRE(bridge.size() == 2);

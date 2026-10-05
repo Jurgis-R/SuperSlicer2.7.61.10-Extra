@@ -93,9 +93,17 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/GCode/Reader/DefaultGCodeReader.hpp"
 #include "libslic3r/Plugins/GCode/SettingsGCodeScripts.hpp"
 #include "libslic3r/Plugins/GuiRulesCore.hpp"
+#include "libslic3r/Plugins/Infill/AdaptiveCubic/AdaptiveCubicPattern.hpp"
+#include "libslic3r/Plugins/Infill/Lightning/LightningPattern.hpp"
+#include "libslic3r/Plugins/Infill/ConcentricPattern.hpp"
 #include "libslic3r/Plugins/Infill/DefaultInfillGenerator.hpp"
-#include "libslic3r/Plugins/Infill/LegacyInfillPatterns.hpp"
+#include "libslic3r/Plugins/Infill/EnsuringPattern.hpp"
+#include "libslic3r/Plugins/Infill/GyroidPattern.hpp"
+#include "libslic3r/Plugins/Infill/PostFullFillVolume.hpp"
 #include "libslic3r/Plugins/Infill/PostInfillGapFill.hpp"
+#include "libslic3r/Plugins/Infill/Rectilinear/RectilinearPatterns.hpp"
+#include "libslic3r/Plugins/Infill/SimpleInfillPatterns.hpp"
+#include "libslic3r/Plugins/Infill/SmoothPattern.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/AvoidCrossingPerimetersTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetraction.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/CreateRetractionLift.hpp"
@@ -683,10 +691,34 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::GCodeGeneration::Thumbnail::register_builtin_gcode_thumbnail_plugins);
     register_builtin_plugin(orchestrator, "infill.generator.default",
         slic3r_api::Infill::DefaultInfillGeneratorPlugin::register_default_infill_generator_plugin);
-    register_builtin_plugin(orchestrator, "legacy_infill_patterns",
-        slic3r_api::Infill::LegacyInfillPatternsPlugin::register_legacy_infill_pattern_plugins);
+    register_builtin_plugin(orchestrator, "adaptivecubic",
+        slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_adaptive_cubic_pattern_plugin);
+    register_builtin_plugin(orchestrator, "supportcubic",
+        slic3r_api::Infill::AdaptiveCubicPatternPlugin::register_support_cubic_pattern_plugin);
+    register_builtin_plugin(orchestrator, "lightning",
+        slic3r_api::Infill::Lightning::register_lightning_pattern_plugin);
+    register_builtin_plugin(orchestrator, "gyroid",
+        slic3r_api::Infill::GyroidPatternPlugin::register_gyroid_pattern_plugin);
+    register_builtin_plugin(orchestrator, "line", slic3r_api::Infill::register_line_pattern_plugin);
+    register_builtin_plugin(orchestrator, "concentric", slic3r_api::Infill::register_concentric_pattern_plugin);
+    register_builtin_plugin(orchestrator, "smooth", slic3r_api::Infill::register_smooth_pattern_plugin);
+    register_builtin_plugin(orchestrator, "ensuring", slic3r_api::Infill::register_ensuring_pattern_plugin);
+    register_builtin_plugin(orchestrator, "honeycomb",
+        slic3r_api::Infill::register_honeycomb_pattern_plugin);
+    register_builtin_plugin(orchestrator, "3dhoneycomb",
+        slic3r_api::Infill::register_honeycomb_3d_pattern_plugin);
+    register_builtin_plugin(orchestrator, "hilbertcurve",
+        slic3r_api::Infill::register_hilbert_curve_pattern_plugin);
+    register_builtin_plugin(orchestrator, "archimedeanchords",
+        slic3r_api::Infill::register_archimedean_chords_pattern_plugin);
+    register_builtin_plugin(orchestrator, "octagramspiral",
+        slic3r_api::Infill::register_octagram_spiral_pattern_plugin);
+    register_builtin_plugin(orchestrator, "rectilinear_patterns",
+        slic3r_api::Infill::register_rectilinear_pattern_plugins);
     register_builtin_plugin(orchestrator, "infill.post_process.gap_fill",
         slic3r_api::Infill::PostInfillGapFillPlugin::register_post_infill_gap_fill_plugin);
+    register_builtin_plugin(orchestrator, "infill.post_process.full_fill_volume",
+        slic3r_api::Infill::PostFullFillVolumePlugin::register_post_full_fill_volume_plugin);
     register_builtin_plugin(orchestrator, "ordering.default",
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins);
     register_builtin_plugin(orchestrator, "seam_placer.aligned",

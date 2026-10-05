@@ -95,6 +95,13 @@ void PostInfillGapFill::run_impl(const plugin_run_context *run_ctx) const
     // not publish for the moment. Once that input exists, this plugin will be
     // able to borrow the infill/gap-fill roots from the context and append the
     // new extrusion trees there.
+    //
+    // FIXME: when real gap fill is implemented, publish it as a child of the
+    // source surface's infill subtree (so it inherits the
+    // c_extrusion_property_infill of that surface) instead of the separate
+    // GAP_FILL bucket. It would print at the right time with fewer travels,
+    // and infill.post_process.full_fill_volume would then measure fill and gap
+    // fill together like the legacy accounting did (FillBase.cpp:312).
 }
 
 void register_post_infill_gap_fill_plugin(orchestrator_handle *orch)

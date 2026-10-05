@@ -155,8 +155,10 @@ bool lineSegmentPolygonsIntersection(const Point& a, const Point& b, const EdgeG
             for (auto it_contour_and_segment = cell_data_range.first; it_contour_and_segment != cell_data_range.second; ++it_contour_and_segment) {
                 // End points of the line segment and their vector.
                 auto segment = grid.segment(*it_contour_and_segment);
-                if (Vec2d ip; Geometry::segment_segment_intersection(segment.first.cast<double>(), segment.second.cast<double>(), this->line_a, this->line_b, ip))
-                    if (double d = (this->intersection_pt - this->line_b).squaredNorm(); d < d2min) {
+                if (Vec2d ip; line_alg::intersection(
+                        Linef(segment.first.cast<double>(), segment.second.cast<double>()),
+                        Linef(this->line_a, this->line_b), &ip))
+                    if (double d = (ip - this->line_b).squaredNorm(); d < d2min) {
                         this->d2min = d;
                         this->intersection_pt = ip;
                     }

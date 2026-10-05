@@ -140,12 +140,37 @@ struct EPropertyPerimeter :
     uint16_t perimeter_flags() const { return c_extrusion_property_perimeter::perimeter_flags; }
 };
 
-/* Source-surface provenance retained by generated infill trees. */
+/* Source-surface provenance and raw fill recipe retained by generated infill trees. */
 struct EPropertyInfill :
     EPropertyPayload<EPropertyInfill, c_extrusion_property_infill, EXTRUSION_PROPERTY_TYPE_INFILL>
 {
     EPropertyInfill &surface_id(uint64_t value) { source_surface_id = value; return *this; }
     uint64_t surface_id() const { return source_surface_id; }
+    EPropertyInfill &area_to_fill_mm2(double value) {
+        c_extrusion_property_infill::area_to_fill_mm2 = value;
+        return *this;
+    }
+    double area_to_fill_mm2() const { return c_extrusion_property_infill::area_to_fill_mm2; }
+    EPropertyInfill &height(coord_t value) { c_extrusion_property_infill::height = value; return *this; }
+    coord_t height() const { return c_extrusion_property_infill::height; }
+    EPropertyInfill &spacing(coord_t value) { c_extrusion_property_infill::spacing = value; return *this; }
+    coord_t spacing() const { return c_extrusion_property_infill::spacing; }
+    EPropertyInfill &spacing_ratio(float value) {
+        c_extrusion_property_infill::spacing_ratio = value;
+        return *this;
+    }
+    float spacing_ratio() const { return c_extrusion_property_infill::spacing_ratio; }
+    EPropertyInfill &density(float value) { c_extrusion_property_infill::density = value; return *this; }
+    float density() const { return c_extrusion_property_infill::density; }
+    EPropertyInfill &flow_mult(float value) { c_extrusion_property_infill::flow_mult = value; return *this; }
+    float flow_mult() const { return c_extrusion_property_infill::flow_mult; }
+    EPropertyInfill &surface_type(uint16_t value) { c_extrusion_property_infill::surface_type = value; return *this; }
+    uint16_t surface_type() const { return c_extrusion_property_infill::surface_type; }
+    EPropertyInfill &infill_flags(uint16_t value) {
+        c_extrusion_property_infill::infill_flags = value;
+        return *this;
+    }
+    uint16_t infill_flags() const { return c_extrusion_property_infill::infill_flags; }
 };
 
 /*

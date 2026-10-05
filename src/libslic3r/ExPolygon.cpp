@@ -1171,7 +1171,11 @@ bool remove_same_neighbor(ExPolygons &expolygons)
 
 bool remove_sticks(ExPolygon &poly)
 {
-    return remove_sticks(poly.contour) || remove_sticks(poly.holes);
+    // Clean the holes even when the contour changed: both cleanups apply to
+    // independent point arrays, and the returned flag has to report either.
+    bool modified = remove_sticks(poly.contour);
+    modified |= remove_sticks(poly.holes);
+    return modified;
 }
 
 bool remove_small_and_small_holes(ExPolygons &expolygons, double min_area)

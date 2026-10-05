@@ -6,7 +6,7 @@
 #define slic3r_utils_h_
 
 #define SLIC3R_PLUGIN_API_UTILS_MAJOR 1u
-#define SLIC3R_PLUGIN_API_UTILS_MINOR 0u
+#define SLIC3R_PLUGIN_API_UTILS_MINOR 1u
 
 #include <stdint.h>
 
@@ -74,6 +74,13 @@ SLIC3R_HOST_API void slic3r_parallel_for_storage(uint32_t begin,
                                                  uint32_t end,
                                                  void *user_data,
                                                  slic3r_parallel_for_storage_fn fn);
+
+/*
+Return an inclusive random integer in [0, max] from the caller's thread-local
+generator. The host seeds generators before worker threads start when a
+deterministic slicing sequence is required.
+*/
+SLIC3R_HOST_API int32_t slic3r_safe_rand(int32_t max);
 
 }
 #endif // slic3r_utils_h_

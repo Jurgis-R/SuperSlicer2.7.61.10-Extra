@@ -571,6 +571,27 @@ void prepare_cube_print(PreparedPerimeterPrint &prepared, const DynamicPrintConf
     run_until_perimeter_input(Orchestrator::instance(), prepared.print);
 }
 
+void replace_all_layer_islands(PreparedPerimeterPrint &prepared, const ExPolygon &area)
+{
+    REQUIRE(prepared.print.objects().size() == 1);
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() > 0);
+    for (Layer &layer : object.layers())
+        replace_layer_island(layer, area);
+    rebuild_island_overlap_graph(object);
+}
+
+void replace_all_layer_islands(PreparedPerimeterPrint &prepared, const std::vector<ExPolygon> &areas)
+{
+    REQUIRE(prepared.print.objects().size() == 1);
+    PrintObject &object = prepared.print.object(0);
+    REQUIRE(object.layer_count() > 0);
+    REQUIRE(areas.size() == object.layer_count());
+    for (size_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx)
+        replace_layer_island(object.layer(layer_idx), areas[layer_idx]);
+    rebuild_island_overlap_graph(object);
+}
+
 size_t layer_index_for_top(const PrintObject &object)
 {
     REQUIRE(object.layer_count() > 0);

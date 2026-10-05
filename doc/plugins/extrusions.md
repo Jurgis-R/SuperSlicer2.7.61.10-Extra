@@ -122,6 +122,26 @@ or inherited from a parent. Other process decisions, such as speed,
 acceleration, temperature, or fan speed, use additional properties. See
 [Using Plugin Properties](/doc/plugins/properties.md) for direct and dynamic property access.
 
+### Variable-Width Lines
+
+`thick_polyline_extrusion()` converts one centerline with a width per point,
+such as an Arachne wall, into a storage-owned entity: a loop when the line
+closes on itself, a multi-path when the width changes, otherwise one path. The
+widths are spacings between neighbor lines, except for thin walls. The
+parameters give the role, the base flow (built from its width, or from its
+spacing with `THICK_POLYLINE_EXTRUSION_FLOW_FROM_SPACING`), the segment
+resolution and width tolerance (0 selects the defaults: 1/8 and 1/20 of the
+flow width), a final `flow_mult`, and whether the entity can be reversed.
+
+```cpp
+c_thick_polyline_extrusion_params params = {};
+params.role = RAW_EXTRUSION_ROLE_SOLID_INFILL;
+params.flow = recipe.flow;
+params.flow_mult = 1.f;
+params.flags = THICK_POLYLINE_EXTRUSION_FLOW_FROM_SPACING | THICK_POLYLINE_EXTRUSION_CAN_REVERSE;
+std::optional<StoredExtrusionEntity> line = thick_polyline_extrusion(storage, points, widths, params);
+```
+
 ### Retraction And Wipe Process Leaves
 
 The ordered G-code pipeline also represents extrusion-axis preparation with
@@ -573,6 +593,7 @@ view; no cast or wrapper conversion is required.
 | Append copy | `append_child_copy()` | `extrusion_insert_child_copy()` | `add_child_copy()` |
 | Append move | `append_child_move()` | `extrusion_insert_child_move()` | `add_child_move()` |
 | Set straight geometry | `set_points()` | `extrusion_polyline_set_points()` | `set_points()` |
+| Set straight geometry from a polyline | `set_polyline()` | `extrusion_polyline_set_points()` | `set_polyline()` |
 | Preserve arcs and Z | `set_segments()` | `extrusion_polyline_set_segments()` | `set_segments()` |
 | Direct property lookup | `entity.get(key)` | `extrusion_property_data()` | `entity.property(Payload)` |
 

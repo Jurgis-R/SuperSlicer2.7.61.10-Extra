@@ -6,7 +6,7 @@
 #define slic3r_clipper_h_
 
 #define SLIC3R_PLUGIN_API_CLIPPER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 1u
+#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 2u
 
 #include "slic3r_def.h"
 #include "slic3r_geometry.h"
@@ -188,6 +188,9 @@ negative shrinks them. For open paths, pass an open end type.
 
 miter_limit is used as MiterLimit for square/miter joins and as ArcTolerance for
 round joins, following the convention already used by ClipperUtils.
+
+Rings meeting exactly along an edge after the offset are split as the native
+per-ring offset_ex() splits them: the result has no zero-width bridge.
 */
 SLIC3R_HOST_API clipper_shapes_handle *clipper_offset(storage_handle *storage,
                                                       const clipper_shapes_handle *subject,
@@ -280,6 +283,11 @@ SLIC3R_HOST_API polyline_collection_handle *clipper_diff_polyline_expolygons(sto
                                                                              const polyline_handle *subject,
                                                                              const expolygon_collection_handle *clip);
 
+// Batch difference returns storage-owned, unordered paths; a null/empty mask copies subjects.
+SLIC3R_HOST_API polyline_collection_handle *clipper_diff_polylines_expolygons(storage_handle *storage,
+                                                                          const polyline_collection_handle *subject,
+                                                                          const expolygon_collection_handle *clip);
+
 /*
 Clip an open polyline by polygonal areas and return the pieces inside clip.
 
@@ -297,6 +305,12 @@ by storage and must be released with storage_free() when no longer needed.
 SLIC3R_HOST_API polyline_collection_handle *clipper_intersection_polyline_expolygons(
     storage_handle *storage,
     const polyline_handle *subject,
+    const expolygon_collection_handle *clip);
+
+// Batch intersection returns storage-owned, unordered paths; a null/empty mask gives an empty result.
+SLIC3R_HOST_API polyline_collection_handle *clipper_intersection_polylines_expolygons(
+    storage_handle *storage,
+    const polyline_collection_handle *subject,
     const expolygon_collection_handle *clip);
 
 /*

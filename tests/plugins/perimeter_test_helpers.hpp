@@ -115,6 +115,16 @@ void prepare_cube_print(PreparedPerimeterPrint &prepared, const DynamicPrintConf
 size_t layer_index_for_top(const PrintObject &object);
 size_t layer_index_for_odd_layer(const PrintObject &object);
 
+/* Replace every layer cross-section with the same explicit area and rebuild the
+   island overlap graph. Tests use it to slice a surface with holes without
+   authoring a hollow mesh. */
+void replace_all_layer_islands(PreparedPerimeterPrint &prepared, const ExPolygon &area);
+
+/* Replace every layer cross-section with one explicit area per layer and rebuild
+   the island overlap graph. `areas` must hold one entry per layer, so tests can
+   vary the cross-section from one layer to the next. */
+void replace_all_layer_islands(PreparedPerimeterPrint &prepared, const std::vector<ExPolygon> &areas);
+
 PerimeterRunCapture run_perimeter_case(
     const DynamicPrintConfig &config,
     std::initializer_list<const char *> active_plugins,

@@ -69,6 +69,133 @@ void check_bbox(const c_bounding_box &bbox,
 
 } // namespace
 
+namespace {
+using DirectedPath = std::vector<std::pair<coord_t, coord_t>>;
+using DirectedPaths = std::vector<DirectedPath>;
+
+// Only collection order is ignored: every bend and each path's direction remains significant.
+DirectedPaths directed_paths(const Slic3r::Polylines &paths);
+// Read coordinates through the public API without interpreting host geometry handles.
+DirectedPaths directed_paths(const slic3r_api::PolylineCollection &paths);
+
+DirectedPaths directed_paths(const Slic3r::Polylines &paths)
+{
+    DirectedPaths result;
+    for (const Slic3r::Polyline &path : paths) {
+        DirectedPath &coordinates = result.emplace_back();
+        for (const Slic3r::Point &point : path.points)
+            coordinates.emplace_back(point.x(), point.y());
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+DirectedPaths directed_paths(const slic3r_api::PolylineCollection &paths)
+{
+    DirectedPaths result;
+    for (const slic3r_api::Polyline path : paths) {
+        DirectedPath &coordinates = result.emplace_back();
+        for (uint32_t index = 0; index < path.size(); ++index) {
+            const c_point point = path.at(index);
+            coordinates.emplace_back(point.x, point.y);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+}
+
+TEST_CASE("Batch polyline clipping matches core directed paths and owns results", "[plugins][clipper][clipper-batch]")
+{
+    const bool difference = GENERATE(false, true);
+    Slic3r::Polylines subjects{
+        Slic3r::Polyline{point_mm(-5., 3.), point_mm(4., 8.), point_mm(15., 8.), point_mm(45., 3.)},
+        Slic3r::Polyline{point_mm(-5., 10.), point_mm(45., 10.)},
+        Slic3r::Polyline{point_mm(12., 12.), point_mm(17., 17.)},
+        Slic3r::Polyline{point_mm(-5., -5.), point_mm(-1., -1.)},
+        Slic3r::Polyline{point_mm(0., 0.), point_mm(20., 0.), point_mm(20., 20.)}
+    };
+    Slic3r::ExPolygons clips{rectangle_with_two_holes(), Slic3r::ExPolygon(rectangle_mm(30., 0., 40., 20.))};
+    const DirectedPaths original = directed_paths(subjects);
+    const Slic3r::ExPolygons original_clips = clips;
+    const DirectedPaths expected = directed_paths(difference ? Slic3r::diff_pl(subjects, clips) : Slic3r::intersection_pl(subjects, clips));
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    const slic3r_api::PolylineCollection subject(reinterpret_cast<const polyline_collection_handle *>(&subjects));
+    const slic3r_api::ExPolygonCollection clip(reinterpret_cast<const expolygon_collection_handle *>(&clips));
+    slic3r_api::StoredPolylineCollection result = difference ?
+        slic3r_api::clipper_diff_polylines_expolygons(storage, subject, clip) :
+        slic3r_api::clipper_intersection_polylines_expolygons(storage, subject, clip);
+    REQUIRE_FALSE(expected.empty());
+    if (!difference)
+        CHECK(std::any_of(expected.begin(), expected.end(), [](const DirectedPath &path) { return path.size() > 2; }));
+    CHECK(directed_paths(result.readonly()) == expected);
+    CHECK(directed_paths(subjects) == original);
+    REQUIRE(clips.size() == original_clips.size());
+    for (size_t index = 0; index < clips.size(); ++index) {
+        CHECK(clips[index].contour.points == original_clips[index].contour.points);
+        REQUIRE(clips[index].holes.size() == original_clips[index].holes.size());
+        for (size_t hole = 0; hole < clips[index].holes.size(); ++hole)
+            CHECK(clips[index].holes[hole].points == original_clips[index].holes[hole].points);
+    }
+    subjects.clear();
+    clips.clear();
+    CHECK(directed_paths(result.readonly()) == expected);
+}
+
+TEST_CASE("Batch polyline C ABI handles null and empty inputs", "[plugins][clipper][clipper-batch]")
+{
+    const bool difference = GENERATE(false, true);
+    using Operation = polyline_collection_handle *(*)(storage_handle *, const polyline_collection_handle *, const expolygon_collection_handle *);
+    const Operation operation = difference ? ::clipper_diff_polylines_expolygons : ::clipper_intersection_polylines_expolygons;
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    Slic3r::Polylines subjects{Slic3r::Polyline{point_mm(-5., 10.), point_mm(25., 10.)},
+                              Slic3r::Polyline{}, Slic3r::Polyline{point_mm(1., 1.)}};
+    Slic3r::ExPolygons clips{rectangle_with_two_holes()};
+    const polyline_collection_handle *subject = reinterpret_cast<const polyline_collection_handle *>(&subjects);
+    const expolygon_collection_handle *clip = reinterpret_cast<const expolygon_collection_handle *>(&clips);
+    CHECK(operation(nullptr, subject, clip) == nullptr);
+    CHECK(operation(storage, nullptr, clip) == nullptr);
+    const DirectedPaths original = directed_paths(subjects);
+    Slic3r::ExPolygons empty;
+    const expolygon_collection_handle *empty_clips[] = {nullptr, reinterpret_cast<const expolygon_collection_handle *>(&empty)};
+    for (const expolygon_collection_handle *mask : empty_clips) {
+        polyline_collection_handle *handle = operation(storage, subject, mask);
+        REQUIRE(handle != nullptr);
+        CHECK(handle != subject);
+        slic3r_api::StoredPolylineCollection result = slic3r_api::StoredPolylineCollection::adopt(storage, handle);
+        CHECK(directed_paths(result.readonly()) == (difference ? original : DirectedPaths{}));
+        subjects.front().points.front().x() += 1;
+        CHECK(directed_paths(result.readonly()) == (difference ? original : DirectedPaths{}));
+        subjects.front().points.front().x() -= 1;
+        if (mask != nullptr) {
+            const slic3r_api::PolylineCollection source(subject);
+            const slic3r_api::ExPolygonCollection areas(mask);
+            slic3r_api::StoredPolylineCollection cpp_result = difference ?
+                slic3r_api::clipper_diff_polylines_expolygons(storage, source, areas) :
+                slic3r_api::clipper_intersection_polylines_expolygons(storage, source, areas);
+            CHECK(directed_paths(cpp_result.readonly()) == (difference ? original : DirectedPaths{}));
+        }
+    }
+    {
+        const DirectedPaths expected = directed_paths(difference ? Slic3r::diff_pl(subjects, clips) : Slic3r::intersection_pl(subjects, clips));
+        slic3r_api::StoredPolylineCollection result = slic3r_api::StoredPolylineCollection::adopt(storage, operation(storage, subject, clip));
+        CHECK(directed_paths(result.readonly()) == expected);
+    }
+    subjects.clear();
+    for (const expolygon_collection_handle *mask : {clip, empty_clips[0], empty_clips[1]}) {
+        polyline_collection_handle *handle = operation(storage, subject, mask);
+        REQUIRE(handle != nullptr);
+        slic3r_api::StoredPolylineCollection result = slic3r_api::StoredPolylineCollection::adopt(storage, handle);
+        CHECK(result.empty());
+    }
+    const slic3r_api::PolylineCollection subject_view(subject);
+    const slic3r_api::ExPolygonCollection clip_view(clip);
+    CHECK(slic3r_api::clipper_diff_polylines_expolygons(storage, subject_view, clip_view).empty());
+    CHECK(slic3r_api::clipper_intersection_polylines_expolygons(storage, subject_view, clip_view).empty());
+}
+
 TEST_CASE("ClipperOperand path_count counts raw non-empty paths", "[plugins][clipper]")
 {
     PluginStorage plugin_storage;
@@ -409,6 +536,27 @@ TEST_CASE("Clipper polyline pieces cut less than SCALED_EPSILON apart are glued 
     const Polyline loop({Point(0, 0), Point(2 * half, 0), Point(2 * half, 2 * half), Point(0, 2 * half), Point(0, 0)});
     const Polygon right_side({Point(half, -half), Point(3 * half, -half), Point(3 * half, 3 * half), Point(half, 3 * half)});
     CHECK(diff_pl(loop, right_side).size() == 2);
+}
+
+TEST_CASE("Clipper offset grows a polygon list of clockwise rings like ClipperOffset", "[plugins][clipper]")
+{
+    // Polygon lists keep the grouped ClipperOffset: painted facet slivers may
+    // have any orientation, and a clockwise lowest ring reverses every ring,
+    // so the set grows instead of being read as holes without a contour.
+    PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+    slic3r_api::ClipperContext clipper(storage);
+    Polygon first = rectangle_mm(0., 0., 10., 10.);
+    Polygon second = rectangle_mm(20., 0., 30., 10.);
+    first.make_clockwise();
+    second.make_clockwise();
+    slic3r_api::ClipperOperand clockwise = clipper(view(first));
+    clockwise += clipper(view(second));
+
+    const slic3r_api::ClipperOperand grown =
+        slic3r_api::clipper_offset(clockwise, scale_d(1.), CLIPPER_JOIN_MITER, 3.);
+    CHECK(grown.to_expolygon_collection().size() == 2);
+    check_bbox(grown.bounding_box(), -1., -1., 31., 11.);
 }
 
 

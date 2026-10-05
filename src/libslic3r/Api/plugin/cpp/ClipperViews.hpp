@@ -70,6 +70,8 @@ clipper_offset(subject, delta) grows closed polygons for positive delta and
 shrinks them for negative delta. clipper_offset2(subject, delta1, delta2) is the
 two-stage offset helper used by many slicer algorithms to remove narrow features
 or build rings. For open polylines, pass the appropriate CLIPPER_END_* type.
+Rings meeting exactly along an edge after the offset are split as the native
+per-ring offset_ex() splits them, without zero-width bridges.
 
 Choosing output form
 --------------------
@@ -80,6 +82,8 @@ clipper_intersection_polyline_expolygons(), or
 clipper_split_polyline_expolygons() when both sides are needed: they are then cut
 at the same points. Converting an open polyline through
 ClipperOperand and back to polygons is not the same operation.
+Use clipper_diff_polylines_expolygons() or clipper_intersection_polylines_expolygons()
+for a whole PolylineCollection in one batch; output collection order is unspecified.
 */
 
 /* ========================= generic read-only / stored views ========================= */
@@ -585,6 +589,18 @@ inline StoredPolylineCollection clipper_diff_polyline_expolygons(storage_handle 
     return StoredPolylineCollection::adopt(storage, ::clipper_diff_polyline_expolygons(storage, subject.handle(), clip.handle()));
 }
 
+// A single batch preserves the core clipping decisions across all subjects; result collection order is unspecified.
+inline StoredPolylineCollection clipper_diff_polylines_expolygons(storage_handle *storage,
+                                                                  const PolylineCollection &subject,
+                                                                  const ExPolygonCollection &clip)
+{
+    if (subject.empty())
+        return StoredPolylineCollection(storage);
+    if (clip.empty())
+        return subject.clone(storage);
+    return StoredPolylineCollection::adopt(storage, ::clipper_diff_polylines_expolygons(storage, subject.handle(), clip.handle()));
+}
+
 inline StoredPolylineCollection clipper_intersection_polyline_expolygons(storage_handle *storage,
                                                                          const Polyline &subject,
                                                                          const ExPolygonCollection &clip)
@@ -592,6 +608,16 @@ inline StoredPolylineCollection clipper_intersection_polyline_expolygons(storage
     if (subject.empty() || clip.empty())
         return StoredPolylineCollection(storage);
     return StoredPolylineCollection::adopt(storage, ::clipper_intersection_polyline_expolygons(storage, subject.handle(), clip.handle()));
+}
+
+// Open subjects retain their bends; polygon materialization through ClipperOperand cannot represent this result.
+inline StoredPolylineCollection clipper_intersection_polylines_expolygons(storage_handle *storage,
+                                                                          const PolylineCollection &subject,
+                                                                          const ExPolygonCollection &clip)
+{
+    if (subject.empty() || clip.empty())
+        return StoredPolylineCollection(storage);
+    return StoredPolylineCollection::adopt(storage, ::clipper_intersection_polylines_expolygons(storage, subject.handle(), clip.handle()));
 }
 
 // Returns {inside, outside}: the pieces of subject inside clip and the pieces outside it, cut at the

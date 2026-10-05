@@ -3472,7 +3472,7 @@ void ClipperOffset::Execute(Paths& solution, double delta)
   //now clean up 'corners' ...
   Clipper clpr;
   clpr.AddPaths(m_destPolys, ptSubject, true);
-  if (delta > 0)
+  if (delta > 0 || ShrinkWithPositiveFill)
   {
     clpr.Execute(ctUnion, solution, pftPositive, pftPositive);
   }
@@ -3503,7 +3503,7 @@ void ClipperOffset::Execute(PolyTree& solution, double delta)
   //now clean up 'corners' ...
   Clipper clpr;
   clpr.AddPaths(m_destPolys, ptSubject, true);
-  if (delta > 0)
+  if (delta > 0 || ShrinkWithPositiveFill)
   {
     clpr.Execute(ctUnion, solution, pftPositive, pftPositive);
   }
@@ -3522,6 +3522,15 @@ void ClipperOffset::Execute(PolyTree& solution, double delta)
     //remove the outer PolyNode rectangle ...
     solution.RemoveOutermostPolygon();
   }
+}
+//------------------------------------------------------------------------------
+
+void ClipperOffset::ExecuteRaw(Paths& solution, double delta)
+{
+  FixOrientations();
+  DoOffset(delta);
+  solution = std::move(m_destPolys);
+  m_destPolys.clear();
 }
 //------------------------------------------------------------------------------
 

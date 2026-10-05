@@ -15,6 +15,11 @@ namespace slic3r_api { namespace Infill { namespace PostInfillGapFillPlugin {
 // Gap fill used to be requested directly from some Fill implementations. The
 // new pipeline gives it a dedicated post-infill slot so it can inspect already
 // generated infill and create residual narrow extrusion as a separate pass.
+//
+// FIXME: publish future gap fill as a child of the source surface's infill
+// subtree so it inherits c_extrusion_property_infill, instead of the separate
+// GAP_FILL bucket. infill.post_process.full_fill_volume then measures fill and
+// gap fill together, like the legacy Fill accounting did.
 class PostInfillGapFill : public PluginBase
 {
 public:

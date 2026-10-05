@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -368,6 +369,112 @@ inline double angle_ccw(c_point v1, c_point v2) {
     const double det = double(v1.x) * double(v2.y) - double(v1.y) * double(v2.x);
     const double dot = double(v1.x) * double(v2.x) + double(v1.y) * double(v2.y);
     return std::atan2(det, dot);
+}
+
+/* ========================= c_bounding_box helpers ========================= */
+/*
+Small C++ convenience functions for c_bounding_box, used by the ABI views and by
+plugins building a pattern frame. They do not extend the C ABI itself.
+*/
+
+// Round a coordinate down to the previous multiple of spacing, with the same
+// rule as the core Slic3r::align_to_grid(): negative coordinates round away
+// from zero.
+inline coord_t align_to_grid(coord_t coord, coord_t spacing)
+{
+    if (spacing <= 0)
+        return coord;
+    return coord < 0 ? ((coord - spacing + 1) / spacing) * spacing : (coord / spacing) * spacing;
+}
+
+inline c_point align_to_grid(c_point coord, c_point spacing)
+{
+    return c_point{align_to_grid(coord.x, spacing.x), align_to_grid(coord.y, spacing.y)};
+}
+
+// Rotate one point around a center, rounding each coordinate to coord_t exactly
+// like the core Point::rotate().
+inline c_point rotate_around(c_point point, double angle, c_point center)
+{
+    const double cos_angle = std::cos(angle);
+    const double sin_angle = std::sin(angle);
+    const double x = double(point.x) - double(center.x);
+    const double y = double(point.y) - double(center.y);
+    return c_point{coord_t(std::llround(double(center.x) + cos_angle * x - sin_angle * y)),
+                   coord_t(std::llround(double(center.y) + sin_angle * x + cos_angle * y))};
+}
+
+// Empty bounding box: min > max, so merging a first point initializes it.
+inline c_bounding_box bounding_box_empty()
+{
+    const coord_t max_value = (std::numeric_limits<coord_t>::max)();
+    const coord_t min_value = (std::numeric_limits<coord_t>::min)();
+    return c_bounding_box{{max_value, max_value}, {min_value, min_value}};
+}
+
+inline bool bounding_box_valid(const c_bounding_box &box)
+{
+    return box.min.x <= box.max.x && box.min.y <= box.max.y;
+}
+
+inline c_point bounding_box_size(const c_bounding_box &box)
+{
+    return c_point{box.max.x - box.min.x, box.max.y - box.min.y};
+}
+
+// Center of the box, with the integer division used by BoundingBoxBase::center().
+inline c_point bounding_box_center(const c_bounding_box &box)
+{
+    return c_point{(box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2};
+}
+
+// Merge one point into the box. An empty box is initialized by the first point.
+inline void bounding_box_merge(c_bounding_box &box, c_point point)
+{
+    if (!bounding_box_valid(box)) {
+        box.min = point;
+        box.max = point;
+        return;
+    }
+    box.min.x = std::min(box.min.x, point.x);
+    box.min.y = std::min(box.min.y, point.y);
+    box.max.x = std::max(box.max.x, point.x);
+    box.max.y = std::max(box.max.y, point.y);
+}
+
+inline void bounding_box_merge(c_bounding_box &box, const c_bounding_box &other)
+{
+    if (!bounding_box_valid(other))
+        return;
+    bounding_box_merge(box, other.min);
+    bounding_box_merge(box, other.max);
+}
+
+inline void bounding_box_translate(c_bounding_box &box, c_point offset)
+{
+    box.min = box.min + offset;
+    box.max = box.max + offset;
+}
+
+// Bounding box of `box` rotated by `angle` around `center`.
+inline c_bounding_box bounding_box_rotate(const c_bounding_box &box, double angle, c_point center)
+{
+    c_bounding_box out = bounding_box_empty();
+    bounding_box_merge(out, rotate_around(c_point{box.min.x, box.min.y}, angle, center));
+    bounding_box_merge(out, rotate_around(c_point{box.min.x, box.max.y}, angle, center));
+    bounding_box_merge(out, rotate_around(c_point{box.max.x, box.min.y}, angle, center));
+    bounding_box_merge(out, rotate_around(c_point{box.max.x, box.max.y}, angle, center));
+    return out;
+}
+
+// Extend the box down to the pattern lattice. Patterns that generate their lines
+// from box.min call this so the lattice stays anchored to the world frame across
+// layers, exactly like the legacy Fill implementations did.
+inline void bounding_box_merge_aligned(c_bounding_box &box, c_point spacing)
+{
+    if (!bounding_box_valid(box))
+        return;
+    bounding_box_merge(box, align_to_grid(box.min, spacing));
 }
 
 inline bool equals(multipoint_const_view lhs, multipoint_const_view rhs) {
@@ -1131,6 +1238,20 @@ public:
     using ConstGeometryHandleView<expolygon_handle>::ConstGeometryHandleView;
 
 };
+
+// Merge every rotated point of one expolygon (contour and holes) into the box.
+// Points are rounded like the core Polygon::rotate(), so the result is the
+// bounding box of the rotated polygon.
+inline void bounding_box_merge_rotated(c_bounding_box &box, const ExPolygon &expolygon, double angle, c_point center)
+{
+    const auto merge_polygon = [&box, angle, center](const Polygon &polygon) {
+        for (const c_point point : polygon.points())
+            bounding_box_merge(box, rotate_around(point, angle, center));
+    };
+    merge_polygon(expolygon.contour());
+    for (const Polygon hole : expolygon.holes())
+        merge_polygon(hole);
+}
 
 class StoredExPolygon : public StoredGeometryHandleView<StoredExPolygon, ExPolygon, expolygon_handle>,
                         public ExPolygonReadApi<StoredExPolygon>,

@@ -3,21 +3,26 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
+#include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/plugin/cpp/OrderingEngine.hpp"
 #include "libslic3r/Plugins/Ordering/KDTreeOrderingEngine.hpp"
 #include "libslic3r/Plugins/Ordering/NearestNeighborOrderingEngine.hpp"
 
 namespace {
 
+using slic3r_api::Ordering::connect_infill;
 using slic3r_api::Ordering::OrderedItem;
 using slic3r_api::Ordering::OrderingCandidate;
 using slic3r_api::Ordering::OrderingEngine;
 using slic3r_api::Ordering::OrderingItem;
+using slic3r_api::StoredPolylineCollection;
 using slic3r_api::Ordering::DefaultOrderingPlugin::KDTreeOrderingEngine;
 using slic3r_api::Ordering::DefaultOrderingPlugin::NearestNeighborOrderingEngine;
 
@@ -38,6 +43,16 @@ OrderingCandidate candidate(const double entry_x,
     return OrderingCandidate{
         point_mm(entry_x, entry_y), point_mm(exit_x, exit_y),
         distance_ratio, penalty_mm};
+}
+
+/* Build one open polyline from millimetre coordinates, owned by storage. */
+slic3r_api::StoredPolyline polyline_mm(storage_handle *storage,
+                                       std::initializer_list<std::pair<double, double>> points)
+{
+    slic3r_api::StoredPolyline polyline(storage);
+    for (const std::pair<double, double> &point : points)
+        polyline.push_back(point_mm(point.first, point.second));
+    return polyline;
 }
 
 /* Extract the original item permutation without hiding candidate assertions. */
@@ -445,6 +460,72 @@ TEST_CASE("KDTreeOrderingEngine rejects malformed candidates", "[plugins][orderi
             0.0, 0.0, 0.0, 0.0, 1.0,
             (std::numeric_limits<double>::quiet_NaN)())}}}),
         std::invalid_argument);
+}
+
+TEST_CASE("connect_infill orders polylines without joining them", "[plugins][ordering][engine]")
+{
+    const NearestNeighborOrderingEngine engine;
+    Slic3r::PluginStorage plugin_storage;
+    storage_handle *storage = reinterpret_cast<storage_handle *>(&plugin_storage);
+
+    SECTION("separated paths stay separate and keep their point counts") {
+        StoredPolylineCollection paths(storage);
+        paths.push_back_move(polyline_mm(storage, { { 0.0, 0.0 }, { 10.0, 0.0 } }));
+        paths.push_back_move(polyline_mm(storage, { { 100.0, 0.0 }, { 110.0, 0.0 } }));
+
+        const std::optional<c_point> exit = connect_infill(paths, engine);
+
+        REQUIRE(paths.size() == 2);
+        CHECK(paths.at(0).size() == 2);
+        CHECK(paths.at(1).size() == 2);
+        CHECK(paths.at(0).front().x == scale_i(0.0));
+        CHECK(paths.at(1).front().x == scale_i(100.0));
+        // The returned exit point is the end of the last routed path.
+        REQUIRE(exit.has_value());
+        CHECK(exit->x == scale_i(110.0));
+        CHECK(exit->y == scale_i(0.0));
+    }
+
+    SECTION("a path entered from its last point is reversed") {
+        StoredPolylineCollection paths(storage);
+        paths.push_back_move(polyline_mm(storage, { { 0.0, 0.0 }, { 10.0, 0.0 } }));
+        paths.push_back_move(polyline_mm(storage, { { 110.0, 0.0 }, { 100.0, 0.0 } }));
+
+        connect_infill(paths, engine);
+
+        REQUIRE(paths.size() == 2);
+        CHECK(paths.at(1).front().x == scale_i(100.0));
+        CHECK(paths.at(1).back().x == scale_i(110.0));
+    }
+
+    SECTION("degenerate paths keep their relative order after the routed ones") {
+        StoredPolylineCollection paths(storage);
+        paths.push_back_move(polyline_mm(storage, { { 100.0, 0.0 }, { 110.0, 0.0 } }));
+        paths.push_back_move(polyline_mm(storage, { { 5.0, 5.0 } }));
+        paths.push_back_move(polyline_mm(storage, { { 0.0, 0.0 }, { 10.0, 0.0 } }));
+
+        connect_infill(paths, engine);
+
+        REQUIRE(paths.size() == 3);
+        CHECK(paths.at(2).size() == 1);
+        CHECK(paths.at(0).front().x == scale_i(0.0));
+        CHECK(paths.at(1).front().x == scale_i(100.0));
+    }
+
+    SECTION("a single routable path is left untouched and returns the start") {
+        StoredPolylineCollection paths(storage);
+        paths.push_back_move(polyline_mm(storage, { { 10.0, 0.0 }, { 0.0, 0.0 } }));
+
+        const std::optional<c_point> exit = connect_infill(paths, engine, point_mm(5.0, 5.0));
+
+        REQUIRE(paths.size() == 1);
+        CHECK(paths.at(0).front().x == scale_i(10.0));
+        CHECK(paths.at(0).back().x == scale_i(0.0));
+        // Nothing was routed, so the incoming position comes back unchanged.
+        REQUIRE(exit.has_value());
+        CHECK(exit->x == scale_i(5.0));
+        CHECK(exit->y == scale_i(5.0));
+    }
 }
 
 } // namespace
