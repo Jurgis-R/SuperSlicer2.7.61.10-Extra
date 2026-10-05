@@ -341,14 +341,14 @@ plugin_property_container_handle *surface_collection_get_properties_mutable(surf
     return Slic3r::to_mutable_property_handle(&Slic3r::to_surface_collection(me)->at(idx));
 }
 
+// Retain an empty surface collection in the locked registry; null storage returns null and insertion errors release the allocation.
 surface_collection_handle *storage_new_surface_collection(storage_handle *me)
 {
     Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(me);
     if (storage == nullptr)
         return nullptr;
     surface_collection_handle *out =
-        reinterpret_cast<surface_collection_handle *>(&storage->surface_collections.emplace_back());
-    storage->generic_storage.insert(out);
+        reinterpret_cast<surface_collection_handle *>(storage->store(std::make_unique<Slic3r::SurfaceCollection>()));
     return out;
 }
 

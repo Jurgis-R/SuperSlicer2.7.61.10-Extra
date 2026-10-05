@@ -443,6 +443,7 @@ void publish_additions(storage_handle *storage,
 
 } // namespace
 
+// Add material top-down to support this object's slopes and rebuild changed layers; missing payloads are skipped and cancellation stops processing.
 void OverhangSlopeFill::run_impl(const plugin_run_context *run_ctx) const
 {
     throw_if_cancelled(run_ctx);
@@ -468,9 +469,6 @@ void OverhangSlopeFill::run_impl(const plugin_run_context *run_ctx) const
         progress().increment();
     }
     progress().finish_run();
-
-    assert(storage_size(storage) == 0);
-    storage_clear(storage);
 }
 
 OverhangSlopeFill &OverhangSlopeFill::instance(orchestrator_handle *orch)

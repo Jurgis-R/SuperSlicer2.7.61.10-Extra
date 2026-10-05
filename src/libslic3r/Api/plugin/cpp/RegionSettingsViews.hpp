@@ -402,8 +402,8 @@ public:
 
     The common case returns before inspecting slices when every source region
     has the same tuple. Otherwise the method reads the immutable region slices
-    directly. It does not use PluginStorage and is therefore suitable for
-    parallel queries on distinct PrintingLayerGroups.
+    directly. Parallel queries on distinct PrintingLayerGroups only read these
+    slices and configs and need no allocations in PluginStorage.
 
     The point must use the source layer coordinate system. Callers working on
     an instanced PrintingPlan must remove the instance shift first.

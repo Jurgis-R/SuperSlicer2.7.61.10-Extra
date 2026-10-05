@@ -601,8 +601,9 @@ TEST_CASE("Arachne concentric cancellation discards the unpublished group", "[pl
     run.host_context = reinterpret_cast<plugin_host_context *>(&probe);
     run.is_cancelled = [](plugin_host_context *host) {
         Probe &probe = *reinterpret_cast<Probe *>(host);
-        for (const std::unique_ptr<ExtrusionEntity> &owned : probe.storage->extrusions) {
-            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned.get()));
+        // Inspect a locked pointer snapshot; this single-threaded probe keeps the temporary entities alive.
+        for (const ExtrusionEntity *owned : probe.storage->stored_extrusions()) {
+            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned));
             if (entity.handle() != probe.output && !entity.is_leaf() && !entity.empty() && !entity.child(0).is_leaf()) {
                 probe.ready = true;
                 return 1;
@@ -689,8 +690,9 @@ TEST_CASE("Ensuring cancellation discards the unpublished group", "[plugins][inf
     run.host_context = reinterpret_cast<plugin_host_context *>(&probe);
     run.is_cancelled = [](plugin_host_context *host) {
         Probe &probe = *reinterpret_cast<Probe *>(host);
-        for (const std::unique_ptr<ExtrusionEntity> &owned : probe.storage->extrusions) {
-            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned.get()));
+        // Inspect a locked pointer snapshot; this single-threaded probe keeps the temporary entities alive.
+        for (const ExtrusionEntity *owned : probe.storage->stored_extrusions()) {
+            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned));
             if (entity.handle() != probe.output && !entity.is_leaf() && !entity.empty()) {
                 probe.ready = true;
                 return 1;

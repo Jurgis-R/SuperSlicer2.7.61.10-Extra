@@ -114,13 +114,9 @@ static const ApiClipper::ClipperShapes *to_shapes(const clipper_shapes_handle *h
     return reinterpret_cast<const ApiClipper::ClipperShapes *>(handle);
 }
 
+// Retain the shape through the locked storage registry; null shapes return null and insertion errors leave no tracked handle.
 static ApiClipper::ClipperShapes *store_shape(PluginStorage &plugin_storage, std::unique_ptr<ApiClipper::ClipperShapes> shape) {
-    if (!shape)
-        return nullptr;
-    ApiClipper::ClipperShapes *raw = shape.get();
-    plugin_storage.clipper_shapes.emplace_back(std::move(shape));
-    plugin_storage.generic_storage.insert(raw);
-    return raw;
+    return plugin_storage.store(std::move(shape));
 }
 
 /*

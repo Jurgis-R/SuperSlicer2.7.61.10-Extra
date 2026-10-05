@@ -257,6 +257,7 @@ static std::unique_ptr<ExtrusionEntity> build_medial_axis_tree(
     return root;
 }
 
+// Retain the extrusion in the locked registry; missing storage or entity returns null and insertion errors release the new entity.
 static extrusion_entity_handle *store_extrusion_entity(storage_handle *storage,
                                                        std::unique_ptr<ExtrusionEntity> entity)
 {
@@ -264,9 +265,7 @@ static extrusion_entity_handle *store_extrusion_entity(storage_handle *storage,
         return nullptr;
 
     PluginStorage *plugin_storage = to_storage(storage);
-    ExtrusionEntity &stored = plugin_storage->extrusions.push_back(std::move(entity));
-    plugin_storage->generic_storage.insert(&stored);
-    return to_handle(&stored);
+    return to_handle(plugin_storage->store(std::move(entity)));
 }
 
 static Slic3r::ExPolygons *to_expolygons(expolygon_collection_handle *me) {
@@ -569,10 +568,10 @@ int32_t multipoint_is_polygon(const multipoint_handle *me) {
     return Slic3r::to_multipoint(me)->is_polygon();
 }
 
+// Allocate an empty polygon in the locked registry; storage must exist, and insertion errors release the allocation.
 polygon_handle *storage_new_polygon(storage_handle *me) {
     Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(me);
-    polygon_handle *out_new_object = reinterpret_cast<polygon_handle *>(&storage->polygons.emplace_back());
-    storage->generic_storage.insert(out_new_object);
+    polygon_handle *out_new_object = reinterpret_cast<polygon_handle *>(storage->store(std::make_unique<Slic3r::Polygon>()));
     return out_new_object;
 }
 
@@ -656,19 +655,20 @@ c_point polygon_point_projection(const polygon_handle *me, c_point point, uint32
     return out;
 }
 
+// Compute and retain a hull in the locked registry; missing input or storage returns null, and insertion errors release the hull.
 polygon_handle *polygon_convex_hull(storage_handle *storage_handle_value, const polygon_handle *me)
 {
     Slic3r::PluginStorage *storage = Slic3r::to_storage(storage_handle_value);
     if (storage == nullptr || me == nullptr)
         return nullptr;
 
-    Slic3r::Polygon &out = storage->polygons.emplace_back(
-        Slic3r::Geometry::convex_hull(Slic3r::to_polygon(me)->points));
-    polygon_handle *handle = reinterpret_cast<polygon_handle *>(&out);
-    storage->generic_storage.insert(handle);
+    Slic3r::Polygon *out = storage->store(std::make_unique<Slic3r::Polygon>(
+        Slic3r::Geometry::convex_hull(Slic3r::to_polygon(me)->points)));
+    polygon_handle *handle = reinterpret_cast<polygon_handle *>(out);
     return handle;
 }
 
+// Combine the polygon points and retain their hull in the locked registry; missing input or storage returns null and insertion errors release the hull.
 polygon_handle *polygons_convex_hull(storage_handle *storage_handle_value, const polygon_collection_handle *me)
 {
     Slic3r::PluginStorage *storage = Slic3r::to_storage(storage_handle_value);
@@ -679,9 +679,8 @@ polygon_handle *polygons_convex_hull(storage_handle *storage_handle_value, const
     for (const Slic3r::Polygon &polygon : *Slic3r::to_polygons(me))
         Slic3r::append(points, polygon.points);
 
-    Slic3r::Polygon &out = storage->polygons.emplace_back(Slic3r::Geometry::convex_hull(points));
-    polygon_handle *handle = reinterpret_cast<polygon_handle *>(&out);
-    storage->generic_storage.insert(handle);
+    Slic3r::Polygon *out = storage->store(std::make_unique<Slic3r::Polygon>(Slic3r::Geometry::convex_hull(points)));
+    polygon_handle *handle = reinterpret_cast<polygon_handle *>(out);
     return handle;
 }
 
@@ -699,10 +698,10 @@ int32_t multipoint_is_polyline(const multipoint_handle *me) {
     return Slic3r::to_multipoint(me)->is_polyline();
 }
 
+// Allocate an empty polyline in the locked registry; storage must exist, and insertion errors release the allocation.
 polyline_handle *storage_new_polyline(storage_handle *me) {
     Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(me);
-    polyline_handle *out_new_object = reinterpret_cast<polyline_handle *>(&storage->polylines.emplace_back());
-    storage->generic_storage.insert(out_new_object);
+    polyline_handle *out_new_object = reinterpret_cast<polyline_handle *>(storage->store(std::make_unique<Slic3r::Polyline>()));
     return out_new_object;
 }
 
@@ -753,11 +752,11 @@ int32_t polyline_close(const polyline_handle *me, polygon_handle *out) {
 
 /* ========================= polygon collection ========================= */
 
+// Allocate an empty polygon collection in the locked registry; storage must exist, and insertion errors release the allocation.
 polygon_collection_handle *storage_new_polygons(storage_handle *me) {
     Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(me);
     polygon_collection_handle *out_new_object =
-        reinterpret_cast<polygon_collection_handle *>(&storage->polygon_collections.emplace_back());
-    storage->generic_storage.insert(out_new_object);
+        reinterpret_cast<polygon_collection_handle *>(storage->store(std::make_unique<Slic3r::Polygons>()));
     return out_new_object;
 }
 
@@ -911,11 +910,11 @@ c_point polygons_point_projection(const polygon_collection_handle *me, c_point p
 
 /* ========================= polyline collection ========================= */
 
+// Allocate an empty polyline collection in the locked registry; storage must exist, and insertion errors release the allocation.
 polyline_collection_handle *storage_new_polylines(storage_handle *me) {
     Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(me);
     polyline_collection_handle *out_new_object =
-        reinterpret_cast<polyline_collection_handle *>(&storage->polyline_collections.emplace_back());
-    storage->generic_storage.insert(out_new_object);
+        reinterpret_cast<polyline_collection_handle *>(storage->store(std::make_unique<Slic3r::Polylines>()));
     return out_new_object;
 }
 
@@ -1064,10 +1063,10 @@ void expolygon_ensure_valid(expolygon_handle *me, coord_t resolution) {
         *Slic3r::to_expolygon(me) = std::move(tmp.front());
 }
 
+// Allocate an empty polygon with holes in the locked registry; storage must exist, and insertion errors release the allocation.
 expolygon_handle *storage_new_expolygon(storage_handle *me) {
     Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(me);
-    expolygon_handle *out_new_object = reinterpret_cast<expolygon_handle *>(&storage->expolygons.emplace_back());
-    storage->generic_storage.insert(out_new_object);
+    expolygon_handle *out_new_object = reinterpret_cast<expolygon_handle *>(storage->store(std::make_unique<Slic3r::ExPolygon>()));
     return out_new_object;
 }
 
@@ -1205,11 +1204,11 @@ void expolygons_ensure_valid(expolygon_collection_handle *me, coord_t resolution
         Slic3r::ensure_valid(*Slic3r::to_expolygons(me), resolution);
 }
 
+// Allocate an empty collection of polygons with holes in the locked registry; storage must exist, and insertion errors release the allocation.
 expolygon_collection_handle *storage_new_expolygons(storage_handle *me) {
     Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(me);
     expolygon_collection_handle *out_new_object =
-        reinterpret_cast<expolygon_collection_handle *>(&storage->expolygon_collections.emplace_back());
-    storage->generic_storage.insert(out_new_object);
+        reinterpret_cast<expolygon_collection_handle *>(storage->store(std::make_unique<Slic3r::ExPolygons>()));
     return out_new_object;
 }
 

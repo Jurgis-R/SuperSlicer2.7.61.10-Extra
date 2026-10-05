@@ -33,6 +33,7 @@ private:
     const char *progress_message_format_impl() const noexcept override;
     void inilialize_impl(storage_handle *storage) const override;
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
+    // Refine this object's raw slices without clearing the plugin's shared storage.
     void run_impl(const plugin_run_context *run_ctx) const override;
 };
 

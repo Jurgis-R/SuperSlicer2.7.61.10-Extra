@@ -4,6 +4,7 @@
 #include "test_data.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/steps/PostSlicingStep.hpp"
 #include "libslic3r/Api/internal/LayerAccess.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/ExPolygon.hpp"
@@ -807,6 +808,68 @@ TEST_CASE("Exclusive-group option ownership rejects wrong-group definitions duri
 }
 
 #ifdef SLIC3R_TEST_PYTHON_PLUGINS
+
+// Run the real low-level plugin on fresh prints; counts are checked before Print destruction, and cancellation is requested only with live polygons.
+TEST_CASE("Python low-level Polyholes releases polygons after repeated runs and cancellation", "[plugins][plugin-storage][polyholes][python]")
+{
+    REQUIRE(Slic3r::Test::Plugins::python_plugin_test_runtime_available());
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Plugin *plugin = orchestrator.get_plugin("python.polyholes");
+    REQUIRE(plugin != nullptr);
+    PluginStorage &storage = orchestrator.plugin_storage()[plugin];
+    const size_t initial_count = storage.size();
+    const DynamicPrintConfig config = polyhole_config(python_polyhole_keys[0], true);
+    const ExPolygons source_slices = make_single_hole_slice(2.5, 2.5, 128);
+    for (size_t run_idx = 0; run_idx < 3; ++run_idx) {
+        INFO("Print run " << run_idx);
+        Model model;
+        Print print;
+        Slic3r::Test::init_print({Slic3r::Test::TestMesh::cube_20x20x20}, print, model, config);
+        Steps::StepLayerHeightGeneration::run_step(orchestrator, print);
+        Steps::StepSlicing::run_step(orchestrator, print);
+        PrintObject &object = print.object(0);
+        // Five twisted polygons yield ten cancellation checks while being filled;
+        // check 1 interrupts construction, and check 11 interrupts the prepared batch.
+        for (const size_t cancel_at : {size_t(1), size_t(11)}) {
+            assign_raw_slices_to_all_layers(object, source_slices);
+            struct Probe {
+                PluginStorage &storage;
+                size_t initial_count;
+                size_t cancel_at;
+                size_t live_checks = 0;
+                bool cancelled = false;
+                bool error = false;
+            } probe {storage, initial_count, cancel_at};
+            run_ctx_post_slicing payload = ApiHost::Steps::make_post_slicing_run_context(print, 0);
+            plugin_run_context run = {};
+            run.step = STEP_POST_SLICING;
+            run.print = reinterpret_cast<const print_handle *>(&print);
+            run.plugin_storage = reinterpret_cast<storage_handle *>(&storage);
+            run.data = &payload;
+            run.host_context = reinterpret_cast<plugin_host_context *>(&probe);
+            // Keep cancellation deterministic by counting only checks made with live replacement allocations.
+            run.is_cancelled = [](plugin_host_context *host) {
+                Probe &probe = *reinterpret_cast<Probe *>(host);
+                if (probe.storage.size() > probe.initial_count && ++probe.live_checks >= probe.cancel_at)
+                    probe.cancelled = true;
+                return probe.cancelled ? 1 : 0;
+            };
+            // Record errors without throwing across the C callback boundary; cancellation must not report an error.
+            run.report_error = [](plugin_host_context *host, const char *) {
+                reinterpret_cast<Probe *>(host)->error = true;
+            };
+            plugin->run(run);
+            CHECK(probe.cancelled);
+            CHECK_FALSE(probe.error);
+            CHECK(storage.size() == initial_count);
+            CHECK(first_hole(object, 0).points == source_slices.front().holes.front().points);
+        }
+        // Successful post-slicing finalizes and locks the islands, so it runs after the cancellation probes.
+        Steps::StepPostSlicing::run_step(orchestrator, print);
+        CHECK(first_hole(object, 0).size() == expected_polyhole_edge_count(2.5, 0.4));
+        CHECK(storage.size() == initial_count);
+    }
+}
 
 TEST_CASE("Python low-level Polyholes shares C++ option definitions and adds only its own angle option", "[plugins][polyholes][python][ui]")
 {

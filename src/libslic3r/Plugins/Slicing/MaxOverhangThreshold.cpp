@@ -224,6 +224,7 @@ void smoothen(Poly &poly, const distf_t max_length = scale_d(1), const double th
     }
 }
 
+// Refine one object's raw slices with temporary clipping results, then rebuild its layer caches; missing payloads are skipped and cancellation stops processing.
 void MaxOverhangThreshold::run_impl(const plugin_run_context *run_ctx) const {
     throw_if_cancelled(run_ctx);
     // POST_SLICING exposes raw slices as mutable borrowed handles. The plugin
@@ -621,9 +622,6 @@ void MaxOverhangThreshold::run_impl(const plugin_run_context *run_ctx) const {
         progress().increment();
     }
     progress().finish_run();
-
-    assert(storage_size(storage) == 0);
-    storage_clear(storage);
 }
 
 MaxOverhangThreshold &MaxOverhangThreshold::instance(orchestrator_handle *orch) {

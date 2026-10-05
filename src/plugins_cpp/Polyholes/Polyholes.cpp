@@ -158,6 +158,7 @@ bool replace_matching_hole_points(expolygon_handle *expolygon,
 
 } // namespace
 
+// Replace suitable round holes in this object's slices, then rebuild changed layers; temporary objects are released individually and cancellation stops processing.
 void Polyholes::run_impl(const plugin_run_context *run_ctx) const
 {
     throw_if_cancelled(run_ctx);
@@ -374,9 +375,6 @@ void Polyholes::run_impl(const plugin_run_context *run_ctx) const
         }
     }
     throw_if_cancelled(run_ctx);
-
-    assert(storage_size(run_ctx->plugin_storage) == 0);
-    storage_clear(run_ctx->plugin_storage);
 }
 
 Polyholes &Polyholes::instance(orchestrator_handle *orch)
