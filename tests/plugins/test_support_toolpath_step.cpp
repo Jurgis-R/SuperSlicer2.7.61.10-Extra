@@ -17,12 +17,14 @@
 #include "libslic3r/Api/plugin/cpp/AuxiliaryLayerHelpers.hpp"
 #include "libslic3r/Api/plugin/cpp/ExtrusionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
+#include "libslic3r/Api/plugin/cpp/SurfaceViews.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/Steps/StepSupportToolpath.hpp"
+#include "libslic3r/TriangleMesh.hpp"
 
 namespace {
 using namespace Slic3r;
@@ -223,6 +225,7 @@ TEST_CASE("Support toolpath role selectors choose only one top algorithm", "[plu
     CHECK(calls[selected == 2 ? 2 : 1].id == probes()[selected]->id());
 }
 
+// Publish typed auxiliary surfaces through the API before checking the sparse algorithm's extrusion.
 TEST_CASE("Sparse support toolpath reads its surface and publishes a source extrusion", "[plugins][support-toolpath]")
 {
     const ScopedToolpathProbes activation;
@@ -249,9 +252,12 @@ TEST_CASE("Sparse support toolpath reads its surface and publishes a source extr
     layer_region_island_handle *region = layer_island_get_or_create_region_island(
         layer_get_island_mutable(layer, 0), nullptr, 0, 0);
     REQUIRE(region != nullptr);
-    LayerRegionIsland &native_region = *reinterpret_cast<LayerRegionIsland *>(region);
-    native_region.set_fill_surfaces().surfaces.emplace_back(stPosInternal | stDensSparse | stModSupport, area);
-    native_region.set_fill_surfaces().surfaces.emplace_back(stPosTop | stDensSolid | stModSupport, area);
+    slic3r_api::StoredSurfaceCollection surfaces(reinterpret_cast<storage_handle *>(&storage));
+    const slic3r_api::ExPolygon surface_area(reinterpret_cast<const expolygon_handle *>(&area));
+    surfaces.append(surface_area, slic3r_api::srf_type().internal().sparse().support().raw());
+    surfaces.append(surface_area, slic3r_api::srf_type().top().solid().support().raw());
+    REQUIRE(slic3r_api::LayerRegionIsland(region).set_fill_surfaces(&surfaces));
+    CHECK(surfaces.empty());
     run_toolpaths(print);
     REQUIRE(calls.size() == 3);
     CHECK(calls.front().matched_surfaces == 1);
@@ -275,4 +281,63 @@ TEST_CASE("Support toolpath dispatch without active providers does nothing", "[p
     run_toolpaths(print);
     CHECK(calls.empty());
     CHECK(print.object(0).auxiliary_layers().empty());
+}
+
+TEST_CASE("Auxiliary fill-surface publication moves and clears but rejects object layers", "[plugins][support-toolpath][surface]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    Test::init_print({make_cube(4., 4., 0.4)}, print, model);
+    print.process();
+    PrintObject &object = print.object(0);
+    REQUIRE_FALSE(object.layers().empty());
+    REQUIRE_FALSE(object.layer(0).islands().empty());
+    REQUIRE_FALSE(object.layer(0).island(0).regions_islands().empty());
+    LayerRegionIsland &object_region = object.layer(0).island(0).regions_island(0);
+    const size_t original_count = object_region.fill_surfaces().size();
+    REQUIRE(original_count > 0);
+    const SurfaceType original_type = object_region.fill_surfaces().at(0).surface_type;
+
+    const ExPolygon area(Polygon({Point(0, 0), Point(scale_i(4.), 0),
+                                  Point(scale_i(4.), scale_i(4.)), Point(0, scale_i(4.))}));
+    const ExPolygons subject {area};
+    PluginStorage storage;
+    const slic3r_api::AuxiliaryLayerBuildResult built = slic3r_api::build_auxiliary_layer_regions_from_subject(
+        reinterpret_cast<storage_handle *>(&storage), slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)),
+        slic3r_api::Object(reinterpret_cast<const object_handle *>(&object)),
+        slic3r_api::ExPolygonCollection(reinterpret_cast<const expolygon_collection_handle *>(&subject)),
+        scale_i(0.2), scale_i(0.2), scale_i(0.1));
+    REQUIRE(built.created);
+    layer_handle *layer = object_get_auxiliary_layer(reinterpret_cast<const object_handle *>(&object), 0);
+    layer_region_island_handle *region = layer_island_get_or_create_region_island(
+        layer_get_island_mutable(layer, 0), nullptr, 0, 0);
+    REQUIRE(region != nullptr);
+    slic3r_api::StoredSurfaceCollection surfaces(reinterpret_cast<storage_handle *>(&storage));
+    const slic3r_api::ExPolygon surface_area(reinterpret_cast<const expolygon_handle *>(&area));
+    const raw_surface_type type = slic3r_api::srf_type().internal().sparse().support().raw();
+
+    struct RunningStep {
+        Print &print;
+        // Restore idle access even if a test assertion stops the loop.
+        ~RunningStep() { print.set_running_step(STEP_NONE); }
+    } reset {print};
+    for (slicing_step_t step : {STEP_SUPPORT, STEP_SUPPORT_TOOLPATH, STEP_FINALIZE_SLICING, STEP_NONE}) {
+        print.set_running_step(step);
+        surfaces.append(surface_area, type);
+        REQUIRE(layer_region_island_set_fill_surfaces(region, surfaces.mutable_handle()) == 1);
+        CHECK(surfaces.empty());
+        CHECK(layer_region_island_count_fill_surface(region) == 1);
+        CHECK(surface_get_type(layer_region_island_get_fill_surface(region, 0)) == type);
+    }
+    REQUIRE(layer_region_island_set_fill_surfaces(region, nullptr) == 1);
+    CHECK(layer_region_island_count_fill_surface(region) == 0);
+    surfaces.append(surface_area, type);
+    CHECK(layer_region_island_set_fill_surfaces(reinterpret_cast<layer_region_island_handle *>(&object_region),
+                                              surfaces.mutable_handle()) == 0);
+    CHECK(object_region.fill_surfaces().size() == original_count);
+    CHECK(object_region.fill_surfaces().at(0).surface_type == original_type);
+    CHECK(surfaces.size() == 1);
+    CHECK(layer_region_island_set_fill_surfaces(nullptr, surfaces.mutable_handle()) == 0);
+    CHECK(surfaces.size() == 1);
 }
