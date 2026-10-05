@@ -96,10 +96,6 @@
 #include "libslic3r/Plugins/Surface/InfillRegionCompatibilitySplitter.hpp"
 #include "libslic3r/Plugins/Surface/SolidShells.hpp"
 #include "libslic3r/Plugins/Surface/TopSurfaceExpansion.hpp"
-#include "libslic3r/Plugins/Support/SupportDemandBridgeRemoval.hpp"
-#include "libslic3r/Plugins/Support/SupportDemandModifiers.hpp"
-#include "libslic3r/Plugins/Support/SupportDemandOverhangs.hpp"
-#include "libslic3r/Plugins/Support/SupportDemandPainting.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/SLA/SLAPrintConfig.hpp"
 #include "plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.hpp"
@@ -567,14 +563,7 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::PolyholesPlugin::register_polyholes_plugin(orchestrator_handle_value);
         slic3r_api::NozzleCleaningPlugin::register_nozzle_cleaning_plugin(orchestrator_handle_value);
-        slic3r_api::Support::SupportDemandOverhangsPlugin::register_support_demand_overhangs_plugin(
-            orchestrator_handle_value);
-        slic3r_api::Support::SupportDemandPaintingPlugin::register_support_demand_painting_plugin(
-            orchestrator_handle_value);
-        slic3r_api::Support::SupportDemandModifiersPlugin::register_support_demand_modifiers_plugin(
-            orchestrator_handle_value);
-        slic3r_api::Support::SupportDemandBridgeRemovalPlugin::register_support_demand_bridge_removal_plugin(
-            orchestrator_handle_value);
+        register_builtin_support_demand_plugins(orchestrator_handle_value);
         slic3r_api::GuiRulesCorePlugin::register_gui_rules_core_plugin(orchestrator_handle_value);
         slic3r_api::Perimeter::ArachnePerimeterGeneratorPlugin::register_arachne_perimeter_generator_plugin(
             orchestrator_handle_value);
@@ -720,6 +709,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "support.demand.overhangs");
         activate_plugin_or_fail(orchestrator, "support.demand.painting");
         activate_plugin_or_fail(orchestrator, "support.demand.modifiers");
+        activate_plugin_or_fail(orchestrator, "support.demand.buildplate_only");
         activate_plugin_or_fail(orchestrator, "support.demand.bridge_removal");
         activate_plugin_or_fail(orchestrator, "gui_rules.core");
         activate_plugin_or_fail(orchestrator, "perimeter.generator.arachne");
