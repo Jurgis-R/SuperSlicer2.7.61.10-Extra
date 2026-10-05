@@ -29,7 +29,7 @@ Member names are those of the native storage, not necessarily those of the API g
 |---|---|
 | `apply` | Preparation of model/configuration inputs by the host, outside concurrent plugin execution. |
 | `None` | Before `STEP_LAYER_HEIGHT`: current model and configuration; resumes at `STEP_LAYER_HEIGHT`. |
-| `Slicing` | After `STEP_POST_SLICING`: profile, main layers and slicing geometry kept; resume at `STEP_PRE_PERIMETER`. |
+| `Slicing` | After `STEP_POST_SLICING`: profile, main layers and slicing geometry kept; resume at `STEP_SUPPORT_DEMAND`. |
 | `Print` | After `STEP_FINALIZE_SLICING`: source tree finalized; resume at `STEP_ORDERING`. |
 | `Ordering` | After `STEP_ORDERING`: optional save of the plan, which remains editable in its working copy. |
 | `Plan` | After `STEP_EXTRUSION_SIMPLIFICATION`: final plan read-only for `STEP_GCODE`. |
@@ -305,6 +305,7 @@ Owner: `Layer::m_islands`. **Freezing `m_slice` does not freeze `m_extrusions`.*
 | `m_infill_free_areas` | ExPolygons without overlap, const getters | Same production | Same freeze; empty may mean no restriction |
 | `m_infill_areas_bboxes` | Native cache recomputed with the areas | Host setter of the areas | Not directly exposed; the C infill bbox getter computes the first area |
 | `m_perimeter_slices` | Native derived contours, no dedicated C getter | Perimeter production | Derived source output, global `Print` freeze |
+| `m_support_demand` | ExPolygons asking for support; const getter `layer_island_get_support_demand()` | `STEP_SUPPORT_DEMAND` builds it; any plugin from `STEP_SUPPORT_DEMAND` through `STEP_SUPPORT` may refine it (bridge removal in `STEP_POST_PERIMETER`) with `support_demand_get_island_mutable(run_ctx, island)`, which checks the running step | Emptied by the `STEP_SUPPORT_DEMAND` cleanup at a `Slicing` replay; read by support generation |
 | `overlaps_above` | Vector of links borrowing the upper islands | Final post-slicing rebuild | Main topology fixed from `Slicing` |
 | `overlaps_below` | Links to the layer below | Same phase | Same rule |
 | `Link::to` | Pointer to another island, exposed | Graph construction | Invalid if the target is rebuilt |
@@ -763,19 +764,15 @@ Sources: `src/libslic3r/Api/host/steps/LayerHeightStep.hpp:20`, `src/libslic3r/S
 | `InfillStepHostContext::pattern_runtime_ids_by_plugin_id`, `pattern_plugins_by_runtime_id` | Local name ↔ ID/plugin registries | Lifetime of this step call, non-persistent IDs |
 | `InfillStepHostContext::recipe_modifier_plugins` | List of borrowed providers | Step context lifetime |
 | `InfillStepHostContext::pattern_host_contexts`, `recipe_modifier_host_contexts` | Owned contexts for the callbacks | Lifetime of the step call |
-| `StepSupportDemand::State::m_demands` | Map borrowed object → owned SupportDemandSet | Reset/destroyed in the pipeline; not a Print member |
-| `SupportDemandSet::m_entries` | Vector of Entry by value | Addition/erasure may invalidate views |
-| `SupportDemandSet::Entry::island` | Source borrow | The set does not own the island |
-| `SupportDemandSet::Entry::polygons` | Owned ExPolygons, mutable getter | Modify/set/clear during demand processing; not a persistent checkpoint |
-| `SupportDemandRunContext::context_step` | Payload borrowing the set | Wrapper lifetime; does not own the demand |
+| `support_demand_get_island_mutable(run_ctx, island)` | Host function returning the island-owned demand (`LayerSliceIsland::m_support_demand`); refused outside `STEP_SUPPORT_DEMAND`..`STEP_SUPPORT` | The collection lives as long as the island |
 
 By-value fields of `raw_infill_pattern_params`, all from the same recipe: `pattern_id`, `surface_type`, `extrusion_role`, `flow`, `density`, `flow_mult`, `connection`, `add_gap_fill`, `gap_fill_enabled`, `dont_adjust`, `monotonic`, `fill_exactly`, `complete`, `use_arachne`, `can_angle_cross`, `extruder`, `priority`, `spacing`, `angle`, `bridge_angle`, `bridge_type`, `layer_height`, `z`, `layer_id`, `overlap`, `bridge_offset`, `fill_resolution`, `link_max_length`, `loop_clipping`, `anchor_length`, `anchor_length_max`, `max_sparse_infill_spacing`.
 
 `c_flow` owns `width`, `spacing`, `height`, `nozzle_diameter`, `is_bridge`, `spacing_ratio`, `mm3_per_mm`. This record does not own the regions from which its values are computed.
 
-The pattern generation callback borrows the provided buffers, without allocating or clearing the output itself. The default generator provides a fresh output. Support generation remains unimplemented; the existence of the demand working set does not prove a persistent support output.
+The pattern generation callback borrows the provided buffers, without allocating or clearing the output itself. The default generator provides a fresh output. The support demand is island data (see the `LayerSliceIsland` table): `STEP_SUPPORT_DEMAND` runs right after `STEP_POST_SLICING`, so every later step can read it. Support generation remains unimplemented.
 
-Sources: `src/libslic3r/Plugins/Infill/DefaultInfillGenerator.cpp:279`, `src/libslic3r/Api/plugin/c/steps/slic3r_step_infill.h:40`, `src/libslic3r/Steps/StepSupportDemand.hpp:25`.
+Sources: `src/libslic3r/Plugins/Infill/DefaultInfillGenerator.cpp:279`, `src/libslic3r/Api/plugin/c/steps/slic3r_step_infill.h:40`, `src/libslic3r/Steps/StepSupportDemand.hpp`.
 
 ### C++ computed views
 
