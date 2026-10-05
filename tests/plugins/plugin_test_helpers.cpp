@@ -465,6 +465,7 @@ void activate_plugin_or_fail(Slic3r::Orchestrator &orchestrator, const char *plu
 
 namespace Slic3r::Test::Plugins {
 
+// Initialize the shared test plugins once and finalize their settings.
 void ensure_plugin_test_runtime_initialized()
 {
     static bool initialized = []() {
@@ -532,6 +533,7 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::SeamPlacement::RandomPlugin::register_random_seam_placer_plugin(orchestrator_handle_value);
         register_regional_seam_test_provider(orchestrator_handle_value);
+        register_support_toolpath_test_providers(orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateToolChangePlugin::register_create_tool_change_plugin(
             orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateTransitionScopePlugin::register_create_transition_scope_plugin(
@@ -773,6 +775,9 @@ void ensure_plugin_test_runtime_initialized()
         }
         register_exclusive_step_group_ui_fragments(orchestrator);
         orchestrator.set_plugin_active("slic3r.test.seam_placer.regional", false);
+        for (const char *id : {"test.support_toolpath.sparse", "test.support_toolpath.bottom",
+                               "test.support_toolpath.top", "test.support_toolpath.alternate"})
+            orchestrator.set_plugin_active(id, false);
         orchestrator.set_plugin_active("seam_placer.aligned", false);
         orchestrator.set_plugin_active("seam_placer.contiguous", false);
         orchestrator.set_plugin_active("seam_placer.cost", false);

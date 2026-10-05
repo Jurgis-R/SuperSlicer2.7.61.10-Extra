@@ -766,12 +766,15 @@ Sources: `src/libslic3r/Api/host/steps/LayerHeightStep.hpp:20`, `src/libslic3r/S
 | `InfillStepHostContext::recipe_modifier_plugins` | List of borrowed providers | Step context lifetime |
 | `InfillStepHostContext::pattern_host_contexts`, `recipe_modifier_host_contexts` | Owned contexts for the callbacks | Lifetime of the step call |
 | `support_demand_get_island_mutable(run_ctx, island)` | Host function returning the island-owned demand (`LayerSliceIsland::m_support_demand`); refused outside `STEP_SUPPORT_DEMAND`..`STEP_SUPPORT` | The collection lives as long as the island |
+| `run_ctx_support_toolpath::{print,object}` | Borrowed whole-object context at `STEP_SUPPORT_TOOLPATH`, after `STEP_SUPPORT` and before `STEP_SKIRT_BRIM`; selected role algorithms read support surfaces and write auxiliary region-island extrusions through data-tree mutators | Auxiliary editing remains allowed through `STEP_FINALIZE_SLICING`; outputs are destroyed with auxiliary layers at a `None`/`Slicing` replay, with no separate dispatcher cleanup |
 
 By-value fields of `raw_infill_pattern_params`, all from the same recipe: `pattern_id`, `surface_type`, `extrusion_role`, `flow`, `density`, `flow_mult`, `connection`, `add_gap_fill`, `gap_fill_enabled`, `dont_adjust`, `monotonic`, `fill_exactly`, `complete`, `use_arachne`, `can_angle_cross`, `extruder`, `priority`, `spacing`, `angle`, `bridge_angle`, `bridge_type`, `layer_height`, `z`, `layer_id`, `overlap`, `bridge_offset`, `fill_resolution`, `link_max_length`, `loop_clipping`, `anchor_length`, `anchor_length_max`, `max_sparse_infill_spacing`.
 
 `c_flow` owns `width`, `spacing`, `height`, `nozzle_diameter`, `is_bridge`, `spacing_ratio`, `mm3_per_mm`. This record does not own the regions from which its values are computed.
 
 The pattern generation callback borrows the provided buffers, without allocating or clearing the output itself. The default generator provides a fresh output. The support demand is island data (see the `LayerSliceIsland` table): `STEP_SUPPORT_DEMAND` runs right after `STEP_POST_SLICING`, so every later step can read it. Support generation remains unimplemented.
+
+`STEP_SUPPORT_TOOLPATH` resumes from `Checkpoint::Slicing` like `STEP_SUPPORT`. Its plugin-defined role groups select sparse, bottom-interface and top-interface algorithms independently; selected plugins run sequentially by priority. The dispatcher does nothing when no provider is active. No built-in support toolpath algorithm is registered.
 
 Sources: `src/libslic3r/Plugins/Infill/DefaultInfillGenerator.cpp:279`, `src/libslic3r/Api/plugin/c/steps/slic3r_step_infill.h:40`, `src/libslic3r/Steps/StepSupportDemand.hpp`.
 

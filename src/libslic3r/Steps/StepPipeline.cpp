@@ -39,6 +39,7 @@
 #include "libslic3r/Steps/StepRunner.hpp"
 #include "libslic3r/Steps/StepSkirtBrim.hpp"
 #include "libslic3r/Steps/StepSupportDemand.hpp"
+#include "libslic3r/Steps/StepSupportToolpath.hpp"
 #include "libslic3r/Steps/StepSurfaceGeneration.hpp"
 #include "libslic3r/SurfaceCollection.hpp"
 #include "libslic3r/Thread.hpp"
@@ -56,6 +57,7 @@
 
 namespace Slic3r::Steps {
 
+// Built-in steps in execution order; dispatch and invalidation follow this order.
 const std::vector<slicing_step_t> &execution_order()
 {
     static const std::vector<slicing_step_t> steps {
@@ -72,6 +74,7 @@ const std::vector<slicing_step_t> &execution_order()
         STEP_INFILL,
         STEP_POST_INFILL,
         STEP_SUPPORT,
+        STEP_SUPPORT_TOOLPATH,
         STEP_SKIRT_BRIM,
         STEP_FINALIZE_SLICING,
         STEP_ORDERING,
@@ -153,6 +156,7 @@ slicing_step_t checkpoint_resume_step(const Checkpoint checkpoint)
     return STEP_LAYER_HEIGHT;
 }
 
+// For each step, the steps that consume its outputs directly.
 const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
 {
     static const std::map<slicing_step_t, std::vector<slicing_step_t>> dependents {
@@ -168,7 +172,8 @@ const std::map<slicing_step_t, std::vector<slicing_step_t>> &step_dependents()
         {STEP_INFILL_GROUP, {STEP_INFILL}},
         {STEP_INFILL, {STEP_POST_INFILL}},
         {STEP_POST_INFILL, {STEP_SUPPORT}},
-        {STEP_SUPPORT, {STEP_SKIRT_BRIM}},
+        {STEP_SUPPORT, {STEP_SUPPORT_TOOLPATH}},
+        {STEP_SUPPORT_TOOLPATH, {STEP_SKIRT_BRIM}},
         {STEP_SKIRT_BRIM, {STEP_FINALIZE_SLICING}},
         {STEP_FINALIZE_SLICING, {STEP_ORDERING}},
         {STEP_ORDERING, {STEP_WIPETOWER}},
@@ -288,6 +293,7 @@ std::string option_key_for_plugin_group(const Orchestrator &orchestrator,
            sanitized_config_key_part(group_id) + "_plugin";
 }
 
+// True when the id is a built-in pipeline or service step, including STEP_NONE and STEP_ANY.
 bool is_known_builtin_step(slicing_step_t step)
 {
     switch (step) {
@@ -308,6 +314,7 @@ bool is_known_builtin_step(slicing_step_t step)
     case STEP_POST_INFILL:
     case STEP_SUPPORT_DEMAND:
     case STEP_SUPPORT:
+    case STEP_SUPPORT_TOOLPATH:
     case STEP_FINALIZE_SLICING:
     case STEP_CHECK_CONFLICT:
     case STEP_ORDERING:
@@ -331,6 +338,7 @@ bool is_known_builtin_step(slicing_step_t step)
     }
 }
 
+// Settings category under which a step's generated selector options appear.
 raw_option_category option_category_for_step(slicing_step_t step)
 {
     switch (step) {
@@ -344,6 +352,7 @@ raw_option_category option_category_for_step(slicing_step_t step)
     case STEP_POST_INFILL:
         return RAW_OPTION_CATEGORY_INFILL;
     case STEP_SUPPORT:
+    case STEP_SUPPORT_TOOLPATH:
     case STEP_SUPPORT_DEMAND:
     case STEP_SUPPORT_SPOT:
         return RAW_OPTION_CATEGORY_SUPPORT;
@@ -675,6 +684,7 @@ Plugin *selected_plugin_from_group(const StepExclusiveGroup &group,
     return plugins[size_t(selected_idx)];
 }
 
+// Plugins to run for a step: one per exclusive group, sorted by priority.
 std::vector<Plugin *> selected_or_active_plugins_for_step(Orchestrator &orchestrator,
                                                           slicing_step_t step,
                                                           const ConfigBase *config)
@@ -722,6 +732,11 @@ std::vector<Plugin *> selected_or_active_plugins_for_step(Orchestrator &orchestr
             selected_plugins.push_back(selected);
     }
 
+    // Selected providers run by priority, not by each group's first candidate.
+    // Stable sorting preserves their discovery order when priorities are equal.
+    std::stable_sort(selected_plugins.begin(), selected_plugins.end(), [](const Plugin *lhs, const Plugin *rhs) {
+        return lhs->get_priority() < rhs->get_priority();
+    });
     return selected_plugins;
 }
 
@@ -872,6 +887,7 @@ void run_post_slicing(Orchestrator &orchestrator, Print &print, const std::strin
     });
 }
 
+// Run the requested steps from support demand up to `until`, including export when reached.
 void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::string &path,
                          slicing_step_t until = STEP_GCODE,
                          const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr,
@@ -956,6 +972,13 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         StepGenerateSupport::run_step(orchestrator, print);
     });
     if (stop_after(STEP_SUPPORT, until)) return;
+
+    run_step_if_requested(print, STEP_SUPPORT_TOOLPATH, [&] {
+        begin_step(print, STEP_SUPPORT_TOOLPATH, L("Generating support toolpaths"));
+        StepSupportToolpath::prepare(print);
+        StepSupportToolpath::run_step(orchestrator, print);
+    });
+    if (stop_after(STEP_SUPPORT_TOOLPATH, until)) return;
 
     run_step_if_requested(print, STEP_SKIRT_BRIM, [&] {
         begin_step(print, STEP_SKIRT_BRIM, L("Generating skirt and brim"));

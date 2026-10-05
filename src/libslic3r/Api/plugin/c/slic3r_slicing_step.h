@@ -6,7 +6,7 @@
 #define slic3r_slicing_step_h_
 
 #define SLIC3R_PLUGIN_API_SLICING_STEP_MAJOR 2u
-#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 0u
+#define SLIC3R_PLUGIN_API_SLICING_STEP_MINOR 1u
 
 #include <stdint.h>
 
@@ -51,6 +51,8 @@ typedef enum slicing_step_t : uint16_t
     STEP_POST_INFILL               = 1100,
     STEP_SUPPORT_DEMAND            = 1200,
     STEP_SUPPORT                   = 1300,
+    /* Per-object support toolpaths: after SUPPORT and before SKIRT_BRIM; values do not encode order. */
+    STEP_SUPPORT_TOOLPATH          = 1350,
     /*
     Last step allowed to edit the Print data tree. Later steps read it and
     write their results into the PrintingPlan.

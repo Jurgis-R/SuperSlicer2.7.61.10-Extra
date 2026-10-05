@@ -177,6 +177,7 @@ typedef enum slic3r_plugin_api_id {
     SLIC3R_PLUGIN_API_STEP_GCODE_READER = 54,
     SLIC3R_PLUGIN_API_MESH_QUERIES = 55,
     SLIC3R_PLUGIN_API_GEOMETRY_TYPES = 56,
+    SLIC3R_PLUGIN_API_STEP_SUPPORT_TOOLPATH = 57,
     /* SLIC3R_PLUGIN_API_COUNT is always last and has its value auto-filled. */
     SLIC3R_PLUGIN_API_COUNT
 } slic3r_plugin_api_id;
