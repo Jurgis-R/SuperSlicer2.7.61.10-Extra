@@ -19,7 +19,7 @@ namespace SG = Slic3r::Test::SupportGrid;
 namespace {
 // Run one model through every style, contact-distance and interface-count combination.
 void run_comparison(int model_id);
-// Check published geometry and contact slabs even when the native reference cannot run.
+// Check published geometry and contact spacing independently of the native comparison.
 void check_family(const PrintObject &object, const Slic3r::SupportGrid::GeneratedSupport &support, const Slic3r::SupportGrid::GridSupportParams &params, int model_id);
 // Populate deprecated region caches and concrete extrusion classes for native support.
 void prepare_legacy_inputs(PrintObject &object);
@@ -89,7 +89,7 @@ void legacy_extrusions(const ExtrusionEntity &entity, ExtrusionEntityCollection 
         for (const ExtrusionEntityUPtr &child : entity.children()) legacy_extrusions(*child, out, attributes);
     }
 }
-// Slice identical prints for one model and compare valid native output; every excluded native combination still checks the family's geometry and contact spacing.
+// Slice two owned prints for one model and compare native output after independent family checks; each parameter section keeps exact Z/thickness and the fixed XY tolerance.
 void run_comparison(int model_id)
 {
     Test::Plugins::ensure_plugin_test_runtime_initialized();
@@ -129,40 +129,17 @@ void run_comparison(int model_id)
         Slic3r::SupportGrid::generate_support(plugin_object, params, support);
         check_family(plugin_object, support, params, model_id);
 
-        const Slic3r::SupportGrid::GeneratorLayer *first_extreme = nullptr;
-        for (const Slic3r::SupportGrid::GeneratorLayers *layers : {&support.top, &support.bottom})
-            for (const Slic3r::SupportGrid::GeneratorLayer *layer : *layers)
-                if (!first_extreme || layer->extreme_z() < first_extreme->extreme_z()) first_extreme = layer;
-        const char *excluded = nullptr;
-        if (model_id == 1) {
-            // SupportMaterial.cpp:2396 asserts TopContact, but the cube's first extreme is a bottom contact above its exposed object surface.
-            excluded = "SupportMaterial.cpp:2396 TopContact assertion: earliest contact is above the object";
-        } else if (first_extreme && first_extreme->type == Slic3r::SupportGrid::LayerType::BottomContact) {
-            // SupportMaterial.cpp:2390-2396 assumes a pre-sized first extreme belongs to a raft; a bottom contact in this no-raft model violates that assumption.
-            excluded = "SupportMaterial.cpp:2396 TopContact assertion: earliest bottom contact is not a raft";
-        } else if (soluble && first_extreme && first_extreme->bottom_z > 0) {
-            // SupportMaterial.cpp:2390-2397 skips a pre-sized first top contact as though it were a raft. Current soluble contacts already have heights,
-            // so the interval beneath that contact loses its columns (the slab gives 1 native layer instead of 14).
-            excluded = "SupportMaterial.cpp:2390-2397 skips soluble first contact and its underlying columns";
-        } else if (soluble) {
-            // SupportLayer.hpp:121 returns scaled bottom Z from unscaled_bottom_z(); SupportMaterial.cpp:2414 compares it with millimetres.
-            // A soluble contact starting on the first object layer therefore aborts rather than describing a valid interval.
-            excluded = "SupportMaterial.cpp:2414 bottom-Z units assertion (SupportLayer.hpp:121)";
-        }
-        if (excluded) {
-            std::cout << "support comparison model=" << model_id << " style=" << style << " soluble=" << soluble
-                      << " interfaces=" << interfaces << " family_layers=" << plugin_object.auxiliary_layers().size()
-                      << " EXCLUDED: " << excluded << '\n';
-            return;
-        }
         PrintObject &legacy_object = legacy_print.object(0);
         prepare_legacy_inputs(legacy_object);
+        std::cout << "support native run model=" << model_id << " style=" << style << " soluble=" << soluble
+                  << " interfaces=" << interfaces << std::endl;
         PrintObjectSupportMaterial generator(&legacy_object, std::make_shared<SlicingParameters>(legacy_object.slicing_parameters()));
         generator.generate(legacy_object);
         const LayerRefs generated = plugin_print.object(0).auxiliary_layers();
         const LayerRefs legacy = legacy_object.auxiliary_layers();
         REQUIRE_FALSE(generated.empty());
         REQUIRE_FALSE(legacy.empty());
+        CAPTURE(generated.size(), legacy.size());
         REQUIRE(generated.size() == legacy.size());
         double maximum_difference = 0;
         for (size_t id = 0; id < legacy.size(); ++id) {
@@ -262,13 +239,13 @@ void check_family(const PrintObject &object, const Slic3r::SupportGrid::Generate
 }
 }
 
-// Compare a roof on a narrow post through eight independent sections, retaining family assertions when soluble native columns are invalid.
+// Compare a roof on a narrow post through eight independent native/family sections with geometry and contact assertions.
 TEST_CASE("Grid legacy comparison: overhanging slab", "[plugins][support-grid][legacy-compare]") { run_comparison(0); }
-// Exercise eight family combinations on a rotated cube with a hole, without calling the native generator that asserts on its first bottom contact.
+// Compare eight native/family combinations on a rotated cube with a hole and contacts above object surfaces.
 TEST_CASE("Grid legacy comparison: cube with hole", "[plugins][support-grid][legacy-compare]") { run_comparison(1); }
-// Compare a bridge through eight independent sections; native-soluble exclusions do not suppress family checks or the other combinations.
+// Compare a bridge through eight independent native/family sections, preserving family geometry checks.
 TEST_CASE("Grid legacy comparison: bridge", "[plugins][support-grid][legacy-compare]") { run_comparison(2); }
-// Compare the enforced demand of a sheared cube through eight sections, excluding the native-soluble scaled-bottom-Z assertion.
+// Compare the enforced demand of a sheared cube through eight sections with both soluble and separated contacts.
 TEST_CASE("Grid legacy comparison: 45 degree overhang", "[plugins][support-grid][legacy-compare]") { run_comparison(3); }
-// Exercise a roof above a low platform through eight sections, verifying family bottom contacts before excluding the native raft-only assumption.
+// Compare a roof above a low platform through eight sections, verifying family bottom contacts before native execution.
 TEST_CASE("Grid legacy comparison: object above platform", "[plugins][support-grid][legacy-compare]") { run_comparison(4); }
