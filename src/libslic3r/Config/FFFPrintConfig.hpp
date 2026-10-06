@@ -826,6 +826,7 @@ std::string validate(const FullPrintConfig &config);
 bool is_XL_printer(const PrintConfig &cfg);
 Points get_bed_shape(const PrintConfig &cfg);
 
+// Register FFF settings and defaults in the supplied configuration definition.
 void init_fff_params(PrintConfigDef &definition);
 
 } // namespace Slic3r

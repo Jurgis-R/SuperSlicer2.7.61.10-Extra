@@ -461,7 +461,7 @@ void activate_plugin_or_fail(Slic3r::Orchestrator &orchestrator, const char *plu
 
 namespace Slic3r::Test::Plugins {
 
-// Initialize the shared test plugins once and finalize their settings.
+// Register and activate shared plugins once, finalize their settings, and fail the test if registration or activation cannot complete.
 void ensure_plugin_test_runtime_initialized()
 {
     static bool initialized = []() {
@@ -711,6 +711,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "support.demand.modifiers");
         activate_plugin_or_fail(orchestrator, "support.demand.buildplate_only");
         activate_plugin_or_fail(orchestrator, "support.demand.bridge_removal");
+        activate_plugin_or_fail(orchestrator, "support.family.grid");
         activate_plugin_or_fail(orchestrator, "gui_rules.core");
         activate_plugin_or_fail(orchestrator, "perimeter.generator.arachne");
         activate_plugin_or_fail(orchestrator, "perimeter.generator.classic");

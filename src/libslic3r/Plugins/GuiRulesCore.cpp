@@ -161,6 +161,7 @@ int32_t GuiRulesCore::priority_impl() const noexcept
     return 0;
 }
 
+// Register FFF setting activation conditions with the host GUI registry; related settings share conditions and scratch storage is unused.
 void GuiRulesCore::inilialize_impl(storage_handle *) const
 {
     // Register one FFF activation rule: all targets share the FFF scope and
@@ -385,10 +386,8 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
                "support_material_angle_height", "support_material_layer_height" },
              without_organic_supports(have_support));
 
-    add_rule({ "support_material_synchronize_layers" }, any_of({
-        all_of({ true_("support_material"), int_equals("support_material_contact_distance_type", int(zdNone)) }),
-        all_of({ non_zero("raft_layers"), int_equals("support_material_contact_distance_type", int(zdNone)) })
-    }));
+    // Synchronization also retains object Z positions for non-soluble support, while contacts keep their separation gaps.
+    add_rule({ "support_material_synchronize_layers" }, have_support);
 
     // raft
     add_rule({ "raft_contact_distance" }, all_of({

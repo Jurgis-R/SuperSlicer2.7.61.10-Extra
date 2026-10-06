@@ -1404,6 +1404,7 @@ void init_milling_params(PrintConfigDef &definition)
 
 }
 
+// Populate the mutable registry with FFF categories, option definitions and defaults; the registry owns the settings used by print presets and the GUI.
 void init_fff_params(PrintConfigDef &definition)
 {
     init_milling_params(definition);
@@ -6636,7 +6637,8 @@ void init_fff_params(PrintConfigDef &definition)
     // TRN PrintSettings : "Synchronize with object layers"
     def->tooltip = L("Synchronize support layers with the object print layers. This is useful "
                    "with multi-material printers, where the extruder switch is expensive. "
-                   "This option is only available when top contact Z distance is set to zero.");
+                   "Contact layers keep the configured Z distances. Intermediate layers follow object layers; "
+                   "extra layers may be inserted near contacts to respect support layer height limits.");
     def->mode = comExpert | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
 

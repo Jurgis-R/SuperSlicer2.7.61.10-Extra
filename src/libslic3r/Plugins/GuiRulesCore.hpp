@@ -28,6 +28,7 @@ private:
     slicing_step_t step_impl() const noexcept override;
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
+    // Register activation rules for built-in FFF settings.
     void inilialize_impl(storage_handle *storage) const override;
     void run_impl(const plugin_run_context *run_ctx) const override;
 };
