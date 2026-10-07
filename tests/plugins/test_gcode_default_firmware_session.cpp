@@ -58,7 +58,9 @@
 #include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Steps/StepExtrusionEdition.hpp"
 #include "libslic3r/Steps/StepGenerateGcode.hpp"
+#include "libslic3r/Steps/StepLayerHeightGeneration.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
+#include "libslic3r/Steps/StepSlicing.hpp"
 #include "test_data.hpp"
 
 /*
@@ -1465,6 +1467,62 @@ TEST_CASE("Default firmware emits ordered semantic marker triplets for layers",
         ";LAYER_CHANGE", ";Z:0.2", ";HEIGHT:0.2",
         ";TYPE:Perimeter", ";WIDTH:0.4",
         ";LAYER_CHANGE", ";Z:0.4", ";HEIGHT:0.25"
+    };
+    CHECK(semantic_marker_lines(output) == expected);
+}
+
+TEST_CASE("Default firmware layer change describes mixed-height print Z groups",
+          "[plugins][gcode][firmware][markers]")
+{
+    // A print Z may group layers of different heights. The layer change uses
+    // the object layer height when the group has one, otherwise the smallest
+    // height; each extrusion still writes its own height when it differs.
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model,
+                     {{"layer_height", "0.2"}, {"first_layer_height", "0.2"}});
+    Orchestrator &orchestrator = Orchestrator::instance();
+    Steps::StepLayerHeightGeneration::run_step(orchestrator, print);
+    Steps::StepSlicing::run_step(orchestrator, print);
+    PrintObject &object = print.object(0);
+    REQUIRE(object.layer_count() > 1);
+    const Layer &object_layer = object.layer(1);
+    REQUIRE(object_layer.scaled_print_z() == scale_i(0.4));
+    REQUIRE(object_layer.scaled_height() == scale_i(0.2));
+
+    // A thinner support layer at the object Z, listed before the object layer
+    // so the choice cannot depend on the group order, then two support layers
+    // alone at a higher Z.
+    const coord_t support_z = scale_i(1.4);
+    const Layer &thin_support = object.add_auxiliary_layer(0, scale_i(0.1), object_layer.scaled_print_z());
+    const Layer &thick_support = object.add_auxiliary_layer(1, scale_i(0.3), support_z);
+    const Layer &middle_support = object.add_auxiliary_layer(2, scale_i(0.15), support_z);
+
+    configure_standard_firmware(print);
+    PrintingLayerGroup &mixed_layer = append_marker_test_layer(print, object_layer.scaled_print_z());
+    mixed_layer.layers = {&thin_support, &object_layer};
+    append_path_extrusion(
+        mixed_layer.tool_groups.front(),
+        marker_test_path(0.0, 1.0, ExtrusionRole::SupportMaterial, 0.4f, 0.1f));
+    append_path_extrusion(
+        mixed_layer.tool_groups.front(),
+        marker_test_path(1.0, 2.0, ExtrusionRole::Perimeter, 0.4f, 0.2f));
+    PrintingLayerGroup &support_layer = append_marker_test_layer(print, support_z);
+    support_layer.layers = {&thick_support, &middle_support};
+    append_path_extrusion(
+        support_layer.tool_groups.front(),
+        marker_test_path(2.0, 3.0, ExtrusionRole::SupportMaterial, 0.4f, 0.3f));
+
+    const std::string output = export_with_firmware(
+        print, "gcode.firmware.marlin2");
+    INFO(output);
+    const std::vector<std::string> expected{
+        ";LAYER_CHANGE", ";Z:0.4", ";HEIGHT:0.2",
+        ";TYPE:Support material", ";WIDTH:0.4", ";HEIGHT:0.1",
+        ";TYPE:Perimeter", ";HEIGHT:0.2",
+        ";LAYER_CHANGE", ";Z:1.4", ";HEIGHT:0.15",
+        ";TYPE:Support material", ";HEIGHT:0.3"
     };
     CHECK(semantic_marker_lines(output) == expected);
 }
