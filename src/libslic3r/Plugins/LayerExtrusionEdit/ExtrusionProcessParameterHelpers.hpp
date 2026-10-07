@@ -77,8 +77,8 @@ double effective_value(const Config &config, const char *key, double ratio);
 LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
                                  const EffectiveTreeState &state);
 
-// Classify leaves for one process field. Fan and speed editing include
-// support; acceleration leaves support paths without a value.
+// Classify leaves for one process field. All fields edit object paths,
+// support and skirt/brim; only the fan field excludes milling.
 LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
                                  const EffectiveTreeState &state,
                                  EPropertySpeedField field);

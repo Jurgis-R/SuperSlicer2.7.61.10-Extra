@@ -56,27 +56,11 @@ LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
         (role == RAW_EXTRUSION_ROLE_MIXED && role != RAW_EXTRUSION_ROLE_GAP_FILL))
         return LeafDisposition::Excluded;
 
-    // Cooling owns printable object paths, support, and skirt/brim. Milling
-    // remains excluded because it is not controlled by filament fan settings.
-    if (field == EPropertySpeedField::FanSpeed) {
-        const bool fan_role = role == RAW_EXTRUSION_ROLE_GAP_FILL ||
-                              role == RAW_EXTRUSION_ROLE_THIN_WALL ||
-                              RAW_EXTRUSION_ROLE_IS_PERIMETER(role) ||
-                              RAW_EXTRUSION_ROLE_IS_INFILL(role) ||
-                              RAW_EXTRUSION_ROLE_IS_SKIRT(role) ||
-                              RAW_EXTRUSION_ROLE_IS_SUPPORT(role);
-        return fan_role && !RAW_EXTRUSION_ROLE_HAS(role, RAW_EXTRUSION_ROLE_MILL) ?
-            LeafDisposition::Editable : LeafDisposition::Excluded;
-    }
-
-    // The fan plugin's layer-time estimate and STEP_GCODE both reject any
-    // geometric leaf without a speed, so the speed plugin must resolve support
-    // paths from the support speed settings.
-    // Acceleration is optional there: the acceleration plugin has no support
-    // rule, and the G-code writer keeps the print acceleration requested by
-    // the previous extrusion, or emits none if nothing was requested yet.
-    if (RAW_EXTRUSION_ROLE_IS_SUPPORT(role))
-        return field == EPropertySpeedField::Speed ? LeafDisposition::Editable : LeafDisposition::Excluded;
+    // Speed, acceleration and cooling own printable object paths, support,
+    // and skirt/brim. Milling has a speed and an acceleration but is excluded
+    // from cooling because it is not controlled by filament fan settings.
+    if (RAW_EXTRUSION_ROLE_HAS(role, RAW_EXTRUSION_ROLE_MILL))
+        return field == EPropertySpeedField::FanSpeed ? LeafDisposition::Excluded : LeafDisposition::Editable;
 
     // Unknown future roles also remain untouched and prevent a property on an
     // ancestor from leaking into a subtree that the plugins do not understand.
@@ -85,7 +69,7 @@ LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
                             RAW_EXTRUSION_ROLE_IS_PERIMETER(role) ||
                             RAW_EXTRUSION_ROLE_IS_INFILL(role) ||
                             RAW_EXTRUSION_ROLE_IS_SKIRT(role) ||
-                            RAW_EXTRUSION_ROLE_HAS(role, RAW_EXTRUSION_ROLE_MILL);
+                            RAW_EXTRUSION_ROLE_IS_SUPPORT(role);
     return known_role ? LeafDisposition::Editable : LeafDisposition::Excluded;
 }
 
