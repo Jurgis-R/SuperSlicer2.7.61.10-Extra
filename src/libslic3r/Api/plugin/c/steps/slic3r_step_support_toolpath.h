@@ -35,8 +35,10 @@ interface 100, top interface 200). A later role can read earlier extrusions.
 
 Each algorithm receives the whole object and walks its auxiliary layers,
 islands and region islands to find support surfaces of its role. It may group
-surfaces and process work in parallel. No INFILL_PATTERN service is available
-in this payload.
+surfaces and process work in parallel. Each algorithm prints only the surfaces
+of its own role: no role takes another role's area, so a role without interface
+layers prints its own contact as base instead of handing it over. No
+INFILL_PATTERN service is available in this payload.
 It writes extrusions into the support-layer region islands through data-tree
 mutators. Auxiliary layers remain editable through STEP_FINALIZE_SLICING.
 Use the print and object handles only during the callback; never free them.

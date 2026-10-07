@@ -507,6 +507,10 @@ set(SLIC3R_SOURCES
 	Plugins/Support/SupportDemandOverhangs.hpp
 	Plugins/Support/SupportDemandPainting.cpp
 	Plugins/Support/SupportDemandPainting.hpp
+	Plugins/Support/Toolpath/LegacySupportPaths.cpp
+	Plugins/Support/Toolpath/LegacySupportPaths.hpp
+	Plugins/Support/Toolpath/SupportToolpathLegacy.cpp
+	Plugins/Support/Toolpath/SupportToolpathLegacy.hpp
 	Printing/PrintingPlan.cpp
 	Printing/PrintingPlan.hpp
 	Steps/StepDetectSupportSpots.cpp
