@@ -71,13 +71,14 @@ struct ExtrusionSettingsContext
 // disabled, and zero options inherit that base.
 double effective_value(const Config &config, const char *key, double ratio);
 
-// Classify a printable leaf. Excluded leaves are deliberately left untouched
-// and block property hoisting through their parent subtree.
+// Classify a printable leaf for the speed field. Excluded leaves are
+// deliberately left untouched and block property hoisting through their parent
+// subtree.
 LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
                                  const EffectiveTreeState &state);
 
-// Classify leaves for one process field. Fan editing includes support and
-// skirt/brim, while speed and acceleration retain their narrower role set.
+// Classify leaves for one process field. Fan and speed editing include
+// support; acceleration leaves support paths without a value.
 LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
                                  const EffectiveTreeState &state,
                                  EPropertySpeedField field);

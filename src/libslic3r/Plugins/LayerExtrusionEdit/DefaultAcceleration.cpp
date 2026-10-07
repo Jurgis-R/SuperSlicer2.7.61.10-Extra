@@ -757,7 +757,8 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
         return;
     }
 
-    if (leaf_disposition(entity, state) == LeafDisposition::Editable && state.acceleration <= 0.f)
+    if (leaf_disposition(entity, state, EPropertySpeedField::Acceleration) == LeafDisposition::Editable &&
+        state.acceleration <= 0.f)
         roles.insert(state.attributes.extrusion_role());
 }
 
@@ -857,7 +858,8 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
         return;
     }
 
-    const LeafDisposition disposition = leaf_disposition(entity, state);
+    const LeafDisposition disposition =
+        leaf_disposition(entity, state, EPropertySpeedField::Acceleration);
     if (disposition == LeafDisposition::Empty || state.acceleration > 0.f)
         return;
 

@@ -69,8 +69,14 @@ LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
             LeafDisposition::Editable : LeafDisposition::Excluded;
     }
 
+    // The fan plugin's layer-time estimate and STEP_GCODE both reject any
+    // geometric leaf without a speed, so the speed plugin must resolve support
+    // paths from the support speed settings.
+    // Acceleration is optional there: the acceleration plugin has no support
+    // rule, and the G-code writer keeps the print acceleration requested by
+    // the previous extrusion, or emits none if nothing was requested yet.
     if (RAW_EXTRUSION_ROLE_IS_SUPPORT(role))
-        return LeafDisposition::Excluded;
+        return field == EPropertySpeedField::Speed ? LeafDisposition::Editable : LeafDisposition::Excluded;
 
     // Unknown future roles also remain untouched and prevent a property on an
     // ancestor from leaking into a subtree that the plugins do not understand.
