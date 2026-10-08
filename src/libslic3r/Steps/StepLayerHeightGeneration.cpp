@@ -21,7 +21,7 @@
 #include "libslic3r/Steps/StepPipeline.hpp"
 
 #ifdef _DEBUG
-#include "libslic3r/Plugins/StandardLayerHeightGenerator.hpp"
+#include "libslic3r/Plugins/Slicing/StandardLayerHeightGenerator.hpp"
 #endif
 #include "StepRunner.hpp"
 

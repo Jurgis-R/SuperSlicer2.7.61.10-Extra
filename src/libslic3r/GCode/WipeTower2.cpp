@@ -48,9 +48,9 @@ coord_t WipeTower2::floatz_tolayer_coord(double z) {
     assert(z >= 0);
     // round it via EPSILON/2
     coord_t coord_z = scale_i(z + EPSILON / 2);
-    // remove epsilon part
-    coord_z /= SCALED_EPSILON;
-    coord_z *= SCALED_EPSILON;
+    // snap to the layer z step, as scale_to_layer_coord() does
+    coord_z /= SCALED_LAYER_Z_STEP;
+    coord_z *= SCALED_LAYER_Z_STEP;
     return coord_z;
 }
 

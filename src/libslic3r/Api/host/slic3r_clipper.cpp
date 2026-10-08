@@ -405,6 +405,34 @@ clipper_shapes_handle *clipper_intersection(storage_handle *storage,
     return clipper_execute(storage, CLIPPER_OPERATION_INTERSECTION, subject, clip);
 }
 
+int32_t clipper_split(storage_handle *storage,
+                      const clipper_shapes_handle *subject,
+                      const clipper_shapes_handle *clip,
+                      clipper_shapes_handle **inside,
+                      clipper_shapes_handle **outside)
+{
+    const Slic3r::ApiClipper::ClipperShapes *subject_shapes = Slic3r::to_shapes(subject);
+    const Slic3r::ApiClipper::ClipperShapes *clip_shapes = Slic3r::to_shapes(clip);
+    if (storage == nullptr || subject_shapes == nullptr || inside == nullptr || outside == nullptr)
+        return 0;
+
+    // Each operation runs on its own Clipper fed with the same inputs, so the two results are cut along
+    // the same clip edges. add_to_clipper() keeps the kind of each adapter: a polyline operand stays
+    // an open path, as in clipper_intersection() and clipper_diff().
+    auto run = [&](Slic3r::ClipperLib::ClipType clip_type) {
+        Slic3r::ClipperLib::Clipper clipper;
+        subject_shapes->add_to_clipper(clipper, Slic3r::ClipperLib::ptSubject, true);
+        if (clip_shapes != nullptr)
+            clip_shapes->add_to_clipper(clipper, Slic3r::ClipperLib::ptClip, true);
+        Slic3r::ClipperLib::PolyTree result;
+        clipper.Execute(clip_type, result, Slic3r::ClipperLib::pftNonZero, Slic3r::ClipperLib::pftNonZero);
+        return Slic3r::store_shape(storage, Slic3r::ApiClipper::make_polytree_shapes(std::move(result)));
+    };
+    *inside = run(Slic3r::ClipperLib::ctIntersection);
+    *outside = run(Slic3r::ClipperLib::ctDifference);
+    return 1;
+}
+
 clipper_shapes_handle *clipper_diff_with_safety_offset(storage_handle *storage,
                                                        const clipper_shapes_handle *subject,
                                                        const clipper_shapes_handle *clip)
@@ -486,8 +514,14 @@ clipper_shapes_handle *clipper_concat_replace(storage_handle *storage,
                                               clipper_shapes_handle *first,
                                               const clipper_shapes_handle *second)
 {
-    if (storage == nullptr || first == nullptr || second == nullptr)
+    if (storage == nullptr)
         return nullptr;
+    // A null handle is an empty operand: keep first when there is nothing to
+    // append, and copy second when there is nothing to append to.
+    if (second == nullptr)
+        return first;
+    if (first == nullptr)
+        return clipper_concat(storage, nullptr, second);
 
     Slic3r::PluginStorage *plugin_storage = Slic3r::to_storage(storage);
     Slic3r::ApiClipper::ClipperShapes *first_shapes = Slic3r::to_shapes(first);
@@ -524,7 +558,7 @@ clipper_shapes_handle *clipper_offset(storage_handle *storage,
     const Slic3r::ClipperLib::JoinType native_join = Slic3r::to_join_type(join_type);
     const Slic3r::ClipperLib::EndType native_end = Slic3r::to_end_type(end_type);
     const Slic3r::ClipperLib::Paths rings = subject_shapes->to_paths();
-    // PolyTree-backed shapes also list the empty contour of the tree root.
+    // An empty path (for example an empty ExPolygon) is not a ring.
     const std::ptrdiff_t ring_count = std::count_if(rings.begin(), rings.end(),
         [](const Slic3r::ClipperLib::Path &ring) { return !ring.empty(); });
     Slic3r::ClipperLib::PolyTree result;
@@ -718,6 +752,30 @@ polyline_collection_handle *clipper_intersection_polylines_expolygons(storage_ha
     if (!Slic3r::to_polylines(subject)->empty() && clip != nullptr && !Slic3r::to_expolygons(clip)->empty())
         out = Slic3r::intersection_pl(*Slic3r::to_polylines(subject), *Slic3r::to_expolygons(clip));
     return out_handle;
+}
+
+int32_t clipper_split_polyline_expolygons(storage_handle *storage,
+                                          const polyline_handle *subject,
+                                          const expolygon_collection_handle *clip,
+                                          polyline_collection_handle **inside,
+                                          polyline_collection_handle **outside)
+{
+    if (storage == nullptr || subject == nullptr || inside == nullptr || outside == nullptr)
+        return 0;
+
+    polyline_collection_handle *inside_handle = storage_new_polylines(storage);
+    polyline_collection_handle *outside_handle = storage_new_polylines(storage);
+    if (clip == nullptr || Slic3r::to_expolygons(clip)->empty()) {
+        Slic3r::to_polylines(outside_handle)->push_back(*Slic3r::to_polyline(subject));
+    } else {
+        std::pair<Slic3r::Polylines, Slic3r::Polylines> split =
+            Slic3r::split_pl(*Slic3r::to_polyline(subject), *Slic3r::to_expolygons(clip));
+        *Slic3r::to_polylines(inside_handle) = std::move(split.first);
+        *Slic3r::to_polylines(outside_handle) = std::move(split.second);
+    }
+    *inside = inside_handle;
+    *outside = outside_handle;
+    return 1;
 }
 
 } // extern "C"

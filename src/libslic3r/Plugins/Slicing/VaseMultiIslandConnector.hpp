@@ -3,8 +3,8 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
-#ifndef plugins_vasemultiislandconnector_hpp_
-#define plugins_vasemultiislandconnector_hpp_
+#ifndef plugins_slicing_vasemultiislandconnector_hpp_
+#define plugins_slicing_vasemultiislandconnector_hpp_
 
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 
@@ -52,4 +52,4 @@ void register_vase_multi_island_connector_plugin(orchestrator_handle *orch);
 
 }} // namespace slic3r_api::VaseMultiIslandConnectorPlugin
 
-#endif // plugins_vasemultiislandconnector_hpp_
+#endif // plugins_slicing_vasemultiislandconnector_hpp_

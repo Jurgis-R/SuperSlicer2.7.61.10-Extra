@@ -379,8 +379,6 @@ set(SLIC3R_SOURCES
 	Plugins/LayerExtrusionEdit/RegionalProcessParameterHelpers.hpp
 	Plugins/LayerExtrusionEdit/TravelConnectionHelpers.cpp
 	Plugins/LayerExtrusionEdit/TravelConnectionHelpers.hpp
-	Plugins/MaxOverhangThreshold.cpp
-	Plugins/MaxOverhangThreshold.hpp
 	Plugins/Ordering/AdvancedExtrusionTreeOrdering.cpp
 	Plugins/Ordering/AdvancedExtrusionTreeOrdering.hpp
 	Plugins/Ordering/ExtrusionTreeOrderingGeometry.cpp
@@ -434,8 +432,16 @@ set(SLIC3R_SOURCES
 	Plugins/SkirtBrim/DefaultBrimSkirtTrim.hpp
 	Plugins/SkirtBrim/DefaultSkirtGenerator.cpp
 	Plugins/SkirtBrim/DefaultSkirtGenerator.hpp
-	Plugins/VaseMultiIslandConnector.cpp
-	Plugins/VaseMultiIslandConnector.hpp
+	Plugins/Slicing/MaxOverhangThreshold.cpp
+	Plugins/Slicing/MaxOverhangThreshold.hpp
+	Plugins/Slicing/OverhangSlopeFill.cpp
+	Plugins/Slicing/OverhangSlopeFill.hpp
+	Plugins/Slicing/SliceVolume.cpp
+	Plugins/Slicing/SliceVolume.hpp
+	Plugins/Slicing/StandardLayerHeightGenerator.cpp
+	Plugins/Slicing/StandardLayerHeightGenerator.hpp
+	Plugins/Slicing/VaseMultiIslandConnector.cpp
+	Plugins/Slicing/VaseMultiIslandConnector.hpp
 	Plugins/Perimeter/ArachnePerimeterGenerator.cpp
 	Plugins/Perimeter/ArachnePerimeterGenerator.hpp
 	Plugins/Perimeter/ClassicPerimeterGenerator.cpp
@@ -475,10 +481,6 @@ set(SLIC3R_SOURCES
 	Plugins/PluginPackageChangelog.hpp
 	Plugins/PluginRepository.cpp
 	Plugins/PluginRepository.hpp
-	Plugins/SliceVolume.cpp
-	Plugins/SliceVolume.hpp
-	Plugins/StandardLayerHeightGenerator.cpp
-	Plugins/StandardLayerHeightGenerator.hpp
 	Plugins/Surface/CleanInfillSurfaces.cpp
 	Plugins/Surface/CleanInfillSurfaces.hpp
 	Plugins/Surface/InitialTypedSurfaceBuilder.cpp

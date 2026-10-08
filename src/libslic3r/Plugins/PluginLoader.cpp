@@ -116,7 +116,6 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/LayerExtrusionEdit/DefaultSpeed.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/DefaultTravel.hpp"
 #include "libslic3r/Plugins/LayerExtrusionEdit/DefaultTravelDeceleration.hpp"
-#include "libslic3r/Plugins/MaxOverhangThreshold.hpp"
 #include "libslic3r/Plugins/Ordering/DefaultOrdering.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimSkirtTrim.hpp"
 #include "libslic3r/Plugins/SkirtBrim/DefaultBrimGenerator.hpp"
@@ -137,15 +136,17 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Perimeter/SimplePerimeterGenerator.hpp"
 #include "libslic3r/Plugins/SeamPlacer/FixedDirectionSeamPlacer.hpp"
 #include "libslic3r/Plugins/SeamPlacer/RandomSeamPlacer.hpp"
-#include "libslic3r/Plugins/SliceVolume.hpp"
-#include "libslic3r/Plugins/StandardLayerHeightGenerator.hpp"
+#include "libslic3r/Plugins/Slicing/MaxOverhangThreshold.hpp"
+#include "libslic3r/Plugins/Slicing/OverhangSlopeFill.hpp"
+#include "libslic3r/Plugins/Slicing/SliceVolume.hpp"
+#include "libslic3r/Plugins/Slicing/StandardLayerHeightGenerator.hpp"
+#include "libslic3r/Plugins/Slicing/VaseMultiIslandConnector.hpp"
 #include "libslic3r/Plugins/Surface/CleanInfillSurfaces.hpp"
 #include "libslic3r/Plugins/Surface/InitialTypedSurfaceBuilder.hpp"
 #include "libslic3r/Plugins/Surface/InfillRegionCompatibilitySplitter.hpp"
 #include "libslic3r/Plugins/Surface/SolidShells.hpp"
 #include "libslic3r/Plugins/Surface/TopSurfaceExpansion.hpp"
 #include "libslic3r/Plugins/Support/SupportDemandBridgeRemoval.hpp"
-#include "libslic3r/Plugins/VaseMultiIslandConnector.hpp"
 #include "libslic3r/Plugins/WipeTower/ToolChangeUnretract.hpp"
 #include "libslic3r/Plugins/WipeTower/ToolChangeWipe.hpp"
 #include "libslic3r/Plugins/WipeTower/WipeTowerManager.hpp"
@@ -671,6 +672,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::StandardLayerHeightGeneratorPlugin::register_standard_layer_height_generator_plugin);
     register_builtin_plugin(orchestrator, "slice_volume",
         slic3r_api::SliceVolumePlugin::register_slice_volume_plugin);
+    register_builtin_plugin(orchestrator, "overhang_slope_fill",
+        slic3r_api::OverhangSlopeFillPlugin::register_overhang_slope_fill_plugin);
     register_builtin_plugin(orchestrator, "max_overhang_threshold",
         slic3r_api::MaxOverhangThresholdPlugin::register_max_overhang_threshold_plugin);
     register_builtin_plugin(orchestrator, "vase.multi_island_connector",

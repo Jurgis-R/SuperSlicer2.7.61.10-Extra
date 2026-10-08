@@ -330,10 +330,14 @@ void merge_tiny_fragments(std::vector<Fragment> &fragments)
     // path creates almost-zero extrusion moves. Merging it into a neighbor
     // preserves the centerline order and merely lets the neighbor's overhang
     // classification cover an unprintably small distance.
+    // A fragment shorter than min_length as a whole cannot be collapsed; it
+    // keeps its points so the loop below merges it into a neighbor. Dropping it
+    // would leave a gap between its neighbors and open a split loop.
     fragments.erase(
         std::remove_if(fragments.begin(), fragments.end(),
                        [](Fragment &fragment) {
-                           return !collapse_tiny_segments(fragment) || fragment.entity.point_count() < 2;
+                           collapse_tiny_segments(fragment);
+                           return fragment.entity.point_count() < 2;
                        }),
         fragments.end());
 
@@ -733,8 +737,9 @@ void append_region_fragments(storage_handle *storage,
             continue;
         }
 
-        StoredPolylineCollection supported_polylines =
-            clipper_intersection_polyline_expolygons(storage, region_polyline, supported_area);
+        // Both sides are cut at the same points, so the fragments tile the region polyline.
+        auto [supported_polylines, overhang_polylines] =
+            clipper_split_polyline_expolygons(storage, region_polyline, supported_area);
         throw_if_cancelled(run_ctx);
         for (const Polyline supported : supported_polylines)
         {
@@ -742,9 +747,6 @@ void append_region_fragments(storage_handle *storage,
             append_supported_fragment(storage, source, supported, source_points, effective_attributes, config, fragments);
         }
 
-        StoredPolylineCollection overhang_polylines =
-            clipper_diff_polyline_expolygons(storage, region_polyline, supported_area);
-        throw_if_cancelled(run_ctx);
         for (const Polyline overhang : overhang_polylines)
         {
             throw_if_cancelled(run_ctx);
@@ -830,6 +832,9 @@ void replace_root_leaf_with_fragments(MutableExtrusionEntity root, std::vector<F
     root.clear_content();
     for (Fragment &fragment : fragments)
         root.append_child_move(fragment.entity.mutable_view());
+    // Set the flags after the children: the first appended child turns the
+    // empty node into a sortable collection. The fragments must stay an
+    // ordered sequence, so a split loop is still a loop.
     root.set_flags(was_reversible ? RAW_EXTRUSION_FLAG_REVERSIBLE : 0);
 }
 

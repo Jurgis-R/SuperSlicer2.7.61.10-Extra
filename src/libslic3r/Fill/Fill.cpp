@@ -732,9 +732,6 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, const LayerSliceIsland&
     for (auto &surface_fill : surface_fills) {
         surface_fill.expolygons = union_safety_offset_ex(surface_fill.expolygons);
         //assert_valid(surface_fill.expolygons); //TODO: uncomment when union_safety_offset_ex will be improve
-        //simplify (also, it's possible rn that some point are below EPSILON distance).
-        //ensure_valid(surface_fill.expolygons, surface_fill.params.fill_resolution);
-        ensure_valid(surface_fill.expolygons);
         surface_fill.expolygons = simplify_polygons_ex(to_polygons(surface_fill.expolygons));
         ensure_valid(surface_fill.expolygons);
         //assert_valid(surface_fill.expolygons); //TODO: uncomment when union_safety_offset_ex will be improve

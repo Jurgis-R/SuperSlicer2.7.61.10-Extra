@@ -135,6 +135,20 @@ void collect_detected_overhang_stats(const ExtrusionEntity &entity, DetectedOver
         collect_detected_overhang_stats(entity.child(child_idx), out);
 }
 
+// Count the entities flagged as perimeter loops, and the ones among them that
+// no longer form a closed continuous sequence.
+void count_flagged_loops(const ExtrusionEntity &entity, size_t &flagged, size_t &broken)
+{
+    if (const ExtrusionPropertyLoopRole *loop_role = entity.get_property<ExtrusionPropertyLoopRole>();
+        loop_role != nullptr && (loop_role->perimeter_flags & C_EXTRUSION_PERIMETER_FLAG_LOOP) != 0) {
+        ++flagged;
+        if (!entity.is_loop())
+            ++broken;
+    }
+    for (size_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        count_flagged_loops(entity.child(child_idx), flagged, broken);
+}
+
 DetectedOverhangStats detected_overhang_stats(const PerimeterRunCapture &capture)
 {
     DetectedOverhangStats out;
@@ -196,6 +210,69 @@ TEST_CASE("Detect overhang marks large unsupported spans as full flow and speed"
     CHECK(stats.full_speed > stats.dynamic_speed);
     CHECK(stats.bridge_role >= std::max(stats.full_flow, stats.full_speed));
     CHECK(stats.max_distance > 0.2);
+}
+
+TEST_CASE("Detect overhang keeps split perimeter loops closed", "[plugins][perimeter][detect-overhang]")
+{
+    // Splitting a loop leaf into supported and overhang fragments must keep the
+    // fragments an ordered, non-sortable sequence. Otherwise the leaf still
+    // carries the perimeter LOOP flag while is_loop() is false, and the
+    // STEP_ORDERING pre-validation rejects the print.
+    const DynamicPrintConfig config = detect_overhang_config({
+        {"overhangs_width", "0.2"},
+        {"overhangs_width_speed", "0.2"}
+    });
+    const PerimeterRunCapture capture = run_detect_overhang_case(config, half_width_lower_support());
+    REQUIRE(detected_overhang_stats(capture).overhang_properties > 0);
+
+    size_t flagged = 0;
+    size_t broken = 0;
+    count_flagged_loops(capture.external_perimeters, flagged, broken);
+    REQUIRE(flagged > 0);
+    CHECK(broken == 0);
+}
+
+TEST_CASE("Detect overhang merges tiny supported crossings into the loop", "[plugins][perimeter][detect-overhang]")
+{
+    // The lower layer supports the left half, plus a bump that crosses the top
+    // perimeter of the unsupported half over about 0.05 mm. That supported
+    // fragment is shorter than the minimum split length, so it must be merged
+    // into a neighbor rather than dropped, or the split loop is left open.
+    const DynamicPrintConfig config = detect_overhang_config({
+        {"overhangs_width", "0.2"},
+        {"overhangs_width_speed", "0.2"}
+    });
+    const double width = unscaled(run_detect_overhang_case(config, half_width_lower_support()).external_perimeter_width);
+    REQUIRE(width > 0.);
+    // The support area is the lower slice shrunk by half the perimeter width,
+    // so the bump keeps 0.05 mm of its width. A strip below the top perimeter
+    // connects the bump to the supported half.
+    const double bump_min_x = 7.;
+    const double bump_max_x = bump_min_x + width + 0.05;
+    const ExPolygon lower_support(Polygon({
+        Point(scale_i(-10.), scale_i(-5.)),
+        Point(scale_i(5.), scale_i(-5.)),
+        Point(scale_i(5.), scale_i(3.)),
+        Point(scale_i(bump_max_x), scale_i(3.)),
+        Point(scale_i(bump_max_x), scale_i(6.)),
+        Point(scale_i(bump_min_x), scale_i(6.)),
+        Point(scale_i(bump_min_x), scale_i(4.)),
+        Point(scale_i(5.), scale_i(4.)),
+        Point(scale_i(5.), scale_i(5.)),
+        Point(scale_i(-10.), scale_i(5.))
+    }));
+    const PerimeterRunCapture capture = run_detect_overhang_case(config, lower_support);
+    REQUIRE(detected_overhang_stats(capture).overhang_properties > 0);
+
+    size_t flagged = 0;
+    size_t broken = 0;
+    count_flagged_loops(capture.external_perimeters, flagged, broken);
+    REQUIRE(flagged > 0);
+    CHECK(broken == 0);
+    // Nothing of the 20 x 10 mm contour is lost.
+    CHECK(extrusion_length(capture.external_perimeters) ==
+          Approx(extrusion_length(run_detect_overhang_case(config, half_width_lower_support()).external_perimeters))
+              .epsilon(0.001));
 }
 
 TEST_CASE("Detect overhang separates flow and speed thresholds", "[plugins][perimeter][detect-overhang]")

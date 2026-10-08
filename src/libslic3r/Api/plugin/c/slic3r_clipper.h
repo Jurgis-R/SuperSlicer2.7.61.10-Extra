@@ -6,7 +6,7 @@
 #define slic3r_clipper_h_
 
 #define SLIC3R_PLUGIN_API_CLIPPER_MAJOR 1u
-#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 1u
+#define SLIC3R_PLUGIN_API_CLIPPER_MINOR 2u
 
 #include "slic3r_def.h"
 #include "slic3r_geometry.h"
@@ -100,6 +100,25 @@ SLIC3R_HOST_API clipper_shapes_handle *clipper_diff(storage_handle *storage,
 SLIC3R_HOST_API clipper_shapes_handle *clipper_intersection(storage_handle *storage,
                                                            const clipper_shapes_handle *subject,
                                                            const clipper_shapes_handle *clip);
+
+/*
+subject intersection clip and subject - clip at once: *inside receives the part
+of subject inside clip and *outside the part outside it, as two new
+storage-owned shapes (release each with storage_free()). Both are computed from
+the same inputs, so they share their boundary along clip. Each operand keeps
+its kind: a polyline subject is clipped as an open path, as with
+clipper_intersection() and clipper_diff(). Each side is
+cleaned at SCALED_EPSILON like any Clipper result, so the two may differ from
+an exact tiling by less than that distance. clip == NULL gives an empty *inside
+and the union of subject in *outside.
+Returns 1 on success. Returns 0 and leaves both outputs unchanged when storage,
+subject, inside or outside is NULL.
+*/
+SLIC3R_HOST_API int32_t clipper_split(storage_handle *storage,
+                                      const clipper_shapes_handle *subject,
+                                      const clipper_shapes_handle *clip,
+                                      clipper_shapes_handle **inside,
+                                      clipper_shapes_handle **outside);
 /*
 Run a boolean operation after applying the Clipper safety offset to clip only.
 
@@ -145,6 +164,9 @@ their own handle instead.
 The caller shall always keep using the returned handle value:
 
     first = clipper_concat_replace(storage, first, second);
+
+A null first or second is treated as an empty operand: a null second returns
+first unchanged, and a null first returns a new handle with the paths of second.
 
 Important limitation:
 - this only updates the handle value returned to the caller;
@@ -248,7 +270,9 @@ SLIC3R_HOST_API clipper_shapes_handle *clipper_clip_shapes_with_subject_bbox(sto
 /*
 Clip an open polyline by polygonal areas and return the remaining open pieces.
 
-This is the polyline equivalent of subject - clip. It is intentionally exposed
+This is the polyline equivalent of subject - clip. Two pieces cut less than
+SCALED_EPSILON apart (by a clip thinner than that) are glued back into one.
+It is intentionally exposed
 as a direct helper instead of a generic ClipperOperand conversion because open
 paths materialize as polylines, not as polygon/expolygon collections.
 
@@ -267,7 +291,9 @@ SLIC3R_HOST_API polyline_collection_handle *clipper_diff_polylines_expolygons(st
 /*
 Clip an open polyline by polygonal areas and return the pieces inside clip.
 
-This is the polyline equivalent of subject intersection clip. It is mostly used
+This is the polyline equivalent of subject intersection clip. Two pieces cut
+less than SCALED_EPSILON apart (by a gap thinner than that between clip areas)
+are glued back into one. It is mostly used
 by post-process plugins that need to split one extrusion into "inside this
 region setting" and "outside this region setting" fragments while keeping the
 original extrusion order.
@@ -286,6 +312,31 @@ SLIC3R_HOST_API polyline_collection_handle *clipper_intersection_polylines_expol
     storage_handle *storage,
     const polyline_collection_handle *subject,
     const expolygon_collection_handle *clip);
+
+/*
+Clip an open polyline by polygonal areas and return both sides at once: the
+pieces inside clip (as clipper_intersection_polyline_expolygons()) and the
+pieces outside it (as clipper_diff_polyline_expolygons()).
+
+Both sides are computed from the same prepared input, so they are cut at the
+same points: every end of a piece that is not an end of subject is also an end
+of a piece on the other side. When two cuts are less than SCALED_EPSILON apart,
+the tiny piece between them is dropped and the two pieces around it are glued
+back into one, so both sides still tile subject. A piece shorter than
+SCALED_EPSILON at an end of subject is kept; the caller decides what to do with
+it. The order and direction of the pieces are unspecified.
+
+*inside and *outside receive new polyline collections owned by storage; release
+each with storage_free() when no longer needed. clip == NULL or an empty
+collection gives an empty *inside and a copy of subject in *outside.
+Returns 1 on success. Returns 0 and leaves both outputs unchanged when storage,
+subject, inside or outside is NULL.
+*/
+SLIC3R_HOST_API int32_t clipper_split_polyline_expolygons(storage_handle *storage,
+                                                          const polyline_handle *subject,
+                                                          const expolygon_collection_handle *clip,
+                                                          polyline_collection_handle **inside,
+                                                          polyline_collection_handle **outside);
 
 #ifdef __cplusplus
 }

@@ -92,6 +92,8 @@ add_executable(${_TEST_NAME}_tests
     test_ordering_xy_serpentine.cpp
     test_ordering_extrusion_tree.cpp
     test_orchestrator_plugin_execution.cpp
+    test_max_overhang_threshold.cpp
+    test_overhang_slope_fill.cpp
     test_perimeter_empty_steps.cpp
     test_perimeter_arachne_generator.cpp
     test_perimeter_classic_generator.cpp

@@ -3,8 +3,8 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
-#ifndef plugins_slicevolume_hpp_
-#define plugins_slicevolume_hpp_
+#ifndef plugins_slicing_slicevolume_hpp_
+#define plugins_slicing_slicevolume_hpp_
 
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 
@@ -42,4 +42,4 @@ void register_slice_volume_plugin(orchestrator_handle *orch);
 
 }} // namespace slic3r_api::SliceVolumePlugin
 
-#endif // plugins_slicevolume_hpp_
+#endif // plugins_slicing_slicevolume_hpp_

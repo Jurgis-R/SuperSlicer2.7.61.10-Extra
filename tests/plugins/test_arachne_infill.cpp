@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <memory>
+#include <regex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,7 +51,8 @@ appear as one run of native entities in their native order. The pipeline test
 checks that the Arachne perimeter generator setting selects the walls.
 
 The ensuring plugin is compared with the native FillEnsuring tree as a whole:
-same group flags, same entities in the same order.
+same group flags, same entities in the same order, and the same points up to
+SCALED_EPSILON.
 */
 
 using namespace Slic3r;
@@ -120,6 +122,10 @@ std::string native_ensuring(const ExPolygon &polygon, const raw_infill_pattern_p
 // Run the ensuring plugin on one recipe and read its whole tree.
 std::string plugin_ensuring(const ExPolygon &polygon, const raw_infill_pattern_params &raw,
                             const Arachne::WallToolPathsSettings &settings);
+// Whether two tree texts are the same, coordinates compared up to SCALED_EPSILON:
+// the plugin and the native filler reach the same areas through different Clipper
+// operations, whose outputs are cleaned at SCALED_EPSILON.
+bool same_tree(const std::string &plugin, const std::string &native);
 // Slice a thin slab with a concentric top surface and read the width of every top infill leaf.
 std::vector<float> top_infill_widths(const char *perimeter_generator);
 // Collect the widths of the leaves of one entity.
@@ -338,6 +344,21 @@ std::string plugin_ensuring(const ExPolygon &polygon, const raw_infill_pattern_p
     for (const slic3r_api::ExtrusionEntity group : output.readonly().children())
         tree = snapshot(group);
     return tree;
+}
+
+bool same_tree(const std::string &plugin, const std::string &native)
+{
+    // Points are written "x,y;". Flags, roles and flows must match exactly.
+    static const std::regex point(R"((-?[0-9]+),(-?[0-9]+);)");
+    if (std::regex_replace(plugin, point, ";") != std::regex_replace(native, point, ";"))
+        return false;
+    std::sregex_iterator plugin_it(plugin.begin(), plugin.end(), point);
+    std::sregex_iterator native_it(native.begin(), native.end(), point);
+    for (const std::sregex_iterator end; plugin_it != end; ++plugin_it, ++native_it)
+        for (const int coordinate : {1, 2})
+            if (std::abs(std::stoll((*plugin_it)[coordinate]) - std::stoll((*native_it)[coordinate])) > SCALED_EPSILON)
+                return false;
+    return true;
 }
 
 std::vector<float> top_infill_widths(const char *perimeter_generator)
@@ -639,7 +660,10 @@ TEST_CASE("Ensuring plugin matches the native FillEnsuring tree", "[plugins][inf
                     const raw_infill_pattern_params raw = ensuring_recipe(polygon, frame, overlap);
                     const std::string expected = native_ensuring(polygon, raw, region, print);
                     REQUIRE_FALSE(expected.empty());
-                    CHECK(plugin_ensuring(polygon, raw, Arachne::wall_tool_paths_settings(region, print)) == expected);
+                    const std::string actual = plugin_ensuring(polygon, raw, Arachne::wall_tool_paths_settings(region, print));
+                    INFO("plugin: " << actual);
+                    INFO("native: " << expected);
+                    CHECK(same_tree(actual, expected));
                 }
 }
 

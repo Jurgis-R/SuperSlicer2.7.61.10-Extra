@@ -443,6 +443,12 @@ public:
   void ReverseSolution(bool value) {m_ReverseOutput = value;};
   bool StrictlySimple() const {return m_StrictSimple;};
   void StrictlySimple(bool value) {m_StrictSimple = value;};
+  // Distance below which output vertices are merged after clipping (see CleanOutPolygons()).
+  // Clipper rounds intersections to 1 unit, so its output may contain vertices a few units apart,
+  // spikes and almost collinear vertices; dropping them keeps the result away from that rounding.
+  // 0 disables the cleaning.
+  double CleanDistance() const {return m_CleanDistance;};
+  void CleanDistance(double value) {m_CleanDistance = value;};
   //set the callback function for z value filling on intersections (otherwise Z is 0)
 #ifdef CLIPPERLIB_USE_XYZ
   void ZFillFunction(ZFillCallback zFillFunc) { m_ZFill = zFillFunc; }
@@ -478,6 +484,7 @@ private:
   // Does the result go to a PolyTree or Paths?
   bool                  m_UsingPolyTree; 
   bool                  m_StrictSimple;
+  double                m_CleanDistance;
 #ifdef CLIPPERLIB_USE_XYZ
   ZFillCallback         m_ZFill; //custom callback 
 #endif
@@ -523,6 +530,7 @@ private:
   bool FixupIntersectionOrder();
   void FixupOutPolygon(OutRec &outrec);
   void FixupOutPolyline(OutRec &outrec);
+  void CleanOutPolygons();
   bool FindOwnerFromSplitRecs(OutRec &outRec, OutRec *&currOrfl);
   void FixHoleLinkage(OutRec &outrec);
   bool JoinPoints(Join *j, OutRec* outRec1, OutRec* outRec2);

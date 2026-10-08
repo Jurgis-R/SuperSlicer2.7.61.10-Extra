@@ -258,7 +258,6 @@ SliceConnection estimate_slice_connection(size_t slice_idx, const Layer *layer)
 
     Polygons overlap = intersection(ClipperUtils::clip_clipper_polygons_with_subject_bbox(slice_polys, below_bb),
                                     ClipperUtils::clip_clipper_polygons_with_subject_bbox(below_polys, slice_bb));
-    ensure_valid(overlap);
     if (overlap.empty())
         return connection;
 

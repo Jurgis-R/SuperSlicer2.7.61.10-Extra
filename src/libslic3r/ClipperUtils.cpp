@@ -1592,25 +1592,112 @@ void scaleClipperPolygons(ClipperLib::Paths& polygons)
             pit->y() <<= CLIPPER_OFFSET_POWER_OF_2;
         }
 }
-template<typename PathsProvider1, typename PathsProvider2>
-Polylines _clipper_pl_open(ClipperLib::ClipType clipType, PathsProvider1 &&subject, PathsProvider2 &&clip)
-{
-    CLIPPER_UTILS_TIME_LIMIT_MILLIS(CLIPPER_UTILS_TIME_LIMIT_DEFAULT);
-    //sadly, it still has the y-bug, so need to mitigate it.
-    //ClipperLib::Clipper clipper;
-    //clipper.AddPaths(std::forward<PathsProvider1>(subject), ClipperLib::ptSubject, false);
-    //clipper.AddPaths(std::forward<PathsProvider2>(clip), ClipperLib::ptClip, true);
-    //ClipperLib::PolyTree retval;
-    //clipper.Execute(clipType, retval, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
-    //return PolyTreeToPolylines(std::move(retval));
+// Polylines are clipped on coordinates scaled by CLIPPER_OFFSET_SCALE and slightly shifted ("xy safing"),
+// a workaround for a Clipper bug that may pick the wrong point on equal Y coordinates.
+// _clipper_pl_open_prepare() converts the open subject and the closed clip once;
+// _clipper_pl_open_execute() then runs one operation on a fresh clipper and restores the slicer
+// coordinates. Operations run on the same prepared input share the same cut points. (A Clipper
+// object cannot run a second operation on open paths: its open edges are not reset between runs.)
+// With a single subject polyline, _clipper_pl_open_execute() also glues back the pieces that a
+// clip thinner than SCALED_EPSILON split (see _clipper_pl_rejoin()).
+// A stretch of the subject between two glued pieces: [from, to], in arc length from the subject start.
+using SubjectInterval = std::pair<double, double>;
 
+struct PreparedPolylineClip
+{
+    ClipperLib::Paths subject;
+    ClipperLib::Paths clip;
+    // The points of the subject in slicer coordinates when it is a single polyline, empty otherwise.
+    Points single_subject;
+};
+
+// Arc length, from the start of subject, of the subject point closest to pt. Cut points lie on the
+// subject up to the rounding of the cut, so this locates each piece end along the subject. A subject
+// that passes within a few units of itself may locate such a point on the wrong pass.
+static double _subject_position(const Points &subject, const Point &pt)
+{
+    const Vec2d point = pt.cast<double>();
+    double best_distance_sqr = std::numeric_limits<double>::max();
+    double best_position = 0.;
+    double length = 0.;
+    for (size_t idx = 1; idx < subject.size(); ++idx) {
+        const Vec2d start = subject[idx - 1].cast<double>();
+        const Vec2d segment = subject[idx].cast<double>() - start;
+        const double segment_length_sqr = segment.squaredNorm();
+        const double t = segment_length_sqr > 0. ? std::clamp((point - start).dot(segment) / segment_length_sqr, 0., 1.) : 0.;
+        const double distance_sqr = (start + t * segment - point).squaredNorm();
+        const double segment_length = std::sqrt(segment_length_sqr);
+        if (distance_sqr < best_distance_sqr) {
+            best_distance_sqr = distance_sqr;
+            best_position = length + t * segment_length;
+        }
+        length += segment_length;
+    }
+    return best_position;
+}
+
+// Glues back the pieces of one clipped polyline that were cut less than SCALED_EPSILON apart along the
+// subject. Each piece is located along the subject by the arc length of its two ends (Clipper may
+// reverse open pieces) and the pieces are sorted by position. Two consecutive pieces whose gap along
+// the subject is shorter than SCALED_EPSILON are oriented along the subject and concatenated, and the
+// second junction point is dropped. Ends that are close in the plane but far apart along the subject
+// (a path coming back next to itself, the two ends of a loop) are never glued. The output is sorted
+// along the subject. Each glued stretch of the subject is appended to gaps when it is not null.
+static void _clipper_pl_rejoin(Polylines &pieces, const Points &subject, std::vector<SubjectInterval> *gaps)
+{
+    struct PlacedPiece
+    {
+        Polyline polyline;
+        double   start;
+        double   end;
+        // True when the piece runs against the subject direction.
+        bool     reversed;
+    };
+    std::vector<PlacedPiece> placed;
+    placed.reserve(pieces.size());
+    for (Polyline &piece : pieces) {
+        const double front = _subject_position(subject, piece.front());
+        const double back = _subject_position(subject, piece.back());
+        placed.push_back({std::move(piece), std::min(front, back), std::max(front, back), front > back});
+    }
+    std::sort(placed.begin(), placed.end(), [](const PlacedPiece &a, const PlacedPiece &b) { return a.start < b.start; });
+
+    pieces.clear();
+    double last_end = 0.;
+    bool last_reversed = false;
+    for (PlacedPiece &piece : placed) {
+        if (!pieces.empty() && std::abs(piece.start - last_end) < double(SCALED_EPSILON)) {
+            Points &previous = pieces.back().points;
+            if (last_reversed)
+                std::reverse(previous.begin(), previous.end());
+            if (piece.reversed)
+                std::reverse(piece.polyline.points.begin(), piece.polyline.points.end());
+            previous.insert(previous.end(), piece.polyline.points.begin() + 1, piece.polyline.points.end());
+            if (gaps != nullptr)
+                gaps->emplace_back(std::min(last_end, piece.start), std::max(last_end, piece.start));
+            last_reversed = false;
+        } else {
+            pieces.push_back(std::move(piece.polyline));
+            last_reversed = piece.reversed;
+        }
+        last_end = std::max(last_end, piece.end);
+    }
+}
+
+template<typename PathsProvider1, typename PathsProvider2>
+static PreparedPolylineClip _clipper_pl_open_prepare(PathsProvider1 &&subject, PathsProvider2 &&clip)
+{
     // read input
-    ClipperLib::Paths input_subject;
+    PreparedPolylineClip prepared;
+    ClipperLib::Paths &input_subject = prepared.subject;
     for (const ClipperLib::Path& pg : subject)
         input_subject.push_back(pg);
-    ClipperLib::Paths input_clip;
+    ClipperLib::Paths &input_clip = prepared.clip;
     for (const ClipperLib::Path& pg : clip)
         input_clip.push_back(pg);
+    if (input_subject.size() == 1 && input_subject.front().size() >= 2)
+        for (const ClipperLib::IntPoint &pt : input_subject.front())
+            prepared.single_subject.emplace_back(pt.x(), pt.y());
 
     //scale to have some more precision to do some Y-bugfix
     scaleClipperPolygons(input_subject);
@@ -1657,15 +1744,18 @@ Polylines _clipper_pl_open(ClipperLib::ClipType clipType, PathsProvider1 &&subje
         }
     }
 
-    // init Clipper
+    return prepared;
+}
+
+static Polylines _clipper_pl_open_execute(const PreparedPolylineClip &input, ClipperLib::ClipType clipType,
+                                          std::vector<SubjectInterval> *gaps = nullptr)
+{
     ClipperLib::Clipper clipper;
-    clipper.Clear();
+    // The coordinates are scaled up, so is the distance at which output vertices are merged.
+    clipper.CleanDistance(double(SCALED_EPSILON) * CLIPPER_OFFSET_SCALE);
+    clipper.AddPaths(input.subject, ClipperLib::ptSubject, false);
+    clipper.AddPaths(input.clip, ClipperLib::ptClip, true);
 
-    // add polygons
-    clipper.AddPaths(input_subject, ClipperLib::ptSubject, false);
-    clipper.AddPaths(input_clip, ClipperLib::ptClip, true);
-
-    // perform operation
     ClipperLib::PolyTree retval;
     clipper.Execute(clipType, retval, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
 
@@ -1697,8 +1787,60 @@ Polylines _clipper_pl_open(ClipperLib::ClipType clipType, PathsProvider1 &&subje
         to_check.insert(to_check.end(), node->Childs.begin(), node->Childs.end());
     }
 
-    return PolyTreeToPolylines(std::move(retval));
+    Polylines pieces = PolyTreeToPolylines(std::move(retval));
+    if (!input.single_subject.empty())
+        _clipper_pl_rejoin(pieces, input.single_subject, gaps);
+    return pieces;
 }
+
+template<typename PathsProvider1, typename PathsProvider2>
+Polylines _clipper_pl_open(ClipperLib::ClipType clipType, PathsProvider1 &&subject, PathsProvider2 &&clip)
+{
+    CLIPPER_UTILS_TIME_LIMIT_MILLIS(CLIPPER_UTILS_TIME_LIMIT_DEFAULT);
+    return _clipper_pl_open_execute(
+        _clipper_pl_open_prepare(std::forward<PathsProvider1>(subject), std::forward<PathsProvider2>(clip)), clipType);
+}
+
+// Shared body of the split_pl() overloads: both operations run on the same prepared input.
+// Gaps are only glued (and tiny pieces only dropped) for a single subject polyline.
+template<typename PathsProvider1, typename PathsProvider2>
+static std::pair<Polylines, Polylines> _split_pl(PathsProvider1 &&subject, PathsProvider2 &&clip)
+{
+    CLIPPER_UTILS_TIME_LIMIT_MILLIS(CLIPPER_UTILS_TIME_LIMIT_DEFAULT);
+    const PreparedPolylineClip input =
+        _clipper_pl_open_prepare(std::forward<PathsProvider1>(subject), std::forward<PathsProvider2>(clip));
+    std::vector<SubjectInterval> inside_gaps;
+    std::vector<SubjectInterval> outside_gaps;
+    Polylines inside = _clipper_pl_open_execute(input, ClipperLib::ctIntersection, &inside_gaps);
+    Polylines outside = _clipper_pl_open_execute(input, ClipperLib::ctDifference, &outside_gaps);
+    // A stretch glued on one side was a piece shorter than SCALED_EPSILON on the other side: drop that
+    // piece, located along the subject like in _clipper_pl_rejoin(), so that both sides still tile the
+    // subject. Only pieces lying inside a glued stretch are dropped, never a longer one.
+    auto drop_pieces_in = [&input](Polylines &pieces, const std::vector<SubjectInterval> &gaps) {
+        if (gaps.empty())
+            return;
+        const double eps = double(SCALED_EPSILON);
+        pieces.erase(std::remove_if(pieces.begin(), pieces.end(),
+                                    [&](const Polyline &piece) {
+                                        const double front = _subject_position(input.single_subject, piece.front());
+                                        const double back = _subject_position(input.single_subject, piece.back());
+                                        const double start = std::min(front, back);
+                                        const double end = std::max(front, back);
+                                        return std::any_of(gaps.begin(), gaps.end(), [&](const SubjectInterval &gap) {
+                                            return start > gap.first - eps && end < gap.second + eps;
+                                        });
+                                    }),
+                     pieces.end());
+    };
+    drop_pieces_in(outside, inside_gaps);
+    drop_pieces_in(inside, outside_gaps);
+    return {std::move(inside), std::move(outside)};
+}
+
+std::pair<Polylines, Polylines> split_pl(const Polyline &subject, const ExPolygons &clip)
+    { return _split_pl(ClipperUtils::SinglePathProvider(subject.points), ClipperUtils::ExPolygonsProvider(clip)); }
+std::pair<Polylines, Polylines> split_pl(const Polylines &subject, const Polygons &clip)
+    { return _split_pl(ClipperUtils::PolylinesProvider(subject), ClipperUtils::PolygonsProvider(clip)); }
 
 void scaleClipperPolygons(ClipperLib_Z::Paths& polygons)
 {

@@ -6,7 +6,7 @@
 #define slic3r_def_h_
 
 #define SLIC3R_PLUGIN_API_DEF_MAJOR 1u
-#define SLIC3R_PLUGIN_API_DEF_MINOR 1u
+#define SLIC3R_PLUGIN_API_DEF_MINOR 2u
 
 #include <assert.h>
 #include <stdint.h>
@@ -67,7 +67,10 @@ SLIC3R_CONSTEXPR_STATIC int SCALING_POWER = 15;
 SLIC3R_CONSTEXPR_STATIC double SCALING_FACTOR = 0x1p-15;
 SLIC3R_CONSTEXPR_STATIC double UNSCALING_FACTOR = 0x1p15;
 SLIC3R_CONSTEXPR_STATIC double EPSILON = 0x1p-15;
+// SCALED_EPSILON is 2^SCALED_EPSILON_EXPONENT: one unit, the coordinate resolution itself.
+SLIC3R_CONSTEXPR_STATIC int SCALED_EPSILON_EXPONENT = 0;
 SLIC3R_CONSTEXPR_STATIC coord_t SCALED_EPSILON = 1;
+SLIC3R_CONSTEXPR_STATIC coord_t SCALED_LAYER_Z_STEP = 1;
 
 
 // Equivalent to val * 2^SCALING_POWER. <==> SLIC3R_CONSTEXPR_INLINE coord_t scale_i(coordf_t val) { return (coord_t) (std::scalbn(val, SCALING_POWER); }
@@ -105,7 +108,16 @@ SLIC3R_CONSTEXPR_STATIC double UNSCALING_FACTOR = 1000000.; // 1 / SCALING_FACTO
 // for a trheshold in a difference of radians,
 // for a threshold of a cross product of two non-normalized vectors etc.
 SLIC3R_CONSTEXPR_STATIC double EPSILON = 1e-4;
-SLIC3R_CONSTEXPR_STATIC coord_t SCALED_EPSILON = 100; // coord_t(EPSILON/ SCALING_FACTOR); <- linux has some problem compiling this constexpr
+// Smallest meaningful distance between two points (128 nm). It is a power of two so that
+// SCALED_EPSILON multiples and divisions are shifts by SCALED_EPSILON_EXPONENT. Clipper
+// computes at 1 nm and its output is cleaned at this distance (see clipper.cpp), so
+// rounding artefacts of the integer grid stay far below it.
+// The value is spelled out because C does not accept a const variable in a constant initializer.
+SLIC3R_CONSTEXPR_STATIC int SCALED_EPSILON_EXPONENT = 7;
+SLIC3R_CONSTEXPR_STATIC coord_t SCALED_EPSILON = 128; // 1 << SCALED_EPSILON_EXPONENT
+// Layer heights are decimal (0.2 mm, 0.05 mm...): layer z values snap to this decimal
+// 0.1 um step rather than to the binary SCALED_EPSILON, so 0.2 mm stays exactly 200000.
+SLIC3R_CONSTEXPR_STATIC coord_t SCALED_LAYER_Z_STEP = 100;
 
 SLIC3R_CONSTEXPR_INLINE coord_t scale_i(coordf_t val) { return (coord_t) (val * UNSCALING_FACTOR); }
 SLIC3R_CONSTEXPR_INLINE coordf_t scale_d(coordf_t val) { return (coordf_t) (val * UNSCALING_FACTOR); }
@@ -116,8 +128,12 @@ SLIC3R_CONSTEXPR_INLINE double unscaled(coordf_t val) { return val * SCALING_FAC
 SLIC3R_CONSTEXPR_INLINE double unscaled(coordf_t val) { return val * SCALING_FACTOR; }
 #endif
 SLIC3R_CONSTEXPR_INLINE distsqrf_t coord_sqr(coord_t length) { return (distf_t)(length) * (distf_t)(length); }
+// Equal to SCALED_EPSILON_EXPONENT: the lossy squares drop the epsilon bits.
 #define SLIC3R_SQUARE_BIT_REDUCTION 7
 #define SLIC3R_SQUARE_BIT_FACTOR (1u << SLIC3R_SQUARE_BIT_REDUCTION)
+#ifdef __cplusplus
+static_assert(SLIC3R_SQUARE_BIT_REDUCTION == SCALED_EPSILON_EXPONENT, "lossy squares must drop exactly the epsilon bits");
+#endif
 // lossy square (works only for 2^38 length), by dividing by 128 to remove epsilon (and a bit more)
 SLIC3R_CONSTEXPR_INLINE coord_index_t coord_index(coord_t coord) { 
     // <==> assert(abs(coord) < std::pow(2,38));
@@ -138,12 +154,16 @@ SLIC3R_CONSTEXPR_INLINE lengthsqr_t coord_int_sqr(coord_t length) {
 }
 #endif
 
+#ifdef __cplusplus
+static_assert(SCALED_EPSILON == ((coord_t)1 << SCALED_EPSILON_EXPONENT), "SCALED_EPSILON must be 2^SCALED_EPSILON_EXPONENT");
+#endif
+
 SLIC3R_CONSTEXPR_INLINE coord_t scale_to_layer_coord(double z) {
     assert(z < 10000);
     assert(z >= 0);
     coord_t coord_z = scale_i(z + EPSILON / 2);
-    coord_z /= SCALED_EPSILON;
-    coord_z *= SCALED_EPSILON;
+    coord_z /= SCALED_LAYER_Z_STEP;
+    coord_z *= SCALED_LAYER_Z_STEP;
     return coord_z;
 }
 

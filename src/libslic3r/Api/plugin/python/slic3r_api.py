@@ -795,6 +795,18 @@ class Slic3rAPI:
         return clipper_intersection_polylines_expolygons(storage_address, subject, clip)
 
     @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
+    def clipper_split_polyline_expolygons(
+        self,
+        storage_address: int,
+        subject: Polyline,
+        clip: ExPolygonCollection,
+    ) -> tuple[StoredPolylineCollection, StoredPolylineCollection]:
+        """Return storage-owned ``(inside, outside)`` pieces cut at the same points."""
+        if subject.api is not self or clip.api is not self:
+            raise ValueError("subject and clip must use this API instance")
+        return clipper_split_polyline_expolygons(storage_address, subject, clip)
+
+    @abi_requires_headers("slic3r_clipper.h", "slic3r_geometry.h", "slic3r_utils.h")
     def clipper_clip_expolygons_with_subject_bbox(
         self,
         storage_address: int,

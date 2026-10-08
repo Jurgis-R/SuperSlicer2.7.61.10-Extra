@@ -98,7 +98,6 @@ Polylines Fill::fill_surface(const Surface *surface, const FillParams &params) c
     surface->expolygon.assert_valid();
     // Perform offset.
     Slic3r::ExPolygons expp = offset_ex(surface->expolygon, scale_d(0 - 0.5 * this->get_spacing()));
-    ensure_valid(expp);
     // Create the infills for each of the regions.
     Polylines polylines_out;
     for (ExPolygon &expoly : expp) {
@@ -225,10 +224,8 @@ void split_polygon_gap_fill(const Surface &surface, const FillParams &params, Ex
     ExPolygons solid_infill_areas2 = offset2_ex(ExPolygons{ surface.expolygon }, -params.flow.scaled_spacing() * factor2, params.flow.scaled_spacing() * factor2);
     //choose the best one
     solid_infill = solid_infill_areas1.size() <= solid_infill_areas2.size() + 1 || solid_infill_areas2.empty() ? solid_infill_areas1 : solid_infill_areas2;
-    ensure_valid(solid_infill);
     // get gapfill (offset2 to remove artifacts from solid_infill's expolygon offset2)
     gapfill = diff_ex(ExPolygons{ surface.expolygon }, solid_infill);
-    ensure_valid(gapfill);
 }
 
 void Fill::fill_surface_extrusion_with_gap_fill(const Surface *surface,
@@ -261,7 +258,7 @@ void Fill::fill_surface_extrusion_with_gap_fill(const Surface *surface,
     }
     ExPolygons unextruded_areas;
     if (!coll_nosort->entities().empty()) {
-        unextruded_areas = ensure_valid(diff_ex(solid_infill_areas, union_safety_offset_ex(coll_nosort->polygons_covered_by_spacing(params.flow.spacing_ratio(), 10))));
+        unextruded_areas = diff_ex(solid_infill_areas, union_safety_offset_ex(coll_nosort->polygons_covered_by_spacing(params.flow.spacing_ratio(), 10)));
     } else {
         unextruded_areas = solid_infill_areas;
     }
@@ -3824,7 +3821,6 @@ void FillWithPerimeter::fill_surface_extrusion(const Surface *surface,
     // fix a bug that can happens when (positive) offsetting with a big miter limit and two island merge. See
     // https://github.com/supermerill/SuperSlicer/issues/609
     path_perimeter = intersection_ex(path_perimeter, offset_ex(surface->expolygon, scale_d(-this->get_spacing() / 2)));
-    ensure_valid(path_perimeter);
     for (ExPolygon &expolygon : path_perimeter) {
         expolygon.assert_valid();
 
@@ -3863,7 +3859,6 @@ void FillWithPerimeter::fill_surface_extrusion(const Surface *surface,
             ExPolygons path_inner = offset2_ex(ExPolygons{expolygon},
                                                scale_d(-this->get_spacing() * (ratio_fill_inside + 0.5)),
                                                scale_d(this->get_spacing() / 2));
-            ensure_valid(path_inner);
             for (ExPolygon &expolygon : path_inner) {
                 expolygon.assert_valid();
                 Surface surfInner(*surface, expolygon);

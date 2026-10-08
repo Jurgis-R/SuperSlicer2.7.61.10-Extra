@@ -76,7 +76,7 @@ const raw_used_config_key k_used_config_keys[] = {
     { "overhangs_bridge_threshold", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
     { "overhangs_bridge_upper_layers", RAW_CO_INT, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
     { "overhangs_max_slope", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_REGION, RAW_PRESET_TYPE_FFF_PRINT },
-    { "bridge_precision", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
+    { "bridge_precision", RAW_CO_FLOAT_OR_PERCENT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
     { "nozzle_diameter", RAW_CO_VECTOR_FLOAT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE },
     { "resolution", RAW_CO_FLOAT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE }
 };
@@ -481,7 +481,7 @@ void MaxOverhangThreshold::run_impl(const plugin_run_context *run_ctx) const {
                                             throw_if_cancelled(run_ctx);
                                             if (coverage_count > 0) {
                                                 throw_if_cancelled(run_ctx);
-                                                new_bridged_area_co += clipper_union2(new_bridged_area_co,
+                                                new_bridged_area_co = clipper_union2(new_bridged_area_co,
                                                                                       clipper(coverage_polygons));
                                                 throw_if_cancelled(run_ctx);
                                             }

@@ -684,10 +684,12 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
 
     // The printable domain is the enabled infill area that is not already
     // covered by lower-layer material. Each later wave is clipped to this area.
-    StoredExPolygonCollection overhangs =
-        clipper_diff(clipper(infill_area), clipper(optimized_lower_slices)).to_expolygon_collection();
+    // The supported part of the infill area is its complement: both are split at once.
+    auto [supported_operand, overhangs_operand] = clipper_split(clipper(infill_area), clipper(optimized_lower_slices));
+    StoredExPolygonCollection overhangs = overhangs_operand.to_expolygon_collection();
     if (overhangs.empty())
         return out;
+    StoredExPolygonCollection supported_lower = supported_operand.to_expolygon_collection();
 
     LineDistancer lower_layer_distancer(optimized_lower_slices);
     std::vector<StoredExtrusionEntity> extra_perimeters;
@@ -709,8 +711,6 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
         // Add one supported line before crossing into the unsupported area.
         // This line consumes only a narrow supported band and returns the rest
         // of the supported fill domain to the regular infill generator.
-        StoredExPolygonCollection supported_lower =
-            clipper_intersection(clipper(infill_area), clipper(optimized_lower_slices)).to_expolygon_collection();
         StoredExPolygonCollection zone_margin =
             clipper_offset(clipper(zone_clip), double(input.overhang_spacing)).to_expolygon_collection();
         StoredExPolygonCollection supported_band =
@@ -782,7 +782,6 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
     wave_filled_area.ensure_valid();
     StoredExPolygonCollection residual_overhangs =
         clipper_diff(clipper(overhangs), clipper(wave_filled_area)).to_expolygon_collection();
-    residual_overhangs.ensure_valid();
 
     // Any leftover inside the overhang domain is owned by this post-process:
     // tiny leftovers disappear, printable leftovers become square-flow gap
@@ -792,9 +791,7 @@ OverhangGenerationOutput generate_extra_perimeters_over_overhangs_wave(storage_h
         storage, out.extra_perimeters, residual_overhangs, input, lower_layer_distancer, run_ctx);
     out.filled_area =
         clipper_union2(clipper(wave_filled_area), clipper(residual_overhangs)).to_expolygon_collection();
-    out.filled_area.ensure_valid();
     out.unfilled_area = clipper_diff(clipper(infill_area), clipper(out.filled_area)).to_expolygon_collection();
-    out.unfilled_area.ensure_valid();
     return out;
 }
 

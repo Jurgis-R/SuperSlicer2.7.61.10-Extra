@@ -3,25 +3,25 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
-#ifndef plugins_maxoverhangthreshold_hpp_
-#define plugins_maxoverhangthreshold_hpp_
+#ifndef plugins_slicing_overhangslopefill_hpp_
+#define plugins_slicing_overhangslopefill_hpp_
 
 #include "libslic3r/Api/plugin/cpp/PluginBase.hpp"
 
-namespace slic3r_api { namespace MaxOverhangThresholdPlugin {
+namespace slic3r_api { namespace OverhangSlopeFillPlugin {
 
-// Official post-slicing plugin that reproduces the legacy
-// PrintObject::_max_overhang_threshold() pass through the public plugin API.
-// It edits raw LayerRegion slices, then asks the host to rebuild the dependent
-// layer slice/island caches.
-class MaxOverhangThreshold : public PluginBase
+// Official post-slicing plugin that adds material under overhangs so every
+// layer hangs at most `overhangs_fill_slope` over the layer below. It runs
+// before MaxOverhangThreshold: geometry it supports from below no longer has to
+// be cut by the max-slope pass.
+class OverhangSlopeFill : public PluginBase
 {
 public:
-    static MaxOverhangThreshold &instance(orchestrator_handle *orch);
+    static OverhangSlopeFill &instance(orchestrator_handle *orch);
     static const char *print_ui_fragment() noexcept;
 
 private:
-    MaxOverhangThreshold(orchestrator_handle *orch) : PluginBase(orch) {}
+    explicit OverhangSlopeFill(orchestrator_handle *orch) : PluginBase(orch) {}
     const char *id_impl() const noexcept override;
     const char *name_impl() const noexcept override;
     const char *description_impl() const noexcept override;
@@ -36,9 +36,9 @@ private:
     void run_impl(const plugin_run_context *run_ctx) const override;
 };
 
-// Register the singleton plugin in an orchestrator or external plugin loader.
-void register_max_overhang_threshold_plugin(orchestrator_handle *orch);
+// Register the singleton plugin in an orchestrator or test plugin runtime.
+void register_overhang_slope_fill_plugin(orchestrator_handle *orch);
 
-}} // namespace slic3r_api::MaxOverhangThresholdPlugin
+}} // namespace slic3r_api::OverhangSlopeFillPlugin
 
-#endif // plugins_maxoverhangthreshold_hpp_
+#endif // plugins_slicing_overhangslopefill_hpp_

@@ -546,9 +546,7 @@ struct ClassicGeneratorState
 StoredExPolygonCollection offset_area(storage_handle *storage, const ExPolygon &area, double delta)
 {
     ClipperOperand subject(storage, area);
-    StoredExPolygonCollection out = clipper_offset(subject, delta).to_expolygon_collection();
-    out.ensure_valid();
-    return out;
+    return clipper_offset(subject, delta).to_expolygon_collection();
 }
 
 void append_classic_loop(StoredExtrusionEntity &dst,

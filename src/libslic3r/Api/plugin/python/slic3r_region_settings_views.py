@@ -97,6 +97,8 @@ from slic3r_clipper_views import (
     clipper_diff,
     clipper_intersection,
     clipper_offset,
+    clipper_split,
+    clipper_split_polyline_expolygons,
     clipper_union,
 )
 from slic3r_datatree_views import Config, ConfigOption, LayerIsland, LayerRegion, LayerRegionIsland
@@ -428,7 +430,23 @@ class RegionSettingsClip:
         """
         if isinstance(subject, ClipperOperand) and self.is_accept_all():
             return subject, ClipperOperand.create_empty(self.api, self._storage)
-        return self.intersections(subject), self.diff(subject)
+        if self.is_accept_all():
+            return self.intersections(subject), self.diff(subject)
+        if isinstance(subject, Polyline):
+            return clipper_split_polyline_expolygons(self._storage, subject, self._expolygons)
+        if isinstance(subject, ExPolygon):
+            single = StoredExPolygonCollection(self.api, self._storage)
+            single.push_back(subject)
+            return self.split_to_inside_outside(single)
+        clip = ClipperContext(self.api, self._storage)
+        if isinstance(subject, ClipperOperand):
+            if subject.storage() != self._storage:
+                raise ValueError("clipper operand storage does not match RegionSettingsClip storage")
+            return clipper_split(self._storage, subject, clip(self._expolygons))
+        if isinstance(subject, ExPolygonCollection):
+            inside, outside = clipper_split(clip(subject), clip(self._expolygons))
+            return inside.to_expolygon_collection(), outside.to_expolygon_collection()
+        raise TypeError(f"unsupported RegionSettingsClip subject: {type(subject)!r}")
 
     def append_intersections_to(self, dst, subject) -> None:
         """

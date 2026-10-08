@@ -83,10 +83,7 @@ StoredExPolygonCollection translated_area(storage_handle *storage,
     }
 
     ClipperContext clipper(storage);
-    StoredExPolygonCollection translated =
-        clipper_union(clipper(translated_paths.readonly())).to_expolygon_collection();
-    translated.ensure_valid();
-    return translated;
+    return clipper_union(clipper(translated_paths.readonly())).to_expolygon_collection();
 }
 
 } // namespace
@@ -201,7 +198,6 @@ RegionalProcessPartition project_regional_process_values(
         ClipperContext clipper(storage);
         StoredExPolygonCollection area =
             clipper_union(clipper(entry.second.readonly())).to_expolygon_collection();
-        area.ensure_valid();
         partition.values.push_back(entry.first);
         partition.areas.push_back(std::move(area));
     }

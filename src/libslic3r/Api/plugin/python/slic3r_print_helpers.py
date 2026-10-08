@@ -20,7 +20,7 @@ import math
 from collections.abc import Iterable
 
 from slic3r_abi import abi_requires_headers
-from slic3r_api_generated import EPSILON, SCALED_EPSILON, UNSCALING_FACTOR
+from slic3r_api_generated import EPSILON, SCALED_EPSILON, SCALED_LAYER_Z_STEP, UNSCALING_FACTOR
 from slic3r_datatree_views import LayerSupportProperty, Object, Print, PrintRegion
 
 
@@ -169,7 +169,7 @@ def get_object_first_layer_height(print_view: Print, obj: Object) -> int:
     if not first_layer_height.is_percent():
         z_mm = first_layer_height.get_float()
         coord_z = int((z_mm + float(EPSILON) / 2.0) * float(UNSCALING_FACTOR))
-        return coord_z // int(SCALED_EPSILON) * int(SCALED_EPSILON)
+        return coord_z // int(SCALED_LAYER_Z_STEP) * int(SCALED_LAYER_Z_STEP)
 
     print_config = print_view.config()
     extruders = object_extruders(print_view, obj)
@@ -188,8 +188,8 @@ def get_object_first_layer_height(print_view: Print, obj: Object) -> int:
                 )
                 * float(UNSCALING_FACTOR)
             )
-            // int(SCALED_EPSILON)
-            * int(SCALED_EPSILON)
+            // int(SCALED_LAYER_Z_STEP)
+            * int(SCALED_LAYER_Z_STEP)
         )
         for extruder_id in extruders
     )

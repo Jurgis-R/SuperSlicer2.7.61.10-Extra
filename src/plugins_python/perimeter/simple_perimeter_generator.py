@@ -44,9 +44,7 @@ class SimpleGeneratorState:
 
 def _offset_area(api, storage: int, area, delta: float):
     clip = api.clipper(storage)
-    result = clip.offset(clip(area), delta).to_expolygon_collection()
-    result.ensure_valid()
-    return result
+    return clip.offset(clip(area), delta).to_expolygon_collection()
 
 
 def _append_perimeter_loop(dst: StoredExtrusionEntity, polygon, flow: CFlow, perimeter_idx: int, loop_role: int) -> None:

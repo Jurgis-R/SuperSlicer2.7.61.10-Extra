@@ -5,6 +5,8 @@
 #ifndef slic3r_Api_plugin_cpp_ClipperViews_hpp_
 #define slic3r_Api_plugin_cpp_ClipperViews_hpp_
 
+#include <tuple>
+
 #include "libslic3r/Api/plugin/c/slic3r_clipper.h"
 #include "libslic3r/Api/plugin/cpp/GeometryViews.hpp"
 
@@ -75,8 +77,10 @@ Choosing output form
 --------------------
 Use StoredExPolygonCollection when contour/hole topology matters. Use
 StoredPolygonCollection only when a flat list of polygons is enough. For open
-paths, use clipper_diff_polyline_expolygons() or
-clipper_intersection_polyline_expolygons(); converting an open polyline through
+paths, use clipper_diff_polyline_expolygons(),
+clipper_intersection_polyline_expolygons(), or
+clipper_split_polyline_expolygons() when both sides are needed: they are then cut
+at the same points. Converting an open polyline through
 ClipperOperand and back to polygons is not the same operation.
 Use clipper_diff_polylines_expolygons() or clipper_intersection_polylines_expolygons()
 for a whole PolylineCollection in one batch; output collection order is unspecified.
@@ -188,7 +192,8 @@ public:
         : MutableHandleView<clipper_shapes_handle>()
         , m_storage(other.m_storage)
         , m_owner(other.m_owner) {
-        set_handle(other.raw_mutable_handle());
+        if (other.raw_handle() != nullptr)
+            set_handle(other.raw_mutable_handle());
         other.clear_handle();
         other.m_owner = false;
     }
@@ -321,7 +326,10 @@ public:
         if (other.m_storage != m_storage)
             return *this;
         free_from_storage();
-        set_handle(other.raw_mutable_handle());
+        if (other.raw_handle() != nullptr)
+            set_handle(other.raw_mutable_handle());
+        else
+            clear_handle();
         other.clear_handle();
         m_owner = other.m_owner;
         other.m_owner = false;
@@ -337,7 +345,9 @@ public:
         assert(second.m_storage == m_storage);
         if (second.m_storage != m_storage)
             return ClipperOperand(m_storage);
-        return ClipperOperand(m_storage, ::clipper_concat(m_storage, handle(), second.handle()), true);
+        // Null views are empty operands; the host returns null only when both are.
+        clipper_shapes_handle *result = ::clipper_concat(m_storage, raw_handle(), second.raw_handle());
+        return result != nullptr ? ClipperOperand(m_storage, result, true) : create_empty(m_storage);
     }
     ClipperOperand operator+(const ClipperOperand &b) {
         return this->concat(b);
@@ -349,6 +359,9 @@ public:
         assert(m_storage);
         assert(second.m_storage == m_storage);
         if (second.m_storage != m_storage)
+            return;
+        // Nothing to append, including from a null view such as ClipperContext::operator()().
+        if (second.empty())
             return;
         if (m_owner && is_mutable()) {
             // if we're the owner, we can reuse the handle and maybe avoid an allocation.
@@ -410,6 +423,31 @@ inline ClipperOperand clipper_intersection(storage_handle *storage, const Clippe
     if (subject.empty() || clip.empty())
         return ClipperOperand::create_empty(storage);
     return ClipperOperand::adopt(storage, ::clipper_intersection(storage, subject.handle(), clip.handle()));
+}
+
+// Returns {inside, outside}: subject intersection clip and subject - clip, computed from the same
+// inputs so that they share their boundary along clip. Both are storage-owned operands.
+inline std::tuple<ClipperOperand, ClipperOperand> clipper_split(storage_handle *storage,
+                                                                const ClipperOperand &subject,
+                                                                const ClipperOperand &clip)
+{
+    if (subject.empty())
+        return std::make_tuple(ClipperOperand::create_empty(storage), ClipperOperand::create_empty(storage));
+    if (clip.empty())
+        return std::make_tuple(ClipperOperand::create_empty(storage),
+                               ClipperOperand::adopt(storage, ::clipper_union(storage, subject.handle())));
+    clipper_shapes_handle *inside = nullptr;
+    clipper_shapes_handle *outside = nullptr;
+    const int32_t split = ::clipper_split(storage, subject.handle(), clip.handle(), &inside, &outside);
+    assert(split == 1);
+    (void)split;
+    return std::make_tuple(ClipperOperand::adopt(storage, inside), ClipperOperand::adopt(storage, outside));
+}
+
+inline std::tuple<ClipperOperand, ClipperOperand> clipper_split(const ClipperOperand &subject, const ClipperOperand &clip) {
+    assert(subject.storage() != nullptr);
+    assert(clip.storage() == subject.storage());
+    return clipper_split(subject.storage(), subject, clip);
 }
 
 inline ClipperOperand clipper_diff(const ClipperOperand &subject, const ClipperOperand &clip) {
@@ -580,6 +618,21 @@ inline StoredPolylineCollection clipper_intersection_polylines_expolygons(storag
     if (subject.empty() || clip.empty())
         return StoredPolylineCollection(storage);
     return StoredPolylineCollection::adopt(storage, ::clipper_intersection_polylines_expolygons(storage, subject.handle(), clip.handle()));
+}
+
+// Returns {inside, outside}: the pieces of subject inside clip and the pieces outside it, cut at the
+// same points. Both collections are owned by storage.
+inline std::tuple<StoredPolylineCollection, StoredPolylineCollection>
+clipper_split_polyline_expolygons(storage_handle *storage, const Polyline &subject, const ExPolygonCollection &clip)
+{
+    if (subject.empty())
+        return std::make_tuple(StoredPolylineCollection(storage), StoredPolylineCollection(storage));
+    polyline_collection_handle *inside = nullptr;
+    polyline_collection_handle *outside = nullptr;
+    const int32_t split = ::clipper_split_polyline_expolygons(storage, subject.handle(), clip.handle(), &inside, &outside);
+    assert(split == 1);
+    (void)split;
+    return std::make_tuple(StoredPolylineCollection::adopt(storage, inside), StoredPolylineCollection::adopt(storage, outside));
 }
 
 inline StoredExPolygonCollection clipper_clip_expolygons_with_subject_bbox(storage_handle *storage,
