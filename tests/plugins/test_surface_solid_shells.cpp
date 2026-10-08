@@ -1,7 +1,12 @@
+/* Solid-shell tests prepare typed fill surfaces and verify shell geometry and
+   prerequisites. Region islands group regions by tool: a perimeter-only group
+   can have no fill surfaces beside a typed infill group on the same island.
+   Full slicing/export checks verify that separate tool assignments survive. */
 #include <catch2/catch.hpp>
 
 #include "perimeter_test_helpers.hpp"
 #include "plugin_test_helpers.hpp"
+#include "test_data.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
 #include "libslic3r/Api/host/Plugin.hpp"
@@ -12,6 +17,7 @@
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/LayerRegion.hpp"
 #include "libslic3r/PrintObject.hpp"
+#include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/Steps/StepGeneratePerimeter.hpp"
 #include "libslic3r/Steps/StepPostSlicing.hpp"
 #include "libslic3r/Steps/StepSurfaceGeneration.hpp"
@@ -22,10 +28,46 @@
 #include <initializer_list>
 #include <string>
 #include <vector>
+#include <tbb/global_control.h>
 
 namespace {
 using namespace Slic3r;
 using namespace Slic3r::Test::PerimeterPluginTests;
+
+// Check geometric leaf roles against their configured plan tool and count them.
+void require_plan_path_tools(const ExtrusionEntity &entity, extruder_index_t tool,
+                             size_t &perimeters, size_t &sparse_infill, size_t &solid_infill);
+
+// Walk a borrowed post-processed tree through generic children, ignoring process
+// nodes and travel geometry. Real material paths carry their own role attributes,
+// unlike the common source infill bucket; tool mismatches fail without mutations.
+void require_plan_path_tools(const ExtrusionEntity &entity, extruder_index_t tool,
+                             size_t &perimeters, size_t &sparse_infill, size_t &solid_infill)
+{
+    if (entity.child_count() > 0) {
+        for (size_t index = 0; index < entity.child_count(); ++index)
+            require_plan_path_tools(entity.child(index), tool, perimeters, sparse_infill, solid_infill);
+        return;
+    }
+    if (!entity.has_polyline())
+        return;
+    const ExtrusionAttributes *attributes = entity.get_property<ExtrusionAttributes>();
+    if (attributes == nullptr || attributes->mm3_per_mm <= 0.0f)
+        return;
+    const ExtrusionRole role = attributes->extrusion_role();
+    if (role.is_perimeter()) {
+        ++perimeters;
+        CHECK(tool == 0);
+    }
+    if (role.is_sparse_infill()) {
+        ++sparse_infill;
+        CHECK(tool == 1);
+    }
+    if (role.is_solid_infill()) {
+        ++solid_infill;
+        CHECK(tool == 0);
+    }
+}
 
 class ScopedActivePlugins
 {
@@ -437,6 +479,117 @@ TEST_CASE("SolidShells promotes sparse surface areas required by top and bottom 
         require_same_union(surface_expolygons_of_type(whole_region_island(island).fill_surfaces(),
                                                       stPosInternal | stDensSolid),
                            island.infill_areas());
+    }
+}
+
+// Slice one owned cube with separate perimeter/sparse-infill tools, then export
+// to a project-local file and inspect the borrowed plan. Require real paths on
+// their configured tools; slicing/export failures remain visible test failures.
+TEST_CASE("SolidShells permits separate perimeter and sparse infill tools",
+          "[plugins][surface-generation][solid-shells][separate-infill-tool][integration]")
+{
+    const tbb::global_control concurrency(tbb::global_control::max_allowed_parallelism, 1);
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_num_extruders(2);
+    config.set_deserialize_strict({{"perimeter_extruder", "1"}, {"infill_extruder", "2"},
+        {"solid_infill_extruder", "1"}, {"fill_density", "20%"}, {"layer_height", "0.3"},
+        {"filament_diameter", "1.75,1.75"}, {"extrusion_multiplier", "1,1"},
+        {"wipe_tower", "0"}, {"step_perimeter_plugin", "perimeter.generator.classic"},
+        {"step_surface_generation_plugin", "surface.initial_typed_surface_builder"}});
+    Print print;
+    Model model;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    REQUIRE_NOTHROW(print.process());
+    bool mixed_region_island = false;
+    for (const PrintObject &object : print.objects())
+        for (const Layer &layer : object.layers())
+            for (const LayerSliceIsland &island : layer.islands()) {
+                if (island.infill_areas().empty())
+                    continue;
+                bool has_empty = false, has_typed = false;
+                for (const LayerRegionIsland &region_island : island.regions_islands()) {
+                    has_empty = has_empty || region_island.fill_surfaces().empty();
+                    has_typed = has_typed || !region_island.fill_surfaces().empty();
+                }
+                mixed_region_island = mixed_region_island || (has_empty && has_typed);
+            }
+    CHECK(mixed_region_island);
+    const boost::filesystem::path checkout = boost::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    const std::string path = (checkout / "build" / "temp" / "solid_shells_separate_infill_tool.gcode").string();
+    REQUIRE_NOTHROW(Orchestrator::instance().export_gcode(print, path, nullptr));
+    REQUIRE(print.printing_plan() != nullptr);
+    size_t perimeters = 0, sparse_infill = 0, solid_infill = 0;
+    for (const Printing::PrintingGroup &group : print.printing_plan()->groups)
+        for (const Printing::PrintingLayerGroup &layer : group.layers)
+            for (const Printing::PrintingToolGroup &tool : layer.tool_groups)
+                for (const Printing::PrintingExtrusion &extrusion : tool.extrusions) {
+                    if (extrusion.root)
+                        require_plan_path_tools(*extrusion.root, tool.extruder_id,
+                                                perimeters, sparse_infill, solid_infill);
+                }
+    CHECK(perimeters > 0);
+    CHECK(sparse_infill > 0);
+    CHECK(solid_infill > 0);
+}
+
+// Run only the shell refinement on prepared mixed empty/typed groups. Mutations
+// isolate prerequisite failures while leaving island infill areas present;
+// reject missing collections, untyped surfaces and empty contours, not empty groups.
+TEST_CASE("SolidShells validates typed fill input per island rather than per region group",
+          "[plugins][surface-generation][solid-shells][fill-prerequisites]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &orchestrator = Orchestrator::instance();
+    orchestrator.reset_plugin_cancel();
+    orchestrator.consume_plugin_messages();
+    DynamicPrintConfig config = perimeter_config({{"perimeter_extruder", "1"},
+        {"infill_extruder", "2"}, {"solid_infill_extruder", "1"}, {"fill_density", "20%"}});
+    config.set_num_extruders(2);
+    PreparedPerimeterPrint prepared;
+    prepare_cube_print(prepared, config);
+    {
+        ScopedActivePlugins active({SIMPLE_PERIMETER_GENERATOR, INITIAL_TYPED_SURFACE_BUILDER});
+        run_perimeter_and_surface_steps(prepared.print);
+    }
+    LayerSliceIsland &island = prepared.print.object(0).layer(1).island(0);
+    REQUIRE_FALSE(island.infill_areas().empty());
+    bool has_empty = false;
+    LayerRegionIsland *filled = nullptr;
+    for (LayerRegionIsland &region_island : island.regions_islands()) {
+        has_empty = has_empty || region_island.fill_surfaces().empty();
+        if (!region_island.fill_surfaces().empty())
+            filled = &region_island;
+    }
+    REQUIRE(has_empty);
+    REQUIRE(filled != nullptr);
+    bool expect_error = false;
+    SECTION("empty perimeter group beside typed infill is valid") {}
+    SECTION("only empty groups cannot serve an island with infill areas") {
+        for (LayerRegionIsland &region_island : island.regions_islands())
+            region_island.set_fill_surfaces().clear();
+        expect_error = true;
+    }
+    SECTION("a non-empty collection must retain typed surfaces") {
+        filled->set_fill_surfaces().surfaces.front().surface_type = stNone;
+        expect_error = true;
+    }
+    SECTION("a typed surface must have a non-empty contour") {
+        filled->set_fill_surfaces().surfaces.front().expolygon = ExPolygon();
+        expect_error = true;
+    }
+    if (expect_error) {
+        REQUIRE_THROWS_AS(run_solid_shells_on_existing_surfaces(prepared.print), RuntimeError);
+        bool found_error = false;
+        for (const Orchestrator::PluginMessage &message : orchestrator.consume_plugin_messages())
+            found_error = found_error || (message.plugin_id == SOLID_SHELLS &&
+                message.level == Orchestrator::PluginMessageLevel::Error &&
+                message.message.find("requires typed fill surfaces") != std::string::npos);
+        CHECK(found_error);
+        orchestrator.reset_plugin_cancel();
+    } else {
+        REQUIRE_NOTHROW(run_solid_shells_on_existing_surfaces(prepared.print));
+        require_no_solid_shell_prerequisite_error(orchestrator);
     }
 }
 
