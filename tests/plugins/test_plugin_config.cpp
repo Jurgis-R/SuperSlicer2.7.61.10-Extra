@@ -1405,14 +1405,23 @@ TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers con
          "single_extruder_multi_material_priming",
          "wipe_tower_speed", "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width",
          "wipe_tower_no_sparse_layers", "wipe_tower_rest_in_middle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
-         "wipe_tower_bridging", "wipe_tower_extruder_toolchange", "wipe_tower", "wipe_tower_brim_width",
+         "wipe_tower_bridging", "wipe_tower_extruder_toolchange", "wipe_tower_brim_width",
          "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle", "wipe_tower_extruder",
-         "wipe_tower_per_object", "wipe_tower_object_x", "wipe_tower_object_y"}) {
+         "wipe_tower_object_x", "wipe_tower_object_y"}) {
         CAPTURE(key);
         const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
         REQUIRE(definition != nullptr);
         CHECK(definition->invalidates_step == STEP_WIPETOWER);
         CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Ordering);
+    }
+    // The wipe-into ordering plugin reads the tower presence at STEP_ORDERING, which still replays
+    // the tower step and everything after it.
+    for (const char *key : {"wipe_tower", "wipe_tower_per_object"}) {
+        CAPTURE(key);
+        const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+        REQUIRE(definition != nullptr);
+        CHECK(definition->invalidates_step == STEP_ORDERING);
+        CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Print);
     }
 }
 

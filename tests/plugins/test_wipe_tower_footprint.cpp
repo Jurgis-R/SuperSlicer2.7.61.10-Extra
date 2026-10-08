@@ -258,8 +258,14 @@ TEST_CASE("Tower options expose defaults, consumer invalidation, and legacy load
         REQUIRE(PrintConfigDef::instance().get(key) != nullptr);
         CHECK(PrintConfigDef::instance().get(key)->invalidates_step == STEP_WIPETOWER);
     }
-    for (const char *key : {"wipe_tower", "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
-         "wipe_tower_brim_width", "wipe_tower_extruder", "wipe_tower_per_object", "wipe_tower_object_x", "wipe_tower_object_y"}) {
+    // The wipe-into ordering plugin reads the tower presence at STEP_ORDERING, so these two resume
+    // there; the earlier step still replays the tower step and everything after it.
+    for (const char *key : {"wipe_tower", "wipe_tower_per_object"}) {
+        INFO(key);
+        CHECK(PrintConfigDef::instance().get(key)->invalidates_step == STEP_ORDERING);
+    }
+    for (const char *key : {"wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
+         "wipe_tower_brim_width", "wipe_tower_extruder", "wipe_tower_object_x", "wipe_tower_object_y"}) {
         INFO(key);
         CHECK(PrintConfigDef::instance().get(key)->invalidates_step == STEP_WIPETOWER);
     }

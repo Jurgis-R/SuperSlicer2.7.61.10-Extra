@@ -690,6 +690,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.tool_groups.default");
         activate_plugin_or_fail(orchestrator, "ordering.custom_gcode_event_tools");
         activate_plugin_or_fail(orchestrator, "ordering.printing_extrusion.presort.default");
+        activate_plugin_or_fail(orchestrator, "ordering.wipe_into_first.default");
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
         activate_plugin_or_fail(orchestrator, "wipe_tower.manager.default");
         activate_plugin_or_fail(orchestrator, "wipe_tower.wipe.toolchange.default");

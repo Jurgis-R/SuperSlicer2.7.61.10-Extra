@@ -401,6 +401,7 @@ set(SLIC3R_SOURCES
 	Plugins/Ordering/PrintingExtrusionPreSort.hpp
 	Plugins/Ordering/XYSerpentineExtrusionTreeOrdering.cpp
 	Plugins/Ordering/XYSerpentineExtrusionTreeOrdering.hpp
+	Plugins/Ordering/WipeIntoFirstOrdering.cpp
 	Plugins/PrintingPlan/EntryPointProperty.h
 	Plugins/PrintingPlan/PrintingLayerEntryStateProperties.h
 	Plugins/PrintingPlan/PrintingExtrusionScopeProperty.h

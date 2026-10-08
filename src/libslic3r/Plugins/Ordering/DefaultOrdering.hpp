@@ -23,6 +23,7 @@ independently replaceable through their own exclusive groups.
 void register_default_plan_builder_plugin(orchestrator_handle *orch);
 void register_default_tool_group_ordering_plugin(orchestrator_handle *orch);
 void register_printing_extrusion_pre_sort_plugin(orchestrator_handle *orch);
+void register_wipe_into_first_ordering_plugin(orchestrator_handle *orch);
 void register_advanced_extrusion_tree_ordering_plugin(orchestrator_handle *orch);
 void register_default_extrusion_tree_ordering_plugin(orchestrator_handle *orch);
 void register_default_ordering_plugins(orchestrator_handle *orch);
