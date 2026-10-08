@@ -496,6 +496,8 @@ set(SLIC3R_SOURCES
 	Plugins/Support/SupportDemandOverhangs.hpp
 	Plugins/Support/SupportDemandPainting.cpp
 	Plugins/Support/SupportDemandPainting.hpp
+	Plugins/WipeTower/ToolChangeWipe.cpp
+	Plugins/WipeTower/ToolChangeWipe.hpp
 	Plugins/WipeTower/WipeTowerLayout.cpp
 	Plugins/WipeTower/WipeTowerLayout.hpp
 	Plugins/WipeTower/WipeTowerManager.cpp

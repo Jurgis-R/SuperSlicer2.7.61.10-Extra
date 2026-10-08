@@ -122,6 +122,7 @@ add_executable(${_TEST_NAME}_tests
     test_surface_infill_region_compatibility_splitter.cpp
     test_surface_solid_shells.cpp
     test_surface_top_surface_expansion.cpp
+    test_tool_change_wipe.cpp
     test_vase_multi_island_connector.cpp
     test_wipe_tower_footprint.cpp
     test_wipe_tower_layout.cpp

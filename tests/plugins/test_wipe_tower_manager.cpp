@@ -103,6 +103,7 @@ public:
     ~WipeActivation();
     TestWipe *first = nullptr;
     TestWipe *second = nullptr;
+    bool production_wipe_active = false;
 };
 
 // Configure a two-extruder print and build two layers with concrete visits and independent source roots.
@@ -245,12 +246,14 @@ void TestWipe::run_impl(const plugin_run_context *run) const
     }
 }
 
-// Register process-lifetime borrowed test plugins and reset every probe/config flag; activation failures remain visible and no plan ownership is retained.
+// Register borrowed test services and reset probes, temporarily disabling the production service to isolate manager geometry; activation failures remain visible and no plan ownership is retained.
 WipeActivation::WipeActivation(const uint32_t count)
 {
     Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator.reset_plugin_cancel();
+    production_wipe_active = orchestrator.is_plugin_active("wipe_tower.wipe.toolchange.default");
+    REQUIRE(orchestrator.set_plugin_active("wipe_tower.wipe.toolchange.default", false));
     orchestrator_handle *handle = reinterpret_cast<orchestrator_handle *>(&orchestrator);
     static TestWipe first_plugin(handle, "test.wipe.low", -10);
     static TestWipe second_plugin(handle, "test.wipe.high", 10);
@@ -271,12 +274,13 @@ WipeActivation::WipeActivation(const uint32_t count)
     }
 }
 
-// Test plugins stay registered but inactive; no borrowed plan data is retained and cancellation is cleared.
+// Leave test services registered but inactive, restore production activation and clear cancellation; no borrowed plan data is retained.
 WipeActivation::~WipeActivation()
 {
     Orchestrator &orchestrator = Orchestrator::instance();
     orchestrator.set_plugin_active(first->plugin_id, false);
     orchestrator.set_plugin_active(second->plugin_id, false);
+    orchestrator.set_plugin_active("wipe_tower.wipe.toolchange.default", production_wipe_active);
     orchestrator.reset_plugin_cancel();
 }
 
