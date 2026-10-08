@@ -1,3 +1,4 @@
+/* Shared test startup registers module-owned plugins and config definitions once, then applies test activation choices. */
 #include "plugin_test_helpers.hpp"
 
 #include <cassert>
@@ -98,6 +99,7 @@
 #include "libslic3r/Plugins/Support/SupportDemandOverhangs.hpp"
 #include "libslic3r/Plugins/Support/SupportDemandPainting.hpp"
 #include "libslic3r/Plugins/VaseMultiIslandConnector.hpp"
+#include "libslic3r/Plugins/WipeTower/WipeTowerManager.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/SLA/SLAPrintConfig.hpp"
 #include "plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.hpp"
@@ -463,6 +465,7 @@ void activate_plugin_or_fail(Slic3r::Orchestrator &orchestrator, const char *plu
 
 namespace Slic3r::Test::Plugins {
 
+// Register built-in and test providers before config finalization, then initialize once; registered instances are borrowed.
 void ensure_plugin_test_runtime_initialized()
 {
     static bool initialized = []() {
@@ -520,6 +523,7 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
+        slic3r_api::WipeTower::register_wipe_tower_manager_plugin(orchestrator_handle_value);
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin(orchestrator_handle_value);
         slic3r_api::SeamPlacement::ContiguousPlugin::register_contiguous_seam_placer_plugin(
             orchestrator_handle_value);
@@ -685,6 +689,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.custom_gcode_event_tools");
         activate_plugin_or_fail(orchestrator, "ordering.printing_extrusion.presort.default");
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
+        activate_plugin_or_fail(orchestrator, "wipe_tower.manager.default");
         activate_plugin_or_fail(orchestrator, "seam_placer.aligned");
         activate_plugin_or_fail(orchestrator, "seam_placer.contiguous");
         activate_plugin_or_fail(orchestrator, "seam_placer.cost");

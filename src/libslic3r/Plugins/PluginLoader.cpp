@@ -146,11 +146,15 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Surface/TopSurfaceExpansion.hpp"
 #include "libslic3r/Plugins/Support/SupportDemandBridgeRemoval.hpp"
 #include "libslic3r/Plugins/VaseMultiIslandConnector.hpp"
+#include "libslic3r/Plugins/WipeTower/WipeTowerManager.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/Utils.hpp"
 
 namespace Slic3r {
 namespace {
+
+// Register module-owned built-ins with a non-null borrowed host; registrations and diagnostics are retained by the host.
+void register_builtin_plugins(orchestrator_handle *orchestrator);
 
 using RegisterPluginFn = void (*)(orchestrator_handle *);
 using PluginAbiVersionFn = int32_t (*)(slic3r_major_minor_version *);
@@ -658,6 +662,7 @@ void register_builtin_plugin(orchestrator_handle *orchestrator,
                              << elapsed_ms(start).count() << " ms.";
 }
 
+// Invoke each built-in registration helper with the borrowed host; instances remain owned by their modules.
 void register_builtin_plugins(orchestrator_handle *orchestrator)
 {
     register_builtin_plugin(orchestrator, "standard_layer_height_generator",
@@ -718,6 +723,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::PostFullFillVolumePlugin::register_post_full_fill_volume_plugin);
     register_builtin_plugin(orchestrator, "ordering.default",
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins);
+    register_builtin_plugin(orchestrator, "wipe_tower.manager.default",
+        slic3r_api::WipeTower::register_wipe_tower_manager_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.aligned",
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.contiguous",

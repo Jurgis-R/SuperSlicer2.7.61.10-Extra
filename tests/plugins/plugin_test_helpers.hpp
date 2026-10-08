@@ -10,6 +10,7 @@ namespace Slic3r::Test::Plugins {
 void register_regional_seam_test_provider(orchestrator_handle *orchestrator);
 /* Implemented by the G-code Reader tests and registered before initialization. */
 void register_gcode_reader_test_providers(orchestrator_handle *orchestrator);
+// Register and initialize the shared plugin runtime once for all plugin tests.
 void ensure_plugin_test_runtime_initialized();
 bool python_plugin_test_runtime_available();
 // Return the owned startup snapshot, unaffected by tests clearing live reports.

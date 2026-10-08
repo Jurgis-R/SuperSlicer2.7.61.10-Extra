@@ -496,6 +496,10 @@ set(SLIC3R_SOURCES
 	Plugins/Support/SupportDemandOverhangs.hpp
 	Plugins/Support/SupportDemandPainting.cpp
 	Plugins/Support/SupportDemandPainting.hpp
+	Plugins/WipeTower/WipeTowerLayout.cpp
+	Plugins/WipeTower/WipeTowerLayout.hpp
+	Plugins/WipeTower/WipeTowerManager.cpp
+	Plugins/WipeTower/WipeTowerManager.hpp
 	Printing/PrintingPlan.cpp
 	Printing/PrintingPlan.hpp
 	Steps/StepDetectSupportSpots.cpp
