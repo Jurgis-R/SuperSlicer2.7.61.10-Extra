@@ -8,11 +8,13 @@
    interfaces take portions of base slabs near contacts. All geometry here is
    temporary and belongs to GeneratedSupport. Demand already includes painting,
    modifiers, bridge removal and the buildplate-only filter, so it follows one
-   projection path rather than a separate enforced-support path. Region raw
-   slices supply the object footprint; subtracting the upper layer finds exposed
-   tops including their perimeter strips. Typed fill surfaces live in island
-   work regions and supply bridge footprints. height_block is the downward Z
-   span used for object collisions, independently of printable height.
+   projection path rather than a separate enforced-support path. With
+   build-plate-only support the contacts and columns are also cut by the area
+   the object covers below them. Region raw slices supply the object footprint;
+   subtracting the upper layer finds exposed tops including their perimeter
+   strips. Typed fill surfaces live in island work regions and supply bridge
+   footprints. height_block is the downward Z span used for object collisions,
+   independently of printable height.
 
    The object is read through the data-tree views and every polygon set is a
    StoredPolygonCollection in the run's storage. Clipper operations take
@@ -74,6 +76,8 @@ struct Run {
     Common::ContactDistanceType distance_type;
     int32_t threshold, enforce_layers, interface_layers, bottom_interface_layers, raft_layers;
     bool synchronize, bottom_interface_enabled;
+    // Build-plate-only support: support may stand only on the bed, so contacts and columns are cut by the area the object covers below.
+    bool buildplate_only;
     c_float_or_percent layer_height, interface_layer_height;
     double angle, closing_radius, spacing, raft_first_layer_expansion, brim_width, brim_width_interior;
 };
@@ -104,10 +108,12 @@ void reverse(Polys &polys);
 c_bounding_box extents(const Polys &polys);
 // Order points by x, then y, like the native Point operator<.
 bool point_less(c_point a, c_point b);
+// Return, for each object layer, the area covered by the layers below it; build-plate-only contacts and columns must not stand on it.
+std::vector<Polys> buildplate_covered(const Run &run);
 // Build and merge top-contact slabs from the sliced object's island demand.
-void top_contacts(const Run &run, GeneratedSupport &out);
+void top_contacts(const Run &run, const std::vector<Polys> &covered, GeneratedSupport &out);
 // Project each top contact downwards and create bottom contacts on object top surfaces.
-std::vector<Polys> project_columns(const Run &run, GeneratedSupport &out);
+std::vector<Polys> project_columns(const Run &run, const std::vector<Polys> &covered, GeneratedSupport &out);
 // Place intermediate slabs between contact extremes and assign missing top-contact heights.
 void intermediate_layers(const Run &run, GeneratedSupport &out);
 // Subtract object slices and bridge footprints from slabs with the configured clearance.
@@ -146,9 +152,10 @@ void generate_support(const plugin_run_context *context, const Print &print, con
                       const Common::SupportParams &params, GeneratedSupport &out)
 {
     const Run run(context, print, object, params, out.storage);
-    top_contacts(run, out);
+    const std::vector<Polys> covered = run.buildplate_only ? buildplate_covered(run) : std::vector<Polys>();
+    top_contacts(run, covered, out);
     if (out.top.empty()) return;
-    const std::vector<Polys> areas = project_columns(run, out);
+    const std::vector<Polys> areas = project_columns(run, covered, out);
     intermediate_layers(run, out);
     trim_by_object(run, out.top);
     base_layers(run, areas, out);
@@ -179,6 +186,7 @@ Run::Run(const plugin_run_context *context, const Print &print, const Object &ob
     bottom_interface_layers = bottom_interfaces.get_int();
     raft_layers = config.get("raft_layers").get_int();
     synchronize = config.get("support_material_synchronize_layers").get_bool();
+    buildplate_only = config.get("support_material_buildplate_only").get_bool();
     layer_height = config.get("support_material_layer_height").get_float_or_percent();
     interface_layer_height = config.get("support_material_interface_layer_height").get_float_or_percent();
     angle = config.get("support_material_angle").get_float();
@@ -236,8 +244,22 @@ bool point_less(c_point a, c_point b)
     return a.x < b.x || (a.x == b.x && a.y < b.y);
 }
 
+// Accumulate the layer slices from the bottom up, each grown by 0.01 mm, so that entry id covers every object part below layer id.
+std::vector<Polys> buildplate_covered(const Run &run)
+{
+    const ClipperContext &clipper = run.clipper;
+    std::vector<Polys> covered;
+    covered.reserve(run.layers.size());
+    covered.emplace_back(run.storage);
+    for (size_t id = 1; id < run.layers.size(); ++id) {
+        throw_if_cancelled(run.context);
+        covered.push_back(polygons(clipper_union2(clipper(covered.back()), clipper_offset(clipper(run.layers[id - 1].slices()), scale_d(0.01)))));
+    }
+    return covered;
+}
+
 // Intersect demand with each region, apply the active lower-slice margin, and rasterize contacts; allocated slabs remain in out even when merging empties them.
-void top_contacts(const Run &run, GeneratedSupport &out)
+void top_contacts(const Run &run, const std::vector<Polys> &covered, GeneratedSupport &out)
 {
     const Common::SupportParams &p = run.p;
     const ClipperContext &clipper = run.clipper;
@@ -274,6 +296,11 @@ void top_contacts(const Run &run, GeneratedSupport &out)
                 else
                     margin = polygons(clipper_offset2(clipper(lower.slices()), -no_interface_offset * 0.5f,
                         offset + no_interface_offset * 0.5f, join_type, 0.));
+                // Build-plate-only support: contacts stay off the object below too, so the covered area joins the margin.
+                if (run.buildplate_only && !covered[id].empty()) {
+                    margin = polygons(clipper_union2(clipper(margin), clipper(covered[id])));
+                    margin.ensure_valid(p.resolution);
+                }
             }
             // The active margin removes thin lower features before expanding the collision mask.
             ExPolys kept = Common::native_expolygons(clipper_diff(clipper(raw), clipper(margin)));
@@ -333,7 +360,7 @@ void top_contacts(const Run &run, GeneratedSupport &out)
 }
 
 // Project a sliced object's owned contacts into one area per object layer; bottom collision spans use the next object height for plane gaps or initial contact height otherwise, unchanged by Z alignment; cancellation propagates.
-std::vector<Polys> project_columns(const Run &run, GeneratedSupport &out)
+std::vector<Polys> project_columns(const Run &run, const std::vector<Polys> &covered, GeneratedSupport &out)
 {
     const Common::SupportParams &p = run.p;
     const ClipperContext &clipper = run.clipper;
@@ -389,7 +416,9 @@ std::vector<Polys> project_columns(const Run &run, GeneratedSupport &out)
             for (size_t above = size_t(id + 1); above < run.layers.size() && run.layers[above].print_z() < contact.print_z; ++above)
                 areas[above] = polygons(clipper_diff(clipper(areas[above]), clipper(touching)));
         }
-        const Polys mask = polygons(clipper_offset(clipper(layer.slices()), double(SCALED_EPSILON)));
+        // Build-plate-only support may stand only on the bed: the buildplate-only demand plugin already removed the demand above the object, and the columns are cut by all object area below, so none lands on the object.
+        const Polys mask = run.buildplate_only ? covered[id].readonly().clone(run.storage) :
+            polygons(clipper_offset(clipper(layer.slices()), double(SCALED_EPSILON)));
         Polys raw = polygons(clipper_diff(clipper(projection), clipper(mask)));
         raw.remove_sticks();
         raw.remove_degenerate();

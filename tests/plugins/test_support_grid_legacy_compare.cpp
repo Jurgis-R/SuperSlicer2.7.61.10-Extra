@@ -648,10 +648,8 @@ TEST_CASE("Grid legacy comparison: roof over bed and platform", "[plugins][suppo
 TEST_CASE("Grid legacy comparison: build plate only restriction, snug", "[plugins][support-grid][legacy-compare][support-settings]") {
     compare(5, "snug", false, 3, false, "buildplate_only");
 }
-// The grid style is expected to fail for now: the native generator projects only enforced overhangs to
-// bottom contacts and trims its grid columns by the area the object covers, while the family only
-// receives demand already filtered by the buildplate-only demand plugin, so its grid columns, wider
-// than the demand, still reach the platform (bottom contacts, one more print Z).
-TEST_CASE("Grid legacy comparison: build plate only restriction, grid", "[plugins][support-grid][legacy-compare][support-settings][!shouldfail]") {
+// The same roof with support restricted to the build plate, grid style: the native and the family both cut
+// their grid contacts and columns by the area the object covers below each layer, so neither puts support on the platform.
+TEST_CASE("Grid legacy comparison: build plate only restriction, grid", "[plugins][support-grid][legacy-compare][support-settings]") {
     compare(5, "grid", false, 3, false, "buildplate_only");
 }

@@ -84,8 +84,8 @@ struct UsedKeyList
 
 /*
 Keys read by the support geometry part of SupportParams (heights, gaps,
-flows, extruders) and by the grid family generator. Every plugin using
-SupportParams declares them.
+flows, extruders) and by the grid family generator, including its
+build-plate-only restriction. Every plugin using SupportParams declares them.
 */
 UsedKeyList support_geometry_keys();
 /*

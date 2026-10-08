@@ -20,6 +20,7 @@ std::string serialized(const Config &config, const char *key);
 
 const raw_used_config_key k_geometry_keys[] = {
     {"support_material_style", RAW_CO_ENUM, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
+    {"support_material_buildplate_only", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
     {"support_material_enforce_layers", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
     {"support_material_threshold", RAW_CO_INT, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
     {"support_material_synchronize_layers", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE},
