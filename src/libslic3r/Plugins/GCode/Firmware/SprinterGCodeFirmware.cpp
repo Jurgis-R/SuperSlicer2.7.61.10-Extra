@@ -84,12 +84,14 @@ std::string SprinterGCodeFirmwareSession::encode_machine_envelope(
     return output;
 }
 
+// Borrow two tools and copy only fan runtime when a previous tool exists;
+// destination settings remain owned and unchanged, with no output or failure.
 void SprinterGCodeFirmwareSession::synchronize_selected_extruder_state(
     const DefaultExtruder *previous,
     DefaultExtruder &selected)
 {
     // Sprinter's M106 command controls one shared part-cooling fan. Its T
-    // parameter still keeps temperature encoding history local to each tool.
+    // parameter keeps temperature encoding history per tool outside SEMM.
     if (previous != nullptr)
         selected.fan().synchronize_runtime_from(previous->fan());
 }
@@ -99,11 +101,13 @@ std::string SprinterGCodeFirmwareSession::encode_chamber_temperature(int16_t, bo
     return encode_unsupported_operation("chamber temperature");
 }
 
+// Format the supplied pressure advance without changing state; SEMM omits drive
+// addressing because all filament tools use the same physical extrusion drive.
 std::string SprinterGCodeFirmwareSession::encode_pressure_advance(
     extruder_index_t tool_id,
     double pressure_advance) const
 {
-    return "M572 D" + std::to_string(tool_id) +
+    return "M572" + (single_extruder_multi_material() ? std::string() : " D" + std::to_string(tool_id)) +
            " S" + format_number(pressure_advance) + "\n";
 }
 

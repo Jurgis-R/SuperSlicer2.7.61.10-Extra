@@ -3572,6 +3572,7 @@ TEST_CASE("Thumbnail encoder adapter contains errors and owns its session once",
     CHECK_THROWS(slic3r_api::GCodeThumbnailEncoderView(&incomplete));
 }
 
+// Startup heats only the initial SEMM filament, selecting it with the dialect's shared-tool command.
 TEST_CASE("Preamble heats physical tools but only one MMU nozzle",
           "[plugins][gcode][firmware][preamble]")
 {
@@ -3592,10 +3593,18 @@ TEST_CASE("Preamble heats physical tools but only one MMU nozzle",
     INFO(text);
     CHECK(text.find("S220") != std::string::npos);
     CHECK((text.find("S205") != std::string::npos) == !mmu);
+    if (mmu) {
+        CHECK(count_occurrences(text, "M109 S220\n") == 1);
+        CHECK(text.find("M104 S220") == std::string::npos);
+    }
+    const std::string initial_selection = std::string(firmware_id) == "gcode.firmware.klipper" && !mmu ?
+        "ACTIVATE_EXTRUDER EXTRUDER=extruder1\n" : "T1\n";
+    CHECK(text.find(initial_selection + "G92 E0\n") != std::string::npos);
     if (std::string(firmware_id) == "gcode.firmware.klipper") {
         // M109 has no tool selector in this dialect: the intended physical
         // heater must be active before each request.
-        CHECK(text.find("ACTIVATE_EXTRUDER EXTRUDER=extruder1\n") < text.find("M109 S220"));
+        const std::string selection = mmu ? "T1\n" : "ACTIVATE_EXTRUDER EXTRUDER=extruder1\n";
+        CHECK(text.find(selection) < text.find("M109 S220"));
         if (!mmu) CHECK(text.find("ACTIVATE_EXTRUDER EXTRUDER=extruder\n") < text.find("M109 S205"));
     }
 }

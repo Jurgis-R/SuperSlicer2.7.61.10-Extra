@@ -11,6 +11,8 @@ to verify buffer ownership. The core SCFG codec is covered separately
 by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 Invalidation checks compare each option's earliest consuming step with the
 checkpoint used to replay its affected pipeline suffix.
+Setting-support checks compare definition defaults with config values and read
+only provider metadata; unregistered copies model providers with no used keys.
 */
 
 #include <catch2/catch.hpp>
@@ -46,6 +48,7 @@ checkpoint used to replay its affected pipeline suffix.
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_config.h"
 #include "libslic3r/Api/plugin/cpp/ConfigDefinitionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
@@ -55,6 +58,19 @@ checkpoint used to replay its affected pipeline suffix.
 #include "libslic3r/Config/PrintConfig.hpp"
 
 namespace {
+
+// This unregistered metadata copy models a provider that declares no setting
+// support; the borrowed ABI callbacks are never executed by these checks.
+class PluginWithoutSettingSupport final : public Slic3r::Plugin
+{
+public:
+    // Copy a borrowed provider's metadata and clear its used-key declarations;
+    // retained ABI pointers remain provider-owned, with allocation failures propagated.
+    explicit PluginWithoutSettingSupport(const Slic3r::Plugin &provider) : Plugin(provider)
+    {
+        m_used_config_keys.clear();
+    }
+};
 
 // This small static store exercises the API rejection path without depending
 // on the global print-config caches initialized by the larger slicing fixture.
@@ -1396,4 +1412,106 @@ TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers con
         CHECK(definition->invalidates_step == STEP_WIPETOWER);
         CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Ordering);
     }
+}
+
+// Check a minimal definition/config against borrowed provider metadata without
+// changing registration. Resolver counts prove absent/default values skip selection.
+TEST_CASE("Active settings require support from the selected exclusive-group plugin",
+          "[plugins][config][gcode][setting-support]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const Plugin *marlin = Orchestrator::instance().get_plugin("gcode.firmware.marlin2");
+    REQUIRE(marlin != nullptr);
+    REQUIRE_FALSE(marlin->get_exclusive_group_label().empty());
+    PluginWithoutSettingSupport unsupported(*marlin);
+    ConfigDef definitions;
+    ConfigOptionDef *definition = definitions.add("single_extruder_multi_material", coBool);
+    definition->label = "Material multiplexing";
+    definition->required_plugin_group = "gcode_firmware_plugin";
+    definition->set_default_value(new ConfigOptionBool(false));
+    DynamicConfig config;
+    config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(true));
+    const Plugin *selected = marlin;
+    size_t resolutions = 0;
+    const std::function<const Plugin *(const std::string &)> resolver =
+        [&selected, &resolutions](const std::string &group_id) -> const Plugin * {
+            CHECK(group_id == "gcode_firmware_plugin");
+            ++resolutions;
+            return selected;
+        };
+
+    SECTION("a default value is inactive") {
+        config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(false));
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 0);
+    }
+    SECTION("an absent value is skipped") {
+        config.clear();
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 0);
+    }
+    SECTION("an empty requirement is skipped") {
+        definition->required_plugin_group.clear();
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 0);
+    }
+    SECTION("the selected provider declares the key") {
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 1);
+    }
+    SECTION("the selected provider lacks the key") {
+        selected = &unsupported;
+        const std::optional<std::string> error = Steps::unsupported_active_setting(definitions, config, resolver);
+        REQUIRE(error);
+        CHECK(error->find("single_extruder_multi_material") != std::string::npos);
+        CHECK(error->find("Material multiplexing") != std::string::npos);
+        CHECK(error->find(marlin->get_exclusive_group_label()) != std::string::npos);
+        CHECK(error->find(marlin->get_name()) != std::string::npos);
+        CHECK(error->find(marlin->get_id()) != std::string::npos);
+        CHECK(resolutions == 1);
+    }
+    SECTION("no provider is selected") {
+        selected = nullptr;
+        const std::optional<std::string> error = Steps::unsupported_active_setting(definitions, config, resolver);
+        REQUIRE(error);
+        CHECK(error->find("single_extruder_multi_material") != std::string::npos);
+        CHECK(error->find("Material multiplexing") != std::string::npos);
+        CHECK(error->find("gcode_firmware_plugin") != std::string::npos);
+        CHECK(error->find("no plugin is selected") != std::string::npos);
+        CHECK(resolutions == 1);
+    }
+    SECTION("false is active when the default is true") {
+        definition->set_default_value(new ConfigOptionBool(true));
+        config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(false));
+        selected = &unsupported;
+        CHECK(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 1);
+    }
+}
+
+// Validate an applied model with an explicit built-in firmware selection, and
+// audit that the SEMM definition targets its exclusive group, not a numeric step.
+TEST_CASE("Print validation accepts active SEMM with a supporting built-in firmware",
+          "[plugins][config][gcode][setting-support][integration]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ConfigOptionDef *definition = PrintConfigDef::instance().get("single_extruder_multi_material");
+    REQUIRE(definition != nullptr);
+    CHECK(definition->required_plugin_group == "gcode_firmware_plugin");
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict("single_extruder_multi_material", "1");
+    config.set_deserialize_strict("gcode_firmware_plugin", "gcode.firmware.marlin2");
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    const Plugin *selected = Steps::selected_active_plugin_from_group(
+        Orchestrator::instance(), GCODE_FIRMWARE, "gcode_firmware_plugin", &print.full_print_config());
+    REQUIRE(selected != nullptr);
+    CHECK(selected->get_id() == "gcode.firmware.marlin2");
+    const std::pair<PrintBase::PrintValidationError, std::string> validation = print.validate();
+    INFO(validation.second);
+    CHECK(validation.first == PrintBase::PrintValidationError::pveNone);
+    CHECK(validation.second.empty());
 }

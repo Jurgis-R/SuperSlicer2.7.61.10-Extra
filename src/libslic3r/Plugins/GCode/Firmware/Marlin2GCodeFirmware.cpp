@@ -13,6 +13,7 @@ Marlin 2 firmware implementation
 the built-in firmware provider. Most traversal and state-transition behavior
 comes from the common firmware session; this file supplies Marlin 2 command
 encoding and the script fallbacks needed by the host.
+M220 B backs up the speed override before M220 S changes it; M220 R restores it.
 
 The specialization flow is:
 
@@ -127,16 +128,20 @@ std::string Marlin2GCodeFirmwareSession::encode_machine_envelope(
     return output;
 }
 
+// Borrow two tools and copy only fan runtime when a previous tool exists;
+// destination settings remain owned and unchanged, with no output or failure.
 void Marlin2GCodeFirmwareSession::synchronize_selected_extruder_state(
     const DefaultExtruder *previous,
     DefaultExtruder &selected)
 {
     // M106 addresses the one part-cooling fan used by this dialect, while the
-    // T parameter keeps each extruder heater history independent.
+    // T parameter keeps heater histories independent outside SEMM.
     if (previous != nullptr)
         selected.fan().synchronize_runtime_from(previous->fan());
 }
 
+// Format a supplied effective target without mutating state; cached temperature
+// selects R for cooling waits, and SEMM omits the logical tool's T parameter.
 std::string Marlin2GCodeFirmwareSession::encode_tool_temperature(
     extruder_index_t tool_id,
     int16_t temperature,
@@ -149,7 +154,22 @@ std::string Marlin2GCodeFirmwareSession::encode_tool_temperature(
     const bool cooling_wait = wait && encoded && temperature < *encoded;
     return std::string(wait ? "M109" : "M104") +
            (cooling_wait ? " R" : " S") + std::to_string(temperature) +
-           " T" + std::to_string(tool_id) + "\n";
+           (single_extruder_multi_material() ? std::string() : " T" + std::to_string(tool_id)) + "\n";
+}
+
+// Prepend firmware backup to the base M220 S encoding of a finite non-negative
+// multiplier (1.0 = 100%); return owned text without changing session state.
+// Base validation throws invalid_argument for an invalid ratio.
+std::string Marlin2GCodeFirmwareSession::encode_save_speed_ratio(double ratio) const
+{
+    return "M220 B\n" + DefaultGCodeFirmwareSession::encode_save_speed_ratio(ratio);
+}
+
+// Return owned M220 R text restoring the firmware's backed-up speed override;
+// no inputs, session mutation or validation failures.
+std::string Marlin2GCodeFirmwareSession::encode_restore_speed_ratio() const
+{
+    return "M220 R\n";
 }
 
 std::string Marlin2GCodeFirmwareSession::encode_object_definitions(

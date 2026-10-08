@@ -34,13 +34,16 @@ protected:
                                      const Config *producer_config) const override;
     std::string encode_machine_envelope(const MachineEnvelope &envelope) const override;
     void setup_firmware(const Config &config) override;
+    // Carry shared part-cooling fan runtime across logical tool selections.
     void synchronize_selected_extruder_state(const DefaultExtruder *previous,
                                               DefaultExtruder &selected) override;
+    // Select a configured extruder, or a logical filament with T in SEMM.
     std::string encode_tool_change(extruder_index_t tool_id) const override;
     std::string encode_tool_temperature(extruder_index_t tool_id,
                                         int16_t temperature,
                                         bool wait) const override;
     std::string encode_chamber_temperature(int16_t temperature, bool wait) const override;
+    // Encode pressure advance for a named extruder or the shared SEMM extruder.
     std::string encode_pressure_advance(extruder_index_t tool_id,
                                         double pressure_advance) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;

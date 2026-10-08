@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -436,6 +437,248 @@ TEST_CASE("Built-in firmware dialects encode their process commands",
         CHECK(output.find("G1 X1 E") != std::string::npos);
     }
 }
+// Feed speed-override events through locally owned sessions and compare exact
+// output: Marlin backs up/restores, while other dialects finish at 100%.
+TEST_CASE("Firmware speed-ratio save and restore encoding follows each dialect",
+          "[plugins][gcode][firmware][dialects][speed-ratio]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    using namespace slic3r_api::GCodeGeneration;
+    using namespace slic3r_api::GCodeGeneration::Firmware;
+
+    DefaultGCodeFirmwareSession generic;
+    Marlin1GCodeFirmwareSession marlin1;
+    Marlin2GCodeFirmwareSession marlin2;
+    PrusaGCodeFirmwareSession prusa;
+    KlipperGCodeFirmwareSession klipper;
+    RepRapGCodeFirmwareSession reprap;
+    SprinterGCodeFirmwareSession sprinter;
+    struct DialectExpectation
+    {
+        const char *name;
+        DefaultGCodeFirmwareSession &session;
+        bool saves_override;
+    };
+    const DialectExpectation expectations[] = {
+        {"default", generic, false},
+        {"marlin1", marlin1, true},
+        {"marlin2", marlin2, true},
+        {"prusa", prusa, true},
+        {"klipper", klipper, false},
+        {"reprap", reprap, false},
+        {"sprinter", sprinter, false}
+    };
+
+    Print print;
+    configure_standard_firmware(print);
+    const slic3r_api::Print print_view(reinterpret_cast<const print_handle *>(&print));
+    std::unique_ptr<ExtrusionEntity> save = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::SAVE_AND_RESET_SPEED_RATIO, 0.8);
+    std::unique_ptr<ExtrusionEntity> restore = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::RESTORE_SPEED_RATIO);
+    for (const DialectExpectation &expectation : expectations) {
+        INFO(expectation.name);
+        expectation.session.setup(print_view.config());
+        CHECK(expectation.session.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(save.get()))) ==
+            (expectation.saves_override ? "M220 B\nM220 S80\n" : "M220 S80\n"));
+        CHECK(expectation.session.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(restore.get()))) ==
+            (expectation.saves_override ? "M220 R\n" : "M220 S100\n"));
+    }
+}
+
+// Export A/B/A process requests to distinguish a shared physical cache from per-tool caches.
+TEST_CASE("Built-in firmware dialects address one physical extruder in SEMM",
+          "[plugins][gcode][firmware][dialects][semm]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool semm = GENERATE(false, true);
+    const char *firmware_id = GENERATE("gcode.firmware.marlin1", "gcode.firmware.marlin2",
+        "gcode.firmware.prusa", "gcode.firmware.sprinter", "gcode.firmware.reprap", "gcode.firmware.klipper");
+    CAPTURE(semm, firmware_id);
+    Print print;
+    configure_standard_firmware(print, 2);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.single_extruder_multi_material.value = semm;
+    config.start_gcode_manual.value = true;
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    plan.groups.front().layers.emplace_back();
+    PrintingLayerGroup &layer = plan.groups.front().layers.front();
+    layer.print_z = scale_i(0.2);
+    for (size_t idx = 0; idx < 3; ++idx) {
+        layer.tool_groups.emplace_back();
+        PrintingToolGroup &group = layer.tool_groups.back();
+        group.extruder_id = idx == 1 ? 1 : 0;
+        const float temperature = idx == 1 ? 230.f : 200.f;
+        const float pressure = idx == 1 ? 0.06f : 0.04f;
+        const float fan = idx == 1 ? 60.f : 50.f;
+        ExtrusionEntity::Children children;
+        children.push_back(make_firmware_path(
+            ArcPolyline(Points{Point::new_scale(double(idx), 0.0), Point::new_scale(double(idx + 1), 0.0)}),
+            20.f, 500.f, pressure, fan, temperature));
+        children.push_back(special_command_entity(ExtrusionPropertySpecialCommand::Code::WAIT_FOR_TEMP));
+        std::unique_ptr<ExtrusionEntity> root(new ExtrusionEntity(std::move(children), false, true, true));
+        root->add_property(ExtrusionPropertySpeed(20.f, 500.f, pressure, fan, temperature));
+        append_path_extrusion(group, std::move(root));
+    }
+    const std::string output = export_with_firmware(print, firmware_id);
+    INFO(output);
+    const bool reprap = std::string(firmware_id) == "gcode.firmware.reprap";
+    const bool klipper = std::string(firmware_id) == "gcode.firmware.klipper";
+    const bool sprinter = std::string(firmware_id) == "gcode.firmware.sprinter";
+    const std::string first_heat = reprap ? "G10 P0 S200\n" :
+        std::string("M104 S200") + (semm || klipper ? "\n" : " T0\n");
+    const std::string second_heat = reprap ? "G10 P1 S230\n" :
+        std::string("M104 S230") + (semm || klipper ? "\n" : " T1\n");
+    CHECK(count_occurrences(output, first_heat) == (semm ? 2 : 1));
+    CHECK(count_occurrences(output, second_heat) == 1);
+    const size_t first = output.find(first_heat);
+    const size_t second = output.find(second_heat);
+    REQUIRE(first != std::string::npos);
+    REQUIRE(second != std::string::npos);
+    CHECK(first < second);
+    if (semm)
+        CHECK(output.find(first_heat, second) != std::string::npos);
+    if (!reprap && semm) {
+        std::istringstream lines(output);
+        std::string line;
+        while (std::getline(lines, line))
+            if (line.rfind("M104 ", 0) == 0 || line.rfind("M109 ", 0) == 0)
+                CHECK(line.find(" T") == std::string::npos);
+        CHECK(output.find("M109 S230\n") != std::string::npos);
+    }
+    if (reprap || sprinter) {
+        CHECK(output.find(semm ? "M572 S0.06\n" : "M572 D1 S0.06\n") != std::string::npos);
+        if (semm)
+            CHECK(output.find("M572 D") == std::string::npos);
+    }
+    if (reprap) {
+        CHECK(output.find(semm ? "M106 P0 S0.6\n" : "M106 P1 S0.6\n") != std::string::npos);
+        CHECK(output.find("M116 P1\n") != std::string::npos);
+        if (semm)
+            CHECK(output.find("M106 P1") == std::string::npos);
+    }
+    if (klipper) {
+        CHECK(output.find(semm ? "T1\n" : "ACTIVATE_EXTRUDER EXTRUDER=extruder1\n") != std::string::npos);
+        CHECK(output.find(semm ? "SET_PRESSURE_ADVANCE ADVANCE=0.06\n" :
+            "SET_PRESSURE_ADVANCE ADVANCE=0.06 EXTRUDER=extruder1\n") != std::string::npos);
+        if (semm) {
+            CHECK(output.find("ACTIVATE_EXTRUDER") == std::string::npos);
+            CHECK(output.find("EXTRUDER=") == std::string::npos);
+        }
+    } else {
+        CHECK(output.find("T1\n") != std::string::npos);
+    }
+}
+
+// Compare emitted coordinates across A/B/A selections in both physical-tool models and E modes.
+TEST_CASE("Built-in firmware resets absolute E immediately after every emitted tool selection",
+          "[plugins][gcode][firmware][dialects][toolchange-reset]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool semm = GENERATE(false, true);
+    const bool relative_e = GENERATE(false, true);
+    const char *firmware_id = GENERATE("gcode.firmware.marlin1", "gcode.firmware.marlin2",
+        "gcode.firmware.prusa", "gcode.firmware.sprinter", "gcode.firmware.reprap", "gcode.firmware.klipper");
+    CAPTURE(semm, relative_e, firmware_id);
+    Print print;
+    configure_standard_firmware(print, 2);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.single_extruder_multi_material.value = semm;
+    config.use_relative_e_distances.value = relative_e;
+    config.start_gcode_manual.value = true;
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    plan.groups.front().layers.emplace_back();
+    PrintingLayerGroup &layer = plan.groups.front().layers.front();
+    const std::vector<double> requested_e{1.25, 2.5, 0.75};
+    for (size_t idx = 0; idx < requested_e.size(); ++idx) {
+        layer.tool_groups.emplace_back();
+        PrintingToolGroup &group = layer.tool_groups.back();
+        group.extruder_id = idx == 1 ? 1 : 0;
+        std::unique_ptr<ExtrusionPath> path = make_firmware_path(
+            ArcPolyline(Points{Point::new_scale(double(idx), 0.0), Point::new_scale(double(idx + 1), 0.0)}),
+            20.f, 500.f);
+        path->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, requested_e[idx]));
+        append_path_extrusion(group, std::move(path));
+    }
+    const std::string output = export_with_firmware(print, firmware_id);
+    INFO(output);
+    std::istringstream lines(output);
+    std::string line;
+    std::vector<double> encoded_e;
+    size_t selections = 0;
+    while (std::getline(lines, line)) {
+        if (line == "T0" || line == "T1" || line.rfind("ACTIVATE_EXTRUDER ", 0) == 0) {
+            ++selections;
+            if (!relative_e) {
+                std::string reset;
+                REQUIRE(bool(std::getline(lines, reset)));
+                CHECK(reset == "G92 E0");
+            }
+        }
+        if (line.rfind("G1 ", 0) == 0) {
+            const size_t e_pos = line.find(" E");
+            if (e_pos != std::string::npos)
+                encoded_e.push_back(std::stod(line.substr(e_pos + 2)));
+        }
+    }
+    CHECK(selections == 3);
+    CHECK(count_occurrences(output, "G92 E0\n") == (relative_e ? 0 : selections));
+    REQUIRE(encoded_e.size() == requested_e.size());
+    for (size_t idx = 0; idx < requested_e.size(); ++idx)
+        CHECK(encoded_e[idx] == Approx(requested_e[idx]));
+}
+
+// Each built-in provider explicitly declares the typed setting used by its shared-extruder model.
+TEST_CASE("Built-in firmware providers declare their SEMM dependency",
+          "[plugins][gcode][firmware][semm]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    for (const char *id : {"gcode.firmware.marlin1", "gcode.firmware.marlin2", "gcode.firmware.prusa",
+                           "gcode.firmware.sprinter", "gcode.firmware.reprap", "gcode.firmware.klipper"}) {
+        const Plugin *plugin = Orchestrator::instance().get_plugin(id);
+        REQUIRE(plugin != nullptr);
+        size_t declared = 0;
+        for (const Plugin::UsedConfigKey &key : plugin->get_used_config_keys()) {
+            if (key.key != "single_extruder_multi_material")
+                continue;
+            ++declared;
+            CHECK(key.type == RAW_CO_BOOL);
+            CHECK(key.container_type == RAW_CONTAINER_TYPE_NONE);
+            CHECK(key.option_preset_type == RAW_PRESET_TYPE_NONE);
+        }
+        CHECK(declared == 1);
+    }
+}
+
+// SEMM fan routing uses the physical tool's declared mapping rather than logical filament IDs.
+TEST_CASE("RepRap SEMM fan output preserves the physical tool zero mapping",
+          "[plugins][gcode][firmware][dialects][reprap][semm]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize("single_extruder_multi_material", "1");
+    RepRapReaderStateProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    const orchestrator_runtime_id reader_state_id = orchestrator_register_runtime_id(
+        reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+        GCODE_READER_STATE_ID_TYPE,
+        slic3r_api::GCodeGeneration::Reader::REPRAP_READER_STATE_NAME);
+    firmware.set_reader_state_id(reader_state_id);
+    slic3r_api::GCodeGeneration::Reader::RepRapGCodeReaderState mapped;
+    mapped.tools[0].fans = {2, 3};
+    mapped.tools[1].fans = {4};
+    slic3r_api::GCodeStateTracker tracker;
+    tracker.set_reader_id(reader_state_id);
+    mapped.write_to(tracker, reader_state_id);
+    firmware.synchronize_reader_private_state(tracker);
+    CHECK(firmware.encode_fan(1, 50.0) == "M106 P2 S0.5\nM106 P3 S0.5\n");
+}
+
 TEST_CASE("Built-in firmware acceleration acknowledgements match their physical registers",
           "[plugins][gcode][firmware][dialects][acceleration]")
 {

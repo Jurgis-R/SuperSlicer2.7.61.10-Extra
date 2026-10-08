@@ -32,7 +32,7 @@ The main specialization flow is:
         fallback for other script types
 
     encode state changes
-    |-- select a tool with `ACTIVATE_EXTRUDER`
+    |-- select a tool with `ACTIVATE_EXTRUDER`, or a SEMM filament with `T`
     |-- set temperature with `M104` or `M109`
     |-- set pressure advance with `SET_PRESSURE_ADVANCE`
     |-- encode shared acceleration with `M204`
@@ -46,7 +46,8 @@ Klipper uses one shared acceleration setting for the initial machine envelope,
 while later movement-specific changes use `M204 S`. Tool names come from the
 `tool_name` configuration and fall back to `extruder`, `extruder1`, and so on.
 The selected tool's fan runtime is synchronized from the previous tool because
-the emitted fan command is global, whereas heater histories remain per tool.
+the emitted fan command is global. Outside SEMM, heater histories remain per
+tool; SEMM shares all extruder runtime state through the base session.
 This class does not own plan traversal or script placeholder expansion; those
 responsibilities remain in the base session and the firmware output writer.
 */
@@ -90,12 +91,14 @@ void KlipperGCodeFirmwareSession::setup_firmware(const Config &config)
     }
 }
 
+// Borrow two tools and copy only fan runtime when a previous tool exists;
+// destination settings remain owned and unchanged, with no output or failure.
 void KlipperGCodeFirmwareSession::synchronize_selected_extruder_state(
     const DefaultExtruder *previous,
     DefaultExtruder &selected)
 {
     // The current Klipper encoder emits one global M106 fan command. Heater
-    // commands target the activated extruder and retain per-tool histories.
+    // commands target the activated extruder with per-tool histories outside SEMM.
     if (previous != nullptr)
         selected.fan().synchronize_runtime_from(previous->fan());
 }
@@ -108,8 +111,12 @@ const std::string &KlipperGCodeFirmwareSession::tool_name(extruder_index_t tool_
     return m_tool_names[static_cast<size_t>(tool_id)];
 }
 
+// Return a tool-selection command without changing state; SEMM selects a filament
+// with T, otherwise a configured name is required and missing names throw.
 std::string KlipperGCodeFirmwareSession::encode_tool_change(extruder_index_t tool_id) const
 {
+    if (single_extruder_multi_material())
+        return DefaultGCodeFirmwareSession::encode_tool_change(tool_id);
     return "ACTIVATE_EXTRUDER EXTRUDER=" + tool_name(tool_id) + "\n";
 }
 
@@ -126,12 +133,14 @@ std::string KlipperGCodeFirmwareSession::encode_chamber_temperature(int16_t, boo
     return encode_unsupported_operation("chamber temperature");
 }
 
+// Format pressure advance without mutating state; SEMM targets the active shared
+// extruder, otherwise tool_name validates the ID and supplies the configured name.
 std::string KlipperGCodeFirmwareSession::encode_pressure_advance(
     extruder_index_t tool_id,
     double pressure_advance) const
 {
     return "SET_PRESSURE_ADVANCE ADVANCE=" + format_number(pressure_advance) +
-           " EXTRUDER=" + tool_name(tool_id) + "\n";
+           (single_extruder_multi_material() ? std::string() : " EXTRUDER=" + tool_name(tool_id)) + "\n";
 }
 
 std::string KlipperGCodeFirmwareSession::encode_acceleration(uint32_t acceleration, bool) const
