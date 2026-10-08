@@ -513,8 +513,6 @@ set(SLIC3R_SOURCES
 	Plugins/Support/SupportDemandOverhangs.hpp
 	Plugins/Support/SupportDemandPainting.cpp
 	Plugins/Support/SupportDemandPainting.hpp
-	Plugins/Support/Toolpath/GridSupportParams.cpp
-	Plugins/Support/Toolpath/GridSupportParams.hpp
 	Plugins/Support/Toolpath/LegacySupportPaths.cpp
 	Plugins/Support/Toolpath/LegacySupportPaths.hpp
 	Plugins/Support/Toolpath/SupportToolpathLegacy.cpp

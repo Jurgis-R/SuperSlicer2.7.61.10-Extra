@@ -160,12 +160,13 @@ void fill_with_perimeter(storage_handle *storage, const Surface &surface, const 
 
 InnerFill pattern_service_fill(const run_ctx_support_toolpath &payload, infill_pattern_runtime_id pattern_id,
                                const raw_infill_pattern_params &params, const layer_handle *layer,
-                               const layer_island_handle *island, const layer_region_island_handle *region_island)
+                               const layer_island_handle *island, const layer_region_island_handle *region_island,
+                               const layer_region_handle *primary_region)
 {
-    return [&payload, pattern_id, &params, layer, island, region_island](const surface_handle *surface,
-                                                                         MutableExtrusionEntity output) {
+    return [&payload, pattern_id, &params, layer, island, region_island, primary_region](const surface_handle *surface,
+                                                                                         MutableExtrusionEntity output) {
         if (payload.generate_pattern == nullptr ||
-            payload.generate_pattern(&payload, pattern_id, layer, island, region_island, nullptr, surface, nullptr,
+            payload.generate_pattern(&payload, pattern_id, layer, island, region_island, primary_region, surface, nullptr,
                                      &params, output.mutable_handle()) == 0)
             throw std::runtime_error("The support pattern service could not fill a perimeter-wrapped area.");
     };

@@ -49,6 +49,7 @@ line = 1
 monotoniclines = 1
 concentric = 1
 honeycomb = 1
+supportbase = 1
 3dhoneycomb = 1
 gyroid = 1
 hilbertcurve = 1

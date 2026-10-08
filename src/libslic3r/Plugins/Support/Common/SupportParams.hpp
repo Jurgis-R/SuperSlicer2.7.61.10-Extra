@@ -5,9 +5,9 @@
    the support family and the support toolpaths share: layer heights rounded to
    the machine Z step, contact gaps, interface counts, the support flows, the
    XY gap and the patterns, densities and angles of the toolpaths. It gives the
-   same values as the native GridSupportParams (Grid/GridSupportParams.cpp)
-   and the native toolpath PathParams (Toolpath/LegacySupportPaths.cpp), which
-   remain the reference until the plugins are migrated to this class.
+   same values as the native derivation from the object settings (Slicing.cpp,
+   support flow functions) and the native path settings of SupportParameters.cpp;
+   tests/plugins/test_support_common.cpp compares both.
 
    Units follow the native classes: heights, gaps and extrusion lengths in
    millimeters as double, XY distances (gap_xy, resolution, min_height) scaled,
@@ -37,7 +37,7 @@ struct SupportParams
     // Read the settings of a sliced object; its layers give the minimum layer height.
     SupportParams(const Print &print, const Object &object);
 
-    // ---- Geometry (native GridSupportParams) ----
+    // ---- Geometry (native Slicing.cpp derivation) ----
     // First layer, nominal support layer and thickest support layer heights, Z-step rounded (mm).
     double first_layer_height = 0, layer_height = 0, max_support_height = 0;
     // Vertical gaps above and below the support (mm), zero when soluble; machine Z step (mm).

@@ -661,6 +661,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "monotoniclines");
         activate_plugin_or_fail(orchestrator, "concentric");
         activate_plugin_or_fail(orchestrator, "honeycomb");
+        activate_plugin_or_fail(orchestrator, "supportbase");
         activate_plugin_or_fail(orchestrator, "3dhoneycomb");
         activate_plugin_or_fail(orchestrator, "gyroid");
         activate_plugin_or_fail(orchestrator, "hilbertcurve");

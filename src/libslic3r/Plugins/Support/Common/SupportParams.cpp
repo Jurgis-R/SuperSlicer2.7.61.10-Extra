@@ -1,9 +1,10 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher.
 /* Implementation of SupportParams (see SupportParams.hpp).
 
-   The constructor follows the native GridSupportParams constructor line by
-   line, so a reader can compare both: the same order, the same fallbacks and
-   the same rounding. The differences are only in how values are read:
+   The constructor follows the native geometry derivation (NativeGridParams in
+   tests/plugins/test_support_common.cpp) line by line, so a reader can compare
+   both: the same order, the same fallbacks and the same rounding. The differences
+   are only in how values are read:
    - options through Config views, enums by their serialized value;
    - an extruder index of -1 (configured extruder 0, "current extruder") is
      passed as an out-of-range index, which the host resolves to the first

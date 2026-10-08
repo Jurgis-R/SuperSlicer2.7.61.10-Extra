@@ -1,11 +1,13 @@
 /* The Common support library rewrites, on the plugin API, values the native
-   support code computes: GridSupportParams and the toolpath PathParams, the
+   support code computes: the support geometry, the toolpath PathParams, the
    enum choices of the support settings, and FillWithPerimeter. These tests
    compare each one with the native code on the same inputs.
 
    - SupportParams runs on the configurations of the legacy-comparison harness
      (support_grid_test_helpers.hpp) and a few variants, after slicing.
    - The enum helpers run on every value of the native enum lists.
+   - The smooth contact fill runs on a sliced print with non-default ironing settings and is
+     compared with the native FillSmooth on the same surfaces.
    - The perimeter-wrapped fill calls its inner pattern through the
      STEP_SUPPORT_TOOLPATH pattern service, as a toolpath plugin does, and its
      extrusion tree is compared node by node with the native one. The honeycomb
@@ -19,8 +21,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <map>
 #include <memory>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -29,11 +34,16 @@
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_support_toolpath.h"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/Fill/FillBase.hpp"
+#include "libslic3r/Flow.hpp"
 #include "libslic3r/Geometry.hpp"
+#include "libslic3r/Layer.hpp"
 #include "libslic3r/Plugins/Support/Common/PerimeterFill.hpp"
 #include "libslic3r/Plugins/Support/Common/SupportParams.hpp"
 #include "libslic3r/Plugins/Support/Common/SupportSettings.hpp"
-#include "libslic3r/Plugins/Support/Toolpath/GridSupportParams.hpp"
+#include "libslic3r/Print.hpp"
+#include "libslic3r/PrintObject.hpp"
+#include "libslic3r/PrintRegion.hpp"
+#include "libslic3r/Slicing.hpp"
 #include "libslic3r/Steps/InfillPatternService.hpp"
 
 using namespace Slic3r;
@@ -54,6 +64,122 @@ struct ParamsCase
     std::vector<std::string> disabled = {};
 };
 
+// Native support geometry: nozzle limits, contact gaps and flows that the legacy support code derives
+// from the object settings. Common::SupportParams has to give the same values through the plugin API.
+struct NativeGridParams
+{
+    // Derive contact gaps, layer limits and geometry flows from the object's settings.
+    explicit NativeGridParams(const PrintObject &object);
+    double first_layer_height = 0, layer_height = 0, max_support_height = 0;
+    double gap_above = 0, gap_below = 0, z_step = 0;
+    bool soluble = false;
+    size_t top_interfaces = 0, bottom_interfaces = 0;
+    Flow first_flow, base_flow, interface_flow, bottom_flow;
+    FloatOrPercent bottom_expansion;
+    coord_t min_height = 0, gap_xy = 0, resolution = SCALED_EPSILON;
+    double interface_density = 0;
+};
+
+// Resolve percent heights against the nozzle; zero uses the slicer's minimum default and the result is rounded to the machine Z step.
+double native_min_layer_height(const PrintConfig &print, uint16_t id)
+{
+    const double height = print.min_layer_height.get_effective_value(print.nozzle_diameter.get_at(id), id);
+    return check_z_step(height == 0 ? 0.07 : std::max(0.01, height), print.z_step);
+}
+// Resolve percent heights against the nozzle; a disabled or zero limit uses three quarters of its diameter and respects the configured minimum.
+double native_max_layer_height(const PrintConfig &print, uint16_t id)
+{
+    const double minimum = native_min_layer_height(print, id);
+    const double nozzle = print.nozzle_diameter.get_at(id);
+    const double maximum = print.max_layer_height.get_effective_value(nozzle, id);
+    return check_z_step(std::max(minimum, maximum == 0 || !print.max_layer_height.is_enabled() ? 0.75 * nozzle : maximum), print.z_step);
+}
+
+// Resolve nozzle limits and contact distances for an already sliced object; this instance owns its flows and leaves the object's settings unchanged.
+NativeGridParams::NativeGridParams(const PrintObject &object)
+{
+    const PrintConfig &print = object.print()->config();
+    const PrintObjectConfig &config = object.config();
+    const std::set<extruder_index_t> extruders = object.object_extruders();
+    z_step = print.z_step;
+    soluble = config.support_material_contact_distance_type.value == zdNone;
+    double min_nozzle = print.nozzle_diameter.get_at(0);
+    first_layer_height = config.first_layer_height.value;
+    if (config.first_layer_height.percent) {
+        first_layer_height = std::numeric_limits<double>::max();
+        for (extruder_index_t id : extruders) {
+            const double nozzle = print.nozzle_diameter.get_at(id);
+            min_nozzle = std::min(min_nozzle, nozzle);
+            first_layer_height = std::min(first_layer_height, config.first_layer_height.get_effective_value(nozzle));
+        }
+    }
+    first_layer_height = check_z_step(first_layer_height, z_step);
+    const size_t base_id = config.support_material_extruder.value - 1;
+    const size_t interface_id = config.support_material_interface_extruder.value - 1;
+    const double interface_nozzle = print.nozzle_diameter.get_at(interface_id);
+    const double base_max = std::min(native_max_layer_height(print, base_id),
+        config.support_material_extruder.value > 0 ? print.nozzle_diameter.get_at(base_id) : min_nozzle);
+    const double interface_max = std::min(native_max_layer_height(print, interface_id),
+        config.support_material_interface_extruder.value > 0 ? interface_nozzle : min_nozzle);
+    double minimum = 0, maximum = std::numeric_limits<double>::max();
+    if (config.support_material_extruder.value > 0) {
+        minimum = native_min_layer_height(print, base_id);
+        maximum = base_max;
+    }
+    if (config.support_material_interface_extruder.value > 0) {
+        minimum = std::max(minimum, native_min_layer_height(print, interface_id));
+        maximum = std::min(maximum, interface_max);
+    }
+    max_support_height = maximum == std::numeric_limits<double>::max() ? 0 : std::min(maximum, base_max);
+    for (extruder_index_t id : extruders) {
+        minimum = std::max(minimum, native_min_layer_height(print, id));
+        maximum = std::min(maximum, native_max_layer_height(print, id));
+    }
+    if (maximum == std::numeric_limits<double>::max()) maximum = config.layer_height.value;
+    if (minimum == 0) minimum = config.layer_height.value;
+    minimum = check_z_step(minimum, z_step);
+    maximum = check_z_step(maximum, z_step);
+    if (max_support_height == 0) max_support_height = maximum;
+    max_support_height = check_z_step(max_support_height, z_step);
+    layer_height = std::clamp(check_z_step(config.layer_height.value, z_step), minimum, maximum);
+    if (!soluble) {
+        gap_above = check_z_step(config.support_material_contact_distance.get_effective_value(interface_nozzle), z_step);
+        gap_below = check_z_step(config.support_material_bottom_contact_distance.get_effective_value(interface_nozzle), z_step);
+        if (gap_below <= 0) gap_below = gap_above;
+    }
+    const int top = std::max(0, config.support_material_interface_layers.value);
+    const int bottom = config.support_material_bottom_interface_layers.is_enabled() ?
+        std::max(0, config.support_material_bottom_interface_layers.value) : top;
+    top_interfaces = top > 0 ? size_t(top - 1) : 0;
+    bottom_interfaces = bottom > 0 ? size_t(bottom - 1) : 0;
+    first_flow = support_material_1st_layer_flow(&object, float(first_layer_height));
+    base_flow = support_material_flow(&object, float(layer_height));
+    interface_flow = support_material_interface_flow(&object, float(layer_height));
+    if (top == 0) interface_flow = base_flow;
+    resolution = scale_i(print.resolution_internal);
+    min_height = std::numeric_limits<coord_t>::max();
+    for (size_t id = 0; id < print.min_layer_height.size(); ++id) {
+        const coord_t height = scale_to_layer_coord(print.min_layer_height.get_effective_value(print.nozzle_diameter.get_at(id), id));
+        if (height > 0) min_height = std::min(min_height, height);
+    }
+    for (const Layer &layer : object.layers())
+        if (layer.scaled_height() > 0) min_height = std::min(min_height, layer.scaled_height());
+    double external_width = 0, bridge_ratio = 0;
+    for (size_t id = 0; id < object.num_printing_regions(); ++id) {
+        const PrintRegion &region = object.printing_region(id);
+        external_width = std::max(external_width, double(region.flow(object, frExternalPerimeter, layer_height, 2).width()));
+        bridge_ratio += region.config().bridge_flow_ratio.get_effective_value(1.);
+    }
+    gap_xy = scale_to_layer_coord(config.support_material_xy_spacing.get_effective_value(external_width));
+    bridge_ratio /= object.num_printing_regions();
+    bottom_flow = soluble ? interface_flow.with_flow_ratio(bridge_ratio) :
+        Flow::bridging_flow(std::sqrt(bridge_ratio) * interface_flow.nozzle_diameter(), interface_flow.nozzle_diameter());
+    bottom_expansion = boost::any_cast<FloatOrPercent>(config.support_material_bottom_interface_expansion.get_any());
+    interface_density = std::min(1., interface_flow.spacing() / (config.support_material_interface_spacing.value + interface_flow.spacing()));
+    if (top == 0)
+        interface_density = std::min(1., base_flow.spacing() / (config.support_material_spacing.value + base_flow.spacing()));
+}
+
 // The harness combinations plus variants exercising percent heights, the current extruder,
 // percent XY gaps, the base patterns, the "auto" interface patterns, disabled layer limits and
 // interface counts, and object extruders with different nozzles.
@@ -64,7 +190,7 @@ void check_flow(const c_flow &actual, const Flow &expected);
 void check_flow_mm(const c_flow_mm &actual, const Flow &expected);
 // Serialized name of a native InfillPattern value.
 std::string pattern_name(InfillPattern pattern);
-// Native PathParams pattern choice for one interface, as LegacySupportPaths.cpp computes it.
+// Native pattern choice for one interface, as SupportParameters.cpp computes it.
 InfillPattern native_auto_interface(bool soluble, double interface_density);
 // Compare two extrusion trees node by node: shape, flags, loops, points and attributes.
 void check_same_tree(const ExtrusionEntity &actual, const ExtrusionEntity &expected,
@@ -351,7 +477,7 @@ void compare_perimeter_fill(PatternServiceFixture &fixture, const ExPolygon &sur
     const double spacing = flow.spacing();
     const double z = 0.2;
     const PrintRegionConfig region_config;
-    // Native: the filler and parameters of LegacySupportPaths fill_paths().
+    // Native reference: the filler and parameters of the legacy fill, as SupportCommon.cpp sets them.
     std::unique_ptr<FillWithPerimeter> native_fill(new FillWithPerimeter(Fill::new_from_type(inner.pattern)));
     native_fill->ratio_fill_inside = 0.2f;
     native_fill->set_bounding_box(BoundingBox(Point(-scale_i(1.), -scale_i(1.)), Point(scale_i(1.), scale_i(1.))));
@@ -385,7 +511,7 @@ void compare_perimeter_fill(PatternServiceFixture &fixture, const ExPolygon &sur
     slic3r_api::StoredExtrusionEntity out(storage_value);
     const slic3r_api::ExPolygon area(reinterpret_cast<const expolygon_handle *>(&surface));
     Common::fill_with_perimeter(storage_value, slic3r_api::Surface(area, raw_surface_type(stPosInternal | stDensSparse)),
-                                settings, Common::pattern_service_fill(fixture.payload, recipe.pattern_id, recipe, nullptr, nullptr, nullptr),
+                                settings, Common::pattern_service_fill(fixture.payload, recipe.pattern_id, recipe, nullptr, nullptr, nullptr, nullptr),
                                 out.mutable_view());
     const ExtrusionEntity &api_out = *reinterpret_cast<const ExtrusionEntity *>(out.handle());
     REQUIRE(api_out.child_count() == native_roots.size());
@@ -459,7 +585,7 @@ TEST_CASE("Support params equal the native grid support parameters", "[plugins][
         Steps::StepSlicing::run_step(host, print);
         const PrintObject &object = print.object(0);
 
-        const SupportGrid::GridSupportParams native(object);
+        const NativeGridParams native(object);
         const Common::SupportParams params(slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)),
                                            slic3r_api::Object(reinterpret_cast<const object_handle *>(&object)));
         CHECK(params.first_layer_height == native.first_layer_height);
@@ -487,7 +613,7 @@ TEST_CASE("Support params equal the native grid support parameters", "[plugins][
         check_flow_mm(params.bottom_flow_mm, native.bottom_flow);
         CHECK(params.interface_density == native.interface_density);
 
-        // Path settings, as the native PathParams of LegacySupportPaths.cpp derives them.
+        // Path settings, as the legacy support code (SupportParameters.cpp) derives them.
         const PrintObjectConfig &object_config = object.config();
         const double native_density = std::min(1., native.base_flow.spacing() /
             (object_config.support_material_spacing.value + native.base_flow.spacing()));
@@ -781,4 +907,170 @@ TEST_CASE("Honeycomb plugin pieces equal the native honeycomb without connection
     CHECK(total_length(plugin_connected) == Approx(total_length(native_unconnected)).epsilon(1e-9));
     // Connecting joins pieces along the border: fewer, longer paths.
     CHECK(native_connected.size() < native_unconnected.size());
+}
+
+namespace {
+
+// Length, volume, path count and absolute x and y extents of the extrusion paths of one role, summed over a tree.
+// The extents tell the direction of the lines: a quarter turn of a fill swaps them, while its length does not change.
+struct RoleTotal
+{
+    size_t paths = 0;
+    double length = 0, volume = 0, dx = 0, dy = 0;
+};
+using RoleTotals = std::map<uint16_t, RoleTotal>;
+
+// Add the leaves of a native tree to totals, keyed by the role bits of each path.
+void add_native_totals(const ExtrusionEntity &entity, RoleTotals &totals)
+{
+    if (entity.has_polyline()) {
+        const ExtrusionAttributes *attributes = entity.get_property<ExtrusionAttributes>();
+        REQUIRE(attributes != nullptr);
+        const double length = unscaled(entity.polyline_ref().length());
+        RoleTotal &total = totals[uint16_t(attributes->role)];
+        ++total.paths;
+        total.length += length;
+        total.volume += length * attributes->mm3_per_mm;
+        const Polyline line = entity.polyline_ref().to_polyline();
+        for (size_t index = 1; index < line.points.size(); ++index) {
+            total.dx += unscaled(std::abs(double(line.points[index].x() - line.points[index - 1].x())));
+            total.dy += unscaled(std::abs(double(line.points[index].y() - line.points[index - 1].y())));
+        }
+    }
+    for (const ExtrusionEntityUPtr &child : entity.children())
+        add_native_totals(*child, totals);
+}
+
+// Add the leaves of a plugin-API tree to totals, keyed by the role bits of each path.
+void add_api_totals(const slic3r_api::ExtrusionEntity &entity, RoleTotals &totals)
+{
+    if (entity.has_polyline()) {
+        const slic3r_api::EPropertyAttributes *attributes = entity.get(slic3r_api::EPropertyAttributes::key);
+        REQUIRE(attributes != nullptr);
+        const std::vector<c_point> points = entity.points();
+        double length = 0;
+        RoleTotal &total = totals[uint16_t(attributes->extrusion_role())];
+        for (size_t index = 1; index < points.size(); ++index) {
+            const double dx = double(points[index].x - points[index - 1].x), dy = double(points[index].y - points[index - 1].y);
+            length += std::hypot(dx, dy);
+            total.dx += unscaled(std::abs(dx));
+            total.dy += unscaled(std::abs(dy));
+        }
+        ++total.paths;
+        total.length += unscaled(length);
+        total.volume += unscaled(length) * attributes->mm3_per_mm();
+    }
+    for (uint32_t index = 0; index < entity.child_count(); ++index)
+        add_api_totals(entity.child(index), totals);
+}
+
+// A sliced cube whose region carries non-default ironing settings: the native FillSmooth and the smooth
+// plugin both read them from the region of the surface.
+struct SmoothPrint
+{
+    SmoothPrint()
+    {
+        DynamicPrintConfig config = SG::config("grid", false, 3, false);
+        config.set_deserialize_strict({{"fill_smooth_width", "40%"}, {"fill_smooth_distribution", "30%"}});
+        Test::init_print({Test::mesh(Test::TestMesh::cube_20x20x20)}, print, model, config);
+        Orchestrator &host = Orchestrator::instance();
+        Steps::StepLayerHeightGeneration::prepare(print);
+        Steps::StepLayerHeightGeneration::run_step(host, print);
+        Steps::StepSlicing::run_step(host, print);
+        service = std::make_unique<Steps::InfillPatternService>(host, print, 1, Steps::InfillPatternService::SetupPatterns::Refuse);
+        payload.print = reinterpret_cast<const print_handle *>(&print);
+        payload.object = reinterpret_cast<const object_handle *>(&print.object(0));
+        payload.host_context = service.get();
+        payload.generate_pattern = &service_generate_pattern;
+    }
+    Print print;
+    Model model;
+    std::unique_ptr<Steps::InfillPatternService> service;
+    run_ctx_support_toolpath payload = {};
+};
+
+} // namespace
+
+// There is no layer-level smooth variant: the legacy support generator asserts at SupportCommon.cpp:2389-2390 that each
+// support entity has one non-mixed support role, and an ironed contact mixes the interface and ironing roles in one
+// entity. The native FillSmooth is the filler the legacy calls for that contact, so the smooth plugin is compared with it
+// on the same surfaces, recipe and region settings, and each role must print paths within one percent in length, volume
+// and line direction.
+// Narrow contacts, areas narrower than two line spacings, are a known difference that is not carried over: the native
+// deposit pass leaves them unfilled, because the legacy never sets no-overlap areas and its gap fill (FillBase.cpp:285)
+// is cut by an empty set, which is a legacy defect. The plugin prints monotonic lines there, so the shapes below are wide.
+TEST_CASE("Smooth support contact fill equals the native FillSmooth", "[plugins][support-common]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    SmoothPrint print_case;
+    const PrintObject &object = print_case.print.object(0);
+    const LayerRegion &region = object.layer(0).region(0);
+    const PrintRegion &print_region = object.printing_region(0);
+    const Flow flow = support_test_flow();
+    const double spacing = flow.spacing();
+    const float density = 1.f;
+    const float angle = float(M_PI / 12.);
+    const double z = 0.2;
+
+    // A rectangle and an L with a hole, the contact shapes of the perimeter comparisons.
+    std::vector<ExPolygon> surfaces;
+    surfaces.emplace_back(Polygon({Point(0, 0), Point(scale_i(10.), 0), Point(scale_i(10.), scale_i(6.)), Point(0, scale_i(6.))}));
+    ExPolygon l_shape(Polygon({Point(0, 0), Point(scale_i(12.), 0), Point(scale_i(12.), scale_i(4.)), Point(scale_i(4.), scale_i(4.)),
+                               Point(scale_i(4.), scale_i(12.)), Point(0, scale_i(12.))}));
+    Polygon hole({Point(scale_i(1.), scale_i(1.)), Point(scale_i(1.), scale_i(2.5)), Point(scale_i(2.5), scale_i(2.5)), Point(scale_i(2.5), scale_i(1.))});
+    hole.make_clockwise();
+    l_shape.holes.push_back(hole);
+    surfaces.push_back(l_shape);
+
+    RoleTotals native_totals, api_totals;
+    for (const ExPolygon &surface : surfaces) {
+        FillParams params;
+        params.density = density;
+        params.dont_adjust = true;
+        params.config = &print_region.config();
+        params.flow = flow;
+        params.role = ExtrusionRole::SupportMaterialInterface;
+        std::unique_ptr<Fill> native_fill(Fill::new_from_type(ipSmooth));
+        native_fill->set_bounding_box(BoundingBox(Point(-scale_i(1.), -scale_i(1.)), Point(scale_i(1.), scale_i(1.))));
+        native_fill->z = z;
+        native_fill->angle = angle;
+        native_fill->init_spacing(spacing, params);
+        const Surface native_surface(stModSupport | stPosTop | stDensSolid, surface);
+        ExtrusionEntitiesPtr native_out;
+        native_fill->fill_surface_extrusion(&native_surface, params, native_out);
+        for (ExtrusionEntity *entity : native_out) {
+            std::unique_ptr<ExtrusionEntity> owned(entity);
+            add_native_totals(*owned, native_totals);
+        }
+
+        // The same surface and recipe through the smooth plugin, with the region of the layer as its primary region.
+        raw_infill_pattern_params recipe = inner_recipe(print_case.service->resolve_pattern_id("smooth"), flow, spacing, density, angle, z);
+        recipe.extrusion_role = RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL_INTERFACE;
+        recipe.surface_type = raw_surface_type(RAW_SURFACE_TYPE_MOD_SUPPORT | RAW_SURFACE_TYPE_POS_TOP | RAW_SURFACE_TYPE_DENS_SOLID);
+        recipe.infill_flags = C_INFILL_FLAG_DONT_ADJUST | C_INFILL_FLAG_CAN_ANGLE_CROSS;
+        const Common::InnerFill inner = Common::pattern_service_fill(print_case.payload, recipe.pattern_id, recipe, nullptr, nullptr,
+                                                                     nullptr, reinterpret_cast<const layer_region_handle *>(&region));
+        PluginStorage storage;
+        storage_handle *storage_value = reinterpret_cast<storage_handle *>(&storage);
+        const slic3r_api::ExPolygon area(reinterpret_cast<const expolygon_handle *>(&surface));
+        slic3r_api::StoredSurfaceCollection surface_collection(storage_value);
+        surface_collection.append(area, recipe.surface_type);
+        slic3r_api::StoredExtrusionEntity out(storage_value);
+        inner(surface_collection_at(surface_collection.handle(), 0), out.mutable_view());
+        add_api_totals(out.readonly(), api_totals);
+    }
+
+    // Both passes of the contact print: the deposit in the interface role and the ironing pass.
+    CHECK(api_totals[uint16_t(RAW_EXTRUSION_ROLE_SUPPORT_MATERIAL_INTERFACE)].length > 0);
+    CHECK(api_totals[uint16_t(RAW_EXTRUSION_ROLE_IRONING_INFILL)].length > 0);
+    CHECK(api_totals.size() == native_totals.size());
+    for (const RoleTotals::value_type &item : native_totals) {
+        CAPTURE(item.first, item.second.length, item.second.volume);
+        const RoleTotals::const_iterator found = api_totals.find(item.first);
+        REQUIRE(found != api_totals.end());
+        CHECK(found->second.length == Approx(item.second.length).epsilon(0.01));
+        CHECK(found->second.volume == Approx(item.second.volume).epsilon(0.01));
+        CHECK(found->second.dx == Approx(item.second.dx).epsilon(0.01).margin(1e-6));
+        CHECK(found->second.dy == Approx(item.second.dy).epsilon(0.01).margin(1e-6));
+    }
 }

@@ -33,7 +33,7 @@
 
        const PerimeterFillSettings settings{spacing, 0.2f, role, flow};
        fill_with_perimeter(storage, surface, settings,
-                           pattern_service_fill(*payload, rectilinear_id, recipe, layer, island, region),
+                           pattern_service_fill(*payload, rectilinear_id, recipe, layer, island, region, primary),
                            output);
 
    The native class also applies the "fill exactly" flow correction and the
@@ -84,13 +84,15 @@ void fill_with_perimeter(storage_handle *storage, const Surface &surface, const 
 Inner fill calling the INFILL_PATTERN plugin pattern_id through the pattern
 service of a STEP_SUPPORT_TOOLPATH payload, with recipe params. layer, island
 and region_island describe where the surface is printed and are passed to the
-pattern as context. The payload and params must outlive the returned callback.
-A call the service refuses (unknown id, pattern needing STEP_INFILL
-initialization) throws std::runtime_error.
+pattern as context. primary_region supplies the print settings the pattern
+reads: smooth and ensuring return nothing when it is null. The payload and
+params must outlive the returned callback. A call the service refuses (unknown
+id, pattern needing STEP_INFILL initialization) throws std::runtime_error.
 */
 InnerFill pattern_service_fill(const run_ctx_support_toolpath &payload, infill_pattern_runtime_id pattern_id,
                                const raw_infill_pattern_params &params, const layer_handle *layer,
-                               const layer_island_handle *island, const layer_region_island_handle *region_island);
+                               const layer_island_handle *island, const layer_region_island_handle *region_island,
+                               const layer_region_handle *primary_region);
 
 } // namespace slic3r_api::Support::Common
 
