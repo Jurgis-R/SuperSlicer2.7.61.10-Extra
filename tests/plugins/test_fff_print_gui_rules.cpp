@@ -1,3 +1,8 @@
+///|/ Copyright (c) SuperSlicer 2026 Durand Remi @supermerill
+///|/
+///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
+///|/
+
 #include <catch2/catch.hpp>
 
 #include <algorithm>
@@ -18,10 +23,10 @@
 FFF print GUI rules tests
 =========================
 
-The built-in gui_rules.core plugin replaces the enable/disable logic of the
-legacy ConfigManipulation::toggle_print_fff_options(). These tests compare the
-declarative rules with an imperative reference implementation of the legacy
-intent on curated scenarios and a seeded fuzz.
+The core rule registry describes which configuration controls are meaningful.
+These tests compare it with an independent imperative model on default settings,
+curated tower combinations and seeded fuzz. Towers distinguish global XY from
+shared object offsets; no GUI implementation is loaded or tested here.
 */
 
 using namespace Slic3r;
@@ -35,9 +40,12 @@ const char *const core_gui_rules_owner = "gui_rules.core";
 // Owner of the legacy infill selectors moved out of the core rule plugin.
 const char *const infill_gui_rules_owner = "infill.generator.default";
 
-// Independent reference model of the activation logic. It computes the enabled
-// set directly from the config, so the tests can compare the rule registry
-// against a plain implementation without reusing its evaluator.
+// Compute the independent activation map from borrowed config without retaining it.
+EnabledMap reference_enabled(const DynamicPrintConfig &config);
+// Randomize relevant owned configuration values with the supplied generator.
+void randomize(DynamicPrintConfig &config, std::mt19937 &rng);
+
+// Read borrowed settings into an owned activation map independent of the registry, leaving parallel scheduling irrelevant to towers; absent targets are skipped and option/allocation failures propagate without ownership changes.
 EnabledMap reference_enabled(const DynamicPrintConfig &config)
 {
     EnabledMap out;
@@ -100,8 +108,9 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
 
     const bool seq = b("complete_objects") || fl("parallel_objects_step") > 0;
     const bool parallel_ok = !b("complete_objects") && fl("parallel_objects_step") > 0;
-    const bool have_wipe = fl("parallel_objects_step") <= 0 || b("parallel_islands");
-    const bool wipe_ready = have_wipe && b("wipe_tower");
+    const bool own_tower = b("wipe_tower_per_object");
+    const bool have_wipe = !spiral;
+    const bool wipe_ready = have_wipe && (b("wipe_tower") || own_tower);
     const bool avoid = b("avoid_crossing_perimeters");
     const bool infill_or_solid = H || has_solid;
     const bool smooth =
@@ -310,8 +319,14 @@ EnabledMap reference_enabled(const DynamicPrintConfig &config)
     set("parallel_islands", parallel_ok);
     set("standby_temperature_delta", b("ooze_prevention"));
     set("wipe_tower", have_wipe);
+    set("wipe_tower_per_object", !spiral);
+    set("wipe_tower_object_x", wipe_ready && (b("complete_objects") || own_tower));
+    set("wipe_tower_object_y", wipe_ready && (b("complete_objects") || own_tower));
+    set("wipe_tower_extruder_toolchange", wipe_ready && i("wipe_tower_extruder") != 0);
+    set("wipe_tower_x", have_wipe && b("wipe_tower") && !b("complete_objects"));
+    set("wipe_tower_y", have_wipe && b("wipe_tower") && !b("complete_objects"));
     const char *const wipe_keys[] = {
-        "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
+        "wipe_tower_width", "wipe_tower_rotation_angle",
         "wipe_tower_brim_width", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
         "wipe_tower_bridging", "wipe_tower_brim", "wipe_tower_no_sparse_layers",
         "single_extruder_multi_material_priming", "wipe_tower_speed",
@@ -361,6 +376,7 @@ EnabledMap rule_enabled(const Orchestrator &orchestrator, const DynamicPrintConf
     return out;
 }
 
+// Mutate the owned config using a borrowed seeded generator, including tower eligibility and contour-tool states; no ownership transfers and option failures propagate.
 void randomize(DynamicPrintConfig &config, std::mt19937 &rng)
 {
     std::uniform_int_distribution<int> small(0, 3);
@@ -386,6 +402,7 @@ void randomize(DynamicPrintConfig &config, std::mt19937 &rng)
     config.option<ConfigOptionFloatOrPercent>("small_perimeter_speed")->value = coin(rng) ? 10.0 : 0.0;
     config.option<ConfigOptionFloat>("max_volumetric_speed")->value = coin(rng) ? 5.0 : 0.0;
     config.option<ConfigOptionFloat>("parallel_objects_step")->value = coin(rng) ? 1.0 : 0.0;
+    config.option<ConfigOptionInt>("wipe_tower_extruder")->value = small(rng);
     for (const char *key : { "first_layer_extrusion_width", "external_perimeter_extrusion_width",
                              "perimeter_extrusion_width", "infill_extrusion_width",
                              "solid_infill_extrusion_width", "top_infill_extrusion_width",
@@ -399,7 +416,7 @@ void randomize(DynamicPrintConfig &config, std::mt19937 &rng)
     for (const char *key : { "spiral_vase", "external_perimeters_first", "perimeter_loop",
                              "overhangs", "perimeter_reverse", "thin_walls", "only_one_perimeter_top",
                              "support_material", "support_material_auto", "ooze_prevention",
-                             "complete_objects", "avoid_crossing_perimeters",
+                              "complete_objects", "wipe_tower", "wipe_tower_per_object", "parallel_islands", "avoid_crossing_perimeters",
                              "avoid_crossing_curled_overhangs", "avoid_travel_island",
                              "milling_post_process", "infill_dense", "gap_fill_enabled",
                              "infill_filled_bottom", "infill_filled_solid", "infill_filled_top",
@@ -429,7 +446,7 @@ void randomize(DynamicPrintConfig &config, std::mt19937 &rng)
 
 } // namespace
 
-TEST_CASE("FFF print GUI rules match the legacy toggle logic", "[plugins][gui-rules][fff-print]")
+TEST_CASE("FFF print GUI rules match independent activation logic", "[plugins][gui-rules][fff-print]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
     Orchestrator &orchestrator = Orchestrator::instance();
@@ -457,7 +474,7 @@ TEST_CASE("FFF print GUI rules match the legacy toggle logic", "[plugins][gui-ru
     }
 }
 
-TEST_CASE("FFF print GUI rules match the legacy toggle logic on a seeded fuzz",
+TEST_CASE("FFF print GUI rules match independent activation logic on a seeded fuzz",
           "[plugins][gui-rules][fff-print][fuzz]")
 {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
@@ -477,6 +494,41 @@ TEST_CASE("FFF print GUI rules match the legacy toggle logic on a seeded fuzz",
             INFO("iteration " << iteration << " key " << entry.first);
             REQUIRE(found->second == entry.second);
         }
+    }
+}
+
+// Compare owned tower activation maps across enable/sequential/vase/parallel/tool combinations, requiring parallel-independent eligibility; no GUI code is loaded and assertion/configuration failures remain visible.
+TEST_CASE("Core tower rules distinguish global and instance controls", "[plugins][gui-rules][wipe-tower]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const Orchestrator &orchestrator = Orchestrator::instance();
+    for (unsigned int state = 0; state < 64; ++state) {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        const bool enabled = (state & 1) != 0;
+        const bool own = (state & 2) != 0;
+        const bool sequential = (state & 4) != 0;
+        const bool vase = (state & 8) != 0;
+        const bool parallel = (state & 16) != 0;
+        const bool contour_tool = (state & 32) != 0;
+        config.option<ConfigOptionBool>("wipe_tower")->value = enabled;
+        config.option<ConfigOptionBool>("wipe_tower_per_object")->value = own;
+        config.option<ConfigOptionBool>("complete_objects")->value = sequential;
+        config.option<ConfigOptionBool>("spiral_vase")->value = vase;
+        config.option<ConfigOptionBool>("parallel_islands")->value = false;
+        config.option<ConfigOptionFloat>("parallel_objects_step")->value = parallel ? 5. : 0.;
+        config.option<ConfigOptionInt>("wipe_tower_extruder")->value = contour_tool ? 2 : 0;
+        const EnabledMap actual = rule_enabled(orchestrator, config);
+        const EnabledMap expected = reference_enabled(config);
+        CAPTURE(state);
+        REQUIRE(actual == expected);
+        CHECK(actual.at("wipe_tower_per_object") == !vase);
+        const bool possible = !vase;
+        CHECK(actual.at("wipe_tower") == possible);
+        CHECK(actual.at("wipe_tower_object_x") == (possible && (enabled || own) && (sequential || own)));
+        CHECK(actual.at("wipe_tower_object_y") == actual.at("wipe_tower_object_x"));
+        CHECK(actual.at("wipe_tower_x") == (possible && enabled && !sequential));
+        CHECK(actual.at("wipe_tower_y") == actual.at("wipe_tower_x"));
+        CHECK(actual.at("wipe_tower_extruder_toolchange") == (possible && (enabled || own) && contour_tool));
     }
 }
 
