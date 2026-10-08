@@ -490,6 +490,8 @@ set(SLIC3R_SOURCES
 	Plugins/Surface/SolidShells.hpp
 	Plugins/Surface/TopSurfaceExpansion.cpp
 	Plugins/Surface/TopSurfaceExpansion.hpp
+	Plugins/Support/Common/ClipperResults.cpp
+	Plugins/Support/Common/ClipperResults.hpp
 	Plugins/Support/Common/PerimeterFill.cpp
 	Plugins/Support/Common/PerimeterFill.hpp
 	Plugins/Support/Common/SupportParams.cpp
@@ -499,8 +501,6 @@ set(SLIC3R_SOURCES
 	Plugins/Support/Grid/GridSupportGenerator.cpp
 	Plugins/Support/Grid/GridSupportGenerator.hpp
 	Plugins/Support/Grid/GridSupportLayers.hpp
-	Plugins/Support/Grid/GridSupportParams.cpp
-	Plugins/Support/Grid/GridSupportParams.hpp
 	Plugins/Support/Grid/SupportFamilyGrid.cpp
 	Plugins/Support/Grid/SupportFamilyGrid.hpp
 	Plugins/Support/SupportDemandBridgeRemoval.cpp
@@ -513,6 +513,8 @@ set(SLIC3R_SOURCES
 	Plugins/Support/SupportDemandOverhangs.hpp
 	Plugins/Support/SupportDemandPainting.cpp
 	Plugins/Support/SupportDemandPainting.hpp
+	Plugins/Support/Toolpath/GridSupportParams.cpp
+	Plugins/Support/Toolpath/GridSupportParams.hpp
 	Plugins/Support/Toolpath/LegacySupportPaths.cpp
 	Plugins/Support/Toolpath/LegacySupportPaths.hpp
 	Plugins/Support/Toolpath/SupportToolpathLegacy.cpp

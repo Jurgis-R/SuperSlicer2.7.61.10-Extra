@@ -12,8 +12,9 @@
      plugin leaves its clipped pieces unconnected where the native filler joins them,
      so for it only the perimeters are compared and the inner fill is measured.
 
-   Where the API keeps a native float as a scaled integer (flow width and
-   spacing in c_flow), the derived values get a tolerance; each check says so. */
+   The flows come both as scaled integers (c_flow) and as the host's float
+   millimeters (c_flow_mm); the derived densities read the millimeters, so
+   every value is compared exactly. */
 #include "support_grid_test_helpers.hpp"
 
 #include <algorithm>
@@ -32,7 +33,7 @@
 #include "libslic3r/Plugins/Support/Common/PerimeterFill.hpp"
 #include "libslic3r/Plugins/Support/Common/SupportParams.hpp"
 #include "libslic3r/Plugins/Support/Common/SupportSettings.hpp"
-#include "libslic3r/Plugins/Support/Grid/GridSupportParams.hpp"
+#include "libslic3r/Plugins/Support/Toolpath/GridSupportParams.hpp"
 #include "libslic3r/Steps/InfillPatternService.hpp"
 
 using namespace Slic3r;
@@ -59,6 +60,8 @@ struct ParamsCase
 std::vector<ParamsCase> params_cases();
 // Compare every c_flow field with a native Flow, converted like the host converts it.
 void check_flow(const c_flow &actual, const Flow &expected);
+// Compare the millimeter flow with the native float values, exactly.
+void check_flow_mm(const c_flow_mm &actual, const Flow &expected);
 // Serialized name of a native InfillPattern value.
 std::string pattern_name(InfillPattern pattern);
 // Native PathParams pattern choice for one interface, as LegacySupportPaths.cpp computes it.
@@ -122,6 +125,14 @@ void check_flow(const c_flow &actual, const Flow &expected)
     CHECK(actual.is_bridge == (expected.bridge() ? 1 : 0));
     CHECK(actual.spacing_ratio == expected.spacing_ratio());
     CHECK(actual.mm3_per_mm == expected.mm3_per_mm());
+}
+
+void check_flow_mm(const c_flow_mm &actual, const Flow &expected)
+{
+    CHECK(actual.width == double(expected.width()));
+    CHECK(actual.spacing == double(expected.spacing()));
+    CHECK(actual.height == double(expected.height()));
+    CHECK(actual.nozzle_diameter == double(expected.nozzle_diameter()));
 }
 
 std::string pattern_name(InfillPattern pattern)
@@ -469,23 +480,18 @@ TEST_CASE("Support params equal the native grid support parameters", "[plugins][
         CHECK(params.min_height == native.min_height);
         CHECK(params.gap_xy == native.gap_xy);
         CHECK(params.resolution == native.resolution);
-        // Densities s / (gap + s) read the spacing s from c_flow, the native float spacing truncated to
-        // a scaled unit, unscaled(1) = SCALING_FACTOR mm: the error is at most the derivative
-        // gap / (gap + s)^2 times that unit.
-        const PrintObjectConfig &object_config = object.config();
-        const auto density_bound = [](double gap, double spacing) {
-            return gap / ((gap + spacing) * (gap + spacing)) * unscaled(coord_t(1)) + 1e-12;
-        };
-        const double interface_gap = object_config.support_material_interface_layers.value == 0 ?
-            object_config.support_material_spacing.value : object_config.support_material_interface_spacing.value;
-        CHECK(std::abs(params.interface_density - native.interface_density) <=
-              density_bound(interface_gap, native.interface_flow.spacing()));
+        // The millimeter flows are the native float values, so the densities are exact.
+        check_flow_mm(params.first_flow_mm, native.first_flow);
+        check_flow_mm(params.base_flow_mm, native.base_flow);
+        check_flow_mm(params.interface_flow_mm, native.interface_flow);
+        check_flow_mm(params.bottom_flow_mm, native.bottom_flow);
+        CHECK(params.interface_density == native.interface_density);
 
         // Path settings, as the native PathParams of LegacySupportPaths.cpp derives them.
+        const PrintObjectConfig &object_config = object.config();
         const double native_density = std::min(1., native.base_flow.spacing() /
             (object_config.support_material_spacing.value + native.base_flow.spacing()));
-        CHECK(std::abs(params.base_density - native_density) <=
-              density_bound(object_config.support_material_spacing.value, native.base_flow.spacing()));
+        CHECK(params.base_density == native_density);
         const InfillPattern base_pattern = object_config.support_material_pattern.value == smpHoneycomb ? ipHoneycomb :
             native_density > 0.95 || object_config.support_material_with_sheath.value ? ipRectilinear : ipSupportBase;
         InfillPattern top_pattern = object_config.support_material_top_interface_pattern.value;

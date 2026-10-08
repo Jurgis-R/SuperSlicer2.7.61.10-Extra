@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "ClipperResults.hpp"
 #include "libslic3r/Api/plugin/cpp/ClipperViews.hpp"
 
 namespace slic3r_api::Support::Common {
@@ -32,10 +33,7 @@ void append_path(storage_handle *storage, MutableExtrusionEntity parent, const s
 std::vector<c_point> closed_loop_points(const Polygon &polygon, bool counter_clockwise);
 // Collect, in printing order, the polylines of every leaf of an extrusion tree.
 void collect_leaf_polylines(const ExtrusionEntity &entity, std::vector<std::vector<c_point>> &out);
-// Whether a Clipper result ring is too small or too narrow to keep, like the native test_path()
-// used by remove_small_areas() (ClipperUtils.cpp): its area is below 2 * SCALED_EPSILON times its
-// approximate largest radius around the centroid.
-bool is_small_area(const std::vector<c_point> &ring);
+
 // Fill one perimeter area: its loops, then the inner pattern on its inset.
 void fill_area(storage_handle *storage, const ExPolygon &area, raw_surface_type surface_type,
                const PerimeterFillSettings &settings, const InnerFill &inner_fill, MutableExtrusionEntity area_entity);
@@ -81,44 +79,6 @@ void collect_leaf_polylines(const ExtrusionEntity &entity, std::vector<std::vect
         out.push_back(entity.points());
     for (uint32_t idx = 0; idx < entity.child_count(); ++idx)
         collect_leaf_polylines(entity.child(idx), out);
-}
-
-bool is_small_area(const std::vector<c_point> &ring)
-{
-    // Signed area and centroid exactly as ClipperLib::Area() and ClipperLib::Centroid() compute them,
-    // so the same rings pass the threshold as in the native filter.
-    const size_t size = ring.size();
-    double area = 0;
-    if (size >= 3)
-        for (size_t i = 0, j = size - 1; i < size; ++i) {
-            area += (double(ring[j].x) + ring[i].x) * (double(ring[j].y) - ring[i].y);
-            j = i;
-        }
-    area = -area * 0.5;
-    double x_temp = 0, y_temp = 0;
-    const int last = int(size) - 1;
-    size_t i = 0;
-    for (; int(i) < last; ++i) {
-        const size_t j = i + 1;
-        const double cross = double(ring[i].x) * ring[j].y - double(ring[j].x) * ring[i].y;
-        x_temp += double(ring[i].x + ring[j].x) * cross;
-        y_temp += double(ring[i].y + ring[j].y) * cross;
-    }
-    const double cross = double(ring[i].x) * ring[0].y - double(ring[0].x) * ring[i].y;
-    x_temp += double(ring[i].x + ring[0].x) * cross;
-    y_temp += double(ring[i].y + ring[0].y) * cross;
-    const coord_t centroid_x = coord_t(x_temp / (6 * area));
-    const coord_t centroid_y = coord_t(y_temp / (6 * area));
-    area = std::abs(area);
-    // The native code ORs the squared distances instead of taking their maximum: a cheap upper
-    // bound, kept as is so the threshold is the same.
-    coord_t max_dist_sqr = 0;
-    for (const c_point &point : ring) {
-        const coord_t dx = std::abs(point.x - centroid_x) & 0x3FFFFFFF;
-        const coord_t dy = std::abs(point.y - centroid_y) & 0x3FFFFFFF;
-        max_dist_sqr = max_dist_sqr | (dx * dx + dy * dy);
-    }
-    return area < (2 * SCALED_EPSILON) * std::sqrt(double(max_dist_sqr));
 }
 
 void fill_area(storage_handle *storage, const ExPolygon &area, raw_surface_type surface_type,
@@ -176,12 +136,8 @@ void fill_with_perimeter(storage_handle *storage, const Surface &surface, const 
         CLIPPER_JOIN_MITER, scale_d(settings.spacing) * 10).to_expolygon_collection();
     const StoredExPolygonCollection limit =
         clipper_offset(clipper(expolygon), scale_d(-settings.spacing / 2), CLIPPER_JOIN_MITER, 3.0).to_expolygon_collection();
-    StoredPolygonCollection rings =
-        clipper_intersection(clipper(shrunk.readonly()), clipper(limit.readonly())).to_polygon_collection();
-    for (uint32_t idx = rings.size(); idx-- > 0;)
-        if (is_small_area(rings.at(idx).points()))
-            rings.erase(idx);
-    const StoredExPolygonCollection areas = clipper_union(clipper(rings.readonly())).to_expolygon_collection();
+    const StoredExPolygonCollection areas =
+        native_expolygons(clipper_intersection(clipper(shrunk.readonly()), clipper(limit.readonly())));
     if (areas.empty())
         return;
 

@@ -2,7 +2,10 @@
 /* Support parameters translate object, print and region settings into geometry.
    Z distances use millimetres until converted to the integer layer-Z grid;
    XY geometry uses scaled coordinates. A zero-distance interface is soluble.
-   No raft parameters or slicer-owned parameter bundle are used here. */
+   No raft parameters or slicer-owned parameter bundle are used here.
+   Only the native toolpaths (LegacySupportPaths) and the tests that compare
+   with them read this class; the grid family uses Common::SupportParams,
+   which gives the same values through the plugin API. */
 #ifndef plugins_support_grid_params_hpp_
 #define plugins_support_grid_params_hpp_
 #include "libslic3r/Flow.hpp"

@@ -12,9 +12,11 @@
     same geometry and effective flow attributes, preserving loop boundaries. */
 #include "support_grid_test_helpers.hpp"
 #include "support_grid_legacy_slabs.hpp"
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include "libslic3r/ExtrusionEntityCollection.hpp"
-#include "libslic3r/Plugins/Support/Grid/GridSupportGenerator.hpp"
 #include "libslic3r/Support/SupportMaterial.hpp"
 
 using namespace Slic3r;
@@ -23,8 +25,10 @@ namespace SG = Slic3r::Test::SupportGrid;
 namespace {
 // Run one model through every style, contact-distance and interface-count combination.
 void run_comparison(int model_id, bool same_tool = false);
-// Check published geometry and contact spacing independently of the native comparison.
-void check_family(const PrintObject &object, const Slic3r::SupportGrid::GeneratedSupport &support, const Slic3r::SupportGrid::GridSupportParams &params, int model_id);
+// Check published geometry and contact spacing independently of the native comparison; on_object false
+// means support may not rest on the object (build plate only).
+void check_family(const PrintObject &object, const slic3r_api::Support::Grid::GeneratedSupport &support,
+                  const slic3r_api::Support::Common::SupportParams &params, int model_id, bool on_object = true);
 // Populate deprecated region caches and concrete extrusion classes for native support.
 void prepare_legacy_inputs(PrintObject &object);
 // Copy generic extrusion leaves into concrete paths with resolved flow attributes.
@@ -126,6 +130,10 @@ void legacy_extrusions(const ExtrusionEntity &entity, ExtrusionEntityCollection 
 }
 // Check that every published leaf carries a positive flow whose height is its layer's thickness.
 void check_published_paths(const ExtrusionEntity &entity, const Layer &layer);
+// Hash the published auxiliary layers (Z, thickness, extruder, surface types and points) of the family.
+uint64_t published_hash(const PrintObject &object);
+// Append one comparison result line to the file named by SLIC3R_SUPPORT_COMPARE_TABLE, when it is set.
+void record_comparison(const std::string &section, double slice, double length, double volume, uint64_t hash);
 
 // Walk the owned tree and check width, height and flow per leaf; the layer stays owned by the caller.
 void check_published_paths(const ExtrusionEntity &entity, const Layer &layer)
@@ -141,6 +149,54 @@ void check_published_paths(const ExtrusionEntity &entity, const Layer &layer)
     for (const ExtrusionEntityUPtr &child : entity.children()) check_published_paths(*child, layer);
 }
 
+// FNV-1a over every value that defines a published support surface, in publication order: equal
+// hashes mean the family published exactly the same layers, before and after a refactoring.
+uint64_t published_hash(const PrintObject &object)
+{
+    uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](int64_t value) {
+        for (int byte = 0; byte < 8; ++byte) {
+            hash ^= uint64_t(value >> (byte * 8)) & 0xff;
+            hash *= 1099511628211ull;
+        }
+    };
+    for (const Layer &layer : object.auxiliary_layers()) {
+        mix(layer.scaled_print_z());
+        mix(layer.scaled_height());
+        for (const LayerSliceIsland &island : layer.islands())
+            for (const LayerRegionIsland &work : island.regions_islands()) {
+                mix(work.extruder_id());
+                for (const Surface &surface : work.fill_surfaces()) {
+                    mix(int64_t(surface.surface_type));
+                    for (const Point &point : surface.expolygon.contour.points) {
+                        mix(point.x());
+                        mix(point.y());
+                    }
+                    for (const Polygon &hole : surface.expolygon.holes)
+                        for (const Point &point : hole.points) {
+                            mix(point.x());
+                            mix(point.y());
+                        }
+                }
+            }
+    }
+    return hash;
+}
+
+// The table lets a refactoring of the family prove that every comparison gives the same deviations
+// as before; nothing is written unless the variable is set.
+void record_comparison(const std::string &section, double slice, double length, double volume, uint64_t hash)
+{
+    const char *path = std::getenv("SLIC3R_SUPPORT_COMPARE_TABLE");
+    if (path == nullptr || path[0] == 0)
+        return;
+    std::ofstream out(path, std::ios::app);
+    INFO("comparison table " << path);
+    REQUIRE(out.is_open());
+    out << section << " slice=" << slice << " length=" << length << " volume=" << volume << " hash=" << std::hex << hash << std::dec << "\n";
+    out.flush();
+    REQUIRE(out.good());
+}
 // Apply one comparison variant's extra settings on top of the shared configuration; an empty variant keeps the defaults.
 void apply_variant(DynamicPrintConfig &config, const char *variant)
 {
@@ -163,7 +219,21 @@ void apply_variant(DynamicPrintConfig &config, const char *variant)
     else if (strcmp(variant, "no_sheath") == 0)
         config.set_deserialize_strict({{"support_material_with_sheath", "0"}});
     else if (strcmp(variant, "rectilinear_grid") == 0)
-        config.set_deserialize_strict({{"support_material_pattern", "rectilinear-grid"}});
+        config.set_deserialize_strict({{"support_material_pattern", "rectilinear-grid"}});    else if (strcmp(variant, "filament") == 0)
+        config.set_deserialize_strict({{"support_material_contact_distance_type", "filament"}});
+    else if (strncmp(variant, "bridge_", 7) == 0)
+        // The bridge height of the object decides the contact Z only with a filament contact distance.
+        // A bridge flow ratio below one exercises its square root in the nozzle and flow types.
+        config.set_deserialize_strict({{"support_material_contact_distance_type", "filament"},
+                                       {"bridge_type", variant + 7}, {"bridge_flow_ratio", "80%"}});
+    else if (strcmp(variant, "brim") == 0)
+        config.set_deserialize_strict({{"brim_width", "2"}, {"brim_width_interior", "1"}});
+    else if (strcmp(variant, "feet") == 0)
+        config.set_deserialize_strict({{"raft_first_layer_expansion", "2"}});
+    else if (strcmp(variant, "closing") == 0)
+        config.set_deserialize_strict({{"support_material_closing_radius", "1"}});
+    else if (strcmp(variant, "buildplate_only") == 0)
+        config.set_deserialize_strict({{"support_material_buildplate_only", "1"}});
     else
         FAIL("Unknown comparison variant " << variant);
 }
@@ -183,8 +253,14 @@ void compare(int model_id, const char *style, bool soluble, int interfaces, bool
             shear.linear()(0, 2) = 1.;
             mesh.transform(shear);
         }
-        else mesh = SG::slab(true);
-        CAPTURE(model_id, style, soluble, interfaces, same_tool, variant);
+        else if (model_id == 4) mesh = SG::slab(true);
+        else {
+            // The roof of the slab overhangs both the bed and a low platform under its far end.
+            mesh = SG::slab();
+            TriangleMesh platform = make_cube(4., 8., 0.8);
+            platform.translate(8.f, 0.f, 0.f);
+            mesh.merge(platform);
+        }        CAPTURE(model_id, style, soluble, interfaces, same_tool, variant);
         DynamicPrintConfig config = SG::config(style, soluble, interfaces, same_tool);
         apply_variant(config, variant);
         if (model_id == 3) {
@@ -201,10 +277,9 @@ void compare(int model_id, const char *style, bool soluble, int interfaces, bool
         REQUIRE(legacy_print.object(0).auxiliary_layers().empty());
         SG::family(plugin_print);
         const PrintObject &plugin_object = plugin_print.object(0);
-        const Slic3r::SupportGrid::GridSupportParams params(plugin_object);
-        Slic3r::SupportGrid::GeneratedSupport support;
-        Slic3r::SupportGrid::generate_support(plugin_object, params, support);
-        check_family(plugin_object, support, params, model_id);
+        const SG::Generated generated_support(plugin_print, plugin_object);
+        check_family(plugin_object, generated_support.support, SG::params(plugin_print, plugin_object), model_id,
+                     variant == nullptr || strcmp(variant, "buildplate_only") != 0);
         SG::toolpaths(plugin_print);
 
         PrintObject &legacy_object = legacy_print.object(0);
@@ -318,6 +393,11 @@ void compare(int model_id, const char *style, bool soluble, int interfaces, bool
         }
         // Report the largest measured deviation only when this section fails.
         INFO("largest deviations: slice=" << maximum_difference << " length=" << maximum_length_difference << " volume=" << maximum_volume_difference);
+        std::ostringstream section;
+        section << "model=" << model_id << " style=" << style << " soluble=" << soluble << " interfaces=" << interfaces
+                << " same_tool=" << same_tool << " variant=" << (variant != nullptr ? variant : "");
+        record_comparison(section.str(), maximum_difference, maximum_length_difference, maximum_volume_difference,
+                          published_hash(plugin_object));
     }
 }
 
@@ -332,9 +412,10 @@ void run_comparison(int model_id, bool same_tool)
 }
 
 // Check published slabs without changing them; temporary contacts identify adjacent object layers for gap arithmetic, and model_id selects roofs or supporting platforms.
-void check_family(const PrintObject &object, const Slic3r::SupportGrid::GeneratedSupport &support, const Slic3r::SupportGrid::GridSupportParams &p, int model_id)
+void check_family(const PrintObject &object, const slic3r_api::Support::Grid::GeneratedSupport &support,
+                  const slic3r_api::Support::Common::SupportParams &p, int model_id, bool on_object)
 {
-    using namespace Slic3r::SupportGrid;
+    using namespace slic3r_api::Support::Grid;
     REQUIRE_FALSE(object.auxiliary_layers().empty());
     bool top = false, bottom = false, base = false;
     std::set<size_t> ids;
@@ -344,8 +425,18 @@ void check_family(const PrintObject &object, const Slic3r::SupportGrid::Generate
         CHECK(layer.scaled_print_z() >= previous_z);
         previous_z = layer.scaled_print_z();
         CHECK(ids.insert(layer.id()).second);
+        CAPTURE(layer.scaled_print_z(), layer.scaled_height());
         CHECK(layer.scaled_height() >= p.min_height);
-        CHECK(layer.unscaled_height() <= p.max_support_height + EPSILON);
+        // With a filament contact distance, a bridging bottom contact is printed as a bridge thread, one
+        // bottom-flow height thick, which may exceed the largest support layer height (native rule too).
+        bool bridging_bottom = false;
+        for (const LayerSliceIsland &island : layer.islands())
+            for (const LayerRegionIsland &work : island.regions_islands())
+                for (const Surface &surface : work.fill_surfaces())
+                    bridging_bottom = bridging_bottom || surface.surface_type == (stModSupport | stPosBottom | stDensSolid | stModBridge);
+        const bool bridge_thread = p.distance_type == slic3r_api::Support::Common::ContactDistanceType::Filament &&
+            bridging_bottom && layer.scaled_height() == scale_to_layer_coord(p.bottom_flow_mm.height);
+        CHECK((layer.unscaled_height() <= p.max_support_height + EPSILON || bridge_thread));
         CHECK_FALSE(layer.has_extrusions());
         REQUIRE(layer.get_property<LayerSupportProperty>() != nullptr);
         for (const LayerSliceIsland &island : layer.islands())
@@ -363,8 +454,19 @@ void check_family(const PrintObject &object, const Slic3r::SupportGrid::Generate
     }
     bool expected_top = false, expected_bottom = false, expected_base = false;
     for (const GeneratorLayer *contact : support.top) {
-        CHECK(contact->print_z == object.layer(contact->object_above).scaled_bottom_z() - scale_to_layer_coord(p.gap_above));
-        if (contact->polygons.empty()) continue;
+        // A contact sits one gap below the object above it. With a filament contact distance, a layer with
+        // bridges also gets a contact one gap below its bridges, whose height is the average bridge height of
+        // the layer regions (native LayerRegion::bridging_height_avg_mm()).
+        const Layer &above = object.layer(contact->object_above);
+        const coord_t gap_z = above.scaled_bottom_z() - scale_to_layer_coord(p.gap_above);
+        coord_t bridge_z = gap_z;
+        if (p.distance_type == slic3r_api::Support::Common::ContactDistanceType::Filament) {
+            double total = 0;
+            for (const LayerRegion &region : above.regions()) total += region.bridging_height_avg_mm();
+            bridge_z = above.scaled_print_z() - scale_to_layer_coord(total / above.region_count()) - scale_to_layer_coord(p.gap_above);
+        }
+        CAPTURE(contact->print_z, gap_z, bridge_z);
+        CHECK((contact->print_z == gap_z || contact->print_z == bridge_z));        if (contact->polygons.empty()) continue;
         expected_top = true;
         bool published = false;
         for (const Layer &layer : object.auxiliary_layers()) {
@@ -380,9 +482,9 @@ void check_family(const PrintObject &object, const Slic3r::SupportGrid::Generate
             // With no interface layer on that side the family publishes a mergeable contact as base,
             // so the contact area then lies inside the sparse surface instead of the top one.
             if (contours.empty() && object.config().support_material_interface_layers.value == 0)
-                CHECK(diff_ex(contact->polygons, base_contours).empty());
+                CHECK(diff_ex(SG::native(contact->polygons), base_contours).empty());
             else
-                CHECK(diff_ex(contact->polygons, contours).empty());
+                CHECK(diff_ex(SG::native(contact->polygons), contours).empty());
             published = true;
         }
         CHECK(published);
@@ -405,9 +507,9 @@ void check_family(const PrintObject &object, const Slic3r::SupportGrid::Generate
                             polygons_append(base_contours, surface.expolygon);
             // Same rule as the top side: a contact typed as base lies inside the sparse surface.
             if (contours.empty() && !(object.config().support_material_bottom_interface_layers.is_enabled() ? object.config().support_material_bottom_interface_layers.value != 0 : object.config().support_material_interface_layers.value != 0))
-                CHECK(diff_ex(contact->polygons, base_contours).empty());
+                CHECK(diff_ex(SG::native(contact->polygons), base_contours).empty());
             else
-                CHECK(diff_ex(contact->polygons, contours).empty());
+                CHECK(diff_ex(SG::native(contact->polygons), contours).empty());
             published = true;
         }
         CHECK(published);
@@ -424,7 +526,9 @@ void check_family(const PrintObject &object, const Slic3r::SupportGrid::Generate
         object.config().support_material_bottom_interface_layers.value != 0 : top_interface_layers;
     if (model_id != 3) CHECK(expected_top);
     CHECK(expected_base);
-    CHECK(expected_bottom == (model_id == 1 || model_id == 4));
+    // Support resting on the object exists on the models with an object surface below an overhang,
+    // unless support is restricted to the build plate.
+    CHECK(expected_bottom == (on_object && (model_id == 1 || model_id == 4 || model_id == 5)));
     // A contact is published as top or bottom, or as base when no interface layer is configured on
     // its side and it can merge with the base.
     const bool top_ok = top == expected_top || (expected_top && !top_interface_layers && base);
@@ -510,4 +614,44 @@ TEST_CASE("Grid legacy comparison: honeycomb and sheath", "[plugins][support-gri
 // the family layer counts must agree even when one print Z carries several auxiliary layers.
 TEST_CASE("Grid legacy comparison: rectilinear grid pattern", "[plugins][support-grid][legacy-compare][support-pattern]") {
     for (const char *style : {"grid", "snug"}) compare(1, style, false, 3, false, "rectilinear_grid");
+}
+// Compare a filament contact distance, whose bridge contacts take the object's bridge height, on a
+// roof and on a bridge.
+TEST_CASE("Grid legacy comparison: filament contact distance", "[plugins][support-grid][legacy-compare][support-settings]") {
+    for (const int model_id : {1, 2})
+        for (const char *style : {"grid", "snug"}) compare(model_id, style, false, 3, false, "filament");
+}
+// Compare the three bridge types, which give the height of the bridges above a bridging contact.
+TEST_CASE("Grid legacy comparison: bridge types", "[plugins][support-grid][legacy-compare][support-settings]") {
+    for (const char *style : {"grid", "snug"})
+        for (const char *variant : {"bridge_flow", "bridge_height", "bridge_nozzle"}) compare(2, style, false, 3, false, variant);
+}
+// Compare a brim with an interior width: the first-layer support keeps away from it.
+TEST_CASE("Grid legacy comparison: brim", "[plugins][support-grid][legacy-compare][support-settings]") {
+    for (const int model_id : {0, 1})
+        for (const char *style : {"grid", "snug"}) compare(model_id, style, false, 3, false, "brim");
+}
+// Compare an expanded first-layer foot of the support columns.
+TEST_CASE("Grid legacy comparison: foot expansion", "[plugins][support-grid][legacy-compare][support-settings]") {
+    for (const int model_id : {0, 1})
+        for (const char *style : {"grid", "snug"}) compare(model_id, style, false, 3, false, "feet");
+}
+// Compare a snug closing radius other than the default.
+TEST_CASE("Grid legacy comparison: snug closing radius", "[plugins][support-grid][legacy-compare][support-settings]") {
+    for (const int model_id : {0, 1}) compare(model_id, "snug", false, 3, false, "closing");
+}
+// Compare a roof overhanging the bed and a low platform, the model of the build-plate restriction below.
+TEST_CASE("Grid legacy comparison: roof over bed and platform", "[plugins][support-grid][legacy-compare][support-settings]") {
+    for (const char *style : {"grid", "snug"}) compare(5, style, false, 3, false, "");
+}
+// The same roof with support restricted to the build plate, snug style.
+TEST_CASE("Grid legacy comparison: build plate only restriction, snug", "[plugins][support-grid][legacy-compare][support-settings]") {
+    compare(5, "snug", false, 3, false, "buildplate_only");
+}
+// The grid style is expected to fail for now: the native generator projects only enforced overhangs to
+// bottom contacts and trims its grid columns by the area the object covers, while the family only
+// receives demand already filtered by the buildplate-only demand plugin, so its grid columns, wider
+// than the demand, still reach the platform (bottom contacts, one more print Z).
+TEST_CASE("Grid legacy comparison: build plate only restriction, grid", "[plugins][support-grid][legacy-compare][support-settings][!shouldfail]") {
+    compare(5, "grid", false, 3, false, "buildplate_only");
 }

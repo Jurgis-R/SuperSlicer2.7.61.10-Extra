@@ -12,7 +12,8 @@
    Units follow the native classes: heights, gaps and extrusion lengths in
    millimeters as double, XY distances (gap_xy, resolution, min_height) scaled,
    angles in radians. Flows are c_flow values computed by the host
-   (object_get_support_flow(), object_get_region_flow()).
+   (object_get_support_flow(), object_get_region_flow()), with their millimeter
+   twins (c_flow_mm) for the computations the native code does in millimeters.
 
        const SupportParams params(Print(payload->print), Object(payload->object));
        const double spacing = unscaled(params.base_flow.spacing);
@@ -48,6 +49,10 @@ struct SupportParams
     // First-layer, base and interface flows at the nominal heights; the interface flow is the
     // base flow when there is no interface layer. bottom_flow is the bottom-contact flow.
     c_flow first_flow = {}, base_flow = {}, interface_flow = {}, bottom_flow = {};
+    // The same four flows in the host's millimeters. Computations that the native code does on the
+    // float flow values (grid cell size, densities, widths in millimeters) read these, because the
+    // scaled integers of c_flow are truncated.
+    c_flow_mm first_flow_mm = {}, base_flow_mm = {}, interface_flow_mm = {}, bottom_flow_mm = {};
     // Expansion of the bottom interface, absolute (mm) or a percent of the bottom flow width.
     c_float_or_percent bottom_expansion = {};
     // Thinnest printable layer and XY gap to the object (scaled), and the internal resolution (scaled).

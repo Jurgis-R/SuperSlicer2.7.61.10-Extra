@@ -8,9 +8,11 @@
    - an extruder index of -1 (configured extruder 0, "current extruder") is
      passed as an out-of-range index, which the host resolves to the first
      vector item exactly like the native get_at();
-   - flows through the host (object_get_support_flow, object_get_region_flow),
-     which returns them in scaled integers, so values derived from a flow width
-     or spacing (densities, the XY gap) are computed from that rounded value.
+   - flows through the host twice: object_get_support_flow / object_get_region_flow
+     give the scaled integer coordinates (c_flow), and their _mm twins give the
+     host's millimeter values; values the native code derives from a flow width
+     or spacing in millimeters (densities, the XY gap) read the _mm values, so
+     they are exact.
    The path fields reproduce the PathParams of the legacy toolpaths. */
 #include "SupportParams.hpp"
 
@@ -160,6 +162,10 @@ SupportParams::SupportParams(const Print &print, const Object &object)
     base_flow = object.support_flow(base_role, layer_height);
     interface_flow = object.support_flow(interface_role, layer_height);
     bottom_flow = object.support_flow(interface_role, layer_height, 0., OBJECT_SUPPORT_FLOW_BOTTOM_CONTACT);
+    first_flow_mm = object.support_flow_mm(base_role, first_layer_height, 0., OBJECT_SUPPORT_FLOW_FIRST_LAYER);
+    base_flow_mm = object.support_flow_mm(base_role, layer_height);
+    interface_flow_mm = object.support_flow_mm(interface_role, layer_height);
+    bottom_flow_mm = object.support_flow_mm(interface_role, layer_height, 0., OBJECT_SUPPORT_FLOW_BOTTOM_CONTACT);
     resolution = scale_i(print_config.get("resolution_internal").get_float());
 
     // Thinnest printable layer among the configured minimums and the sliced object layers.
@@ -177,14 +183,14 @@ SupportParams::SupportParams(const Print &print, const Object &object)
     // XY gap: a percent applies to the widest external perimeter of the object regions.
     double external_width = 0;
     for (uint32_t region_idx = 0; region_idx < object.print_region_count(); ++region_idx)
-        external_width = std::max(external_width, unscaled(object.region_flow(region_idx, raw_extrusion_role(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER),
-                                                                               layer_height, 2).width));
+        external_width = std::max(external_width, object.region_flow_mm(region_idx, raw_extrusion_role(RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER),
+                                                                        layer_height, 2).width);
     gap_xy = scale_to_layer_coord(config.get("support_material_xy_spacing").get_effective_value(external_width));
     bottom_expansion = config.get("support_material_bottom_interface_expansion").get_float_or_percent();
 
     // Line densities from the configured gaps between lines.
-    const double interface_spacing = unscaled(interface_flow.spacing);
-    const double base_spacing = unscaled(base_flow.spacing);
+    const double interface_spacing = interface_flow_mm.spacing;
+    const double base_spacing = base_flow_mm.spacing;
     const double base_gap = config.get("support_material_spacing").get_float();
     interface_density = std::min(1., interface_spacing / (config.get("support_material_interface_spacing").get_float() + interface_spacing));
     if (top == 0)
