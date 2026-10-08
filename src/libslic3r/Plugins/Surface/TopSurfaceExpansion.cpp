@@ -43,6 +43,8 @@ sparse and void surfaces are rebuilt; the projected part becomes internal
 solid and the remainder keeps its original type. In pass 2, expanded top
 areas become top solid surfaces, while every non-top surface is reduced by the
 same union so the fill-surface collection remains non-overlapping.
+Each region-island owns its input fill domain. Same-layer expansion stays in
+that domain so it cannot duplicate fill assigned to another tool's region-island.
 
 The projection considers only upper layers within `top_solid_layers` or
 `top_solid_min_thickness`. Expansion is clipped to the current island's
@@ -74,6 +76,10 @@ constexpr raw_surface_type k_top_solid = RAW_SURFACE_TYPE_POS_TOP | RAW_SURFACE_
 constexpr raw_surface_type k_internal_solid = RAW_SURFACE_TYPE_POS_INTERNAL | RAW_SURFACE_TYPE_DENS_SOLID;
 constexpr raw_surface_type k_internal_sparse = RAW_SURFACE_TYPE_POS_INTERNAL | RAW_SURFACE_TYPE_DENS_SPARSE;
 constexpr raw_surface_type k_internal_void = RAW_SURFACE_TYPE_POS_INTERNAL | RAW_SURFACE_TYPE_DENS_VOID;
+
+// Expand a region-island's top surfaces only within its owned fill domain.
+void expand_top_surfaces_in_region_island(const run_ctx_surface_generation &ctx, storage_handle *storage,
+                                        const LayerIsland &island, const LayerRegionIsland &region_island);
 
 bool is_top_surface(raw_surface_type type)
 {
@@ -450,6 +456,10 @@ void append_same_layer_non_top_results(StoredSurfaceCollection &out,
     }
 }
 
+// Union the borrowed input surfaces as this group's fill domain, grow its top
+// areas inside that domain, and subtract them from its other types. Nonnull
+// storage owns intermediate geometry; the callback moves output into the host.
+// Empty inputs/results leave the group unchanged; allocation failures propagate.
 void expand_top_surfaces_in_region_island(const run_ctx_surface_generation &ctx,
                                           storage_handle *storage,
                                           const LayerIsland &island,
@@ -458,6 +468,11 @@ void expand_top_surfaces_in_region_island(const run_ctx_surface_generation &ctx,
     const SurfaceCollection input_surfaces = region_island.fill_surfaces_collection();
     if (input_surfaces.empty())
         return;
+
+    StoredExPolygonCollection fill_domain(storage);
+    for (const Surface surface : input_surfaces)
+        fill_domain.push_back(surface.expolygon());
+    fill_domain = union_collection(storage, fill_domain.readonly());
 
     RegionSettings settings(storage, island, {{ k_external_infill_margin_key }});
     settings.segregate(island.slice());
@@ -469,7 +484,7 @@ void expand_top_surfaces_in_region_island(const run_ctx_surface_generation &ctx,
         StoredExPolygonCollection source_top = collect_top_surfaces(storage, input_surfaces, setting_clip);
         const coord_t margin = external_infill_margin(setting_value, shell_width);
         StoredExPolygonCollection expanded =
-            expand_top_surfaces(storage, source_top.readonly(), margin, island.infill_areas());
+            expand_top_surfaces(storage, source_top.readonly(), margin, fill_domain.readonly());
         expanded_top.append_move_from(std::move(expanded));
     }
     expanded_top = union_collection(storage, expanded_top.readonly());
