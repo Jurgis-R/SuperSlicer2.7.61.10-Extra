@@ -8,10 +8,15 @@ Default layer extrusion speed
 =============================
 
 This plugin resolves speed on extrusion trees cloned into PrintingPlan. Its
-setup pass validates every printable tree and computes immutable autospeed
+setup pass validates every printable regional tree and computes immutable autospeed
 targets per PrintingGroup and extruder. Parallel layer runs then resolve only
 missing speed values, apply first-layer and physical limits, and compact
 uniform speed towards parent nodes.
+
+Synthetic catalog entries have no source object and an unset instance index.
+Their region-less trees retain service-owned extrusion speeds. Missing speeds
+on Travel connectors inserted into those trees use the machine travel_speed;
+real-object trees still require a source region island.
 
 Acceleration is intentionally not handled here. A separate plugin may choose
 and hoist acceleration without depending on this strategy.
@@ -711,6 +716,7 @@ void collect_autospeed_minimum(const MutableExtrusionEntity &entity,
                               const plugin_run_context *run_ctx);
 
 // Prepare raw/final regional partitions and group/extruder autospeed targets.
+// Borrow the plan, leave region-less synthetic roots untouched, and own cached speed outputs; invalid regional sources or cancellation throw.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
                   PrintingPlan &plan,
@@ -747,7 +753,12 @@ double autospeed_target(const AutospeedTargets &targets,
                         uint32_t group_idx,
                         extruder_index_t extruder_id);
 
-// Resolve and compact speed on one cloned extrusion root.
+// Resolve missing Travel connector speeds without editing synthetic extrusion speeds.
+void assign_synthetic_travel_speed(MutableExtrusionEntity entity, const EffectiveTreeState &parent_state,
+                                   const ExtrusionSettingsContext &context, EPropertySpeedFieldEditor &editor,
+                                   const plugin_run_context *run_ctx);
+
+// Resolve regional speeds or synthetic Travel connector speeds on one cloned root.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
                     PrintingToolGroup tool_group,
@@ -1036,6 +1047,7 @@ void collect_autospeed_minimum(const MutableExtrusionEntity &entity,
         minimum = std::min(minimum, mm3_per_mm);
 }
 
+// Borrow the plan, validate regional sources, and populate owned partitions/targets; synthetic region-less output stays unchanged and invalid sources or cancellation throw.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
                   PrintingPlan &plan,
@@ -1072,6 +1084,8 @@ void prepare_plan(storage_handle *storage,
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
                     PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    if (is_regionless_synthetic(plan, extrusion))
+                        continue;
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, true);
                     const LayerRegionIsland region_island = extrusion.region_island();
@@ -1154,6 +1168,8 @@ void prepare_plan(storage_handle *storage,
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
                     PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    if (is_regionless_synthetic(plan, extrusion))
+                        continue;
                     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
                     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
                     if (object_instance_idx < size_t(-1) && object_instance_idx > std::numeric_limits<uint16_t>::max())
@@ -1308,6 +1324,27 @@ double autospeed_target(const AutospeedTargets &targets,
     return found == targets[group_idx].end() ? 0.0 : found->second;
 }
 
+// Traverse a borrowed synthetic tree with inherited process fields, assigning
+// machine travel speed only to geometric Travel leaves lacking an effective
+// speed. Preserve service extrusion speeds and all other fields without hoisting
+// or retaining views; invalid travel settings and cancellation propagate.
+void assign_synthetic_travel_speed(MutableExtrusionEntity entity, const EffectiveTreeState &parent_state,
+                                   const ExtrusionSettingsContext &context, EPropertySpeedFieldEditor &editor,
+                                   const plugin_run_context *run_ctx)
+{
+    throw_if_cancelled(run_ctx);
+    const EffectiveTreeState state = effective_state(entity, parent_state);
+    for (uint32_t child_idx = 0; child_idx < entity.child_count(); ++child_idx)
+        assign_synthetic_travel_speed(entity.child_mutable(child_idx), state, context, editor, run_ctx);
+    if (entity.segment_count() != 0 && state.speed <= 0.f && state.has_attributes &&
+        RAW_EXTRUSION_ROLE_IS_TRAVEL(state.attributes.extrusion_role()))
+        editor.set_value(entity, resolved_travel_speed(context));
+}
+
+// Borrow one plan-owned root and resolve synthetic Travel connectors from print
+// settings while preserving service extrusion fields. Real-object roots use
+// their regional context and hoist uniform resolved speed. Invalid sources,
+// travel settings or cancellation throw without transferring root ownership.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
                     PrintingToolGroup tool_group,
@@ -1320,6 +1357,13 @@ void edit_extrusion(const Print &print,
     throw_if_cancelled(run_ctx);
     // Assign missing leaf speed, then remove redundant direct fields by moving
     // a uniform effective speed towards the root.
+    if (is_regionless_synthetic(plan, extrusion)) {
+        ExtrusionSettingsContext context;
+        context.print_config = print.config();
+        EPropertySpeedFieldEditor editor(EPropertySpeedField::Speed);
+        assign_synthetic_travel_speed(extrusion.mutable_root(), EffectiveTreeState{}, context, editor, run_ctx);
+        return;
+    }
     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);
     if (object_instance_idx < size_t(-1) && object_instance_idx > std::numeric_limits<uint16_t>::max())

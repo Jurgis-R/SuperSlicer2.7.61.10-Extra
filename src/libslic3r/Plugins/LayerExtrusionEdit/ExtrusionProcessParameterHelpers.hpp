@@ -22,6 +22,11 @@ Speed and acceleration use different business rules, but they both need to
 resolve inherited properties, recover source configuration, preserve unrelated
 process fields, and compact uniform values towards collection nodes.
 
+Synthetic catalog entries have no source object and an unset object-instance
+index. Region-less extrusions attached to those entries have no regional process
+settings; speed and acceleration leave their service-owned properties untouched.
+Real-object extrusions must retain their source region island.
+
 This module provides those structural operations without choosing a speed or
 acceleration value. Each plugin owns its validation and setting hierarchy, then
 uses EPropertySpeedFieldEditor to write and hoist only its assigned field.
@@ -85,6 +90,9 @@ LeafDisposition leaf_disposition(const MutableExtrusionEntity &entity,
 // Overlay a node's direct attributes and process fields on inherited state.
 EffectiveTreeState effective_state(const MutableExtrusionEntity &entity,
                                    const EffectiveTreeState &parent_state);
+
+// Identify a region-less extrusion attached to a synthetic plan catalog entry.
+bool is_regionless_synthetic(const PrintingPlan &plan, const PrintingExtrusion &extrusion);
 
 // Recover the print, object, region, layer, and extruder context linked from a
 // cloned PrintingExtrusion.
