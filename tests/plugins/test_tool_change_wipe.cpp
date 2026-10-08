@@ -1886,6 +1886,169 @@ TEST_CASE("Tool-change wipe declares early invalidation for every option read", 
         CHECK(PrintConfigDef::instance().get(key)->invalidates_step == STEP_WIPETOWER);
 }
 
+// Slice an owned two-part box with overlapping tool regions and export its tower;
+// require material from both tools, tower geometry and resolved connector speeds,
+// leaving pipeline failures visible and restoring travel-plugin activation on exit.
+TEST_CASE("Two overlapping model parts export both tools and a wipe tower", "[plugins][wipe-tower][mmu-parts]")
+{
+    const tbb::global_control concurrency(tbb::global_control::max_allowed_parallelism, 1);
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &host = Orchestrator::instance();
+    Plugin *travel = host.get_plugin("layer_extrusion_edit.travel.default");
+    REQUIRE(travel != nullptr);
+    const bool travel_was_active = host.active_plugins().count(travel) != 0;
+    // Restore the borrowed plugin's activation even when an export assertion fails.
+    BOOST_SCOPE_EXIT((&host)(travel)(travel_was_active)) {
+        host.set_plugin_active(travel, travel_was_active);
+    } BOOST_SCOPE_EXIT_END
+    REQUIRE(host.set_plugin_active(travel, true));
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_num_extruders(2);
+    config.set_deserialize_strict({{"nozzle_diameter", "0.4,0.4"}, {"single_extruder_multi_material", "0"},
+        {"wipe_tower", "1"}, {"wipe_tower_x", "57.75"}, {"wipe_tower_y", "107.48"}, {"wipe_tower_width", "60"},
+        {"wiping_volumes_matrix", "0,140,140,0"}, {"filament_minimal_purge_on_wipe_tower", "15,15"},
+        {"wipe_tower_speed", "80"}, {"wipe_tower_wipe_starting_speed", "33%"}, {"first_layer_speed", "30"},
+        {"first_layer_height", "75%"}, {"layer_height", "0.2"}, {"filament_diameter", "1.75,1.75"},
+        {"extrusion_multiplier", "1,1"}, {"perimeter_extruder", "1"}, {"infill_extruder", "1"},
+        {"solid_infill_extruder", "1"}, {"support_material_extruder", "0"},
+        {"step_perimeter_plugin", "perimeter.generator.simple"},
+        {"step_gcode_plugin", "gcode.printing_plan_file_writer"}, {"gcode_flavor", "marlin"}});
+    Print print;
+    Model model;
+    ModelObject *object = model.add_object();
+    object->name = "Shape-Box";
+    object->config.set_deserialize_strict("extruder", "1");
+    TriangleMesh first = make_cube(3., 3., 3.);
+    ModelVolume *part = object->add_volume(std::move(first), ModelVolumeType::MODEL_PART, false);
+    part->name = "Shape-Box";
+    part->config.set_deserialize_strict("extruder", "0");
+    TriangleMesh second = make_cube(3., 3., 3.);
+    second.translate(Vec3f(2.0685f, -0.1366f, -1.5f));
+    part = object->add_volume(std::move(second), ModelVolumeType::MODEL_PART, false);
+    part->name = "Generic-Box";
+    part->config.set_deserialize_strict("extruder", "2");
+    object->add_instance();
+    model.center_instances_around_point({83.69, 98.70});
+    model.objects().front().ensure_on_bed();
+    print.apply(model, config);
+    print.set_status_silent();
+    REQUIRE_NOTHROW(print.process());
+    const boost::filesystem::path checkout = boost::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    const std::string path = (checkout / "build" / "temp" / "mmu_parts_export.gcode").string();
+    REQUIRE_NOTHROW(Orchestrator::instance().export_gcode(print, path, nullptr));
+    double object_volume[2] = {0., 0.};
+    double tower_volume = 0.;
+    size_t tower_travels = 0;
+    for (const Printing::PrintingGroup &group : print.printing_plan()->groups)
+        for (const Printing::PrintingLayerGroup &layer : group.layers)
+            for (const Printing::PrintingToolGroup &tool : layer.tool_groups)
+                for (const Printing::PrintingExtrusion &extrusion : tool.extrusions) {
+                    if (!extrusion.root)
+                        continue;
+                    require_movement_speeds(*extrusion.root, -1.f, extrusion.sregion_island_role.is_wipetower(),
+                                            tower_travels, float(print.config().travel_speed.value));
+                    if (extrusion.sregion_island_role.is_wipetower())
+                        tower_volume += raw_role_volume(*extrusion.root, RAW_EXTRUSION_ROLE_WIPE_TOWER_WIPE);
+                    else if (tool.extruder_id < 2)
+                        object_volume[tool.extruder_id] += raw_role_volume(*extrusion.root, RAW_EXTRUSION_ROLE_EXTERNAL_PERIMETER);
+                }
+    CHECK(object_volume[0] > 0.);
+    CHECK(object_volume[1] > 0.);
+    CHECK(tower_volume > 0.);
+    CHECK(tower_travels > 0);
+}
+
+// The user-visible requirement on the mmu.3mf-equivalent print: in the tower layer with the
+// largest used depth, at most 10 % of that depth is sparse. The tower rectangle and the purge
+// bands are measured from the final plan geometry in platter Y; the last layer of a tie is
+// used, so the first layer's brim never enlarges the rectangle.
+TEST_CASE("Two overlapping model parts keep the tower sparse share below ten percent",
+          "[plugins][wipe-tower][sparse-share]")
+{
+    const tbb::global_control concurrency(tbb::global_control::max_allowed_parallelism, 1);
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Orchestrator &host = Orchestrator::instance();
+    Plugin *travel = host.get_plugin("layer_extrusion_edit.travel.default");
+    REQUIRE(travel != nullptr);
+    const bool travel_was_active = host.active_plugins().count(travel) != 0;
+    BOOST_SCOPE_EXIT((&host)(travel)(travel_was_active)) {
+        host.set_plugin_active(travel, travel_was_active);
+    } BOOST_SCOPE_EXIT_END
+    REQUIRE(host.set_plugin_active(travel, true));
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_num_extruders(2);
+    config.set_deserialize_strict({{"nozzle_diameter", "0.4,0.4"}, {"single_extruder_multi_material", "0"},
+        {"wipe_tower", "1"}, {"wipe_tower_x", "57.75"}, {"wipe_tower_y", "107.48"}, {"wipe_tower_width", "60"},
+        {"wiping_volumes_matrix", "0,140,140,0"}, {"filament_minimal_purge_on_wipe_tower", "15,15"},
+        {"wipe_tower_speed", "80"}, {"wipe_tower_wipe_starting_speed", "33%"}, {"first_layer_speed", "30"},
+        {"first_layer_height", "75%"}, {"layer_height", "0.2"}, {"filament_diameter", "1.75,1.75"},
+        {"extrusion_multiplier", "1,1"}, {"perimeter_extruder", "1"}, {"infill_extruder", "1"},
+        {"solid_infill_extruder", "1"}, {"support_material_extruder", "0"},
+        {"step_perimeter_plugin", "perimeter.generator.simple"},
+        {"step_gcode_plugin", "gcode.printing_plan_file_writer"}, {"gcode_flavor", "marlin"}});
+    Print print;
+    Model model;
+    ModelObject *object = model.add_object();
+    object->name = "Shape-Box";
+    object->config.set_deserialize_strict("extruder", "1");
+    TriangleMesh first = make_cube(3., 3., 3.);
+    ModelVolume *part = object->add_volume(std::move(first), ModelVolumeType::MODEL_PART, false);
+    part->name = "Shape-Box";
+    part->config.set_deserialize_strict("extruder", "0");
+    TriangleMesh second = make_cube(3., 3., 3.);
+    second.translate(Vec3f(2.0685f, -0.1366f, -1.5f));
+    part = object->add_volume(std::move(second), ModelVolumeType::MODEL_PART, false);
+    part->name = "Generic-Box";
+    part->config.set_deserialize_strict("extruder", "2");
+    object->add_instance();
+    model.center_instances_around_point({83.69, 98.70});
+    model.objects().front().ensure_on_bed();
+    print.apply(model, config);
+    print.set_status_silent();
+    REQUIRE_NOTHROW(print.process());
+    const boost::filesystem::path checkout =
+        boost::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    const std::string path =
+        (checkout / "build" / "temp" / "mmu_parts_sparse_share.gcode").string();
+    REQUIRE_NOTHROW(Orchestrator::instance().export_gcode(print, path, nullptr));
+
+    // One measure per tower layer: the used depth from its purge and ramming bands, the
+    // rectangle depth from all its tower leaves, and its number of purge bands.
+    struct LayerMeasure { size_t index; double used; double depth; size_t bands; };
+    std::vector<LayerMeasure> measures;
+    size_t layer_index = 0;
+    for (const Printing::PrintingGroup &group : print.printing_plan()->groups)
+        for (const Printing::PrintingLayerGroup &layer : group.layers) {
+            double min_y = (std::numeric_limits<double>::max)();
+            double max_y = -min_y;
+            double purge_max = -min_y;
+            size_t bands = 0;
+            for (const Printing::PrintingToolGroup &tool : layer.tool_groups)
+                for (const Printing::PrintingExtrusion &extrusion : tool.extrusions) {
+                    if (!extrusion.root || !extrusion.sregion_island_role.is_wipetower())
+                        continue;
+                    tower_leaf_y_extent(*extrusion.root, min_y, max_y, purge_max);
+                    coord_t z_offset = 0;
+                    if (first_leaf_with_raw_role(*extrusion.root,
+                            uint16_t(RAW_EXTRUSION_ROLE_WIPE_TOWER_WIPE), 0, z_offset) != nullptr)
+                        ++bands;
+                }
+            if (max_y > min_y && purge_max > min_y)
+                measures.push_back({layer_index, purge_max - min_y, max_y - min_y, bands});
+            ++layer_index;
+        }
+    REQUIRE_FALSE(measures.empty());
+    const LayerMeasure *most_used = nullptr;
+    for (const LayerMeasure &measure : measures)
+        if (most_used == nullptr || measure.used >= most_used->used)
+            most_used = &measure;
+    REQUIRE(most_used != nullptr);
+    REQUIRE(most_used->depth > 0.);
+    CAPTURE(most_used->index, most_used->used, most_used->depth, most_used->bands, measures.size());
+    CHECK((most_used->depth - most_used->used) / most_used->depth <= 0.1);
+}
+
+// Slice two owned tool-specific cubes and export through real plugins in shared/restarting-Z mode, requiring one selection per real change and every sampled purge at its local tower row's platter Z.
 TEST_CASE("Production two-nozzle wipe exports tool changes and tower offsets", "[plugins][wipe-tower][toolchange]")
 {
     const tbb::global_control concurrency(tbb::global_control::max_allowed_parallelism, 1);
@@ -2374,6 +2537,172 @@ TEST_CASE("Wipe into infill and objects measures the printed prefix",
     CHECK(extrusions_after == extrusions);
 }
 
+// Convert owned synthetic reader totals with borrowed config, checking normal
+// time, per-tool properties and tower shares. Unrelated area/export metadata
+// remains intact, and a second fill replaces rather than adds to measured totals.
+TEST_CASE("Reader statistics fill preserves source areas and export metadata",
+          "[plugins][gcode][wipe-tower][print-statistics]")
+{
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    PrintConfig config;
+    config.filament_diameter.set(std::vector<double>{1.75, 2.85});
+    config.filament_density.set(std::vector<double>{1.1, 1.3});
+    config.filament_cost.set(std::vector<double>{20.0, 30.0});
+    config.time_cost.value = 2.0;
+    const double area0 = PI * std::pow(1.75 * 0.5, 2.0);
+    const double area1 = PI * std::pow(2.85 * 0.5, 2.0);
+    GCodeProcessorResult result;
+    result.print_statistics.modes[0].time = 3600.f;
+    result.print_statistics.volumes_per_extruder = {{0, 10.0 * area0}, {1, 20.0 * area1}};
+    result.print_statistics.volumes_per_role_per_extruder[GCodeExtrusionRole::WipeTower] =
+        {{0, area0}, {1, 2.0 * area1}};
+    PrintStatistics stats;
+    stats._layer_area_stats = {{scale_i(0.2), 12.f}};
+    stats.initial_extruder_id = 1;
+    stats.total_toolchanges = 4;
+    stats.printing_extruders = {0, 1};
+    stats.is_computing_gcode = true;
+    stats.estimated_print_time[1] = 123.0;
+    const double expected_mass = 10.0 * area0 * 1.1 * 0.001 + 20.0 * area1 * 1.3 * 0.001;
+    const double expected_cost = 2.0 + 10.0 * area0 * 1.1 * 20.0 * 1e-6 + 20.0 * area1 * 1.3 * 30.0 * 1e-6;
+    for (size_t repeat = 0; repeat < 2; ++repeat) {
+        Steps::StepReadGeneratedGcode::fill_print_statistics(result, config, stats);
+        CHECK(stats.filament_stats == result.print_statistics.volumes_per_extruder);
+        CHECK(stats.total_extruded_volume == Approx(10.0 * area0 + 20.0 * area1));
+        CHECK(stats.total_used_filament == Approx(30.0));
+        CHECK(stats.total_weight == Approx(expected_mass));
+        CHECK(stats.total_cost == Approx(expected_cost));
+        CHECK(stats.total_wipe_tower_filament == Approx(3.0));
+        CHECK(stats.total_wipe_tower_filament_weight == Approx(area0 * 1.1 * 0.001 + 2.0 * area1 * 1.3 * 0.001));
+        CHECK(stats.total_wipe_tower_volume == Approx(area0 + 2.0 * area1));
+        CHECK(stats.total_wipe_tower_cost == Approx(area0 * 1.1 * 20.0 * 1e-6 + 2.0 * area1 * 1.3 * 30.0 * 1e-6));
+        REQUIRE(stats.estimated_print_time.size() == 1);
+        CHECK(stats.estimated_print_time.at(0) == Approx(3600.0));
+        CHECK(stats.estimated_print_time_str.at(0) == get_time_dhms(3600.f));
+        REQUIRE(stats._layer_area_stats.size() == 1);
+        CHECK(stats._layer_area_stats[0].second == 12.f);
+        CHECK(stats.initial_extruder_id == 1);
+        CHECK(stats.total_toolchanges == 4);
+        CHECK(stats.printing_extruders == std::vector<extruder_index_t>{0, 1});
+        CHECK(stats.is_computing_gcode.load());
+    }
+    result.print_statistics.volumes_per_role_per_extruder.clear();
+    Steps::StepReadGeneratedGcode::fill_print_statistics(result, config, stats);
+    CHECK(stats.total_wipe_tower_filament == 0.0);
+    CHECK(stats.total_wipe_tower_filament_weight == 0.0);
+    CHECK(stats.total_wipe_tower_volume == 0.0);
+    CHECK(stats.total_wipe_tower_cost == 0.0);
+    stats.clear();
+    CHECK(stats.total_wipe_tower_filament == 0.0);
+    CHECK(stats.total_wipe_tower_filament_weight == 0.0);
+    CHECK(stats.total_wipe_tower_volume == 0.0);
+    CHECK(stats.total_wipe_tower_cost == 0.0);
+}
+
+// Export a sliced single-tool print or a two-tool tower print through production
+// plugins. Reconcile reader volumes independently, then export without a viewer
+// result and explicitly reread before measured filename finalization, as the CLI does.
+TEST_CASE("Export statistics include the tower share for preview and explicit CLI reads",
+          "[plugins][gcode][wipe-tower][print-statistics][integration]")
+{
+    const tbb::global_control concurrency(tbb::global_control::max_allowed_parallelism, 1);
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool tower = GENERATE(false, true);
+    CAPTURE(tower);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_num_extruders(tower ? 2 : 1);
+    config.set_deserialize_strict({{"wipe_tower", tower ? "1" : "0"}, {"wipe_tower_x", "40"}, {"wipe_tower_y", "60"},
+        {"wipe_tower_width", "20"}, {"wipe_tower_rotation_angle", "0"}, {"wipe_tower_brim_width", "0"},
+        {"single_extruder_multi_material", "0"}, {"filament_diameter", tower ? "1.75,2.85" : "1.75"},
+        {"filament_density", tower ? "1.1,1.3" : "1.1"}, {"filament_cost", tower ? "20,30" : "20"}, {"time_cost", "2"},
+        {"perimeter_extruder", "1"}, {"infill_extruder", "1"}, {"solid_infill_extruder", "1"},
+        {"step_perimeter_plugin", "perimeter.generator.classic"}, {"step_surface_generation_plugin", "surface.initial_typed_surface_builder"},
+        {"step_wipetower_plugin", "wipe_tower.manager.default"}, {"gcode_firmware_plugin", "gcode.firmware.marlin2"},
+        {"layer_height", "0.3"}, {"fill_density", "20%"}});
+    if (tower)
+        config.set_deserialize_strict({{"wiping_volumes_matrix", "0,140,140,0"}, {"filament_minimal_purge_on_wipe_tower", "15,15"}});
+    Print print;
+    Model model;
+    if (tower) {
+        Test::init_print({Test::TestMesh::cube_20x20x20, Test::TestMesh::cube_20x20x20}, print, model, config);
+        for (const char *key : {"perimeter_extruder", "infill_extruder", "solid_infill_extruder"})
+            model.objects()[1].config.set_deserialize_strict(key, "2");
+        print.apply(model, config);
+    } else
+        Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    REQUIRE_NOTHROW(print.process());
+    const boost::filesystem::path checkout = boost::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    const std::string preview_path = (checkout / "build" / "temp" /
+        (tower ? "stats_tower_preview.gcode" : "stats_single_preview.gcode")).string();
+    GCodeProcessorResult result;
+    REQUIRE_NOTHROW(Orchestrator::instance().export_gcode(print, preview_path, &result));
+    const PrintStatistics &stats = print.print_statistics();
+    REQUIRE(result.print_statistics.volumes_per_extruder.size() == (tower ? 2 : 1));
+    CHECK(stats.filament_stats == result.print_statistics.volumes_per_extruder);
+    double expected_volume = 0.0, expected_length = 0.0, expected_mass = 0.0, expected_cost = 0.0;
+    for (const auto &[tool, volume] : result.print_statistics.volumes_per_extruder) {
+        const double area = PI * std::pow(print.config().filament_diameter.get_at(tool) * 0.5, 2.0);
+        const double mass = volume * print.config().filament_density.get_at(tool) * 0.001;
+        expected_volume += volume;
+        expected_length += volume / area;
+        expected_mass += mass;
+        expected_cost += mass * print.config().filament_cost.get_at(tool) * 0.001;
+    }
+    expected_cost += print.config().time_cost.value * (result.print_statistics.modes[0].time / 3600.f);
+    CHECK(stats.total_extruded_volume == Approx(expected_volume));
+    CHECK(stats.total_used_filament == Approx(expected_length));
+    CHECK(stats.total_weight == Approx(expected_mass));
+    CHECK(stats.total_cost == Approx(expected_cost));
+    REQUIRE(stats.estimated_print_time.count(0) == 1);
+    CHECK(stats.estimated_print_time.at(0) > 0.0);
+    CHECK(stats.estimated_print_time_str.at(0) == get_time_dhms(result.print_statistics.modes[0].time));
+    CHECK(stats.estimated_print_time.count(1) == 0);
+    double tower_length = 0.0, tower_mass = 0.0, tower_volume = 0.0, tower_cost = 0.0;
+    if (tower) {
+        REQUIRE(result.print_statistics.volumes_per_role_per_extruder.count(GCodeExtrusionRole::WipeTower) == 1);
+        for (const auto &[tool, volume] : result.print_statistics.volumes_per_role_per_extruder.at(GCodeExtrusionRole::WipeTower)) {
+            tower_length += volume / (PI * std::pow(print.config().filament_diameter.get_at(tool) * 0.5, 2.0));
+            tower_volume += volume;
+            const double mass = volume * print.config().filament_density.get_at(tool) * 0.001;
+            tower_mass += mass;
+            tower_cost += mass * print.config().filament_cost.get_at(tool) * 0.001;
+        }
+        CHECK(stats.total_wipe_tower_filament > 0.0);
+    }
+    CHECK(stats.total_wipe_tower_filament == Approx(tower_length));
+    CHECK(stats.total_wipe_tower_filament_weight == Approx(tower_mass));
+    CHECK(stats.total_wipe_tower_volume == Approx(tower_volume));
+    CHECK(stats.total_wipe_tower_cost == Approx(tower_cost));
+    const DynamicConfig placeholders = stats.config();
+    CHECK(placeholders.opt_float("total_wipe_tower_filament") == Approx(tower_length));
+    CHECK(placeholders.opt_float("total_wipe_tower_cost") == Approx(tower_cost));
+    const std::map<uint8_t, double> preview_times = stats.estimated_print_time;
+    const std::vector<std::pair<coord_t, float>> preview_areas = stats._layer_area_stats;
+    REQUIRE_FALSE(preview_areas.empty());
+    const std::string cli_path = (checkout / "build" / "temp" /
+        (tower ? "stats_tower_cli.gcode" : "stats_single_cli.gcode")).string();
+    REQUIRE_NOTHROW(Orchestrator::instance().export_gcode(print, cli_path, nullptr));
+    CHECK(print.print_statistics().estimated_print_time.empty());
+    CHECK(print.print_statistics().total_used_filament == 0.0);
+    CHECK(boost::filesystem::exists(print.gcode_reader_source_path()));
+    CHECK(print.gcode_reader_plugin_id() == result.reader_plugin_id);
+    REQUIRE_NOTHROW(Steps::StepReadGeneratedGcode::read_statistics(Orchestrator::instance(), print));
+    CHECK(stats.total_extruded_volume == Approx(expected_volume));
+    CHECK(stats.total_used_filament == Approx(expected_length));
+    CHECK(stats.total_weight == Approx(expected_mass));
+    CHECK(stats.total_cost == Approx(expected_cost));
+    CHECK(stats.total_wipe_tower_filament == Approx(tower_length));
+    CHECK(stats.total_wipe_tower_filament_weight == Approx(tower_mass));
+    CHECK(stats.total_wipe_tower_volume == Approx(tower_volume));
+    CHECK(stats.total_wipe_tower_cost == Approx(tower_cost));
+    CHECK(stats.estimated_print_time == preview_times);
+    CHECK(stats._layer_area_stats == preview_areas);
+    CHECK(stats.filament_stats == result.print_statistics.volumes_per_extruder);
+    CHECK_FALSE(stats.finalize_output_path("stats_{total_wipe_tower_filament}_{total_wipe_tower_cost}.gcode").empty());
+}
+
+// Every G-code script sees has_wipe_tower true only when the plan holds tower extrusions, and
+// has_single_extruder_multi_material_priming only with a tower, SEMM and priming.
 TEST_CASE("Every G-code script knows whether a wipe tower is printed", "[plugins][wipe-tower][toolchange][placeholders]")
 {
     const tbb::global_control concurrency(tbb::global_control::max_allowed_parallelism, 1);
