@@ -84,7 +84,10 @@ void initialize_create_tool_change_settings(orchestrator_handle *orchestrator)
         "expected to take care of the toolchange yourself - Slic3r will not output any other G-code to "
         "change the filament. You can use placeholder variables for all Slic3r settings as well as {toolchange_z}, {layer_z}, {layer_num}, {max_layer_z}, {previous_extruder} "
         "and {next_extruder}, so e.g. the standard toolchange command can be scripted as T{next_extruder}."
-        "!! Warning !!: if any character is written here, Slic3r won't output any toolchange command by itself.";
+        "!! Warning !!: if any character is written here, Slic3r won't output any toolchange command by itself. "
+        "A negative E move counts as a retraction only with '; retraction' on the same line, "
+        "and a positive E move restores it only with '; unretraction'; other E moves do not "
+        "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 5;

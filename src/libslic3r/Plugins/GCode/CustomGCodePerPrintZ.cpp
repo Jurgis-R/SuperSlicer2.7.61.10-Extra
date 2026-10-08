@@ -241,7 +241,10 @@ void initialize_custom_gcode_per_print_z_settings(orchestrator_handle *orchestra
     def.invalidates_step = STEP_GCODE;
     def.label = "Color change G-code";
     def.tooltip = "This G-code will be used as a code for the color change"
-                  " If empty, the default color change print command for the selected G-code flavor will be used (if any).";
+                  " If empty, the default color change print command for the selected G-code flavor will be used (if any). "
+                  "A negative E move counts as a retraction only with '; retraction' on the same line, "
+                  "and a positive E move restores it only with '; unretraction'; other E moves do not "
+                  "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 12;
@@ -258,7 +261,10 @@ void initialize_custom_gcode_per_print_z_settings(orchestrator_handle *orchestra
     def.invalidates_step = STEP_GCODE;
     def.label = "Pause Print G-code";
     def.tooltip = "This G-code will be used as a code for the pause print."
-                  " If empty, the default pause print command for the selected G-code flavor will be used (if any).";
+                  " If empty, the default pause print command for the selected G-code flavor will be used (if any). "
+                  "A negative E move counts as a retraction only with '; retraction' on the same line, "
+                  "and a positive E move restores it only with '; unretraction'; other E moves do not "
+                  "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 12;
@@ -274,7 +280,10 @@ void initialize_custom_gcode_per_print_z_settings(orchestrator_handle *orchestra
     def.printer_technology = RAW_PT_FFF;
     def.invalidates_step = STEP_GCODE;
     def.label = "Custom G-code";
-    def.tooltip = "This G-code will be used as a custom code";
+    def.tooltip = "This G-code will be used as a custom code. "
+                  "A negative E move counts as a retraction only with '; retraction' on the same line, "
+                  "and a positive E move restores it only with '; unretraction'; other E moves do not "
+                  "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 12;

@@ -65,6 +65,8 @@ plan- and layer-level scripts, but cannot receive a tool-specific start script
 until a tool group and its transition scope exist. In single-extruder
 multi-material mode, final filament cleanup is limited to the active tool;
 otherwise each tool used by the plan receives its own final script.
+Synthetic catalog entries label generated geometry but have no model Object;
+groups containing only such an entry do not select an object for object scripts.
 */
 
 namespace slic3r_api { namespace GCodeGeneration { namespace SettingsGCodeScriptsPlugin {
@@ -102,7 +104,7 @@ struct PlanSummary
 // Read global facts once before scripts are inserted, including values needed by plan-level events.
 PlanSummary summarize_plan(const ConstPrintingPlan &plan,
                            const plugin_run_context *run_ctx);
-// Resolve a one-object group to the stable object index expected by PlaceholderParser.
+// Resolve a single real-object catalog group to its stable placeholder object index.
 std::optional<uint32_t> group_object_index(const Print &print,
                                            const ConstPrintingPlan &plan,
                                            const ConstPrintingGroup &group,
@@ -173,7 +175,8 @@ PlanSummary summarize_plan(const ConstPrintingPlan &plan,
             for (uint32_t tool_idx = 0; tool_idx < layer.tool_group_count(); ++tool_idx) {
                 if ((tool_idx & 63u) == 0)
                     throw_if_cancelled(run_ctx);
-                const extruder_index_t extruder_id = layer.tool_group(tool_idx).extruder_id();
+                const ConstPrintingToolGroup tool_group = layer.tool_group(tool_idx);
+                const extruder_index_t extruder_id = tool_group.extruder_id();
                 if (extruder_id == EXTRUDER_ID_UNKNOWN)
                     continue;
                 if (!summary.first_extruder)
@@ -185,6 +188,7 @@ PlanSummary summarize_plan(const ConstPrintingPlan &plan,
     return summary;
 }
 
+// Inspect a borrowed single-entry group and map only a real catalog owner to a Print object index; missing/synthetic owners return no index, cancellation throws and no ownership or plan state changes.
 std::optional<uint32_t> group_object_index(const Print &print,
                                            const ConstPrintingPlan &plan,
                                            const ConstPrintingGroup &group,
@@ -197,7 +201,10 @@ std::optional<uint32_t> group_object_index(const Print &print,
     if (printing_catalog_id == UINT32_MAX ||
         printing_catalog_id >= plan.object_instance_count())
         return std::nullopt;
-    const Object object = plan.object_instance(printing_catalog_id).object();
+    const PrintingObjectInstance instance = plan.object_instance(printing_catalog_id);
+    if (!instance.has_object())
+        return std::nullopt;
+    const Object object = instance.object();
     for (uint32_t object_idx = 0; object_idx < print.object_count(); ++object_idx) {
         if ((object_idx & 63u) == 0)
             throw_if_cancelled(run_ctx);
@@ -385,7 +392,10 @@ void initialize_settings_gcode_scripts_settings(orchestrator_handle *orchestrato
     def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
     def.label = "Start G-code";
     def.tooltip = "This start procedure is inserted at the beginning, possibly prepended by "
-                  "temperature-changing commands and others. See 'autoemit_temperature_commands' and 'start_gcode_manual'.";
+                  "temperature-changing commands and others. See 'autoemit_temperature_commands' and 'start_gcode_manual'. "
+                  "A negative E move counts as a retraction only with '; retraction' on the same line, "
+                  "and a positive E move restores it only with '; unretraction'; other E moves do not "
+                  "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 12;
@@ -403,7 +413,10 @@ void initialize_settings_gcode_scripts_settings(orchestrator_handle *orchestrato
     def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
     def.label = "End G-code";
     def.tooltip = "This end procedure is inserted at the end of the output file. "
-                  "Note that you can use placeholder variables for all Slic3r settings.";
+                  "Note that you can use placeholder variables for all Slic3r settings. "
+                  "A negative E move counts as a retraction only with '; retraction' on the same line, "
+                  "and a positive E move restores it only with '; unretraction'; other E moves do not "
+                  "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 12;
@@ -420,7 +433,7 @@ void initialize_settings_gcode_scripts_settings(orchestrator_handle *orchestrato
     def.invalidates_step = STEP_GCODE;
     def.category = RAW_OPTION_CATEGORY_CUSTOMGCODE;
     def.label = "Between objects G-code";
-    def.tooltip = "This code is inserted between objects when using sequential printing. By default extruder and bed temperature are reset using non-wait command; however if M104, M109, M140 or M190 are detected in this custom code, Slic3r will not add temperature commands. Note that you can use placeholder variables for all Slic3r settings, so you can put a \"M109 S{first_layer_temperature}\" command wherever you want.";
+    def.tooltip = "This code is inserted between objects when using sequential printing. By default extruder and bed temperature are reset using non-wait command; however if M104, M109, M140 or M190 are detected in this custom code, Slic3r will not add temperature commands. Note that you can use placeholder variables for all Slic3r settings, so you can put a \"M109 S{first_layer_temperature}\" command wherever you want. A negative E move counts as a retraction only with '; retraction' on the same line, and a positive E move restores it only with '; unretraction'; other E moves do not change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 12;
@@ -460,7 +473,9 @@ void initialize_settings_gcode_scripts_settings(orchestrator_handle *orchestrato
                   "of heating commands and other custom actions. Note that you can use placeholder variables "
                   "for all Slic3r settings, so you can put a \"M109 S{first_layer_temperature}\" command "
                   "wherever you want. If you have multiple extruders, the gcode is processed "
-                  "in extruder order.";
+                  "in extruder order. A negative E move counts as a retraction only with "
+                  "'; retraction' on the same line, and a positive E move restores it only with "
+                  "'; unretraction'; other E moves do not change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 12;
@@ -482,7 +497,10 @@ void initialize_settings_gcode_scripts_settings(orchestrator_handle *orchestrato
     def.tooltip = "This end procedure is inserted at the end of the output file, before the printer end gcode (and "
                   "before any toolchange from this filament in case of multimaterial printers). "
                   "Note that you can use placeholder variables for all Slic3r settings. "
-                  "If you have multiple extruders, the gcode is processed in extruder order.";
+                  "If you have multiple extruders, the gcode is processed in extruder order. "
+                  "A negative E move counts as a retraction only with '; retraction' on the same line, "
+                  "and a positive E move restores it only with '; unretraction'; other E moves do not "
+                  "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 120;
@@ -516,7 +534,7 @@ private:
     int32_t priority_impl() const noexcept override { return 0; }
     int32_t used_config_keys(raw_used_config_key *keys) const noexcept override {
         if (keys == nullptr)
-            return 9;
+            return 10;
         keys[0] = raw_used_config_key{"start_gcode", RAW_CO_STRING, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         keys[1] = raw_used_config_key{"end_gcode", RAW_CO_STRING, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         keys[2] = raw_used_config_key{"before_layer_gcode", RAW_CO_STRING, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
@@ -526,7 +544,8 @@ private:
         keys[6] = raw_used_config_key{"start_filament_gcode", RAW_CO_VECTOR_STRING, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         keys[7] = raw_used_config_key{"end_filament_gcode", RAW_CO_VECTOR_STRING, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
         keys[8] = raw_used_config_key{"single_extruder_multi_material", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
-        return 9;
+        keys[9] = raw_used_config_key{"single_extruder_multi_material_priming", RAW_CO_BOOL, RAW_CONTAINER_TYPE_NONE, RAW_PRESET_TYPE_NONE};
+        return 10;
     }
     int32_t defined_config_keys(const char **keys) const noexcept override {
         if (keys != nullptr)
