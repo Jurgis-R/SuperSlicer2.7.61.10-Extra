@@ -128,6 +128,7 @@ add_executable(${_TEST_NAME}_tests
     test_wipe_tower_footprint.cpp
     test_wipe_tower_layout.cpp
     test_wipe_tower_manager.cpp
+    test_wipe_tower_toolchange_unretract.cpp
     )
 
 add_library(plugin_loader_missing_register_fixture SHARED plugin_loader_fixture.cpp)

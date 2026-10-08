@@ -1423,6 +1423,18 @@ TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers con
         CHECK(definition->invalidates_step == STEP_ORDERING);
         CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Print);
     }
+    // The tool-change unretraction wipe reads the retraction and speed settings of the incoming
+    // tool at STEP_LAYER_EXTRUSION_EDIT, so their invalidation is tightened there from the G-code
+    // step. The layered speed percentages need solid_infill_speed as their fallback base.
+    // filament_diameter keeps the earlier skirt/brim consumer instead.
+    for (const char *key : {"retract_restart_wipe_toolchange", "deretract_speed",
+         "use_firmware_retraction", "support_material_speed", "solid_infill_speed"}) {
+        CAPTURE(key);
+        const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+        REQUIRE(definition != nullptr);
+        CHECK(definition->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+        CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Ordering);
+    }
 }
 
 // Check a minimal definition/config against borrowed provider metadata without

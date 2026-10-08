@@ -146,6 +146,7 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Surface/TopSurfaceExpansion.hpp"
 #include "libslic3r/Plugins/Support/SupportDemandBridgeRemoval.hpp"
 #include "libslic3r/Plugins/VaseMultiIslandConnector.hpp"
+#include "libslic3r/Plugins/WipeTower/ToolChangeUnretract.hpp"
 #include "libslic3r/Plugins/WipeTower/ToolChangeWipe.hpp"
 #include "libslic3r/Plugins/WipeTower/WipeTowerManager.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
@@ -728,6 +729,8 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::WipeTower::register_wipe_tower_manager_plugin);
     register_builtin_plugin(orchestrator, "wipe_tower.wipe.toolchange.default",
         slic3r_api::WipeTower::register_tool_change_wipe_plugin);
+    register_builtin_plugin(orchestrator, "wipe_tower.toolchange_unretract.default",
+        slic3r_api::WipeTower::ToolChangeUnretractPlugin::register_tool_change_unretract_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.aligned",
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.contiguous",

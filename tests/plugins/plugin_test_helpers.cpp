@@ -99,6 +99,7 @@
 #include "libslic3r/Plugins/Support/SupportDemandOverhangs.hpp"
 #include "libslic3r/Plugins/Support/SupportDemandPainting.hpp"
 #include "libslic3r/Plugins/VaseMultiIslandConnector.hpp"
+#include "libslic3r/Plugins/WipeTower/ToolChangeUnretract.hpp"
 #include "libslic3r/Plugins/WipeTower/ToolChangeWipe.hpp"
 #include "libslic3r/Plugins/WipeTower/WipeTowerManager.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
@@ -526,6 +527,8 @@ void ensure_plugin_test_runtime_initialized()
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
         slic3r_api::WipeTower::register_wipe_tower_manager_plugin(orchestrator_handle_value);
         slic3r_api::WipeTower::register_tool_change_wipe_plugin(orchestrator_handle_value);
+        slic3r_api::WipeTower::ToolChangeUnretractPlugin::
+            register_tool_change_unretract_plugin(orchestrator_handle_value);
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin(orchestrator_handle_value);
         slic3r_api::SeamPlacement::ContiguousPlugin::register_contiguous_seam_placer_plugin(
             orchestrator_handle_value);
@@ -694,6 +697,7 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
         activate_plugin_or_fail(orchestrator, "wipe_tower.manager.default");
         activate_plugin_or_fail(orchestrator, "wipe_tower.wipe.toolchange.default");
+        activate_plugin_or_fail(orchestrator, "wipe_tower.toolchange_unretract.default");
         activate_plugin_or_fail(orchestrator, "seam_placer.aligned");
         activate_plugin_or_fail(orchestrator, "seam_placer.contiguous");
         activate_plugin_or_fail(orchestrator, "seam_placer.cost");
