@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* The object list maps model objects, volumes and instances to sidebar rows.
+   Settings rows summarize per-object option categories; refreshing their digest
+   and any selected settings panel leaves the canvas selection unchanged. */
 #ifndef slic3r_GUI_ObjectList_hpp_
 #define slic3r_GUI_ObjectList_hpp_
 
@@ -382,6 +385,8 @@ public:
 
     void last_volume_is_deleted(const int obj_idx);
     void update_and_show_object_settings_item();
+    // Refresh one object's settings digest and any selected settings panel without changing canvas selection.
+    void refresh_object_settings_item(int obj_idx);
     void update_settings_item_and_selection(wxDataViewItem item, wxDataViewItemArray& selections);
     void update_object_list_by_printer_technology();
     void update_info_items(size_t obj_idx, wxDataViewItemArray* selections = nullptr, bool added_object = false);

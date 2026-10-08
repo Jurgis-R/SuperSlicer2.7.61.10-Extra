@@ -270,8 +270,9 @@ TEST_CASE("Line plugin discards ready extrusion when publication is cancelled", 
         Probe &probe = *reinterpret_cast<Probe *>(host);
         ++probe.checks;
         // A nonempty temporary group appears only after paths have been built for publication.
-        for (const std::unique_ptr<ExtrusionEntity> &owned : probe.storage->extrusions) {
-            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned.get()));
+        // Inspect a locked pointer snapshot; this single-threaded probe keeps the temporary entities alive.
+        for (const ExtrusionEntity *owned : probe.storage->stored_extrusions()) {
+            const slic3r_api::ExtrusionEntity entity(reinterpret_cast<const extrusion_entity_handle *>(owned));
             if (entity.handle() != probe.output && !entity.is_leaf() && !entity.empty()) {
                 probe.ready_group_seen = true;
                 return 1;

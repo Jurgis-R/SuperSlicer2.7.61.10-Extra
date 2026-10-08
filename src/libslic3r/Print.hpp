@@ -19,6 +19,12 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+/* Print owns effective configuration, sliced objects and pipeline state. Its
+   placement checks borrow model instances and use config-derived square tower
+   envelopes; instance-tower offsets follow model translation, not rotation.
+   Tool ordering supports preview ticks and legacy export. Statistics store
+   measured totals including the wipe-tower share for sidebar and placeholders.
+   Validation includes print-level setting requirements on selected providers. */
 #ifndef slic3r_Print_hpp_
 #define slic3r_Print_hpp_
 
@@ -40,7 +46,6 @@
 #include "Flow.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/ToolOrdering.hpp"
-#include "GCode/WipeTower.hpp"
 #include "libslic3r.h"
 #include "Point.hpp"
 #include "PluginProperty.hpp"
@@ -55,7 +60,6 @@ namespace Slic3r {
 class GCodeGenerator;
 class Plugin;
 struct GCodeProcessorResult;
-class WipeTower2;
 struct ConflictResult;
 namespace Printing {
 struct PrintingPlan;
@@ -66,58 +70,6 @@ struct PrintAccess;
 namespace Steps {
 enum class Checkpoint : uint8_t;
 }
-
-struct WipeTowerData
-{
-    // Following section will be consumed by the GCodeGenerator.
-    // Tool ordering of a non-sequential print has to be known to calculate the wipe tower.
-    // Cache it here, so it does not need to be recalculated during the G-code generation.
-    Print                                                *print;
-    // Cache of tool changes per print layer.
-    std::unique_ptr<std::vector<WipeTower::ToolChangeResult>> priming;
-    std::vector<std::vector<WipeTower::ToolChangeResult>> tool_changes;
-    std::unique_ptr<WipeTower::ToolChangeResult>          final_purge;
-    std::vector<std::pair<float, std::vector<float>>>     used_filament_until_layer;
-    int                                                   number_of_toolchanges;
-
-    // Depth of the wipe tower to pass to GLCanvas3D for exact bounding box:
-    float                                                 depth;
-    std::vector<std::pair<float, float>>                  z_and_depth_pairs;
-    float                                                 brim_width;
-    float                                                 height;
-
-    // Data needed to generate fake extrusions for conflict checking.
-    float                                                 width;
-    float                                                 first_layer_height;
-    float                                                 cone_angle;
-    Vec2d                                                 position;
-    float                                                 rotation_angle;
-
-    void clear() {
-        priming.reset(nullptr);
-        tool_changes.clear();
-        final_purge.reset(nullptr);
-        used_filament_until_layer.clear();
-        number_of_toolchanges = -1;
-        depth = 0.f;
-        z_and_depth_pairs.clear();
-        brim_width = 0.f;
-        height = 0.f;
-        width = 0.f;
-        first_layer_height = 0.f;
-        cone_angle = 0.f;
-        position = Vec2d::Zero();
-        rotation_angle = 0.f;
-    }
-
-private:
-	// Only allow the WipeTowerData to be instantiated internally by Print, 
-	// as this WipeTowerData shares reference to Print::m_tool_ordering.
-	friend class Print;
-	WipeTowerData(Print *print) : print(print) { clear(); }
-	WipeTowerData(const WipeTowerData & /* rhs */) = delete;
-	WipeTowerData &operator=(const WipeTowerData & /* rhs */) = delete;
-};
 
 struct PrintStatistics
 {
@@ -131,10 +83,11 @@ struct PrintStatistics
     double                          total_cost;
     int                             total_toolchanges;
     double                          total_weight;
-    std::vector<std::pair<size_t, double>> color_extruderid_to_used_weight;
     double                          total_wipe_tower_cost;
-    double                          total_wipe_tower_filament;
-    double                          total_wipe_tower_filament_weight;
+    double                          total_wipe_tower_filament; // filament length in mm
+    double                          total_wipe_tower_filament_weight; // grams
+    double                          total_wipe_tower_volume; // mm3
+    std::vector<std::pair<size_t, double>> color_extruderid_to_used_weight;
     std::vector<extruder_index_t>   printing_extruders;
     extruder_index_t                initial_extruder_id;
     std::string                     initial_filament_type;
@@ -144,13 +97,14 @@ struct PrintStatistics
 
     std::atomic_bool is_computing_gcode;
 
-    // Config with the filled in print statistics.
+    // Copy measured print statistics, including tower shares, into a placeholder config.
     DynamicConfig           config() const;
     // Config with the statistics keys populated with placeholder strings.
     static DynamicConfig    placeholders();
     // Replace the print statistics placeholders in the path.
     std::string             finalize_output_path(const std::string &path_in) const;
 
+    // Reset all measured totals, per-tool values and export-progress state.
     void clear() {
         estimated_print_time.clear();
         estimated_print_time_str.clear();
@@ -159,9 +113,10 @@ struct PrintStatistics
         total_cost             = 0.;
         total_toolchanges      = 0;
         total_weight           = 0.;
-        total_wipe_tower_cost  = 0.;
+        total_wipe_tower_cost = 0.;
         total_wipe_tower_filament = 0.;
         total_wipe_tower_filament_weight = 0.;
+        total_wipe_tower_volume = 0.;
         initial_extruder_id    = EXTRUDER_ID_UNKNOWN;
         initial_filament_type.clear();
         printing_filament_types.clear();
@@ -235,6 +190,7 @@ public:
 
     ApplyStatus         apply(const Model &model, DynamicPrintConfig config) override;
     void set_task(const TaskParams &params) override;
+    // Slice the print and prepare tool ordering for preview ticks and legacy export.
     void process() override;
     void finalize() override;
 
@@ -250,7 +206,7 @@ public:
     bool                has_skirt() const;
     bool                has_brim() const;
 
-    // Returns an empty string if valid, otherwise returns an error message.
+    // Validate placement/settings and selected providers, returning a status/message pair.
     std::pair<PrintValidationError, std::string> validate(std::vector<std::string>* warnings = nullptr) const override;
     Flow                brim_flow(extruder_index_t extruder_id, const PrintObjectConfig &brim_config) const;
     Flow                skirt_flow(extruder_index_t extruder_id, bool first_layer=false) const;
@@ -262,7 +218,7 @@ public:
     // get all extruders from the list of objects in this print ( same as print.object_extruders(print.objects()) )
     std::set<extruder_index_t> object_extruders(coord_t z = -1) const;
     std::set<extruder_index_t> support_material_extruders(coord_t z = -1) const;
-    // all extruder to print layers that extrude at this z.
+    // Collect object/support tools at scaled Z, adding the global tower contour tool only for all-layer queries.
     std::set<extruder_index_t> extruders(coord_t z = -1) const;
     // Effective first-layer bed temperature across every tool used at Z=0.
     int32_t first_layer_bed_temperature() const;
@@ -302,11 +258,13 @@ public:
     [[deprecated("brim/skirt are stored in auxiliary layers; this accessor materializes a compatibility cache.")]]
     const ExtrusionEntityCollection& brim() const;
     // Convex hull of the 1st layer extrusions, for bed leveling and placing the initial purge line.
-    // It encompasses the object extrusions, support extrusions, skirt, brim, wipe tower.
+    // It encompasses the object extrusions, support extrusions, skirt and brim, but not wipe towers.
     // It does NOT encompass user extrusions generated by custom G-code,
     // therefore it does NOT encompass the initial purge line.
     // It does NOT encompass MMU/MMU2 starting (wipe) areas.
     const Polygon&                   first_layer_convex_hull() const { return m_first_layer_convex_hull; }
+    // Compute an export envelope from the cached first-layer hull and current global/instance tower corners.
+    Polygon                          first_layer_convex_hull_with_wipe_towers() const;
 
     const PrintStatistics&      print_statistics() const { return m_print_statistics; }
     PrintStatistics&            print_statistics() { return m_print_statistics; }
@@ -314,10 +272,10 @@ public:
     std::time_t                 timestamp_last_change() const { return m_timestamp_last_change; }
 
     // Wipe tower support.
+    // Test eligibility for any configured global or instance tower.
     bool                        has_wipe_tower() const;
-    const WipeTowerData&        wipe_tower_data(const ConfigBase* config, double nozzle_diameter) const;
-    const WipeTowerData&        wipe_tower_data() const { return wipe_tower_data(&this->m_config,0); }
-    const WipeTower2*           wipe_tower2() const { return m_wipe_tower2.get(); }
+    // Test global-tower eligibility outside complete-object/vase modes, independent of parallel scheduling.
+    bool                        has_global_wipe_tower() const;
     const std::vector<ToolOrdering> &tool_orderings() const { return m_tool_orderings; }
     const Printing::PrintingPlan *printing_plan() const { return m_printing_plan.get(); }
     Printing::PrintingPlan &mutable_printing_plan();
@@ -343,7 +301,11 @@ public:
     // Path of the finished text stream used by GCodeReader and GCodeViewer.
     // The producer owns the file; Print owns only this copied UTF-8 path.
     const std::string &gcode_reader_source_path() const { return m_gcode_reader_source_path; }
-    void set_gcode_reader_source_path(std::string path);
+    // Return the reader selected by the firmware for the published export source.
+    const std::string &gcode_reader_plugin_id() const { return m_gcode_reader_plugin_id; }
+    // Own the readable export path and its selected reader identity until invalidation.
+    void set_gcode_reader_source_path(std::string path, std::string reader_plugin_id = {});
+    // Discard the published source path and reader identity together.
     void reset_gcode_reader_source_path();
     const PrintObject *auxiliary_object() const { return m_auxiliary_object.get(); }
     PrintObject &mutable_auxiliary_object();
@@ -366,6 +328,7 @@ public:
 
     const Polygons& get_sequential_print_clearance_contours() const { return m_sequential_print_clearance_contours; }
 //TODO: decide to use this one or the printconfig one.
+    // Check clearance between instance envelopes, including their configured towers.
     static bool sequential_print_horizontal_clearance_valid(const Print& print, Polygons* polygons = nullptr);
 
     //put this in public to be accessible for tests, it was in private before.
@@ -453,6 +416,7 @@ protected:
 private:
     void                active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message, int message_id = 0);
     void                add_step_warning(PrintStateBase::WarningLevel level, const std::string &message, int message_id);
+    // Finalize the cached slicing-only first-layer hull from skirt coverage or first-layer islands.
     void                finalize_first_layer_convex_hull();
     // Non-cancelling scheduling invalidates downstream snapshots but retains the
     // live plan until plugins have released their borrowed handles.
@@ -467,6 +431,7 @@ private:
     // Islands of objects and their supports extruded at the 1st layer.
     Polygons            first_layer_islands() const;
     // Return 4 wipe tower corners in the world coordinates (shifted and rotated), including the wipe tower brim.
+    // Collect scaled generic footprint corners for every configured tower.
     Points              first_layer_wipe_tower_corners() const;
 
     PrintConfig                             m_config;
@@ -527,9 +492,7 @@ private:
     std::map<slicing_step_t, PipelineStepState> m_pipeline_state;
     mutable std::atomic_bool                m_freeze_diagnostic_claimed{false};
     std::string                             m_gcode_reader_source_path;
-    mutable std::mutex                      m_wipe_tower_data_mutex;
-    WipeTowerData                           m_wipe_tower_data {this};
-    std::unique_ptr<WipeTower2>             m_wipe_tower2;
+    std::string                             m_gcode_reader_plugin_id;
 
     // Estimated print time, filament consumed.
     PrintStatistics                         m_print_statistics;

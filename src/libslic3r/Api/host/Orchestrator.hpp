@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -651,6 +652,63 @@ public:
     // Release every allocation still owned by this storage.
     ~PluginStorage();
 
+    // Retain an allocation and its exported handle together under the storage lock.
+    // Configs supply their adjusted ConfigBase handle; other objects use their own address.
+    template<class T> T *store(std::unique_ptr<T> item, void *handle = nullptr)
+    {
+        if (item == nullptr)
+            return nullptr;
+        T *object = item.get();
+        if (handle == nullptr)
+            handle = object;
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        generic_storage.insert(handle);
+        try {
+            if constexpr (std::is_same_v<T, Polyline>)
+                polylines.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, Polygon>)
+                polygons.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, ExPolygon>)
+                expolygons.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, std::vector<Polyline>>)
+                polyline_collections.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, Polygons>)
+                polygon_collections.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, std::vector<ExPolygon>>)
+                expolygon_collections.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, SurfaceCollection>)
+                surface_collections.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, ExtrusionEntity>)
+                extrusions.push_back(std::move(item));
+            else if constexpr (std::is_same_v<T, DynamicConfig>)
+                configs.push_back(std::move(item));
+            else {
+                static_assert(std::is_same_v<T, ApiClipper::ClipperShapes>, "Unsupported plugin storage type");
+                clipper_shapes.push_back(std::move(item));
+            }
+        } catch (...) {
+            generic_storage.erase(handle);
+            throw;
+        }
+        return object;
+    }
+
+    // Release all tracked allocations; previously returned pointers become invalid.
+    void clear();
+    // Return the number of currently tracked allocations under the storage lock.
+    size_t size() const;
+    // Test whether an exported handle is tracked under the storage lock.
+    bool contains(void *ptr) const;
+    // Release one allocation under the storage lock; unknown pointers are rejected.
+    bool free(void *ptr);
+    // Copy the stored extrusion pointers under the lock for inspection while their owners remain alive.
+    std::vector<const ExtrusionEntity *> stored_extrusions() const;
+
+private:
+    // TODO: Replace this temporary lock with private storage per object, location or sub-plugin call; keep setup/clear and print-wide storage persistent.
+    // See the planned rework in doc/development/plugin-data-lifetimes.md.
+    mutable std::mutex m_mutex;
+
     // Stored objects live behind unique_ptr so their addresses stay stable even
     // if the owning vector reallocates. Plugins may keep these handles until
     // storage_free() or clear().
@@ -665,15 +723,6 @@ public:
     StableOwnedVector<DynamicConfig> configs;
     std::vector<std::unique_ptr<ApiClipper::ClipperShapes>> clipper_shapes;
     std::unordered_set<void *> generic_storage;
-
-    // Release all tracked allocations; previously returned pointers become invalid.
-    void clear();
-    // Return the number of currently tracked generic allocations.
-    size_t size() const;
-    // Test whether a pointer is currently tracked.
-    bool contains(void *ptr) const;
-    // Release one tracked allocation; unknown pointers are rejected.
-    bool free(void *ptr);
 
 };
 

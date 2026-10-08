@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Selection borrows the scene/model and caches selected volume indices and
+   temporary transforms. Tower proxies select individually in volume mode,
+   keeping their configuration offsets separate from model-instance transforms. */
 #ifndef slic3r_GUI_Selection_hpp_
 #define slic3r_GUI_Selection_hpp_
 
@@ -192,6 +195,7 @@ public:
     EMode get_mode() const { return m_mode; }
     void set_mode(EMode mode) { m_mode = mode; }
 
+    // Select one scene volume, keeping tower proxies separate from model instances.
     void add(unsigned int volume_idx, bool as_single_selection = true, bool check_for_already_contained = false);
     void remove(unsigned int volume_idx);
 

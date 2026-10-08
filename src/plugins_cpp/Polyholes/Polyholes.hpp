@@ -39,6 +39,7 @@ private:
     void inilialize_impl(storage_handle *storage) const override;
     void setup_impl(const plugin_run_context *run_ctx, uint32_t run_count) const override;
     void setup_run_impl(const plugin_run_context *run_ctx) const override;
+    // Replace round slice holes without clearing the plugin's shared storage.
     void run_impl(const plugin_run_context *run_ctx) const override;
 };
 

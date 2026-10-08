@@ -181,10 +181,10 @@ correction.
 
 ## Rectilinear family port
 
-The family exposes twelve stable plugin ids:
-`rectilinear`, `alignedrectilinear`, `monotonic`, `monotoniclines`, `grid`,
+The family exposes eleven stable plugin ids:
+`rectilinear`, `alignedrectilinear`, `monotonic`, `grid`,
 `triangles`, `stars`, `cubic`, `scatteredrectilinear`, `sawtooth`,
-`rectiwithperimeter` and `supportbase`. All twelve ids share the raster /
+`rectiwithperimeter` and `supportbase`. All eleven ids share the raster /
 multi-sweep code ported from `FillRectilinear.cpp` into
 `Plugins/Infill/Rectilinear`; `sawtooth`, `rectiwithperimeter` and `supportbase`
 add or replace a stage on top of it:

@@ -120,7 +120,10 @@ typedef enum slicing_step_t : uint16_t
     by the viewer and by firmware sessions after custom G-code; it does not
     run as a standalone slicing pipeline stage.
     */
-    GCODE_READER                   = 10400
+    GCODE_READER                   = 10400,
+
+    /* Non-exclusive wipe services driven in phases by STEP_WIPETOWER. */
+    WIPE_TOWER_WIPE                = 10450
 
 } slicing_step_t;
 

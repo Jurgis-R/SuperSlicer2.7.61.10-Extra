@@ -35,6 +35,7 @@ void register_default_ordering_plugins(orchestrator_handle *orch)
     ObjectInstanceCatalogPlugin::register_object_instance_catalog_plugin(orch);
     register_default_tool_group_ordering_plugin(orch);
     register_printing_extrusion_pre_sort_plugin(orch);
+    register_wipe_into_first_ordering_plugin(orch);
     register_advanced_extrusion_tree_ordering_plugin(orch);
     register_xy_serpentine_extrusion_tree_ordering_plugin(orch);
     register_default_extrusion_tree_ordering_plugin(orch);

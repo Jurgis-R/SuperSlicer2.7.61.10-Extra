@@ -511,11 +511,15 @@ Sources: `src/libslic3r/Api/plugin/c/slic3r_extrusion_property.h:237`, `src/libs
 
 ### `PluginStorage`
 
-The storage provided per context belongs to `Orchestrator::m_plugin_storage` and may survive several callbacks. A worker storage provided by `slic3r_parallel_for_storage`, by contrast, is local to the job and destroyed when it returns.
+The storage provided per context belongs to `Orchestrator::m_plugin_storage` and survives callbacks. Parallel calls of the same plugin share it. A central mutex protects allocation registration, individual release, membership/count queries and clearing. Object addresses remain stable across container growth; accessing an existing object through its handle does not take the storage lock. Plugins must coordinate edits of the same object and finish reading a handle before freeing it. Do not call `storage_clear()` during `setup_run()` or `run()`, or assert that the shared storage is empty: other callbacks may still have live allocations. Temporary owners release their allocations individually. A worker storage provided by `slic3r_parallel_for_storage`, by contrast, is local to the job and destroyed when it returns.
 
 Plugin instances are singletons: `plugin_ctx` and this storage designate the plugin, not a particular run or a Print. The `plugin_run_context::print` member identifies the Print for setup/setup_run/run; the optional callback `clear(plugin_ctx, print, plugin_storage)` receives the same key directly. A run-dependent cache must be partitioned by this identity, not by the temporary address of the context.
 
 Participant tracking belongs to the Print. Their presence does not mean their caches are invalid: a separate atomic flag signals cleanups caused by an invalidation or a failure. An unchanged apply does not traverse this tracking and does not cancel a valid worker; tracking reads needed for cleanup happen after the workers have stopped. An apply retry after a failed cleanup is still treated as an invalidation, even if the inputs have already been applied.
+
+### Planned rework
+
+Replace the central storage lock with private storage per executed element (object, layer location or sub-plugin call), shared by that element's `setup_run()` and `run()`. Keep persistent storage for `setup()`/`clear()` and print-wide calls: G-code firmware sessions retain a config allocated during their factory `run()` and use it later while writing the print. A future per-object pipeline must prevent object steps from writing print-wide data (`print_records_*` or the print's auxiliary object). The current `setup_run()` discovery barrier across objects must also be reviewed before changing that scheduling.
 
 ### Scheduling ownership and invalidation barriers
 
@@ -588,7 +592,7 @@ This return change breaks the ABI: native plugins must be recompiled and manifes
 | `PluginStorage::generic_storage` | Registry of releasable root pointers | Not a recursive owner nor a reference counter |
 | `StableOwnedVector<T>::m_items` | Vector of unique_ptr | Adding other roots does not move existing ones |
 
-`storage_free` must only receive roots of this storage, never a child, a contour, an option or a source/plan object. `storage_clear` destroys all allocations; handle copies are not reset to zero. The `Stored*` RAII wrappers carry `m_storage` and `m_handle`: they own the responsibility for releasing the handle, not the storage, which must outlive them. Address stability does not imply thread-safe allocation in a shared storage.
+`storage_free` must only receive roots of this storage, never a child, a contour, an option or a source/plan object. `storage_clear` destroys all allocations; handle copies are not reset to zero. The `Stored*` RAII wrappers carry `m_storage` and `m_handle`: they own the responsibility for releasing the handle, not the storage, which must outlive them. The registry lock protects allocation and release, not simultaneous access to the stored objects.
 
 Sources: `src/libslic3r/Api/host/Orchestrator.hpp:564`, `src/libslic3r/Api/host/Orchestrator.cpp:2428`, `src/libslic3r/Api/host/slic3r_utils.cpp:15`.
 
@@ -728,6 +732,8 @@ Sources: `src/libslic3r/Config/ConfigDef.hpp:127`, `src/libslic3r/Api/host/slic3
 ## 9. Step contexts and temporary outputs
 
 A `plugin_run_context` is a callback borrow. Its members `step`, `print`, `plugin_storage`, `data`, `host_context` and callbacks do not own the pointed-to objects. Copying the context does not extend any lifetime; the opaque host_context must not be inspected or retained. Step wrappers may live during setup_run/run, but the public contract may limit the borrow to the current call.
+
+`plugin_storage` still designates the plugin's shared persistent storage, not a private storage created by the context copy. Its allocation registry is locked as described in section 7; a callback must not clear it while parallel callbacks may use it. Use `slic3r_parallel_for_storage` when each task needs an independent temporary lifetime.
 
 ### Layer-height and perimeters
 

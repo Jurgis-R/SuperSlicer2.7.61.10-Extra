@@ -20,6 +20,11 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Plater owns model/config UI state and schedules background processing. Tower
+   move events encode the owner index+1 in Z (zero for global); instance XY values
+   are offsets from ModelInstance translation, shared by every owner instance.
+   The sliced-info panel formats measured whole-print/per-tool totals and times,
+   including object/wipe-tower filament-length and material-cost shares. */
 #include "Plater.hpp"
 #include "libslic3r/Exception.hpp"
 
@@ -305,9 +310,7 @@ void ObjectInfo::update_warning_icon(const std::string& warning_icon_name)
 
 enum SlicedInfoIdx
 {
-    siFilament_g,
-    siFilament_m,
-    siFilament_mm3,
+    siFilament,
     siMateril_unit,
     siCost,
     siEstimatedTime,
@@ -321,9 +324,13 @@ class SlicedInfo : public wxStaticBoxSizer
 public:
     SlicedInfo(wxWindow *parent);
     void SetTextAndShow(SlicedInfoIdx idx, const wxString& text, const wxString& new_label="");
+    // Fill the value columns of a row; the filament row has three (length, volume, weight).
+    // "N/A" in the first column hides the row, an empty column is hidden.
+    void SetColumnsAndShow(SlicedInfoIdx idx, const std::vector<wxString>& columns, const wxString& new_label="");
 
 private:
-    std::vector<std::pair<wxStaticText*, wxStaticText*>> info_vec;
+    // Label and value columns of each row.
+    std::vector<std::pair<wxStaticText*, std::vector<wxStaticText*>>> info_vec;
 };
 
 SlicedInfo::SlicedInfo(wxWindow *parent) :
@@ -337,19 +344,24 @@ SlicedInfo::SlicedInfo(wxWindow *parent) :
 
     info_vec.reserve(siCount);
 
-    auto init_info_label = [this, parent, grid_sizer](wxString text_label) {
+    auto init_info_label = [this, parent, grid_sizer](wxString text_label, size_t nb_columns = 1) {
         auto *text = new wxStaticText(parent, wxID_ANY, text_label);
         text->SetFont(wxGetApp().small_font());
-        auto info_label = new wxStaticText(parent, wxID_ANY, "N/A");
-        info_label->SetFont(wxGetApp().small_font());
         grid_sizer->Add(text, 0);
-        grid_sizer->Add(info_label, 0);
-        info_vec.push_back(std::pair<wxStaticText*, wxStaticText*>(text, info_label));
+        // Several columns form a table: right aligned under their unit.
+        auto *values_sizer = new wxBoxSizer(wxHORIZONTAL);
+        std::vector<wxStaticText*> values;
+        for (size_t i = 0; i < nb_columns; ++i) {
+            auto info_label = new wxStaticText(parent, wxID_ANY, "N/A", wxDefaultPosition, wxDefaultSize, nb_columns > 1 ? wxALIGN_RIGHT : 0);
+            info_label->SetFont(wxGetApp().small_font());
+            values_sizer->Add(info_label, 0, i > 0 ? wxLEFT : 0, 10);
+            values.push_back(info_label);
+        }
+        grid_sizer->Add(values_sizer, 0);
+        info_vec.emplace_back(text, std::move(values));
     };
 
-    init_info_label(_L("Used Filament (g)"));
-    init_info_label(_L("Used Filament (m)"));
-    init_info_label(_L("Used Filament (mm³)"));
+    init_info_label(_L("Used Filament"), 3);
     init_info_label(_L("Used Material (unit)"));
     init_info_label(_L("Cost (money)"));
     init_info_label(_L("Estimated printing time"));
@@ -361,13 +373,23 @@ SlicedInfo::SlicedInfo(wxWindow *parent) :
 
 void SlicedInfo::SetTextAndShow(SlicedInfoIdx idx, const wxString& text, const wxString& new_label/*=""*/)
 {
-    const bool show = text != "N/A";
-    if (show)
-        info_vec[idx].second->SetLabelText(text);
+    SetColumnsAndShow(idx, { text }, new_label);
+}
+
+void SlicedInfo::SetColumnsAndShow(SlicedInfoIdx idx, const std::vector<wxString>& columns, const wxString& new_label/*=""*/)
+{
+    assert(!columns.empty());
+    const bool show = columns.front() != "N/A";
     if (!new_label.IsEmpty())
         info_vec[idx].first->SetLabelText(new_label);
     info_vec[idx].first->Show(show);
-    info_vec[idx].second->Show(show);
+    const std::vector<wxStaticText*>& values = info_vec[idx].second;
+    for (size_t i = 0; i < values.size(); ++i) {
+        const bool show_column = show && i < columns.size() && !columns[i].IsEmpty();
+        if (show_column)
+            values[i]->SetLabelText(columns[i]);
+        values[i]->Show(show_column);
+    }
 }
 
 // Frequently changed parameters
@@ -1449,6 +1471,11 @@ void Sidebar::show_info_sizer()
     }
 }
 
+// Read borrowed FFF/SLA results and presets to update owned sidebar labels,
+// visibility and notifications, including the filament table (length, volume and weight)
+// and the object/tower shares.
+// Absent measurements show N/A; UI/config/allocation failures propagate without
+// transferring result ownership.
 void Sidebar::update_sliced_info_sizer()
 {
     if (p->sliced_info->IsShown(size_t(0)))
@@ -1486,157 +1513,85 @@ void Sidebar::update_sliced_info_sizer()
             p->plater->get_notification_manager()->set_slicing_complete_print_time(_u8L("Estimated printing time") + ": " + boost::nowide::narrow(t_est), p->plater->is_sidebar_collapsed());
 
             // Hide non-SLA sliced info parameters
-            p->sliced_info->SetTextAndShow(siFilament_m, "N/A");
-            p->sliced_info->SetTextAndShow(siFilament_mm3, "N/A");
-            p->sliced_info->SetTextAndShow(siFilament_g, "N/A");
+            p->sliced_info->SetTextAndShow(siFilament, "N/A");
             p->sliced_info->SetTextAndShow(siWTNumbetOfToolchanges, "N/A");
         }
         else
         {
             const PrintStatistics& ps = p->plater->fff_print().print_statistics();
+            const PrintConfig& print_config = p->plater->fff_print().config();
             const bool is_wipe_tower = ps.total_wipe_tower_filament > 0;
 
-            bool imperial_units = wxGetApp().app_config->get_bool("use_inches");
-            double koef = imperial_units ? ObjectManipulation::in_to_mm : 1000.0;
+            const bool imperial_units = wxGetApp().app_config->get_bool("use_inches");
+            const double length_koef = imperial_units ? ObjectManipulation::in_to_mm : 1000.0;
+            const double volume_koef = imperial_units ? pow(ObjectManipulation::mm_to_in, 3) : 1.0;
+            const bool has_weight = ps.total_weight != 0.0;
 
-            wxString new_label = imperial_units ? _L("Used Filament (in)") : _L("Used Filament (m)");
-            if (is_wipe_tower)
-                new_label += format_wxstr(":\n    - %1%\n    - %2%", _L("objects"), _L("wipe tower"));
-
-            wxString info_text = is_wipe_tower ?
-                                wxString::Format("%.2f \n%.2f \n%.2f", ps.total_used_filament / koef,
-                                                (ps.total_used_filament - ps.total_wipe_tower_filament) / koef,
-                                                ps.total_wipe_tower_filament / koef) :
-                                wxString::Format("%.2f", ps.total_used_filament / koef);
-            // if multiple filament/extruders, then print them all
-            if (ps.filament_stats.size() > 1 || ps.color_extruderid_to_used_filament.size() > 0) {
-                new_label += ":";
-                const std::vector<ExtruderFilaments>& filament_presets = wxGetApp().preset_bundle->extruders_filaments;
-                const PresetCollection& filaments = wxGetApp().preset_bundle->filaments;
+            // Filament table: one line per row and one column per unit (length, volume, weight),
+            // each column starting with its unit. Without density, the weight column is hidden.
+            wxString new_label;
+            std::vector<wxString> columns = { imperial_units ? "in" : "m", from_u8(imperial_units ? "in³" : "mm³"), has_weight ? "g" : "" };
+            auto add_line = [&](const wxString& label, double length, double volume, double weight, double spool_weight) {
+                new_label += "\n" + label;
+                columns[0] += wxString::Format("\n%.2f", length / length_koef);
+                columns[1] += wxString::Format("\n%.2f", volume * volume_koef);
+                if (has_weight) {
+                    columns[2] += wxString::Format("\n%.2f", weight);
+                    if (spool_weight != 0.0)
+                        columns[2] += wxString::Format(" (%.2f)", weight + spool_weight);
+                }
+            };
+            // if multiple filament/extruders, then print them all with their spool weight,
+            // otherwise the total line has the spool weight of the only extruder
+            const bool per_extruder = ps.filament_stats.size() > 1 || !ps.color_extruderid_to_used_filament.empty();
+            const double single_spool_weight = !per_extruder && ps.filament_stats.size() == 1 ?
+                print_config.filament_spool_weight.get_at(ps.filament_stats.begin()->first) : 0.0;
+            bool has_spool = single_spool_weight != 0.0;
+            add_line(_L("Used Filament") + ":", ps.total_used_filament, ps.total_extruded_volume, ps.total_weight, single_spool_weight);
+            if (is_wipe_tower) {
+                add_line("    - " + _L("objects"), ps.total_used_filament - ps.total_wipe_tower_filament,
+                         ps.total_extruded_volume - ps.total_wipe_tower_volume, ps.total_weight - ps.total_wipe_tower_filament_weight, 0.0);
+                add_line("    - " + _L("wipe tower"), ps.total_wipe_tower_filament, ps.total_wipe_tower_volume,
+                         ps.total_wipe_tower_filament_weight, 0.0);
+            }
+            if (per_extruder) {
                 //for each extruder
                 for (const auto& [filament_id, filament_vol] : ps.filament_stats) {
+                    const double area = 0.25 * PI * pow(print_config.filament_diameter.get_at(filament_id), 2);
+                    const double density = print_config.filament_density.get_at(filament_id);
+                    const double spool_weight = print_config.filament_spool_weight.get_at(filament_id);
+                    has_spool = has_spool || spool_weight != 0.0;
+                    auto add_extruder_line = [&](const wxString& label, double volume) {
+                        add_line("    - " + label, volume / area, volume, volume * density * 0.001, spool_weight);
+                    };
+                    // print each color change for this extruder (lengths in mm), the last color has the rest
                     int items_printed = 0;
-                    double total_length = 0;
-                    const Preset* filament_preset = filaments.find_preset(filament_presets[filament_id].get_selected_preset_name(), false);
-                    if (filament_preset) {
-                        double crosssection = 0.5 * filament_preset->config.opt_float("filament_diameter", filament_id);
-                        crosssection *= crosssection * PI;
-                        double mm3_to_m = 0.001 / crosssection;
-                        // print each color change for this extruder
-                        for (auto entry : ps.color_extruderid_to_used_filament) {
-                            if (filament_id == entry.first) {
-                                items_printed++;
-                                new_label += "\n    - " + format_wxstr(_L("Color %1% at extruder %2%"), items_printed , (filament_id + 1));
-                                total_length += entry.second;
-                                info_text += wxString::Format("\n%.2f (%.2f)", entry.second / 1000, total_length / 1000);
-                            }
-                        }
-                        //print total for this extruder
-                        if (items_printed == 0) {
-                            new_label += "\n    - " + format_wxstr(_L("Filament at extruder %1%"), filament_id + 1);
-                            //new_label += from_u8((boost::format("\n    - %1% %2%") % _utf8(L("Color")) % ps.color_extruderid_to_used_filament.size()).str());
-                            info_text += wxString::Format("\n%.2f", filament_vol * mm3_to_m);
-                        } 
-                        else {
-                            new_label += "\n    - " + format_wxstr(_L("Color %1% at extruder %2%"), (items_printed+1), (filament_id + 1));
-                            info_text += wxString::Format("\n%.2f (%.2f)", (filament_vol - total_length) * mm3_to_m, filament_vol * mm3_to_m);
+                    double colors_volume = 0;
+                    for (const auto& [extruder_id, length] : ps.color_extruderid_to_used_filament) {
+                        if (extruder_id == size_t(filament_id)) {
+                            items_printed++;
+                            add_extruder_line(format_wxstr(_L("Color %1% at extruder %2%"), items_printed, filament_id + 1), length * area);
+                            colors_volume += length * area;
                         }
                     }
+                    if (items_printed == 0)
+                        add_extruder_line(format_wxstr(_L("Filament at extruder %1%"), filament_id + 1), filament_vol);
+                    else
+                        add_extruder_line(format_wxstr(_L("Color %1% at extruder %2%"), items_printed + 1, filament_id + 1), filament_vol - colors_volume);
                 }
             }
-            p->sliced_info->SetTextAndShow(siFilament_m, info_text, new_label);
-
-            koef = imperial_units ? pow(ObjectManipulation::mm_to_in, 3) : 1.0f;
-            new_label = imperial_units ? _L("Used Filament (in³)") : _L("Used Filament (mm³)");
-            info_text = wxString::Format("%.2f", imperial_units ? ps.total_extruded_volume * koef : ps.total_extruded_volume);
-            p->sliced_info->SetTextAndShow(siFilament_mm3,  info_text,      new_label);
-
-            if (ps.total_weight == 0.0)
-                p->sliced_info->SetTextAndShow(siFilament_g, "N/A");
-            else {
-                new_label = _L("Used Filament (g)");
-                info_text = wxString::Format("%.2f", ps.total_weight);
-
-                
-                const auto& extruders_filaments = wxGetApp().preset_bundle->extruders_filaments;
-                if (ps.filament_stats.size() > 1 || ps.color_extruderid_to_used_weight.size() > 0) {
-                    bool has_spool = false;
-                    new_label += ":";
-
-                    //for each extruder
-                    for (const auto& [filament_id, filament_vol] : ps.filament_stats) {
-                        assert(filament_id < extruders_filaments.size());
-                        if (const Preset* filament_preset = extruders_filaments[filament_id].get_selected_preset()) {
-                            double spool_weight = filament_preset->config.opt_float("filament_spool_weight", 0);
-                            double filament_density = filament_preset->config.opt_float("filament_density", filament_id);
-                            double crosssection = filament_preset->config.opt_float("filament_diameter", filament_id);
-                            crosssection *= crosssection;
-                            crosssection *= 0.25 * PI;
-                            double m_to_g = filament_density / (crosssection * 1000);
-                            double mm3_to_g = filament_density *0.001;
-                            int items_printed = 0;
-                            double total_length = 0;
-                            //for (int i = 0; i < ps.color_extruderid_to_used_filament.size(); i++) {
-                            //    new_label += from_u8((boost::format("\n    - %1% %2%") % _utf8(L("Color")) % (i + 1)).str());
-                            //    total_weight += ps.color_extruderid_to_used_weight[i].second;
-                            //    info_text += (ps.color_extruderid_to_used_weight[i].second == 0 ? "\nN/A" : wxString::Format("\n%.2f", ps.color_extruderid_to_used_weight[i].second / 1000))
-                            //        + (total_weight == 0 ? " (N/A)" : wxString::Format(" (%.2f)", total_weight / 1000));
-                            //}
-                            if (spool_weight != 0.0)
-                                has_spool = true;
-                            for (auto entry : ps.color_extruderid_to_used_filament) {
-                                if (filament_id == entry.first) {
-                                    items_printed++;
-                                    new_label += "\n    - " + format_wxstr(_L("Color %1% at extruder %2%"), items_printed, (filament_id + 1));
-                                    total_length += entry.second;
-                                    info_text += wxString::Format("\n%.2f", entry.second * m_to_g);
-                                    if (spool_weight != 0.0)
-                                        info_text += wxString::Format(" (%.2f)", entry.second * m_to_g + spool_weight);
-                                }
-                            }
-                            //print total for this extruder
-                            if (items_printed == 0) {
-                                new_label += "\n    - " + format_wxstr(_L("Filament at extruder %1%"), filament_id + 1);
-                                //new_label += from_u8((boost::format("\n    - %1% %2%") % _utf8(L("Color")) % ps.color_extruderid_to_used_filament.size()).str());
-                                info_text += wxString::Format("\n%.2f", filament_vol * mm3_to_g);
-                                if (spool_weight != 0.0)
-                                    info_text += wxString::Format(" (%.2f)", filament_vol * mm3_to_g + spool_weight);
-                            } else {
-                                new_label += "\n    - " + format_wxstr(_L("Color %1% at extruder %2%"), (items_printed + 1), (filament_id + 1));
-                                info_text += wxString::Format("\n%.2f", (filament_vol - total_length) * mm3_to_g);
-                                if (spool_weight != 0.0)
-                                    info_text += wxString::Format(" (%.2f)", (filament_vol - total_length) * mm3_to_g + spool_weight);
-                            }
-                        }
-                    }
-                    if (has_spool)
-                        new_label += "\n      " + _L("(including spool)");
-                } else if(ps.filament_stats.size() == 1) {
-                    //add spool to main line if there is only one filament
-                    if (const Preset* filament_preset = extruders_filaments[ps.filament_stats.begin()->first].get_selected_preset()) {
-                        double spool_weight = filament_preset->config.opt_float("filament_spool_weight", 0);
-                        if (spool_weight != 0.0) {
-                            new_label += "\n      " + _L("(including spool)");
-                            info_text += wxString::Format(" (%.2f)\n", ps.total_weight + spool_weight);
-                        }
-                    }
-                } else {
-                    // not possible anymore in 2.7?
-                    assert(false);
-                }
-                p->sliced_info->SetTextAndShow(siFilament_g, info_text, new_label);
-            }
+            if (has_weight && has_spool)
+                new_label += "\n      " + _L("(including spool)");
+            p->sliced_info->SetColumnsAndShow(siFilament, columns, new_label);
 
             new_label = _L("Cost");
             if (is_wipe_tower)
                 new_label += format_wxstr(":\n    - %1%\n    - %2%", _L("objects"), _L("wipe tower"));
-
-            info_text = ps.total_cost == 0.0 ? "N/A" :
-                        is_wipe_tower ?
-                        wxString::Format("%.2f \n%.2f \n%.2f", ps.total_cost,
-                                            (ps.total_cost - ps.total_wipe_tower_cost),
-                                            ps.total_wipe_tower_cost) :
-                        wxString::Format("%.2f", ps.total_cost);
+            wxString info_text = ps.total_cost == 0.0 ? "N/A" :
+                is_wipe_tower ?
+                wxString::Format("%.2f \n%.2f \n%.2f", ps.total_cost,
+                                 ps.total_cost - ps.total_wipe_tower_cost, ps.total_wipe_tower_cost) :
+                wxString::Format("%.2f", ps.total_cost);
             p->sliced_info->SetTextAndShow(siCost, info_text,      new_label);
 
             const std::chrono::system_clock::time_point time_now = std::chrono::system_clock::now();
@@ -1944,6 +1899,7 @@ struct Plater::priv
     static const std::regex pattern_printRequest;
     static const std::regex pattern_step;
 
+    // Initialize the plater's owned controls and scene configuration.
     priv(Plater *q, MainFrame *main_frame);
     ~priv();
 
@@ -2171,6 +2127,8 @@ struct Plater::priv
 
     void on_object_select(SimpleEvent&);
     void on_right_click(RBtnEvent&);
+    // Persist a global tower position or an object's shared instance-tower offset.
+    // Persist global tower position or shared object offsets and refresh the affected settings UI.
     void on_wipetower_moved(Vec3dEvent&);
     void on_wipetower_rotated(Vec3dEvent&);
     void on_update_geometry(Vec3dsEvent<2>&);
@@ -2259,6 +2217,7 @@ const std::regex Plater::priv::pattern_prusa(".*prusa", std::regex::icase);
 const std::regex Plater::priv::pattern_zip(".*zip", std::regex::icase);
 const std::regex Plater::priv::pattern_step(".*[.](step|stp)", std::regex::icase);
 
+// Borrow the plater/frame and initialize owned controls plus a scene-config subset containing tower defaults; UI/config allocation failures propagate.
 Plater::priv::priv(Plater *q, MainFrame *main_frame)
     : q(q)
     , main_frame(main_frame)
@@ -2286,8 +2245,9 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         "skirt_extrusion_width", "skirt_height", "first_layer_extrusion_spacing", "perimeter_extrusion_spacing", "extrusion_spacing",
         "variable_layer_height", "nozzle_diameter", "single_extruder_multi_material",
         "wipe_tower", "wipe_tower_brim_width", "wipe_tower_rotation_angle", "wipe_tower_width", "wipe_tower_x", "wipe_tower_y",
+        "wipe_tower_per_object", "wipe_tower_object_x", "wipe_tower_object_y", "wipe_tower_extruder_toolchange", "spiral_vase",
         "wipe_tower_cone_angle", "wipe_tower_extra_spacing", "wipe_tower_extruder",
-        "filament_minimal_purge_on_wipe_tower", "wiping_volumes_matrix", // for wipe_tower_data
+        "filament_minimal_purge_on_wipe_tower", "wiping_volumes_matrix",
         "extruder_colour", "filament_colour", "material_colour",
         "printer_model", "printer_notes", "printer_technology",
         // These values are necessary to construct SlicingParameters by the Canvas3D variable layer height editor.
@@ -4985,8 +4945,18 @@ void Plater::priv::on_right_click(RBtnEvent& evt)
     }
 }
 
+// Decode borrowed event XY as global position or object-relative offset using Z=owner+1 (zero global); persist settings, refresh the owner's sidebar and towers, retain model ownership, and propagate config/UI failures.
 void Plater::priv::on_wipetower_moved(Vec3dEvent &evt)
 {
+    const int object_idx = int(evt.data(2)) - 1;
+    if (object_idx >= 0 && object_idx < int(model.objects().size())) {
+        ModelObject &object = model.objects()[object_idx];
+        object.config.set_deserialize_strict("wipe_tower_object_x", std::to_string(evt.data(0)));
+        object.config.set_deserialize_strict("wipe_tower_object_y", std::to_string(evt.data(1)));
+        wxGetApp().obj_list()->refresh_object_settings_item(object_idx);
+        q->changed_object(object);
+        return;
+    }
     DynamicPrintConfig cfg;
     cfg.opt<ConfigOptionFloat>("wipe_tower_x", true)->value = evt.data(0);
     cfg.opt<ConfigOptionFloat>("wipe_tower_y", true)->value = evt.data(1);

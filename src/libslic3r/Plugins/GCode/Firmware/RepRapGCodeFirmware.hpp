@@ -36,7 +36,9 @@ protected:
     std::string encode_tool_temperature(extruder_index_t tool_id,
                                         int16_t temperature,
                                         bool wait) const override;
+    // Encode mapped fans, using the physical tool 0 fan mapping in SEMM.
     std::string encode_fan(extruder_index_t tool_id, double speed_percent) const override;
+    // Encode mapped pressure advance, omitting drive addressing in SEMM.
     std::string encode_pressure_advance(extruder_index_t tool_id,
                                         double pressure_advance) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;

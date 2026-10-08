@@ -1,8 +1,11 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -44,6 +47,9 @@ These tests exercise the plugin service rather than the legacy GCodeReader
 class. Service tests use read_gcode() to verify the host-owned final state.
 Tests which need individual actions invoke the built-in provider through its
 real run payload and capture the same callbacks that the host implements.
+Viewer material tests use Print settings to distinguish single-extruder
+multi-material (SEMM) shared retraction debt from independent tool debts,
+and compare role/tool volumes with the existing length and mass totals.
 */
 
 namespace {
@@ -1657,6 +1663,50 @@ TEST_CASE("G92 preserves the first extrusion in absolute and relative E modes",
     }
 }
 
+// Tool-selection resets establish a fresh E origin without adding viewer movement or losing prime.
+TEST_CASE("Built-in G-code readers preserve extrusion after tool selection and G92",
+          "[plugins][gcode][reader][viewer][toolchange-reset]")
+{
+    ensure_plugin_test_runtime_initialized();
+    const bool semm = GENERATE(false, true);
+    const char *reader_id = GENERATE("gcode.reader.default", "gcode.reader.marlin1",
+        "gcode.reader.marlin2", "gcode.reader.prusa", "gcode.reader.sprinter", "gcode.reader.reprap", "gcode.reader.klipper");
+    CAPTURE(semm, reader_id);
+    Print print;
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.single_extruder_multi_material.value = semm;
+    config.nozzle_diameter.set(std::vector<double>{0.4, 0.4});
+    config.filament_diameter.set(std::vector<double>{1.75, 1.75});
+    config.tool_name.set(std::vector<std::string>{"extruder", "extruder1"});
+    config.tool_name.set_enabled(true);
+    Printing::PrintingPlan &plan = print.mutable_printing_plan();
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
+    const bool named_tools = std::string(reader_id) == "gcode.reader.klipper" && !semm;
+    const std::string select_a = named_tools ? "ACTIVATE_EXTRUDER EXTRUDER=extruder\n" : "T0\n";
+    const std::string select_b = named_tools ? "ACTIVATE_EXTRUDER EXTRUDER=extruder1\n" : "T1\n";
+    GCodeReaderService service(Orchestrator::instance(), &print);
+    const GCodeProcessorResult result = service.read_for_viewer(reader_id,
+        "M82\nG90\n" + select_a + "G92 E0\nG1 X1 Y0 Z.2 E1.25 F1200\n" +
+        select_b + "G92 E0\nG1 X2 E2.5\n" + select_a + "G92 E0\nG1 X3 E.75\n");
+    std::vector<double> extrusion_deltas;
+    std::vector<uint32_t> extrusion_tools;
+    for (const GCodeProcessorResult::MoveVertex &move : result.moves) {
+        if (move.internal_only || move.type != EMoveType::Extrude)
+            continue;
+        extrusion_deltas.push_back(move.delta_extruder);
+        extrusion_tools.push_back(move.extruder_id);
+    }
+    REQUIRE(extrusion_deltas.size() == 3);
+    CHECK(extrusion_deltas[0] == Approx(1.25));
+    CHECK(extrusion_deltas[1] == Approx(2.5));
+    CHECK(extrusion_deltas[2] == Approx(0.75));
+    CHECK(extrusion_tools == std::vector<uint32_t>{0, 1, 0});
+}
+
 TEST_CASE("Host G-code reader seeds tools and viewer metadata from Print settings",
           "[plugins][gcode][reader][viewer]")
 {
@@ -1975,6 +2025,180 @@ TEST_CASE("Host G-code reader does not display retraction recovery as extrusion"
     REQUIRE(result.print_statistics.volumes_per_extruder.count(0) == 1);
     CHECK(result.print_statistics.volumes_per_extruder.at(0) ==
           Approx(filament_area));
+}
+
+// Read fresh streams at each loading boundary from borrowed local Print/plan
+// settings. Debt repayment produces no consumption; only excess E contributes
+// owned viewer statistics. The standalone path keeps independent tool debt.
+TEST_CASE("Host G-code reader shares loading debt only for SEMM prints",
+          "[plugins][gcode][reader][viewer][semm-material]")
+{
+    ensure_plugin_test_runtime_initialized();
+    const bool semm = GENERATE(false, true);
+    const char *reader_id = GENERATE("gcode.reader.default", "gcode.reader.marlin2");
+    CAPTURE(semm, reader_id);
+    Print print;
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.single_extruder_multi_material.value = semm;
+    config.nozzle_diameter.set(std::vector<double>{0.4, 0.4});
+    config.filament_diameter.set(std::vector<double>{1.75, 1.75});
+    print.mutable_printing_plan();
+    GCodeReaderService service(Orchestrator::instance(), &print);
+    const std::string load = "M82\nT0\nG92 E0\nG1 E-92 F120\nT1\nG92 E0\n"
+                             ";TYPE:Wipe tower\nG1 X10 E90 F600\n";
+    const double filament_area = PI * std::pow(1.75 * 0.5, 2.0);
+    const std::vector<std::pair<std::string, double>> boundaries = {
+        {"", 90.0}, {"G1 X20 E92\n", 92.0}, {"G1 X20 E92\nG1 X30 E93\n", 93.0}
+    };
+    for (const std::pair<std::string, double> &boundary : boundaries) {
+        CAPTURE(boundary.second);
+        const GCodeProcessorResult result = service.read_for_viewer(reader_id, load + boundary.first);
+        const double consumed = semm ? std::max(boundary.second - 92.0, 0.0) : boundary.second;
+        CHECK(result.print_statistics.volumes_per_extruder.count(0) == 0);
+        if (consumed == 0.0) {
+            CHECK(result.print_statistics.volumes_per_extruder.empty());
+            CHECK(result.print_statistics.volumes_per_role_per_extruder.empty());
+            CHECK(result.print_statistics.used_filaments_per_role.empty());
+            CHECK(result.moves.back().type == EMoveType::Travel);
+        } else {
+            REQUIRE(result.print_statistics.volumes_per_extruder.count(1) == 1);
+            CHECK(result.print_statistics.volumes_per_extruder.at(1) == Approx(consumed * filament_area));
+            REQUIRE(result.print_statistics.volumes_per_role_per_extruder.count(GCodeExtrusionRole::WipeTower) == 1);
+            CHECK(result.print_statistics.volumes_per_role_per_extruder.at(GCodeExtrusionRole::WipeTower).at(1) ==
+                  Approx(consumed * filament_area));
+            CHECK(result.moves.back().type == EMoveType::Extrude);
+        }
+    }
+    GCodeReaderService standalone(Orchestrator::instance(), nullptr);
+    const GCodeProcessorResult external = standalone.read_for_viewer(reader_id, load);
+    REQUIRE(external.print_statistics.volumes_per_extruder.count(1) == 1);
+    CHECK(external.print_statistics.volumes_per_extruder.at(1) == Approx(90.0 * filament_area));
+}
+
+// Supply normalized events through the existing helper and infer retained debt
+// from a subsequent 2 mm load. Invalidation uses active-tool E, not slot 0's E;
+// losing only the tool identity preserves debt, but unattributable E changes clear it.
+TEST_CASE("Host G-code reader SEMM debt follows active tool E validity",
+          "[plugins][gcode][reader][viewer][semm-material]")
+{
+    ensure_plugin_test_runtime_initialized();
+    Print print;
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.single_extruder_multi_material.value = true;
+    config.nozzle_diameter.set(std::vector<double>{0.4, 0.4});
+    config.filament_diameter.set(std::vector<double>{1.75, 1.75});
+    Printing::PrintingPlan &plan = print.mutable_printing_plan();
+    std::vector<raw_gcode_reader_event_item> initial_items;
+    raw_gcode_reader_state initial = initial_state(initial_items);
+    initial_items.push_back({RAW_GCODE_READER_ITEM_E, 1, 0.0});
+    initial.items = initial_items.data();
+    initial.item_count = static_cast<uint32_t>(initial_items.size());
+    slic3r_api::GCodeStateTracker state(initial);
+    GCodeReaderResultBuilder builder(&print, &plan, "test.reader", state);
+    consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+        {{RAW_GCODE_READER_ITEM_E, 0, -2.0},
+         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 0.0}});
+    consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+        {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 1.0},
+         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 1.0}});
+    bool debt_cleared = false;
+    SECTION("inactive tool E invalidation preserves shared debt") {
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_E, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+    }
+    SECTION("active tool E invalidation clears shared debt") {
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_E, 1, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_SET_POSITION,
+            {{RAW_GCODE_READER_ITEM_E, 1, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+        debt_cleared = true;
+    }
+    SECTION("unknown active tool alone preserves shared debt") {
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 1.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+    }
+    SECTION("E change with unknown active tool clears shared debt") {
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_INVALIDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 2.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_E, 1, 1.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 3.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_STATE_UPDATE,
+            {{RAW_GCODE_READER_ITEM_ACTIVE_TOOL, 0, 1.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 4.0}});
+        consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_SET_POSITION,
+            {{RAW_GCODE_READER_ITEM_E, 1, 0.0},
+             {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 5.0}});
+        debt_cleared = true;
+    }
+    consume_builder_event(builder, state, RAW_GCODE_READER_EVENT_LINEAR_MOVE,
+        {{RAW_GCODE_READER_ITEM_X, 0, 2.0}, {RAW_GCODE_READER_ITEM_E, 1, 2.0},
+         {RAW_GCODE_READER_ITEM_LINE_NUMBER, 0, 6.0}});
+    const GCodeProcessorResult result = builder.finish(state);
+    if (debt_cleared) {
+        REQUIRE(result.print_statistics.volumes_per_extruder.count(1) == 1);
+        CHECK(result.print_statistics.volumes_per_extruder.at(1) ==
+              Approx(2.0 * PI * std::pow(1.75 * 0.5, 2.0)));
+    } else {
+        CHECK(result.print_statistics.volumes_per_extruder.empty());
+    }
+}
+
+// Read two tools with different filament properties and unlabelled tower moves;
+// role/tool volumes must reconcile with per-tool volumes and per-role m/g totals.
+// Reset a copied statistics value to verify that its owned role/tool map is cleared.
+TEST_CASE("Host G-code reader accounts for filament by role and logical tool",
+          "[plugins][gcode][reader][viewer][role-tool-material]")
+{
+    ensure_plugin_test_runtime_initialized();
+    Print print;
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.single_extruder_multi_material.value = false;
+    config.nozzle_diameter.set(std::vector<double>{0.4, 0.6});
+    config.filament_diameter.set(std::vector<double>{1.75, 2.85});
+    config.filament_density.set(std::vector<double>{1.1, 1.3});
+    print.mutable_printing_plan();
+    GCodeReaderService service(Orchestrator::instance(), &print);
+    const GCodeProcessorResult result = service.read_for_viewer("gcode.reader.marlin2",
+        "M82\nT0\nG92 E0\n;TYPE:Wipe tower\nG1 X10 E2 F600\n"
+        ";TYPE:Perimeter\nG1 X20 E3\nT1\nG92 E0\n"
+        ";TYPE:Wipe tower\nG1 X30 E3\n;TYPE:Perimeter\nG1 X40 E7\n");
+    const PrintEstimatedStatistics &stats = result.print_statistics;
+    const double area0 = PI * std::pow(result.filament_diameters[0] * 0.5, 2.0);
+    const double area1 = PI * std::pow(result.filament_diameters[1] * 0.5, 2.0);
+    REQUIRE(stats.volumes_per_role_per_extruder.size() == 2);
+    REQUIRE(stats.volumes_per_role_per_extruder.count(GCodeExtrusionRole::WipeTower) == 1);
+    REQUIRE(stats.volumes_per_role_per_extruder.count(GCodeExtrusionRole::Perimeter) == 1);
+    const std::map<extruder_index_t, double> &tower = stats.volumes_per_role_per_extruder.at(GCodeExtrusionRole::WipeTower);
+    const std::map<extruder_index_t, double> &perimeter = stats.volumes_per_role_per_extruder.at(GCodeExtrusionRole::Perimeter);
+    REQUIRE(tower.size() == 2);
+    REQUIRE(perimeter.size() == 2);
+    CHECK(tower.at(0) == Approx(2.0 * area0));
+    CHECK(tower.at(1) == Approx(3.0 * area1));
+    CHECK(perimeter.at(0) == Approx(area0));
+    CHECK(perimeter.at(1) == Approx(4.0 * area1));
+    CHECK(stats.volumes_per_extruder.at(0) == Approx(tower.at(0) + perimeter.at(0)));
+    CHECK(stats.volumes_per_extruder.at(1) == Approx(tower.at(1) + perimeter.at(1)));
+    for (const auto &[role, volumes] : stats.volumes_per_role_per_extruder) {
+        const double expected_length_m = (volumes.at(0) / area0 + volumes.at(1) / area1) * 0.001;
+        const double expected_mass_g = (volumes.at(0) * result.filament_densities[0] +
+                                        volumes.at(1) * result.filament_densities[1]) * 0.001;
+        REQUIRE(stats.used_filaments_per_role.count(role) == 1);
+        CHECK(stats.used_filaments_per_role.at(role).first == Approx(expected_length_m));
+        CHECK(stats.used_filaments_per_role.at(role).second == Approx(expected_mass_g));
+    }
+    CHECK(stats.volumes_per_role_per_extruder_per_object.empty());
+    PrintEstimatedStatistics cleared = stats;
+    cleared.reset();
+    CHECK(cleared.volumes_per_role_per_extruder.empty());
 }
 
 TEST_CASE("Host G-code reader invalidates only unreliable retraction debt",

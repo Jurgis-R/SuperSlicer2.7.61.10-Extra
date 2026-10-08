@@ -6,7 +6,12 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* G-code display and translucent model shells. Tower shells use configured purge
+   volumes to estimate rectangular bodies with open-side teeth and brims; their
+   heights follow the model or owner object, with a 10 mm minimum. Generated wipe
+   paths are displayed from G-code. Shell volumes own their meshes. */
 #include "GCodeViewer.hpp"
+#include "libslic3r/WipeTowerFootprint.hpp"
 
 #include <algorithm>
 #include <array>
@@ -3070,28 +3075,21 @@ void GCodeViewer::load_shells(const Print& print)
     m_max_bounding_box.reset();
 }
 
+// Borrow a Print and append owned translucent tower shells using approximate purge-based display depths and owner/model heights of at least 10 mm; update shell bounds for FFF printers, leave other printer types unchanged, and propagate allocation failures.
 void GCodeViewer::load_wipetower_shell(const Print& print)
 {
-    if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() == ptFFF && print.is_step_done(STEP_WIPETOWER)) {
-        // adds wipe tower's volume
-        const double max_z = print.object(0).model_object()->get_model()->max_z();
-        const PrintConfig& print_config = print.config();
-        const PrintObjectConfig& object_config = print.default_object_config();
-        if (print.has_wipe_tower()) {
-            const WipeTowerData& wipe_tower_data = print.wipe_tower_data();
-            const float depth = wipe_tower_data.depth;
-            const std::vector<std::pair<float, float>> z_and_depth_pairs = wipe_tower_data.z_and_depth_pairs;
-            const float brim_width = wipe_tower_data.brim_width;
-            if (depth != 0.) {
-                m_shells.volumes.load_wipe_tower_preview(object_config.wipe_tower_x, object_config.wipe_tower_y, object_config.wipe_tower_width, depth, z_and_depth_pairs,
-                    max_z, object_config.wipe_tower_cone_angle, object_config.wipe_tower_rotation_angle, false, brim_width);
+    if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() == ptFFF) {
+        for (const WipeTowerFootprint &tower : wipe_tower_footprints(print)) {
+                const double max_z = tower.object == nullptr ? print.model().max_z() : tower.object->max_z();
+                m_shells.volumes.load_wipe_tower_preview(float(tower.origin.x()), float(tower.origin.y()), float(tower.width),
+                    float(wipe_tower_preview_depth(print.full_print_config(), tower.width)), float(std::max(max_z, 10.0)),
+                    float(tower.rotation), float(tower.brim_width));
                 const std::unique_ptr<GLVolume> &volume = m_shells.volumes.volumes.back();
                 volume->color.a(0.25f);
                 volume->force_native_color = true;
                 volume->set_render_color(true);
                 m_shells_bounding_box.merge(volume->transformed_bounding_box());
                 m_max_bounding_box.reset();
-            }
         }
     }
 }

@@ -368,7 +368,8 @@ void initialize_feature_gcode_settings(orchestrator_handle *orchestrator)
         "Note that you can use placeholder variables for all Slic3r settings as well as {last_extrusion_role}, {extrusion_role}, {layer_num} and {layer_z}."
         " The 'extrusion_role' strings can take these string values:"
         " { Perimeter, ExternalPerimeter, OverhangPerimeter, InternalInfill, SolidInfill, TopSolidInfill, BridgeInfill, GapFill, Skirt, SupportMaterial, SupportMaterialInterface, WipeTower, Mixed }."
-        " Mixed is only used when the role of the extrusion is not unique, not exactly inside another category or not known.";
+        " Mixed is only used when the role of the extrusion is not unique, not exactly inside another category or not known."
+        " A negative E move counts as a retraction only with '; retraction' on the same line, and a positive E move restores it only with '; unretraction'; other E moves do not change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 5;

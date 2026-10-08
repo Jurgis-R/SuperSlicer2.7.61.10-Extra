@@ -15,6 +15,7 @@ Marlin 1 firmware session
 Marlin 1 reuses the standard extrusion traversal and machine states. Its
 single-register base session models M204 S by invalidating the opposite print
 or travel acceleration acknowledgement in Gantry.
+M220 B/R save and restore the firmware speed override around M220 S requests.
 */
 
 namespace slic3r_api { namespace GCodeGeneration { namespace Firmware {
@@ -30,12 +31,18 @@ protected:
     std::string resolve_empty_script(gcode_script_type script_type,
                                      const Config *producer_config) const override;
     std::string encode_machine_envelope(const MachineEnvelope &envelope) const override;
+    // Carry shared part-cooling fan runtime across logical tool selections.
     void synchronize_selected_extruder_state(const DefaultExtruder *previous,
                                               DefaultExtruder &selected) override;
+    // Encode heating/cooling requests for a physical heater or the shared SEMM heater.
     std::string encode_tool_temperature(extruder_index_t tool_id,
                                         int16_t temperature,
                                         bool wait) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;
+    // Encode firmware speed-override backup followed by the requested multiplier.
+    std::string encode_save_speed_ratio(double ratio) const override;
+    // Encode restoration of the speed override backed up by the firmware.
+    std::string encode_restore_speed_ratio() const override;
     std::string encode_object_definitions(const std::vector<ObjectLabel> &objects) const override;
     std::string encode_object_start(const ObjectLabel &object) const override;
     std::string encode_object_end(const ObjectLabel &object) const override;

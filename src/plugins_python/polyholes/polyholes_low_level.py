@@ -106,6 +106,7 @@ def _create_polyholes(
     angle_start_rad: float,
     run_ctx_address: int,
 ) -> list[int]:
+    """Build storage-owned polygons; return ownership on success and release every partial allocation on failure or cancellation."""
     throw_if_cancelled(run_ctx_address)
     if nozzle_diameter_scaled <= 0:
         nozzle_diameter_scaled = 1
@@ -116,23 +117,35 @@ def _create_polyholes(
     rotation_rad = 2.0 * math.pi / (edge_count * polyhole_count) if twist else 0.0
     new_radius_scaled = radius_scaled / math.cos(math.pi / edge_count)
 
-    polygons = [api.storage_new_polygon(storage_address) for _ in range(polyhole_count)]
-    for poly_idx in range(polyhole_count):
-        throw_if_cancelled(run_ctx_address)
-        polygon_idx = poly_idx // 2 if poly_idx % 2 == 0 else (polyhole_count + 1) // 2 + poly_idx // 2
-        polygon = polygons[polygon_idx]
-        for edge_idx in range(edge_count):
-            if edge_idx % 64 == 0:
-                throw_if_cancelled(run_ctx_address)
-            angle_rad = angle_start_rad + rotation_rad * poly_idx + 2.0 * math.pi * edge_idx / edge_count
-            x_scaled = round_coord(float(center_scaled.x) + new_radius_scaled * math.cos(angle_rad))
-            y_scaled = round_coord(float(center_scaled.y) + new_radius_scaled * math.sin(angle_rad))
-            api.polygon_push_back(
-                polygon,
-                CPoint(x_scaled, y_scaled),
-            )
-        api.polygon_make_clockwise(polygon)
-    return polygons
+    polygons: list[int] = []
+    complete = False
+    try:
+        for _ in range(polyhole_count):
+            polygon = api.storage_new_polygon(storage_address)
+            if not polygon:
+                raise MemoryError("Cannot allocate a polyhole polygon")
+            polygons.append(polygon)
+        for poly_idx in range(polyhole_count):
+            throw_if_cancelled(run_ctx_address)
+            polygon_idx = poly_idx // 2 if poly_idx % 2 == 0 else (polyhole_count + 1) // 2 + poly_idx // 2
+            polygon = polygons[polygon_idx]
+            for edge_idx in range(edge_count):
+                if edge_idx % 64 == 0:
+                    throw_if_cancelled(run_ctx_address)
+                angle_rad = angle_start_rad + rotation_rad * poly_idx + 2.0 * math.pi * edge_idx / edge_count
+                x_scaled = round_coord(float(center_scaled.x) + new_radius_scaled * math.cos(angle_rad))
+                y_scaled = round_coord(float(center_scaled.y) + new_radius_scaled * math.sin(angle_rad))
+                api.polygon_push_back(
+                    polygon,
+                    CPoint(x_scaled, y_scaled),
+                )
+            api.polygon_make_clockwise(polygon)
+        complete = True
+        return polygons
+    finally:
+        if not complete:
+            for polygon in polygons:
+                api.host.storage_free(storage_address, polygon)
 
 
 def _replace_matching_hole(
@@ -303,6 +316,7 @@ class PythonPolyholesPlugin(PluginBase):
             report_error(run_ctx_address, f"Python Polyholes failed: {exc}")
 
     def _run_polyholes(self, run_ctx_address: int, common: PluginRunContext, ctx) -> None:
+        """Replace suitable slice holes and rebuild changed layers; finally release prepared polygons individually, including on failure or cancellation."""
         layer_count = self.api.host.object_count_layer(ctx.object)
         layer_holes: list[list[HoleData]] = [[] for _ in range(layer_count)]
 
@@ -382,57 +396,60 @@ class PythonPolyholesPlugin(PluginBase):
         print_config = self.api.host.print_get_config(ctx.print)
 
         prepared_replacements: list[tuple[ThroughHole, list[int]]] = []
-        for through_hole in through_holes:
+        try:
+            for through_hole in through_holes:
+                throw_if_cancelled(run_ctx_address)
+                nozzle_diameter_scaled = scale_i(self.api.config_float(
+                    print_config,
+                    "nozzle_diameter",
+                    max(0, through_hole.hole_data.extruder_id),
+                ))
+                replacements = _create_polyholes(
+                    self.api,
+                    common.plugin_storage,
+                    through_hole.hole_data.center_scaled,
+                    through_hole.hole_data.max_radius_scaled,
+                    nozzle_diameter_scaled,
+                    through_hole.hole_data.twist,
+                    through_hole.hole_data.angle_start_rad,
+                    run_ctx_address,
+                )
+                prepared_replacements.append((through_hole, replacements))
+
+            # Raw slices and their derived layer caches form one consistency commit.
+            # Once mutation starts, every touched layer is recomputed before the next
+            # cancellation check so callers cannot observe stale slice-island caches.
             throw_if_cancelled(run_ctx_address)
-            nozzle_diameter_scaled = scale_i(self.api.config_float(
-                print_config,
-                "nozzle_diameter",
-                max(0, through_hole.hole_data.extruder_id),
-            ))
-            replacements = _create_polyholes(
-                self.api,
-                common.plugin_storage,
-                through_hole.hole_data.center_scaled,
-                through_hole.hole_data.max_radius_scaled,
-                nozzle_diameter_scaled,
-                through_hole.hole_data.twist,
-                through_hole.hole_data.angle_start_rad,
-                run_ctx_address,
-            )
-            prepared_replacements.append((through_hole, replacements))
+            modified_layers: set[int] = set()
+            for hole_idx, (through_hole, replacements) in enumerate(prepared_replacements):
+                for layer_hole in through_hole.layers:
+                    mutable_layer = self.api.host.object_get_layer_mutable(ctx.object, layer_hole.layer_idx)
+                    mutable_region = self.api.host.layer_get_region_mutable(mutable_layer, layer_hole.layer_region_idx)
+                    mutable_slices = ctx.layer_region_borrow_mutable_slices(mutable_region)
+                    replacement = replacements[layer_hole.layer_idx % len(replacements)]
+                    modified = 0
+                    for expolygon in self.api.expolygons(mutable_slices, mutable=True):
+                        if _replace_matching_hole(
+                            self.api, expolygon, layer_hole.points_scaled, replacement
+                        ):
+                            modified += 1
+                    if modified:
+                        modified_layers.add(layer_hole.layer_idx)
+                report_progress(
+                    run_ctx_address,
+                    (hole_idx + 1) / max(1, len(through_holes)),
+                    "Python Polyholes: converting holes",
+                )
 
-        # Raw slices and their derived layer caches form one consistency commit.
-        # Once mutation starts, every touched layer is recomputed before the next
-        # cancellation check so callers cannot observe stale slice-island caches.
-        throw_if_cancelled(run_ctx_address)
-        modified_layers: set[int] = set()
-        for hole_idx, (through_hole, replacements) in enumerate(prepared_replacements):
-            for layer_hole in through_hole.layers:
-                mutable_layer = self.api.host.object_get_layer_mutable(ctx.object, layer_hole.layer_idx)
-                mutable_region = self.api.host.layer_get_region_mutable(mutable_layer, layer_hole.layer_region_idx)
-                mutable_slices = ctx.layer_region_borrow_mutable_slices(mutable_region)
-                replacement = replacements[layer_hole.layer_idx % len(replacements)]
-                modified = 0
-                for expolygon in self.api.expolygons(mutable_slices, mutable=True):
-                    if _replace_matching_hole(
-                        self.api, expolygon, layer_hole.points_scaled, replacement
-                    ):
-                        modified += 1
-                if modified:
-                    modified_layers.add(layer_hole.layer_idx)
-            report_progress(
-                run_ctx_address,
-                (hole_idx + 1) / max(1, len(through_holes)),
-                "Python Polyholes: converting holes",
-            )
+            for layer_idx in sorted(modified_layers):
+                mutable_layer = self.api.host.object_get_layer_mutable(ctx.object, layer_idx)
+                ctx.layer_recompute_slices_and_islands_from_layer_region(mutable_layer)
 
-        for layer_idx in sorted(modified_layers):
-            mutable_layer = self.api.host.object_get_layer_mutable(ctx.object, layer_idx)
-            ctx.layer_recompute_slices_and_islands_from_layer_region(mutable_layer)
-
-        if self.api.storage_size(common.plugin_storage) != 0:
-            self.api.storage_clear(common.plugin_storage)
-        throw_if_cancelled(run_ctx_address)
+            throw_if_cancelled(run_ctx_address)
+        finally:
+            for _, replacements in prepared_replacements:
+                for polygon in replacements:
+                    self.api.host.storage_free(common.plugin_storage, polygon)
 
     def _group_holes(
         self, ctx, layer_holes: list[list[HoleData]], run_ctx_address: int

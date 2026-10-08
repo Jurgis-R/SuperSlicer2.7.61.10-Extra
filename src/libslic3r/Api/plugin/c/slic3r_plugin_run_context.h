@@ -59,6 +59,14 @@ typedef struct plugin_run_context {
     outside a Print. The pointer is borrowed and valid only during the call.
     */
     const print_handle *print;
+    /*
+    Persistent plugin storage, shared by parallel calls of the same plugin.
+    Allocations, membership/count queries and individual releases are protected
+    by a host mutex. This does not protect simultaneous edits of the same object
+    or reads of a handle that another callback frees. Do not call storage_clear()
+    during setup_run() or run(): it would destroy other callbacks' allocations.
+    Use slic3r_parallel_for_storage() for temporary storage isolated per task.
+    */
     storage_handle *plugin_storage;
     void *data;
 

@@ -1062,6 +1062,7 @@ class Slic3rAPI:
 
     @abi_requires_headers("steps/slic3r_step_wipetower.h")
     def wipe_tower_context(self, address: int) -> WipeTowerContext | None:
+        """Borrow the wipe manager's read-only Print and mutable whole plan."""
         return WipeTowerContext.from_wipe_tower_run_context(self, address)
 
     @abi_requires_headers("steps/slic3r_step_ordering.h")

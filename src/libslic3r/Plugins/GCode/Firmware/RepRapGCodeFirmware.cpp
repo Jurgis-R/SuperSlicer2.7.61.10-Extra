@@ -231,13 +231,16 @@ std::string RepRapGCodeFirmwareSession::encode_tool_temperature(
     return output;
 }
 
+// Clamp the requested fan percentage and return mapped physical fan commands;
+// SEMM uses tool 0's fan mapping (fan 0 without a mapping), without state mutation.
 std::string RepRapGCodeFirmwareSession::encode_fan(extruder_index_t tool_id,
                                                     double speed_percent) const
 {
     const double normalized = std::clamp(speed_percent, 0.0, 100.0) / 100.0;
+    const extruder_index_t fan_tool = single_extruder_multi_material() ? 0 : tool_id;
     const std::map<uint32_t, Reader::RepRapToolState>::const_iterator tool =
-        m_reader_state.tools.find(tool_id);
-    const std::vector<uint32_t> fallback{static_cast<uint32_t>(tool_id)};
+        m_reader_state.tools.find(fan_tool);
+    const std::vector<uint32_t> fallback{static_cast<uint32_t>(fan_tool)};
     const std::vector<uint32_t> &fans = tool != m_reader_state.tools.end() &&
                                                !tool->second.fans.empty() ?
         tool->second.fans : fallback;
@@ -248,10 +251,17 @@ std::string RepRapGCodeFirmwareSession::encode_fan(extruder_index_t tool_id,
     return output;
 }
 
+// Return pressure-advance commands and record their physical drive values in the
+// owned Reader cache; SEMM caches its unaddressed M572 on drive 0, while other tools
+// use their declared mappings or a same-ID fallback. Inputs are resolved upstream.
 std::string RepRapGCodeFirmwareSession::encode_pressure_advance(
     extruder_index_t tool_id,
     double pressure_advance) const
 {
+    if (single_extruder_multi_material()) {
+        m_reader_state.pressure_advance[0] = pressure_advance;
+        return "M572 S" + format_number(pressure_advance) + "\n";
+    }
     // [2026-08-25] RepRapFirmware assigns pressure advance per drive with
     // M572: https://docs.duet3d.com/User_manual/Reference/Gcodes
     const std::map<uint32_t, Reader::RepRapToolState>::const_iterator tool =

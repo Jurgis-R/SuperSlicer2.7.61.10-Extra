@@ -6,9 +6,15 @@
 #ifndef steps_steppipeline_hpp_
 #define steps_steppipeline_hpp_
 
+/* Pipeline execution and selection metadata. Exclusive groups select one
+   provider independently of other groups on the same step. Active setting
+   requirements use that group selection to check declared option support. */
+
 #include "libslic3r/Api/plugin/c/slic3r_gcode_thumbnail.h"
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,6 +26,7 @@
 namespace Slic3r {
 
 class ConfigBase;
+class ConfigDef;
 struct GCodeProcessorResult;
 class Orchestrator;
 class Plugin;
@@ -102,6 +109,11 @@ Plugin *selected_active_plugin_from_group(Orchestrator &orchestrator,
                                           slicing_step_t step,
                                           const std::string &exclusive_group,
                                           const ConfigBase *config);
+
+// Return the first active setting unsupported by its selected exclusive-group provider.
+std::optional<std::string> unsupported_active_setting(
+    const ConfigDef &definitions, const ConfigBase &config,
+    const std::function<const Plugin *(const std::string &group_id)> &selected_plugin_of_group);
 
 // Written execution order for the migrated pipeline. The order is intentionally
 // not inferred from the dependency graph: a missing step in this list is a

@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Arrange input and result application. Model instances and the global tower
+   have arrange polygons; instance-tower proxies are excluded and follow their
+   model-instance translations after arrangement. */
 #include "ArrangeJob.hpp"
 
 #include <numeric>
@@ -118,6 +121,7 @@ void ArrangeJob::prepare_all() {
     }
 }
 
+// Borrow plater model/selection and populate owned arrange inputs including only the global tower; instance proxies do not select it, empty model selection arranges all, and allocation failures propagate.
 void ArrangeJob::prepare_selected() {
     clear_input();
 
@@ -158,8 +162,9 @@ void ArrangeJob::prepare_selected() {
     if (auto wti = get_wipe_tower(*m_plater)) {
         ArrangePolygon &&ap = get_arrange_poly(wti, m_plater);
 
-        auto &cont = m_plater->get_selection().is_wipe_tower() ? m_selected :
-                                                                 m_unselected;
+        const Selection &selection = m_plater->get_selection();
+        ArrangePolygons &cont = selection.is_wipe_tower() && selection.get_first_volume()->volume_idx() == 0 ?
+            m_selected : m_unselected;
 
         cont.emplace_back(std::move(ap));
     }

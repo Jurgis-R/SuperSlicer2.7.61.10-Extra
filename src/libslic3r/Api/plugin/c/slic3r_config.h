@@ -25,8 +25,9 @@ These functions let a plugin build a typed configuration without depending on
 the host C++ Config classes. The configuration belongs to storage and follows
 the same lifetime and threading rules as temporary geometry: release it with
 storage_free(), or let storage_clear() release it with the other temporaries.
-PluginStorage is not thread-safe; parallel callbacks must allocate temporary
-configs in the scratch storage supplied to that callback.
+PluginStorage synchronizes allocation and release bookkeeping. Callers must
+coordinate concurrent edits of the same config and finish using it before it
+is freed. Do not clear shared plugin storage during setup_run() or run().
 */
 
 /* Return all keys as a borrowed array of borrowed null-terminated strings. */

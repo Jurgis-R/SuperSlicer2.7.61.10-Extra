@@ -153,11 +153,17 @@ after the available plugin set is known.
 #include "libslic3r/Plugins/Support/SupportDemandModifiers.hpp"
 #include "libslic3r/Plugins/Support/SupportDemandOverhangs.hpp"
 #include "libslic3r/Plugins/Support/SupportDemandPainting.hpp"
+#include "libslic3r/Plugins/WipeTower/ToolChangeUnretract.hpp"
+#include "libslic3r/Plugins/WipeTower/ToolChangeWipe.hpp"
+#include "libslic3r/Plugins/WipeTower/WipeTowerManager.hpp"
 #include "libslic3r/Steps/StepPipeline.hpp"
 #include "libslic3r/Utils.hpp"
 
 namespace Slic3r {
 namespace {
+
+// Register module-owned built-ins with a non-null borrowed host; registrations and diagnostics are retained by the host.
+void register_builtin_plugins(orchestrator_handle *orchestrator);
 
 using RegisterPluginFn = void (*)(orchestrator_handle *);
 using PluginAbiVersionFn = int32_t (*)(slic3r_major_minor_version *);
@@ -728,6 +734,12 @@ void register_builtin_plugins(orchestrator_handle *orchestrator)
         slic3r_api::Infill::PostFullFillVolumePlugin::register_post_full_fill_volume_plugin);
     register_builtin_plugin(orchestrator, "ordering.default",
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins);
+    register_builtin_plugin(orchestrator, "wipe_tower.manager.default",
+        slic3r_api::WipeTower::register_wipe_tower_manager_plugin);
+    register_builtin_plugin(orchestrator, "wipe_tower.wipe.toolchange.default",
+        slic3r_api::WipeTower::register_tool_change_wipe_plugin);
+    register_builtin_plugin(orchestrator, "wipe_tower.toolchange_unretract.default",
+        slic3r_api::WipeTower::ToolChangeUnretractPlugin::register_tool_change_unretract_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.aligned",
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin);
     register_builtin_plugin(orchestrator, "seam_placer.contiguous",

@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Rotation gizmos edit selected scene transforms. Tower proxies use volume_id 0
+   for the global tower and owner-index+1 for instance towers; instance-tower
+   rotation stays in object configuration rather than mouse manipulation. */
 #include "GLGizmoRotate.hpp"
 
 #include <GL/glew.h>
@@ -575,9 +578,12 @@ std::string GLGizmoRotate3D::on_get_name() const
     return _u8L("Rotate");
 }
 
+// Inspect borrowed selection without mutation; instance-tower proxies use config rotation and cannot activate this mouse gizmo, while other existing selection restrictions remain in effect.
 bool GLGizmoRotate3D::on_is_activable() const
 {
     const Selection& selection = m_parent.get_selection();
+    if (selection.is_wipe_tower() && selection.get_first_volume()->volume_idx() > 0)
+        return false;
 
     // not activable if volume selected is a seam modifier
     ModelVolume* volume = get_selected_volume(selection);

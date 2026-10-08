@@ -36,7 +36,7 @@ public:
 private:
     void build();
     void build_catalog();
-    // Rebuild the navigation tree: one node per phase, one child per step.
+    // Rebuild the navigation tree: one node per phase, one child per producer or service step.
     void build_navigation();
     void refresh_navigation_counts();
     void refresh_plugin_list();

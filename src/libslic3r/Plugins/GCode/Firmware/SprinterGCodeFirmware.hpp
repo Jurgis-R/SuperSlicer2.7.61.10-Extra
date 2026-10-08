@@ -30,9 +30,11 @@ protected:
     std::string resolve_empty_script(gcode_script_type script_type,
                                      const Config *producer_config) const override;
     std::string encode_machine_envelope(const MachineEnvelope &envelope) const override;
+    // Carry shared part-cooling fan runtime across logical tool selections.
     void synchronize_selected_extruder_state(const DefaultExtruder *previous,
                                               DefaultExtruder &selected) override;
     std::string encode_chamber_temperature(int16_t temperature, bool wait) const override;
+    // Encode pressure advance for a drive, or without drive addressing in SEMM.
     std::string encode_pressure_advance(extruder_index_t tool_id,
                                         double pressure_advance) const override;
     std::string encode_acceleration(uint32_t acceleration, bool travel) const override;

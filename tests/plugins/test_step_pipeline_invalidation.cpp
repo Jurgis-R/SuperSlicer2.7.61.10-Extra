@@ -1496,6 +1496,46 @@ TEST_CASE("Ordering checkpoint survives downstream invalidation only",
     CHECK(print.should_execute_step(STEP_ORDERING));
 }
 
+// Change global or object tower XY through normal apply, preserving the caller-owned ordered snapshot; assert that only tower generation and downstream steps replay, with apply/allocation failures visible.
+TEST_CASE("Tower position changes replay only from the ordering checkpoint",
+          "[plugins][wipe-tower][step-pipeline][invalidation][checkpoint]")
+{
+    using namespace Slic3r;
+    using Steps::Checkpoint;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    Print print;
+    Model model;
+    DynamicPrintConfig config = Test::PerimeterPluginTests::perimeter_config({});
+    config.set_num_extruders(2);
+    config.set_deserialize_strict("wipe_tower", "1");
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    for (const slicing_step_t step : Steps::execution_order())
+        print.mark_step_executed(step);
+    print.mutable_printing_plan().groups.emplace_back();
+    REQUIRE(print.save_ordering_checkpoint());
+    REQUIRE(print.current_checkpoint() == Checkpoint::GCode);
+
+    SECTION("global X") {
+        config.set_deserialize_strict("wipe_tower_x", "210");
+    }
+    SECTION("object X") {
+        model.objects()[0].config.set_deserialize_strict("wipe_tower_object_x", "70");
+    }
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_INVALIDATED);
+    CHECK(print.current_checkpoint() == Checkpoint::Ordering);
+    CHECK(print.has_ordering_checkpoint());
+    for (const slicing_step_t step : Steps::execution_order()) {
+        CAPTURE(step);
+        CHECK(print.should_execute_step(step) == !Steps::executes_before(step, STEP_WIPETOWER));
+    }
+    print.prepare_checkpoint_resume();
+    CHECK(print.current_checkpoint() == Checkpoint::Ordering);
+    CHECK_FALSE(print.should_execute_step(STEP_ORDERING));
+    CHECK_FALSE(print.should_execute_step(STEP_SKIRT_BRIM));
+    CHECK(print.should_execute_step(STEP_WIPETOWER));
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_UNCHANGED);
+}
+
 TEST_CASE("Disabling the ordering checkpoint releases its copy",
           "[plugins][step-pipeline][invalidation][checkpoint]")
 {

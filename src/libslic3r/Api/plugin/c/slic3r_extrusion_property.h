@@ -286,22 +286,35 @@ typedef struct c_extrusion_property_custom_gcode {
 } c_extrusion_property_custom_gcode;
 
 /*
-Special commands are non-geometric events carried in the extrusion stream.
+Special commands are entry events carried in the extrusion stream, except for
+EXTRUSION on a geometric leaf as described below.
 c_extrusion_property_special_command.extra_data stores the numeric parameter
 described below; commands without an explicit parameter ignore it.
 */
 typedef enum c_extrusion_special_command {
     /* Change to the tool index stored in extra_data. */
     C_EXTRUSION_SPECIAL_COMMAND_TOOLCHANGE = 0,
-    /* Save the firmware speed override and set it to extra_data, where 1.0 is 100%. */
+    /* Set the speed override to extra_data (1.0 = 100%). Marlin backs up the
+       prior override with M220 B; other built-in dialects only emit M220 S. */
     C_EXTRUSION_SPECIAL_COMMAND_SAVE_AND_RESET_SPEED_RATIO = 1,
-    /* Restore the previously saved firmware speed override, or fall back to 100%. */
+    /* Marlin restores its backed-up speed override with M220 R. Other built-in
+       dialects emit M220 S100, discarding the user's prior speed override. */
     C_EXTRUSION_SPECIAL_COMMAND_RESTORE_SPEED_RATIO = 2,
     /* Flush/synchronize the motion planner with a zero-duration dwell. */
     C_EXTRUSION_SPECIAL_COMMAND_FLUSH_PLANNER_QUEUE = 3,
-    /* Emit an E-only extrusion move of extra_data millimeters. */
+    /* Emit extra_data as a signed filament length in millimeters, with no flow
+       or extrusion multiplier. A leaf with segments distributes it over their
+       planar lengths (arcs included), at the leaf's XY speed; zero width/height
+       omit dimension markers. Zero planar length or a simultaneous extrusion-axis
+       request is invalid. Parents and leaves without segments emit E-only on
+       entry. The move is raw: the E position and the usage statistics advance,
+       but the retraction state is unchanged in both directions. Use an
+       EXTRUSION_PROPERTY_TYPE_EXTRUSION_AXIS RETRACT_TO/UNRETRACT request to
+       retract or restore filament. */
     C_EXTRUSION_SPECIAL_COMMAND_EXTRUSION = 4,
-    /* Emit an E-only retract/deretract move of extra_data millimeters. */
+    /* Emit an E-only retract/deretract move of extra_data millimeters:
+       negative extra_data adds retraction, positive extra_data repays
+       outstanding retraction. */
     C_EXTRUSION_SPECIAL_COMMAND_RETRACT = 5,
     /* Pause the print for extra_data milliseconds when no custom pause G-code is configured. */
     C_EXTRUSION_SPECIAL_COMMAND_PAUSE = 6,
@@ -408,7 +421,9 @@ How EPropertyExtrusionAxis changes the physical extrusion axis.
 
 The property expresses a process request rather than firmware syntax. A
 firmware session may therefore encode retract/unretract as explicit E moves or
-as native commands such as G10/G11 while keeping the same PrintingPlan.
+as native commands such as G10/G11 while keeping the same PrintingPlan. It is
+the explicit way to change the retraction state: raw filament moves such as
+C_EXTRUSION_SPECIAL_COMMAND_EXTRUSION leave it unchanged.
 */
 typedef enum c_extrusion_axis_operation {
     /* No extrusion-axis operation has been configured on this property. */
@@ -422,7 +437,12 @@ typedef enum c_extrusion_axis_operation {
 /* Property type: EXTRUSION_PROPERTY_TYPE_EXTRUSION_AXIS. */
 typedef struct c_extrusion_property_extrusion_axis {
     c_extrusion_axis_operation operation;
-    /* Target retraction length for RETRACT_TO; unused by other operations. */
+    /* Target retraction length for RETRACT_TO. For an E-only UNRETRACT event,
+       zero restores everything plus restart extras; a positive value restores
+       at most this many filament millimeters, clamped to outstanding retraction,
+       without scheduling or consuming extras. Native G10/G11 cannot perform
+       partial unretraction: the partial event emits nothing, and a following
+       full UNRETRACT emits G11. Geometric UNRETRACT always restores everything. */
     double value;
     /* Signed adjustment applied by UNRETRACT after restoring the retraction. */
     double restart_extra;

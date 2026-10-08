@@ -10,7 +10,12 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Canvas scene rebuilding and interaction. Tower proxies have object_id INT_MAX;
+   volume_id 0 is global, while owner-object-index+1 and instance_id identify an
+   instance tower. Move events use Z=owner+1, XY=relative offset (global: Z=0,
+   XY=platter position). Tower geometry and placement come only from config. */
 #include "GLCanvas3D.hpp"
+#include "libslic3r/WipeTowerFootprint.hpp"
 
 #include <igl/unproject.h>
 
@@ -2407,6 +2412,7 @@ void GLCanvas3D::mirror_selection(Axis axis)
 // 3) SLA support meshes for their respective ModelObjects / ModelInstances
 // 4) Wipe tower preview
 // 5) Out of bed collision status & message overlay (texture)
+// Rebuild owned volumes from borrowed model/config and preserve selection; towers use approximate purge-based display depths and model heights of at least 10 mm, refresh flags control redraw/reuse, delayed reloads retain existing state, and allocation failures propagate.
 void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_refresh)
 {
     if (m_canvas == nullptr || m_config == nullptr || m_model == nullptr)
@@ -2472,7 +2478,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
     m_reload_delayed = !m_canvas->IsShown() && !refresh_immediately && !force_full_scene_refresh;
 
     PrinterTechnology printer_technology = current_printer_technology();
-    int               volume_idx_wipe_tower_old = -1;
+    std::map<size_t, int> volume_idx_wipe_tower_old;
 
     // Release invalidated volumes to conserve GPU memory in case of delayed refresh (see m_reload_delayed).
     // First initialize model_volumes_new_sorted & model_instances_new_sorted.
@@ -2545,12 +2551,10 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
         if (mvs == nullptr || force_full_scene_refresh) {
             // This GLVolume will be released.
             if (volume->is_wipe_tower) {
-                // There is only one wipe tower.
-                assert(volume_idx_wipe_tower_old == -1);
 #if ENABLE_OPENGL_ES
                 m_wipe_tower_mesh.clear();
 #endif // ENABLE_OPENGL_ES
-                volume_idx_wipe_tower_old = (int)volume_id;
+                volume_idx_wipe_tower_old[volume->geometry_id.first] = int(volume_id);
             }
             if (!m_reload_delayed) {
                 deleted_volumes.emplace_back(volume.get(), volume_id);
@@ -2738,55 +2742,35 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
     }
 
     if (printer_technology == ptFFF && m_config->has("nozzle_diameter")) {
-        // Should the wipe tower be visualized ?
-        unsigned int extruders_count = (unsigned int)m_config->option<ConfigOptionFloats>("nozzle_diameter")->size();
-
-        const bool wt = m_config->option("wipe_tower")->get_bool();
-        const bool co = m_config->option("complete_objects")->get_bool() ||
-            (m_config->option("parallel_objects_step")->get_float() > 0 &&
-             m_config->option("parallel_objects_step_max_z")->get_float() == 0 &&
-              !m_config->option("parallel_islands")->get_bool());
-
-        if (extruders_count > 1 && wt && !co) {
-            // can't get these one from wipe_tower_data, as these use the platter's config, not the print one.
-            const float x = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_x"))->value;
-            const float y = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_y"))->value;
-            const float w = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_width"))->value;
-            const float a = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_rotation_angle"))->value;
-            const float ca = dynamic_cast<const ConfigOptionFloat*>(m_config->option("wipe_tower_cone_angle"))->value;
-
-            const Print *print = m_process->fff_print();
-            //FIXME use real nozzle diameter, or the biggest
-            const double first_nozzle_diameter = m_config->option<ConfigOptionFloats>("nozzle_diameter")->get_at(0);
-            const WipeTowerData& wipe_tower_data = print->wipe_tower_data(m_config, first_nozzle_diameter);
-            const float depth = wipe_tower_data.depth;
-            const float bw = wipe_tower_data.brim_width;
-            const std::vector<std::pair<float, float>> z_and_depth_pairs = wipe_tower_data.z_and_depth_pairs;
-            const float height_real = wipe_tower_data.height; // -1.f = unknown
-            
-
-            // Height of a print (Show at least a slab).
-            const double height = height_real < 0.f ? std::max(m_model->max_z(), 10.0) : height_real;
-
-            if (depth != 0.) {
-    #if ENABLE_OPENGL_ES
-                int volume_idx_wipe_tower_new = m_volumes.load_wipe_tower_preview(
-                    x, y, w, depth, z_and_depth_pairs, (float)height, ca, a, !print->is_step_done(STEP_WIPETOWER),
-                    bw, &m_wipe_tower_mesh);
-    #else
-                int volume_idx_wipe_tower_new = m_volumes.load_wipe_tower_preview(
-                    x, y, w, depth, z_and_depth_pairs, (float)height, ca, a, !print->is_step_done(STEP_WIPETOWER),
-                    bw);
-    #endif // ENABLE_OPENGL_ES
-                if (volume_idx_wipe_tower_old != -1)
-                    map_glvolume_old_to_new[volume_idx_wipe_tower_old] = volume_idx_wipe_tower_new;
+        for (const WipeTowerFootprint &tower : wipe_tower_footprints(*m_model, *m_config)) {
+            const float height = float(std::max(tower.object == nullptr ? m_model->max_z() : tower.object->max_z(), 10.0));
+            const float depth = float(wipe_tower_preview_depth(*m_config, tower.width));
+#if ENABLE_OPENGL_ES
+            const int new_index = m_volumes.load_wipe_tower_preview(float(tower.origin.x()), float(tower.origin.y()),
+                float(tower.width), depth, height, float(tower.rotation), float(tower.brim_width), tower.object == nullptr ? &m_wipe_tower_mesh : nullptr);
+#else
+            const int new_index = m_volumes.load_wipe_tower_preview(float(tower.origin.x()), float(tower.origin.y()),
+                float(tower.width), depth, height, float(tower.rotation), float(tower.brim_width));
+#endif
+            GLVolume &volume = *m_volumes.volumes[new_index];
+            if (tower.object != nullptr) {
+                int object_idx = 0;
+                while (&m_model->objects()[object_idx] != tower.object)
+                    ++object_idx;
+                const int instance_idx = int(std::find(tower.object->instances.begin(), tower.object->instances.end(), tower.instance) - tower.object->instances.begin());
+                // INT_MAX separates proxies from model parts; volume_id stores owner+1.
+                volume.composite_id = GLVolume::CompositeID(INT_MAX, object_idx + 1, instance_idx);
+                volume.geometry_id.first = tower.instance->id().id;
             }
+            const std::map<size_t, int>::const_iterator old = volume_idx_wipe_tower_old.find(volume.geometry_id.first);
+            if (old != volume_idx_wipe_tower_old.end())
+                map_glvolume_old_to_new[old->second] = new_index;
         }
     }
 
     update_volumes_colors_by_extruder();
     // Update selection indices based on the old/new GLVolumeCollection.
-    if (m_selection.get_mode() == Selection::Instance)
+    if (m_selection.get_mode() == Selection::Instance && !m_selection.is_wipe_tower())
         m_selection.instances_changed(instance_ids_selected);
     else
         m_selection.volumes_changed(map_glvolume_old_to_new);
@@ -2958,6 +2942,7 @@ bool GLCanvas3D::is_preview_dirty() {
     return last_showned_print != print->timestamp_last_change();
 }
 
+// Borrow preview colours/events and append owned skirt/object toolpath volumes; wipe preview comes from G-code rather than legacy tower data, and allocation failures propagate.
 void GLCanvas3D::load_preview(const std::vector<std::string>& str_tool_colors, const std::vector<CustomGCode::Item>& color_print_values)
 {
     const Print *print = this->fff_print();
@@ -2974,7 +2959,6 @@ void GLCanvas3D::load_preview(const std::vector<std::string>& str_tool_colors, c
 
         const BuildVolume &build_volume = m_bed.build_volume();
         _load_skirt_brim_preview_toolpaths(build_volume);
-        _load_wipe_tower_toolpaths(build_volume, str_tool_colors);
         for (const PrintObject& object : print->objects())
             _load_print_object_toolpaths(object, build_volume, str_tool_colors, color_print_values);
 
@@ -4427,6 +4411,7 @@ void GLCanvas3D::set_tooltip(const std::string& tooltip)
         m_tooltip.set_text(tooltip);
 }
 
+// Persist selected borrowed model transforms or emit a tower move event; instance-tower XY is relative to ModelInstance translation, event Z encodes owner+1 (zero global), and ownership stays unchanged.
 void GLCanvas3D::do_move(const std::string& snapshot_type)
 {
     if (m_model == nullptr)
@@ -4438,6 +4423,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
     std::set<std::pair<int, int>> done;  // keeps track of modified instances
     bool object_moved = false;
     Vec3d wipe_tower_origin = Vec3d::Zero();
+    bool tower_moved = false;
 
     Selection::EMode selection_mode = m_selection.get_mode();
 
@@ -4466,9 +4452,15 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
                 model_object->invalidate_bounding_box();
             }
         }
-        else if (m_selection.is_wipe_tower() && v->is_wipe_tower)
-            // Move a wipe tower proxy.
+        else if (m_selection.is_wipe_tower() && v->is_wipe_tower && m_selection.contains_volume(unsigned(&v - &m_volumes.volumes.front()))) {
             wipe_tower_origin = v->get_volume_offset();
+            if (v->volume_idx() > 0) {
+                const ModelObject &owner = m_model->objects()[v->volume_idx() - 1];
+                wipe_tower_origin -= owner.instances[v->instance_idx()]->get_offset();
+            }
+            wipe_tower_origin.z() = v->volume_idx();
+            tower_moved = true;
+        }
     }
 
     // Fixes flying instances
@@ -4495,7 +4487,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
     if (object_moved)
         post_event(SimpleEvent(EVT_GLCANVAS_INSTANCE_MOVED));
 
-    if (wipe_tower_origin != Vec3d::Zero())
+    if (tower_moved)
         post_event(Vec3dEvent(EVT_GLCANVAS_WIPETOWER_MOVED, std::move(wipe_tower_origin)));
 
     if (current_printer_technology() == ptFFF && fff_print()->config().complete_objects) {
@@ -4506,6 +4498,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
     m_dirty = true;
 }
 
+// Persist selected borrowed model rotations or global-tower rotation with undo bookkeeping; instance towers stay config-rotated and no ownership transfers.
 void GLCanvas3D::do_rotate(const std::string& snapshot_type)
 {
     if (m_model == nullptr)
@@ -4536,7 +4529,7 @@ void GLCanvas3D::do_rotate(const std::string& snapshot_type)
     Selection::EMode selection_mode = m_selection.get_mode();
 
     for (const std::unique_ptr<GLVolume> &v : m_volumes.volumes) {
-        if (v->is_wipe_tower) {
+        if (v->is_wipe_tower && v->volume_idx() == 0 && m_selection.contains_volume(unsigned(&v - &m_volumes.volumes.front()))) {
             const Vec3d offset = v->get_volume_offset();
             Vec3d rot_unit_x = v->get_volume_transformation().get_matrix().linear() * Vec3d::UnitX();
             double z_rot = std::atan2(rot_unit_x.y(), rot_unit_x.x());
@@ -4851,12 +4844,13 @@ void GLCanvas3D::update_ui_from_settings()
         wxGetApp().plater()->enable_collapse_toolbar(wxGetApp().app_config->get_bool("show_collapse_button"));
 }
 
+// Read the borrowed global proxy's local arrangement box and configured pose; return empty info if only instance towers exist, without mutation or ownership transfer.
 GLCanvas3D::WipeTowerInfo GLCanvas3D::get_wipe_tower_info() const
 {
     WipeTowerInfo wti;
     
     for (const std::unique_ptr<GLVolume> &vol : m_volumes.volumes) {
-        if (vol->is_wipe_tower) {
+        if (vol->is_wipe_tower && vol->volume_idx() == 0) {
             wti.m_pos = Vec2d(m_config->opt_float("wipe_tower_x"),
                             m_config->opt_float("wipe_tower_y"));
             wti.m_rotation = (M_PI/180.) * m_config->opt_float("wipe_tower_rotation_angle");
@@ -7975,187 +7969,6 @@ void GLCanvas3D::_load_print_object_toolpaths(const PrintObject &               
     }
 
     BOOST_LOG_TRIVIAL(debug) << "Loading print object toolpaths in parallel - end" << m_volumes.log_memory_info() << log_memory_info();
-}
-
-void GLCanvas3D::_load_wipe_tower_toolpaths(const BuildVolume& build_volume, const std::vector<std::string>& str_tool_colors)
-{
-    const Print *print = this->fff_print();
-    if (print == nullptr || print->wipe_tower_data().tool_changes.empty())
-        return;
-
-    if (!print->is_step_done(STEP_WIPETOWER))
-        return;
-
-    std::vector<ColorRGBA> tool_colors;
-    decode_colors(str_tool_colors, tool_colors);
-
-    struct Ctxt
-    {
-        const Print                  *print;
-        const std::vector<ColorRGBA> *tool_colors;
-        Vec2f                         wipe_tower_pos;
-        float                         wipe_tower_angle;
-        ColorRGBA                     color_support;
-
-        // For cloring by a tool, return a parsed color.
-        bool                         color_by_tool() const { return tool_colors != nullptr; }
-        size_t                       number_tools() const { return this->color_by_tool() ? tool_colors->size() : 0; }
-        const ColorRGBA&             color_tool(size_t tool) const { return (*tool_colors)[tool]; }
-        int                          volume_idx(int tool, int feature) const {
-            return this->color_by_tool() ? std::min<int>(this->number_tools() - 1, std::max<int>(tool, 0)) : feature;
-        }
-
-        const std::vector<WipeTower::ToolChangeResult>& tool_change(size_t idx) {
-            const auto &tool_changes = print->wipe_tower_data().tool_changes;
-            return priming.empty() ?
-                ((idx == tool_changes.size()) ? final : tool_changes[idx]) :
-                ((idx == 0) ? priming : (idx == tool_changes.size() + 1) ? final : tool_changes[idx - 1]);
-        }
-        std::vector<WipeTower::ToolChangeResult> priming;
-        std::vector<WipeTower::ToolChangeResult> final;
-    } ctxt;
-
-    ctxt.print = print;
-    ctxt.tool_colors = tool_colors.empty() ? nullptr : &tool_colors;
-    if (print->wipe_tower_data().priming && print->config().single_extruder_multi_material_priming)
-        for (int i=0; i<(int)print->wipe_tower_data().priming.get()->size(); ++i)
-            ctxt.priming.emplace_back(print->wipe_tower_data().priming.get()->at(i));
-    if (print->wipe_tower_data().final_purge)
-        ctxt.final.emplace_back(*print->wipe_tower_data().final_purge.get());
-
-    ctxt.wipe_tower_angle = ctxt.print->default_object_config().wipe_tower_rotation_angle.value/180.f * PI;
-    ctxt.wipe_tower_pos = Vec2f(ctxt.print->default_object_config().wipe_tower_x.value, ctxt.print->default_object_config().wipe_tower_y.value);
-
-    ctxt.color_support = m_gcode_viewer.get_extrusion_colors()[uint8_t(GCodeExtrusionRole::WipeTower)];
-
-    BOOST_LOG_TRIVIAL(debug) << "Loading wipe tower toolpaths in parallel - start" << m_volumes.log_memory_info() << log_memory_info();
-
-    //FIXME Improve the heuristics for a grain size.
-    size_t          n_items = print->wipe_tower_data().tool_changes.size() + (ctxt.priming.empty() ? 0 : 1);
-    size_t          grain_size = std::max(n_items / 128, size_t(1));
-    tbb::spin_mutex new_volume_mutex;
-    auto            new_volume = [this, &new_volume_mutex](const ColorRGBA& color) {
-        auto *volume = new GLVolume(color);
-		volume->is_extrusion_path = true;
-        // to prevent sending data to gpu (in the main thread) while
-        // editing the model geometry
-        volume->model.disable_render();
-        tbb::spin_mutex::scoped_lock lock;
-        lock.acquire(new_volume_mutex);
-        m_volumes.volumes.emplace_back(volume);
-        lock.release();
-        return volume;
-    };
-    const size_t   volumes_cnt_initial = m_volumes.volumes.size();
-    std::vector<GLVolumeCollection> volumes_per_thread(n_items);
-    tbb::parallel_for(
-        tbb::blocked_range<size_t>(0, n_items, grain_size),
-        [&ctxt, &new_volume](const tbb::blocked_range<size_t>& range) {
-        // Bounding box of this slab of a wipe tower.
-        GLVolumePtrs vols;
-        std::vector<GLModel::Geometry> geometries;
-        if (ctxt.color_by_tool()) {
-            for (size_t i = 0; i < ctxt.number_tools(); ++i) {
-                vols.push_back(new_volume(ctxt.color_tool(i)));
-                geometries.emplace_back();
-            }
-        }
-        else {
-            vols = { new_volume(ctxt.color_support) };
-            geometries = { GLModel::Geometry() };
-        }
-
-        assert(vols.size() == geometries.size());
-        for (GLModel::Geometry& g : geometries) {
-            g.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3 };
-        }
-        for (size_t idx_layer = range.begin(); idx_layer < range.end(); ++idx_layer) {
-            const std::vector<WipeTower::ToolChangeResult> &layer = ctxt.tool_change(idx_layer);
-            for (size_t i = 0; i < vols.size(); ++i) {
-                GLVolume &vol = *vols[i];
-                if (vol._print_zs.empty() || vol._print_zs.back() != scale_to_layer_coord(layer.front().print_z)) {
-                    vol._print_zs.push_back(scale_to_layer_coord(layer.front().print_z));
-                    vol.offsets.push_back(geometries[i].indices_count());
-                }
-            }
-            for (const WipeTower::ToolChangeResult &extrusions : layer) {
-                for (size_t i = 1; i < extrusions.extrusions.size();) {
-                    const WipeTower::Extrusion &e = extrusions.extrusions[i];
-                    if (e.width == 0.) {
-                        ++i;
-                        continue;
-                    }
-                    size_t j = i + 1;
-                    if (ctxt.color_by_tool())
-                        for (; j < extrusions.extrusions.size() && extrusions.extrusions[j].tool == e.tool && extrusions.extrusions[j].width > 0.f; ++j);
-                    else
-                        for (; j < extrusions.extrusions.size() && extrusions.extrusions[j].width > 0.f; ++j);
-                    size_t              n_lines = j - i;
-                    Lines               lines;
-                    std::vector<double> widths;
-                    std::vector<double> heights;
-                    lines.reserve(n_lines);
-                    widths.reserve(n_lines);
-                    heights.assign(n_lines, extrusions.layer_height);
-                    WipeTower::Extrusion e_prev = extrusions.extrusions[i-1];
-
-                    if (!extrusions.priming) { // wipe tower extrusions describe the wipe tower at the origin with no rotation
-                        e_prev.pos = Eigen::Rotation2Df(ctxt.wipe_tower_angle) * e_prev.pos;
-                        e_prev.pos += ctxt.wipe_tower_pos;
-                    }
-
-                    for (; i < j; ++i) {
-                        WipeTower::Extrusion e = extrusions.extrusions[i];
-                        assert(e.width > 0.f);
-                        if (!extrusions.priming) {
-                            e.pos = Eigen::Rotation2Df(ctxt.wipe_tower_angle) * e.pos;
-                            e.pos += ctxt.wipe_tower_pos;
-                        }
-
-                        lines.emplace_back(Point::new_scale(e_prev.pos.x(), e_prev.pos.y()), Point::new_scale(e.pos.x(), e.pos.y()));
-                        widths.push_back(e.width);
-
-                        e_prev = e;
-                    }
-
-                    _3DScene::thick_lines_to_verts(lines, widths, heights, lines.front().a == lines.back().b, extrusions.print_z,
-                        geometries[ctxt.volume_idx(e.tool, 0)]);
-                }
-            }
-        }
-        for (size_t i = 0; i < vols.size(); ++i) {
-            GLVolume &vol = *vols[i];
-            if (geometries[i].vertices_size_bytes() > MAX_VERTEX_BUFFER_SIZE) {
-                vol.model.init_from(std::move(geometries[i]));
-                vols[i] = new_volume(vol.color);
-            }
-        }
-
-        for (size_t i = 0; i < vols.size(); ++i) {
-            if (!geometries[i].is_empty())
-                vols[i]->model.init_from(std::move(geometries[i]));
-        }
-        });
-
-    BOOST_LOG_TRIVIAL(debug) << "Loading wipe tower toolpaths in parallel - finalizing results" << m_volumes.log_memory_info() << log_memory_info();
-    // Remove empty volumes from the newly added volumes.
-    {
-        for (auto ptr_it = m_volumes.volumes.begin() + volumes_cnt_initial; ptr_it != m_volumes.volumes.end();)
-            if ((*ptr_it)->empty()) {
-                // ptr_it->reset();
-                ptr_it = m_volumes.volumes.erase(ptr_it);
-            } else {
-                ++ptr_it;
-            }
-    }
-    for (size_t i = volumes_cnt_initial; i < m_volumes.volumes.size(); ++i) {
-        const std::unique_ptr<GLVolume> &v = m_volumes.volumes[i];
-        v->is_outside = !contains(build_volume, v->model);
-        // We are done editinig the model, now it can be sent to gpu
-        v->model.enable_render();
-    }
-
-    BOOST_LOG_TRIVIAL(debug) << "Loading wipe tower toolpaths in parallel - end" << m_volumes.log_memory_info() << log_memory_info();
 }
 
 // While it looks like we can call 

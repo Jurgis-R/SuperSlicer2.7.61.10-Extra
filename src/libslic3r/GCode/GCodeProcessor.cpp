@@ -7,6 +7,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* The G-code processor interprets machine moves into preview paths, filament
+   volumes and estimated times. Post-processing rewrites text or binary metadata
+   from those measurements, including the wipe tower filament weight. */
 #include "GCodeProcessor.hpp"
 
 #include <cassert>
@@ -4134,6 +4137,7 @@ void GCodeProcessor::process_toolchange(extruder_index_t new_id)
     }
 }
 
+// Rewrite the owned result file's timing/filament metadata from measured per-tool volumes and the wipe tower role weight; file ownership is scoped and I/O/binary-encoding failures throw.
 void GCodeProcessor::post_process()
 {
     FilePtr in{ boost::nowide::fopen(m_result.filename.c_str(), "rb") };
@@ -4163,7 +4167,11 @@ void GCodeProcessor::post_process()
         filament_total_cost += filament_cost[id];
     }
 
-    double total_g_wipe_tower = m_status_monitor->stats().total_wipe_tower_filament_weight;
+    // Filament weight (g) extruded with the wipe tower role, as measured while processing the moves.
+    const std::map<GCodeExtrusionRole, std::pair<double, double>>::const_iterator wipe_tower_filament =
+        m_result.print_statistics.used_filaments_per_role.find(GCodeExtrusionRole::WipeTower);
+    const double total_g_wipe_tower = wipe_tower_filament != m_result.print_statistics.used_filaments_per_role.end() ?
+        wipe_tower_filament->second.second : 0.;
 
     if (m_binarizer.is_enabled()) {
         // update print metadata

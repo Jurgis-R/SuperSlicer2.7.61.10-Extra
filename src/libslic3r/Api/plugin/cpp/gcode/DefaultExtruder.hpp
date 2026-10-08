@@ -20,9 +20,10 @@ firmware states. It owns one fan, heater, pressure-advance register and E axis,
 but does not inherit from those capabilities. This makes the physical model
 visible and lets Printer reuse the same heater and fan components.
 
-The standard firmware may copy heater and fan runtime state between logical
-extruders when they refer to shared hardware. E-axis and pressure-advance state
-always remain attached to their logical extruder.
+The standard firmware copies all component runtime state between logical tools
+in single-extruder multi-material mode, where tools select filaments on shared
+hardware. Device corrections and filament conversion settings remain configured
+on the destination tool. Other shared components may be copied by a dialect.
 */
 
 namespace slic3r_api { namespace GCodeGeneration {

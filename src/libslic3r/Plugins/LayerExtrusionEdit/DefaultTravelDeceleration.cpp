@@ -17,6 +17,11 @@ making tree boundaries visible to the motion calculation.
 Each parallel run mutates only its own PrintingLayerGroup. setup() scans the
 already resolved speeds once so the first travel of every layer can still see
 the movement speed that preceded that independently processed layer.
+
+Synthetic catalog entries have no source object and an unset instance index.
+Their region-less output stays in movement order but has no regional
+target-deceleration setting; it therefore cannot supply a deceleration target.
+Real-object output must retain its source regions.
 */
 
 #include "DefaultTravelDeceleration.hpp"
@@ -187,6 +192,7 @@ void collect_ordered_leaves(
     const plugin_run_context *run_ctx);
 
 /* Flatten one tool-group across tree and PrintingExtrusion boundaries. */
+// Retain synthetic movement without regional source lookup; reject missing real-object sources.
 std::vector<OrderedLeaf> ordered_tool_leaves(
     PrintingPlan &plan,
     PrintingToolGroup tool,
@@ -200,6 +206,7 @@ TravelRun collect_travel_run(
     const plugin_run_context *run_ctx);
 
 /* Resolve the regional enable switch at the final point of one Travel run. */
+// Return false for a region-less synthetic target rather than using object settings.
 bool target_deceleration_is_enabled(const std::vector<OrderedLeaf> &leaves,
                                     const TravelRun &travel,
                                     const OrderedLeaf &target,
@@ -392,6 +399,7 @@ void collect_ordered_leaves(
     });
 }
 
+// Borrow plan-owned trees and return borrowed ordered leaf views, including synthetic movement with no source shift; invalid real sources or cancellation throw without geometry mutation.
 std::vector<OrderedLeaf> ordered_tool_leaves(
     PrintingPlan &plan,
     PrintingToolGroup tool,
@@ -405,11 +413,12 @@ std::vector<OrderedLeaf> ordered_tool_leaves(
     for (uint32_t extrusion_idx = 0; extrusion_idx < tool.extrusion_count(); ++extrusion_idx) {
         throw_if_cancelled(run_ctx);
         PrintingExtrusion extrusion = tool.extrusion(extrusion_idx);
+        const bool synthetic = is_regionless_synthetic(plan, extrusion);
         const LayerRegionIsland region_island = extrusion.region_island();
-        if (!region_island.valid() || region_island.region_count() == 0)
+        if (!synthetic && (!region_island.valid() || region_island.region_count() == 0))
             throw std::runtime_error(
                 "Travel deceleration encountered an extrusion without source regions.");
-        const c_point instance_shift = plan.object_instance_shift(extrusion);
+        const c_point instance_shift = synthetic ? c_point{0,0} : plan.object_instance_shift(extrusion);
         collect_ordered_leaves(
             extrusion.mutable_root(), EffectiveTreeState{}, region_island,
             instance_shift, leaves, run_ctx);
@@ -449,6 +458,7 @@ TravelRun collect_travel_run(
     return run;
 }
 
+// Read borrowed regional geometry at a valid travel endpoint; synthetic targets return false, real lookup failures/cancellation throw, and no geometry or ownership changes.
 bool target_deceleration_is_enabled(const std::vector<OrderedLeaf> &leaves,
                                     const TravelRun &travel,
                                     const OrderedLeaf &target,
@@ -456,6 +466,8 @@ bool target_deceleration_is_enabled(const std::vector<OrderedLeaf> &leaves,
 {
     throw_if_cancelled(run_ctx);
     assert(travel.begin < travel.end && travel.end <= leaves.size());
+    if (!target.region_island.valid())
+        return false;
     const OrderedLeaf &last_travel = leaves[travel.end - 1];
     const c_extrusion_segment last_segment =
         last_travel.entity.segment(last_travel.entity.segment_count() - 1);

@@ -24,6 +24,10 @@
 #ifndef slic3r_ConfigDef_hpp_
 #define slic3r_ConfigDef_hpp_
 
+/* Configuration definitions own option metadata/defaults; config stores hold
+   the corresponding values. A required plugin group connects an active value
+   (different from its definition default) to a provider's declared config keys. */
+
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -383,6 +387,11 @@ public:
     // Earliest slicing step invalidated by this option when it changes.
     // STEP_ANY means unknown; invalidate the full slicing state.
     slicing_step_t                      invalidates_step = STEP_ANY;
+    // Empty means no requirement. When the value differs from default_value,
+    // the selected plugin in this exclusive group must declare this option key
+    // in its used config keys. Required options must have a definition default.
+    // Plugin-defined raw_config_option_def cannot set this without an ABI extension.
+    std::string                         required_plugin_group;
     // Category of a configuration field, from the GUI perspective.
     OptionCategory                      category        = OptionCategory::none;
     // A tooltip text shown in the GUI.

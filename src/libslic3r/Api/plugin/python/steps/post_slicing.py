@@ -141,10 +141,5 @@ class PostSlicingContext(PluginRunContextView):
     def recompute_slices_and_islands_from_layer_region(self, layer: MutableLayer) -> None:
         self.payload.layer_recompute_slices_and_islands_from_layer_region(layer.mutable_c_handle())
 
-    def post_slicing_storage_size(self) -> int:
-        return int(self.api.host.storage_size(_void_p(self.plugin_storage())))
-
-    def clear_storage(self) -> None:
-        self.api.host.storage_clear(_void_p(self.plugin_storage()))
 
 __all__ = ["PostSlicingContext"]

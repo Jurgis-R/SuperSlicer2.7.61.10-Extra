@@ -6,6 +6,11 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Machine moves are interpreted into preview paths, per-tool filament volumes
+   and time estimates. Text/binary output metadata is rewritten from measured
+   values, including the filament weight of the wipe tower role. Reader-built
+   results also aggregate consumed volume by extrusion role and logical tool,
+   without requiring object labels; the legacy processor leaves that map empty. */
 #ifndef slic3r_GCodeProcessor_hpp_
 #define slic3r_GCodeProcessor_hpp_
 
@@ -83,6 +88,8 @@ namespace Slic3r {
 
         std::vector<double>                                     volumes_per_color_change;
         std::map<extruder_index_t, double>                      volumes_per_extruder;
+        // Consumed filament volume in mm3, grouped by role then logical tool.
+        std::map<GCodeExtrusionRole, std::map<extruder_index_t, double>> volumes_per_role_per_extruder;
         std::map<size_t, std::map<extruder_index_t, std::map<GCodeExtrusionRole, double>>> volumes_per_role_per_extruder_per_object;
         std::map<GCodeExtrusionRole, std::pair<double, double>> used_filaments_per_role;
         std::map<extruder_index_t, double>                      cost_per_extruder;
@@ -91,6 +98,7 @@ namespace Slic3r {
 
         PrintEstimatedStatistics() { reset(); }
 
+        // Clear all estimated times and accumulated filament volumes, masses and costs.
         void reset() {
             for (Mode &m : modes) {
                 m.reset();
@@ -98,6 +106,7 @@ namespace Slic3r {
             volumes_per_color_change.clear();
             volumes_per_color_change.shrink_to_fit();
             volumes_per_extruder.clear();
+            volumes_per_role_per_extruder.clear();
             volumes_per_role_per_extruder_per_object.clear();
             used_filaments_per_role.clear();
             cost_per_extruder.clear();
@@ -906,6 +915,7 @@ namespace Slic3r {
         // post process the file with the given filename to:
         // 1) add remaining time lines M73 and update moves' gcode ids accordingly
         // 2) update used filament data
+        // Rewrite output metadata using measured timing and filament totals.
         void post_process();
 
         void store_move_vertex(EMoveType type, bool internal_only = false);

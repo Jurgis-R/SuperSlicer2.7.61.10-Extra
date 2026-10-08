@@ -6,6 +6,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* G-code display owns rendering buffers and translucent model shells. Tower
+   toolpaths come from parsed G-code; their shells are square-plus-brim proxies
+   derived from effective configuration, with no generated tower-cache input. */
 #ifndef slic3r_GCodeViewer_hpp_
 #define slic3r_GCodeViewer_hpp_
 
@@ -1029,6 +1032,7 @@ public:
 
 private:
     void load_toolpaths(const GCodeProcessorResult& gcode_result);
+    // Append translucent generic shells for all configured towers.
     void load_wipetower_shell(const Print& print);
     void render_toolpaths();
     void render_shells();

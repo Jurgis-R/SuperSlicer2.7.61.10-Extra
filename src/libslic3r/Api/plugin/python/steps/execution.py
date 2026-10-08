@@ -252,18 +252,20 @@ class SupportSpotContext(_PrintObjectContext):
 
 
 @abi_requires_headers("steps/slic3r_step_wipetower.h")
-class WipeTowerContext(_PrintObjectContext):
-    """Read-only object context for wipe-tower generation."""
+class WipeTowerContext(_PayloadContext):
+    """Whole-plan wipe generation with a borrowed Print and mutable plan."""
 
     @classmethod
     def from_wipe_tower_run_context(cls, api, address: int):
-        return cls._from_run_context(api, address, STEP_WIPETOWER, RunCtxGenerateWipeTower, ("print", "object"))
+        return cls._from_run_context(api, address, STEP_WIPETOWER, RunCtxGenerateWipeTower, ("print", "plan"))
 
     def wipe_tower_print(self) -> Print:
-        return self._print()
+        """Borrow the read-only source print for this callback."""
+        return Print(self.api, self.payload.print)
 
-    def wipe_tower_object(self) -> Object:
-        return self._object()
+    def wipe_tower_plan(self) -> MutablePrintingPlan:
+        """Borrow the working plan for whole-plan edits during this callback."""
+        return MutablePrintingPlan(self.api, self.payload.plan)
 
 
 @abi_requires_headers("steps/slic3r_step_finalize_slicing.h")

@@ -9,8 +9,9 @@
 #ifndef slic3r_ConflictChecker_hpp_
 #define slic3r_ConflictChecker_hpp_
 
-//used only in Print::process() after brim generation, to check for object collision
-// arc is done just after, so we don't need to worry about it
+/* Object collision queries flatten object/support paths into height buckets and
+   compare rasterized segments from different instances. Results borrow object
+   identities; this API is not invoked by the slicing/export pipeline. */
 
 #include <optional>
 #include <queue>
@@ -128,7 +129,8 @@ using ConflictObjName = std::optional<std::pair<std::string, std::string>>;
 
 struct ConflictChecker
 {
-    static ConflictResultOpt  find_inter_of_lines_in_diff_objs(SpanOfConstPtrs<PrintObject> objs, const WipeTowerData& wtd);
+    // Find the earliest path intersection between different object instances.
+    static ConflictResultOpt  find_inter_of_lines_in_diff_objs(SpanOfConstPtrs<PrintObject> objs);
     static ConflictComputeOpt find_inter_of_lines(const LineWithIDs &lines);
     static ConflictComputeOpt line_intersect(const LineWithID &l1, const LineWithID &l2);
 };

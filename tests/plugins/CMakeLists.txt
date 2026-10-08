@@ -93,6 +93,7 @@ add_executable(${_TEST_NAME}_tests
     test_ordering_advanced_extrusion_tree.cpp
     test_ordering_engine.cpp
     test_ordering_printing_extrusion_presort.cpp
+    test_ordering_wipe_into_first.cpp
     test_ordering_xy_serpentine.cpp
     test_ordering_extrusion_tree.cpp
     test_orchestrator_plugin_execution.cpp
@@ -115,6 +116,7 @@ add_executable(${_TEST_NAME}_tests
     test_perimeter_remove_gap_fill_on_overhangs.cpp
     test_perimeter_separate_hole_contour.cpp
     test_perimeter_simple_generator.cpp
+    test_plugin_storage.cpp
     test_polyholes.cpp
     test_printing_plan.cpp
     test_print_status_queue.cpp
@@ -136,7 +138,12 @@ add_executable(${_TEST_NAME}_tests
     test_surface_infill_region_compatibility_splitter.cpp
     test_surface_solid_shells.cpp
     test_surface_top_surface_expansion.cpp
+    test_tool_change_wipe.cpp
     test_vase_multi_island_connector.cpp
+    test_wipe_tower_footprint.cpp
+    test_wipe_tower_layout.cpp
+    test_wipe_tower_manager.cpp
+    test_wipe_tower_toolchange_unretract.cpp
     )
 
 add_library(plugin_loader_missing_register_fixture SHARED plugin_loader_fixture.cpp)

@@ -286,8 +286,10 @@ PluginActivationConfig read_plugin_configuration();
 wxString unavailable_plugin_tooltip(const std::string &plugin_id,
                                     const PluginActivationConfig &config);
 wxString plugin_package_load_diagnostic(const PluginPackageLoadReport &report);
+// Translate built-in step identities into display labels; unknown identities use a numeric label.
 wxString step_name(slicing_step_t step);
 wxString phase_name(PluginPhase phase);
+// Classify producer and service steps for navigation; unclassified values return no phase.
 std::optional<PluginPhase> phase_for_step(slicing_step_t step);
 std::optional<size_t> pipeline_step_index(slicing_step_t step);
 bool is_pipeline_step(slicing_step_t step);
@@ -426,6 +428,7 @@ wxString step_name(slicing_step_t step)
     case STEP_CHECK_CONFLICT:            return _L("Conflict detection");
     case STEP_ORDERING:                  return _L("Extrusion ordering");
     case STEP_WIPETOWER:                 return _L("Wipe tower");
+    case WIPE_TOWER_WIPE:                return _L("Wipe tower wipes");
     case STEP_SUPPORT_SPOT:              return _L("Support spot detection");
     case STEP_LAYER_EXTRUSION_EDIT:      return _L("Layer extrusion editing");
     case STEP_LAYER_STICHING:            return _L("Layer stitching");
@@ -458,7 +461,7 @@ wxString phase_name(PluginPhase phase)
     return wxEmptyString;
 }
 
-// Configuration phase under which a step is listed.
+// Configuration phase under which a producer or service step is listed.
 std::optional<PluginPhase> phase_for_step(slicing_step_t step)
 {
     switch (step) {
@@ -486,6 +489,7 @@ std::optional<PluginPhase> phase_for_step(slicing_step_t step)
     case STEP_SKIRT_BRIM:
     case STEP_ALERT_SUPPORTS_NEEDED:
     case STEP_WIPETOWER:
+    case WIPE_TOWER_WIPE:
     case STEP_SUPPORT_SPOT:
     case STEP_FINALIZE_SLICING:
         return PluginPhase::SupportAdhesion;
@@ -1178,7 +1182,7 @@ void PluginConfigDialog::build_catalog()
     }
 }
 
-// Rebuild the navigation tree: one node per phase, one child per step.
+// Rebuild the navigation tree: one node per phase, one child per producer or service step.
 void PluginConfigDialog::build_navigation()
 {
     wxTreeCtrl *tree = m_state->navigation;
@@ -1208,7 +1212,7 @@ void PluginConfigDialog::build_navigation()
         INFILL_PATTERN, INFILL_SURFACE_RECIPE_MODIFIER, BRIDGE_DETECTOR,
         STEP_ALERT_SUPPORTS_NEEDED, STEP_SKIRT_BRIM, STEP_SUPPORT_DEMAND, STEP_SUPPORT,
         STEP_SUPPORT_TOOLPATH,
-        STEP_WIPETOWER, STEP_SUPPORT_SPOT,
+        STEP_WIPETOWER, WIPE_TOWER_WIPE, STEP_SUPPORT_SPOT,
         STEP_FINALIZE_SLICING, STEP_ORDERING, SEAM_PLACER,
         STEP_CHECK_CONFLICT, STEP_LAYER_EXTRUSION_EDIT, STEP_LAYER_STICHING,
         STEP_EXTRUSION_EDIT, STEP_EXTRUSION_SIMPLIFICATION,

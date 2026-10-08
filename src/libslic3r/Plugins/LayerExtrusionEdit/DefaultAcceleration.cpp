@@ -9,11 +9,15 @@ Default layer extrusion acceleration
 
 This plugin resolves acceleration on extrusion trees cloned into PrintingPlan.
 Unlike speed, acceleration needs no group-wide flow analysis. setup_impl()
-still validates all source attributes and configuration links before parallel
+still validates regional source attributes and configuration links before parallel
 layer runs begin so an invalid later layer cannot leave earlier layers edited.
 
 The plugin modifies only accel_mm_per_s2. Existing speed, pressure, fan, and
 temperature fields remain owned by their original producers.
+
+Synthetic catalog entries have no source object and an unset instance index.
+Their region-less trees retain service-owned properties without regional defaults;
+real-object trees still require a source region island.
 */
 
 #include "DefaultAcceleration.hpp"
@@ -596,6 +600,7 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
                               const plugin_run_context *run_ctx);
 
 // Validate all trees and prepare immutable partitions before parallel mutation.
+// Leave region-less synthetic roots untouched while validating real-object sources.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
                   PrintingPlan &plan,
@@ -613,6 +618,7 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
                               const plugin_run_context *run_ctx);
 
 // Resolve and compact acceleration on one cloned extrusion root.
+// Leave region-less synthetic roots untouched while validating real-object sources.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
                     PrintingToolGroup tool_group,
@@ -771,6 +777,7 @@ void collect_unresolved_roles(MutableExtrusionEntity entity,
         roles.insert(state.attributes.extrusion_role());
 }
 
+// Borrow regional roots to validate and cache owned acceleration partitions; skip region-less synthetic output and throw on invalid sources or cancellation.
 void prepare_plan(storage_handle *storage,
                   const Print &print,
                   PrintingPlan &plan,
@@ -796,6 +803,8 @@ void prepare_plan(storage_handle *storage,
                 for (uint32_t extrusion_idx = 0; extrusion_idx < tool_group.extrusion_count(); ++extrusion_idx) {
                     throw_if_cancelled(run_ctx);
                     PrintingExtrusion extrusion = tool_group.extrusion(extrusion_idx);
+                    if (is_regionless_synthetic(plan, extrusion))
+                        continue;
                     const ExtrusionSettingsContext context = validated_settings_context(
                         print, tool_group, extrusion, false);
                     const LayerRegionIsland region_island = extrusion.region_island();
@@ -900,6 +909,7 @@ void assign_acceleration_tree(MutableExtrusionEntity entity,
     apply_regional_process_partition(entity, partition_it->second, editor);
 }
 
+// Borrow a plan-owned root, skip region-less synthetic output, and assign/hoist unresolved regional acceleration; source or cancellation failures throw without ownership transfer.
 void edit_extrusion(const Print &print,
                     const PrintingPlan &plan,
                     PrintingToolGroup tool_group,
@@ -908,6 +918,8 @@ void edit_extrusion(const Print &print,
                     const plugin_run_context *run_ctx)
 {
     throw_if_cancelled(run_ctx);
+    if (is_regionless_synthetic(plan, extrusion))
+        return;
     const ExtrusionSettingsContext context = settings_context(print, tool_group, extrusion);
     const LayerRegionIsland region_island = extrusion.region_island();
     const size_t object_instance_idx = printing_plan_object_instance_idx(plan, extrusion);

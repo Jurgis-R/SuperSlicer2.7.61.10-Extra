@@ -240,6 +240,7 @@ public:
     // Overrides ConfigBase::def(). Static configuration definition. Any value stored into this ConfigBase shall have its definition here.
     const ConfigDef*    def() const override { return &PrintConfigDef::instance(); }
 
+    // Normalize FFF option subsets, using nozzle-count limits only when present.
     void                normalize_fdm();
 
     void                set_num_extruders(unsigned int num_extruders);
@@ -816,6 +817,7 @@ public:
 class PrintStatisticsConfigDef : public ConfigDef
 {
 public:
+    // Define measured-print placeholders and their displayed units.
     PrintStatisticsConfigDef();
 };
 

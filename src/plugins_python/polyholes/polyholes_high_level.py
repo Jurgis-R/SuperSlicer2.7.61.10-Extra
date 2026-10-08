@@ -260,6 +260,7 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
             ctx.report_error(f"Python Polyholes high level failed: {exc}")
 
     def _run_polyholes(self, ctx, run_ctx_address: int) -> None:
+        """Replace suitable slice holes and rebuild changed layers; release temporary handles individually without clearing shared storage."""
         throw_if_cancelled(run_ctx_address)
         obj = ctx.post_slicing_object()
         layer_count = obj.layer_count()
@@ -379,8 +380,6 @@ class PythonPolyholesHighLevelPlugin(PluginBase):
             for polygon in replacements:
                 polygon.free_from_storage()
 
-        if ctx.post_slicing_storage_size() != 0:
-            ctx.clear_storage()
         throw_if_cancelled(run_ctx_address)
 
     def _group_holes(

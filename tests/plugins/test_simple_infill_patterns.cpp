@@ -299,7 +299,7 @@ TEST_CASE("Simple infill pattern plugins register as infill pattern providers",
 
     for (const char *plugin_id : { "line", "concentric", "honeycomb", "3dhoneycomb", "hilbertcurve", "archimedeanchords",
                                    "octagramspiral", "rectilinear", "alignedrectilinear", "monotonic",
-                                   "monotoniclines", "grid", "triangles", "stars", "cubic",
+                                   "grid", "triangles", "stars", "cubic",
                                    "scatteredrectilinear", "supportbase" }) {
         INFO(plugin_id);
         const Plugin *plugin = orchestrator.get_plugin(plugin_id);

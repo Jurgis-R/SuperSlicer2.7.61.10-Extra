@@ -152,6 +152,7 @@ set(SLIC3R_SOURCES
 	Api/plugin/c/steps/slic3r_step_support_toolpath.h
 	Api/plugin/c/steps/slic3r_step_surface_generation.h
 	Api/plugin/c/steps/slic3r_step_skirt_brim.h
+	Api/plugin/c/steps/slic3r_step_wipe_tower_wipe.h
 	Api/plugin/c/steps/slic3r_step_wipetower.h
 	Api/plugin/cpp/BridgeDetectorViews.hpp
 	Api/plugin/cpp/ConfigViews.hpp
@@ -399,6 +400,7 @@ set(SLIC3R_SOURCES
 	Plugins/Ordering/PrintingExtrusionPreSort.hpp
 	Plugins/Ordering/XYSerpentineExtrusionTreeOrdering.cpp
 	Plugins/Ordering/XYSerpentineExtrusionTreeOrdering.hpp
+	Plugins/Ordering/WipeIntoFirstOrdering.cpp
 	Plugins/PrintingPlan/EntryPointProperty.h
 	Plugins/PrintingPlan/PrintingLayerEntryStateProperties.h
 	Plugins/PrintingPlan/PrintingExtrusionScopeProperty.h
@@ -517,6 +519,14 @@ set(SLIC3R_SOURCES
 	Plugins/Support/Toolpath/LegacySupportPaths.hpp
 	Plugins/Support/Toolpath/SupportToolpathLegacy.cpp
 	Plugins/Support/Toolpath/SupportToolpathLegacy.hpp
+	Plugins/WipeTower/ToolChangeUnretract.cpp
+	Plugins/WipeTower/ToolChangeUnretract.hpp
+	Plugins/WipeTower/ToolChangeWipe.cpp
+	Plugins/WipeTower/ToolChangeWipe.hpp
+	Plugins/WipeTower/WipeTowerLayout.cpp
+	Plugins/WipeTower/WipeTowerLayout.hpp
+	Plugins/WipeTower/WipeTowerManager.cpp
+	Plugins/WipeTower/WipeTowerManager.hpp
 	Printing/PrintingPlan.cpp
 	Printing/PrintingPlan.hpp
 	Steps/StepDetectSupportSpots.cpp
@@ -774,12 +784,8 @@ set(SLIC3R_SOURCES
     GCode/ToolOrdering.hpp
     GCode/Wipe.cpp
     GCode/Wipe.hpp
-    GCode/WipeTower.cpp
-    GCode/WipeTower.hpp
     GCode/WipeTower2.cpp
     GCode/WipeTower2.hpp
-    GCode/WipeTowerIntegration.cpp
-    GCode/WipeTowerIntegration.hpp
     GCode/GCodeProcessor.cpp
     GCode/GCodeProcessor.hpp
     GCode/AvoidCrossingPerimeters.cpp
@@ -1033,6 +1039,8 @@ set(SLIC3R_SOURCES
     TriangleSelectorWrapper.cpp
     TriangleSelectorWrapper.hpp
     TypeTraits.hpp
+    WipeTowerFootprint.cpp
+    WipeTowerFootprint.hpp
     MTUtils.hpp
     Zipper.hpp
     Zipper.cpp

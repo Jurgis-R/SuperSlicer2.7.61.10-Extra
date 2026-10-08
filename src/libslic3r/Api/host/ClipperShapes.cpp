@@ -27,14 +27,10 @@
 
 namespace Slic3r {
 
+// Retain the shape through the locked storage registry; null shapes return null and insertion errors leave no tracked handle.
 static ApiClipper::ClipperShapes *store_shape(PluginStorage &plugin_storage, std::unique_ptr<ApiClipper::ClipperShapes> shape)
 {
-    if (!shape)
-        return nullptr;
-    ApiClipper::ClipperShapes *raw = shape.get();
-    plugin_storage.clipper_shapes.emplace_back(std::move(shape));
-    plugin_storage.generic_storage.insert(raw);
-    return raw;
+    return plugin_storage.store(std::move(shape));
 }
 
 static ClipperLib::Paths concat_paths(const ApiClipper::ClipperShapes *first, const ApiClipper::ClipperShapes *second)

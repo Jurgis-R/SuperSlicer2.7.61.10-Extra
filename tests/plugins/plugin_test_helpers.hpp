@@ -14,7 +14,9 @@ void register_gcode_reader_test_providers(orchestrator_handle *orchestrator);
 void register_support_toolpath_test_providers(orchestrator_handle *orchestrator);
 // Register recording support families before generated selector options are finalized.
 void register_support_step_test_providers(orchestrator_handle *orchestrator);
-// Initialize providers and immutable test configuration definitions once.
+// Register the shared-storage allocation probe before option finalization.
+void register_plugin_storage_test_provider(orchestrator_handle *orchestrator);
+// Register and initialize the shared plugin runtime once for all plugin tests.
 void ensure_plugin_test_runtime_initialized();
 bool python_plugin_test_runtime_available();
 // Return the owned startup snapshot, unaffected by tests clearing live reports.

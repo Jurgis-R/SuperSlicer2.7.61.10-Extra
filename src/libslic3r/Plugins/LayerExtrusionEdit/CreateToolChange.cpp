@@ -84,7 +84,10 @@ void initialize_create_tool_change_settings(orchestrator_handle *orchestrator)
         "expected to take care of the toolchange yourself - Slic3r will not output any other G-code to "
         "change the filament. You can use placeholder variables for all Slic3r settings as well as {toolchange_z}, {layer_z}, {layer_num}, {max_layer_z}, {previous_extruder} "
         "and {next_extruder}, so e.g. the standard toolchange command can be scripted as T{next_extruder}."
-        "!! Warning !!: if any character is written here, Slic3r won't output any toolchange command by itself.";
+        "!! Warning !!: if any character is written here, Slic3r won't output any toolchange command by itself. "
+        "A negative E move counts as a retraction only with '; retraction' on the same line, "
+        "and a positive E move restores it only with '; unretraction'; other E moves do not "
+        "change the retraction state.";
     def.multiline = 1;
     def.full_width = 1;
     def.height = 5;
@@ -167,7 +170,7 @@ private:
     /* Highest final layer Z made available to toolchange_gcode placeholders. */
     mutable coord_t m_max_layer_z = 0;
 
-    /* PluginStorage is shared and non-thread-safe; guard only event allocation. */
+    /* Serialize event construction; PluginStorage synchronizes allocation/free bookkeeping, not edits or object lifetimes. */
     mutable std::mutex m_storage_mutex;
 };
 
@@ -418,9 +421,9 @@ void CreateToolChange::run_impl(const plugin_run_context *run_ctx) const
                 "A PrintingToolGroup has no valid extruder for tool-change planning.");
         if (current_extruder != EXTRUDER_ID_UNKNOWN &&
             current_extruder != target_extruder) {
-            // Runs own separate tool-groups, but the host currently lends one
-            // PluginStorage to all of them. Keep its short allocation and move
-            // transaction serialized while all hierarchy work remains parallel.
+            // Runs own separate tool-groups. This local lock serializes event
+            // construction and publication; PluginStorage already synchronizes
+            // allocation/free bookkeeping, not edits or use of a freed config.
             const std::lock_guard<std::mutex> storage_lock(m_storage_mutex);
             append_tool_change_event(
                 run_ctx->plugin_storage, tool_group, script,

@@ -3220,17 +3220,6 @@ Polylines FillMonotonic::fill_surface(const Surface *surface, const FillParams &
     return polylines_out;
 }
 
-Polylines FillMonotonicLines::fill_surface(const Surface *surface, const FillParams &params) const
-{
-    FillParams params2 = params;
-    params2.monotonic = true;
-    params2.anchor_length_max = 0.0f;
-    Polylines polylines_out;
-    if (! fill_surface_by_lines(surface, params2, 0.f, 0.f, polylines_out))
-        BOOST_LOG_TRIVIAL(error) << "FillMonotonicLines::fill_surface() failed to fill a region.";
-    return polylines_out;
-}
-
 Polylines FillGrid::fill_surface(const Surface *surface, const FillParams &params) const
 {
     Polylines polylines_out;

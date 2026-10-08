@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +78,55 @@ class PythonExecutionContextTests(unittest.TestCase):
 
         self.assertEqual(singleton.exclusive_group, "test.singleton")
         self.assertEqual(service.exclusive_group, "")
+
+    def test_low_level_polyholes_releases_partial_allocations_on_failure(self):
+        """Inject allocation and point-building failures; every created polygon is freed without touching an unrelated storage allocation."""
+        polyholes = load_module(
+            "execution_context_polyholes_low_level",
+            ROOT / "src/plugins_python/polyholes/polyholes_low_level.py",
+        )
+        for failure in ("allocation", "null_allocation", "points"):
+            with self.subTest(failure=failure):
+                live = {999}
+                allocated = []
+                released = []
+
+                def allocate(storage):
+                    self.assertEqual(storage, 900)
+                    if len(allocated) == 2 and failure != "points":
+                        if failure == "null_allocation":
+                            return 0
+                        raise MemoryError("Polygon allocation failed")
+                    handle = len(allocated) + 1
+                    allocated.append(handle)
+                    live.add(handle)
+                    return handle
+
+                def release(storage, handle):
+                    self.assertEqual(storage, 900)
+                    live.remove(handle)
+                    released.append(handle)
+                    return 1
+
+                def push_point(handle, point):
+                    raise RuntimeError("Polygon point construction failed")
+
+                api = types.SimpleNamespace(
+                    host=types.SimpleNamespace(storage_free=release),
+                    storage_new_polygon=allocate,
+                    polygon_push_back=push_point,
+                    polygon_make_clockwise=lambda handle: None,
+                )
+                with patch.object(polyholes, "throw_if_cancelled", return_value=None):
+                    with self.assertRaises(MemoryError if failure != "points" else RuntimeError):
+                        polyholes._create_polyholes(
+                            api, 900, self.api_module.CPoint(0, 0),
+                            self.api_module.scale_i(2.5), self.api_module.scale_i(0.4),
+                            True, 0.0, 0,
+                        )
+                self.assertEqual(len(allocated), 5 if failure == "points" else 2)
+                self.assertEqual(released, allocated)
+                self.assertEqual(live, {999})
 
     def test_plugin_base_does_not_opt_into_clear(self):
         plugin = self.api_module.PluginBase("test.no_clear", 1)
@@ -147,6 +197,30 @@ class PythonExecutionContextTests(unittest.TestCase):
         copied.pattern_id = 99
         self.assertEqual(params.pattern_id, 42)
         self.assertEqual(context.infill_pattern_output().address, 9)
+        self.assertTrue(keepalive)
+
+    def test_wipe_tower_context_borrows_print_and_mutable_whole_plan(self):
+        """Match the whole-plan C payload and reject a missing plan or wrong step."""
+        payload = self.generated.RunCtxGenerateWipeTower()
+        payload.print = ctypes.c_void_p(71)
+        payload.plan = ctypes.c_void_p(72)
+        common, keepalive = self.make_common(self.generated.STEP_WIPETOWER, payload)
+        api = types.SimpleNamespace(host=types.SimpleNamespace())
+        context = self.execution.WipeTowerContext.from_wipe_tower_run_context(
+            api, ctypes.addressof(common)
+        )
+        self.assertEqual(context.wipe_tower_print().address, 71)
+        self.assertEqual(context.wipe_tower_plan().address, 72)
+        self.assertIsInstance(context.wipe_tower_plan(), self.execution.MutablePrintingPlan)
+        payload.plan = None
+        self.assertIsNone(self.execution.WipeTowerContext.from_wipe_tower_run_context(
+            api, ctypes.addressof(common)
+        ))
+        payload.plan = ctypes.c_void_p(72)
+        common.step = self.generated.STEP_ORDERING
+        self.assertIsNone(self.execution.WipeTowerContext.from_wipe_tower_run_context(
+            api, ctypes.addressof(common)
+        ))
         self.assertTrue(keepalive)
 
     def test_support_demand_edit_goes_through_the_run_context(self):

@@ -14,6 +14,8 @@ namespace slic3r_api { namespace GuiRulesCorePlugin {
 // its only job. Rules of settings implemented by a feature plugin are meant to
 // move to that plugin; this one keeps the remaining built-in logic until it is
 // distributed.
+// Tower controls distinguish absolute global positions from offsets shared by
+// every instance of an object; sequential printing permits instance towers.
 class GuiRulesCore : public PluginBase
 {
 public:
@@ -28,7 +30,7 @@ private:
     slicing_step_t step_impl() const noexcept override;
     const char *const *dependencies_impl() const noexcept override;
     int32_t priority_impl() const noexcept override;
-    // Register activation rules for built-in FFF settings.
+    // Register activation rules for built-in FFF settings, including the per-instance wipe tower controls.
     void inilialize_impl(storage_handle *storage) const override;
     void run_impl(const plugin_run_context *run_ctx) const override;
 };

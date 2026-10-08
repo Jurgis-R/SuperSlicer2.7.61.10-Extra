@@ -46,6 +46,8 @@ properties where required, merges tiny neighboring fragments, and preserves
 unchanged portions as clones. A replacement leaf becomes a collection of the
 ordered fragments; the original perimeter tree and its non-leaf structure are
 otherwise preserved.
+Replacement collections keep their fragment order fixed so connected perimeter
+fragments remain continuous loops for the ordering step.
 
 The normal call flow is:
 
@@ -156,6 +158,9 @@ struct Fragment
     bool changed = false;
     double min_length = 0.;
 };
+
+// Replace a leaf with its classified fragments while retaining their fixed order.
+void replace_root_leaf_with_fragments(MutableExtrusionEntity root, std::vector<Fragment> &fragments);
 
 StoredPolyline polyline_from_points(storage_handle *storage, const std::vector<c_point> &points)
 {
@@ -804,6 +809,10 @@ bool fragments_need_replacement(const std::vector<Fragment> &fragments, const Mu
     return fragments.front().changed || !same_points(fragments.front().entity.points(), entity.points());
 }
 
+// Move owned classified fragments into the borrowed source leaf, directly for
+// one fragment or as fixed-order children for several. Restore reversibility
+// after child creation establishes the collection; keep parent properties and
+// leave empty inputs unchanged. Failed moves assert and allocation errors propagate.
 void replace_root_leaf_with_fragments(MutableExtrusionEntity root, std::vector<Fragment> &fragments)
 {
     if (fragments.empty())

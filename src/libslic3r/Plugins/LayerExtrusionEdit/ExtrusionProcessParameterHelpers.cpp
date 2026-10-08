@@ -12,6 +12,10 @@ They resolve the properties inherited by each extrusion leaf, validate the
 source links retained by PrintingPlan, and compact one selected process field
 without changing geometry or ordering.
 
+Synthetic catalog entries have no source object and an unset object-instance
+index. Region-less extrusions attached to them carry service-owned process
+properties rather than regional defaults; real-object source links remain required.
+
 EPropertySpeedFieldEditor remembers which EPropertySpeed payloads it creates. This
 allows it to remove a payload that becomes empty during hoisting while keeping
 pre-existing payloads owned by another plugin intact.
@@ -22,6 +26,9 @@ pre-existing payloads owned by another plugin intact.
 #include <stdexcept>
 
 namespace slic3r_api { namespace LayerExtrusionEdit { namespace ProcessParameterHelpers {
+
+// Identify region-less synthetic output without mutating or retaining borrowed plan/extrusion views.
+bool is_regionless_synthetic(const PrintingPlan &plan, const PrintingExtrusion &extrusion);
 
 double effective_value(const Config &config, const char *key, double ratio)
 {
@@ -97,6 +104,18 @@ EffectiveTreeState effective_state(const MutableExtrusionEntity &entity,
         state.full_overhang_speed = overhang->has_full_overhangs_speed != 0;
     }
     return state;
+}
+
+// Inspect borrowed source/catalog views; return true only for an existing synthetic entry with no region island, leaving invalid or real-object sources for normal validation.
+bool is_regionless_synthetic(const PrintingPlan &plan, const PrintingExtrusion &extrusion)
+{
+    if (extrusion.region_island().valid())
+        return false;
+    const uint32_t id = extrusion.printing_catalog_id();
+    if (id >= plan.object_instance_count())
+        return false;
+    const PrintingObjectInstance instance = plan.object_instance(id);
+    return !instance.has_object() && instance.object_instance_idx() == uint64_t(-1);
 }
 
 ExtrusionSettingsContext settings_context(const Print &print,

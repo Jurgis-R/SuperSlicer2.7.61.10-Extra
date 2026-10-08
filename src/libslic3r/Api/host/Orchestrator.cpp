@@ -2,6 +2,7 @@
 ///|/
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+/* The orchestrator owns plugin registration and run contexts, and resolves service invalidation to executable producers. */
 #include "Orchestrator.hpp"
 #include "GCodeReaderService.hpp"
 #include "GCodeThumbnailRenderer.hpp"
@@ -50,6 +51,9 @@
 #include "Plugin.hpp"
 
 namespace Slic3r {
+
+// Resolve a borrowed plugin to its executable invalidation producer, returning STEP_NONE for unsupported steps.
+static slicing_step_t plan_owner_step(const Plugin &plugin);
 
 static bool graph_coordinate_equal(double lhs, double rhs);
 static bool graph_enforced_values_equal(const GraphSettings &lhs, const GraphSettings &rhs);
@@ -530,6 +534,7 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
         out.set_default_value(temp_default_option);
 }
 
+// Map a borrowed plugin's service step to its executable producer for invalidation; unknown steps return STEP_NONE.
 static slicing_step_t plan_owner_step(const Plugin &plugin)
 {
     const slicing_step_t step = plugin.get_step();
@@ -542,6 +547,8 @@ static slicing_step_t plan_owner_step(const Plugin &plugin)
         return STEP_PERIMETER;
     case SEAM_PLACER:
         return STEP_ORDERING;
+    case WIPE_TOWER_WIPE:
+        return STEP_WIPETOWER;
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
     case GCODE_READER:
@@ -2524,8 +2531,9 @@ PluginStorage::PluginStorage() = default;
 // Member containers release their objects when storage is destroyed.
 PluginStorage::~PluginStorage() = default;
 
-// Destroy all objects and clear the tracking set; all exported storage handles become invalid.
+// Lock the containers and destroy all tracked objects; call only when no callback or handle reader can still use them.
 void PluginStorage::clear() {
+    const std::lock_guard<std::mutex> lock(m_mutex);
     polylines.clear();
     polygons.clear();
     expolygons.clear();
@@ -2539,17 +2547,32 @@ void PluginStorage::clear() {
     generic_storage.clear();
 }
 
-// Test membership without modifying storage.
+// Read the tracking set under the lock; null or untracked exported handles return false without inspecting the object.
 bool PluginStorage::contains(void *ptr) const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
     return ptr != nullptr && generic_storage.find(ptr) != generic_storage.end();
 }
 
-// Return the number of currently tracked generic allocations.
-size_t PluginStorage::size() const { return generic_storage.size(); }
+// Read the tracked allocation count under the lock; the count may change as soon as another callback allocates or frees.
+size_t PluginStorage::size() const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    return generic_storage.size();
+}
 
-// Release one tracked allocation; an unknown pointer is rejected and triggers the debug assertion.
+// Copy extrusion pointers while holding the registry lock; callers must keep these objects alive during inspection, and vector allocation can throw.
+std::vector<const ExtrusionEntity *> PluginStorage::stored_extrusions() const
+{
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<const ExtrusionEntity *> result;
+    for (const std::unique_ptr<ExtrusionEntity> &entity : extrusions)
+        result.push_back(entity.get());
+    return result;
+}
+
+// Lock the tracking set and containers while releasing one exported handle; its readers must be finished, and unknown handles assert in Debug and return false.
 bool PluginStorage::free(void *ptr) {
-    if (!contains(ptr)) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    if (ptr == nullptr || generic_storage.find(ptr) == generic_storage.end()) {
         assert(false);
         return false;
     }

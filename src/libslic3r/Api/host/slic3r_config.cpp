@@ -87,15 +87,16 @@ config_option_handle *config_get_mutable(config_handle *config_handle_value, con
     return reinterpret_cast<config_option_handle *>(config->optptr(key, false));
 }
 
+// Retain a config and its adjusted ConfigBase handle together under the registry lock; null storage or an allocation failure returns null.
 config_handle *storage_new_config(storage_handle *storage_handle_value)
 {
     if (storage_handle_value == nullptr)
         return nullptr;
     try {
         Slic3r::PluginStorage *storage = reinterpret_cast<Slic3r::PluginStorage *>(storage_handle_value);
-        Slic3r::DynamicConfig &config = storage->configs.emplace_back();
-        config_handle *handle = Slic3r::ApiHost::to_config_handle(&config);
-        storage->generic_storage.insert(handle);
+        std::unique_ptr<Slic3r::DynamicConfig> config = std::make_unique<Slic3r::DynamicConfig>();
+        config_handle *handle = Slic3r::ApiHost::to_config_handle(config.get());
+        storage->store(std::move(config), handle);
         return handle;
     } catch (...) {
         return nullptr;

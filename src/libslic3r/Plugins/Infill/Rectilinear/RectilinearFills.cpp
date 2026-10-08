@@ -3075,17 +3075,6 @@ Polylines FillMonotonic::fill_surface(const slic3r_api::ExPolygon &expolygon, co
     return polylines_out;
 }
 
-Polylines FillMonotonicLines::fill_surface(const slic3r_api::ExPolygon &expolygon, const raw_infill_pattern_params &params) const
-{
-    raw_infill_pattern_params params2 = params;
-    params2.infill_flags |= C_INFILL_FLAG_MONOTONIC;
-    params2.anchor_length_max = 0.0f;
-    Polylines polylines_out;
-    if (! fill_surface_by_lines(expolygon, params2, 0.f, 0.f, polylines_out))
-        BOOST_LOG_TRIVIAL(error) << "FillMonotonicLines::fill_surface() failed to fill a region.";
-    return polylines_out;
-}
-
 Polylines FillGrid::fill_surface(const slic3r_api::ExPolygon &expolygon, const raw_infill_pattern_params &params) const
 {
     Polylines polylines_out;

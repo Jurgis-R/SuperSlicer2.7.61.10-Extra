@@ -13,6 +13,9 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+/* The legacy generator exposes stream export and per-layer processing over
+   borrowed print geometry. It owns writer state and placeholder values; legacy
+   generated wipe data describes only the global tower. */
 #ifndef slic3r_GCode_hpp_
 #define slic3r_GCode_hpp_
 
@@ -66,7 +69,6 @@ class SeamPlacer;
 class SpiralVase;
 class TemperatureMover;
 class ToolOrdering;
-struct WipeTowerData;
 class WipeTowerLayer;
 
 namespace { struct Item; }
@@ -76,7 +78,6 @@ namespace GCode {
 class LabelObjects;
 class TravelObstacleTracker;
 class Wipe;
-class WipeTowerIntegration;
 } // namespace GCode
 
 class OozePrevention {
@@ -213,8 +214,7 @@ public:
     const GCodeWriter& writer() const { return m_writer; }
     PlaceholderParser& placeholder_parser();
     const PlaceholderParser& placeholder_parser() const;
-    // Process a template through the placeholder parser, collect error messages to be reported
-    // inside the generated string and after the G-code export finishes.
+    // Evaluate a script using writer measurements and record template errors.
     std::string placeholder_parser_process(const std::string &name,
                                            const std::string &templ,
                                            extruder_index_t current_extruder_id,
@@ -276,6 +276,7 @@ private:
         GCodeFindReplace *m_find_replace_backup { nullptr };
         GCodeProcessor   &m_processor;
     };
+    // Export prepared layers with a local global tower and measured script/statistics state.
     void            _do_export(Print &print, GCodeOutputStream &file, ThumbnailsGeneratorCallback thumbnail_cb);
     void            _move_to_print_object(std::string& gcode_out, const Print& print, size_t finished_objects, extruder_index_t initial_extruder_id);
     void            _init_multiextruders(const Print& print, std::string& gcode_out, GCodeWriter& writer, const std::vector<ToolOrdering>& tool_ordering, const std::string& custom_gcode);
@@ -289,6 +290,7 @@ private:
                                                              const extruder_index_t current_extruder_id);
 
 
+    // Generate a layer result with export-borrowed tower paths and writer measurements.
     LayerResult process_layer(
         const Print                     &print,
         Print::StatusMonitor            &status_monitor,
@@ -565,8 +567,6 @@ private:
     std::unique_ptr<PressureEqualizer>  m_pressure_equalizer;
     std::map<coord_t, std::shared_ptr<WipeTowerLayer>> m_wipe_tower_layers;
     std::shared_ptr<WipeTowerLayer>     m_wipe_tower_current_layer;
-    // to get extruded volume, for stats
-    const WipeTowerData                *m_wipe_tower_data;
 
     // Heights (print_z) at which the skirt has already been extruded.
     std::vector<coord_t>                m_skirt_done;
@@ -624,7 +624,6 @@ private:
     bool                                object_layer_over_raft() const { return m_object_layer_over_raft; }
 
     friend class GCode::Wipe;
-    friend class GCode::WipeTowerIntegration;
     friend class PressureEqualizer;
 
     //utility for cooling markers

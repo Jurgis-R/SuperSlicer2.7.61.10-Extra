@@ -28,6 +28,11 @@ as solid where the configured top or bottom shell thickness requires material.
 It consumes typed fill surfaces produced by the initial surface builder and
 publishes a replacement surface partition. It does not generate infill or
 change perimeter and island geometry.
+An island groups its regions by tool. A perimeter-only region island may have
+an empty fill collection; an island with infill areas must still have at least
+one typed fill collection, and every surface present must be typed and non-empty.
+Clipping results are normalized with the geometry epsilon before publication so
+adjacent near-coincident vertices do not form invalid surface contours.
 
 The normal execution flow is:
 
@@ -82,6 +87,15 @@ const raw_used_config_key k_used_config_keys[] = {
 constexpr raw_surface_type k_internal_solid = RAW_SURFACE_TYPE_POS_INTERNAL | RAW_SURFACE_TYPE_DENS_SOLID;
 constexpr raw_surface_type k_internal_sparse = RAW_SURFACE_TYPE_POS_INTERNAL | RAW_SURFACE_TYPE_DENS_SPARSE;
 
+// Report whether any surface in a borrowed collection lacks geometry or typing.
+bool scan_surface_prerequisites(const plugin_run_context *run_ctx, const SurfaceCollection &surfaces);
+// Report invalid surfaces or an infill-bearing island without any fill collection.
+bool scan_object_surface_prerequisites(const plugin_run_context *run_ctx, const Object &object);
+// Normalize and move the disjoint solid/sparse shell results into output surfaces.
+void append_solid_and_sparse_results(StoredSurfaceCollection &out, storage_handle *storage,
+                                    StoredExPolygonCollection &&source, StoredExPolygonCollection &&top_solid,
+                                    StoredExPolygonCollection &&bottom_solid, const plugin_run_context *run_ctx);
+
 bool processable_internal_surface(raw_surface_type type)
 {
     // Bridges are refined by a dedicated bridge module. This plugin only
@@ -93,11 +107,11 @@ bool processable_internal_surface(raw_surface_type type)
            !surface_type_is_solid(type);
 }
 
+// Inspect borrowed surfaces without retaining or changing them; return true
+// for an empty contour or missing position/density flags, false for valid
+// surfaces or an empty collection. Cancellation through run_ctx propagates.
 bool scan_surface_prerequisites(const plugin_run_context *run_ctx, const SurfaceCollection &surfaces)
 {
-    if (surfaces.empty())
-        return true;
-
     // Surface-generation plugins after the initial builder need typed,
     // non-empty areas. Missing position/density bits usually mean that an
     // earlier plugin skipped the initial classification step.
@@ -116,6 +130,10 @@ bool scan_surface_prerequisites(const plugin_run_context *run_ctx, const Surface
     return false;
 }
 
+// Inspect borrowed object islands without mutation; for each island with infill
+// areas, allow empty perimeter-only collections but require at least one typed,
+// non-empty fill collection. Return true on any invalid/missing input; false
+// when all islands qualify. Retain no views and propagate cancellation.
 bool scan_object_surface_prerequisites(const plugin_run_context *run_ctx, const Object &object)
 {
     for (uint32_t layer_idx = 0; layer_idx < object.layer_count(); ++layer_idx) {
@@ -127,13 +145,17 @@ bool scan_object_surface_prerequisites(const plugin_run_context *run_ctx, const 
             // If no fill area exists, no surface is expected for that island.
             if (island.infill_areas().empty())
                 continue;
+            bool has_fill_surfaces = false;
             for (uint32_t region_island_idx = 0; region_island_idx < island.region_island_count();
                  ++region_island_idx) {
                 throw_if_cancelled(run_ctx);
-                if (scan_surface_prerequisites(run_ctx,
-                                               island.region_island(region_island_idx).fill_surfaces_collection()))
+                const SurfaceCollection surfaces = island.region_island(region_island_idx).fill_surfaces_collection();
+                if (scan_surface_prerequisites(run_ctx, surfaces))
                     return true;
+                has_fill_surfaces = has_fill_surfaces || !surfaces.empty();
             }
+            if (!has_fill_surfaces)
+                return true;
         }
     }
     return false;
@@ -469,6 +491,10 @@ void append_unchanged_surfaces(StoredSurfaceCollection &out,
     }
 }
 
+// Union borrowed shell requests and subtract them from the source in nonnull
+// storage, normalize near-coincident contour vertices, then transfer both result
+// collections into out with their density types. Inputs are temporary owned
+// collections; no views escape and cancellation/allocation failures propagate.
 void append_solid_and_sparse_results(StoredSurfaceCollection &out,
                                      storage_handle *storage,
                                      StoredExPolygonCollection &&source,
@@ -491,6 +517,8 @@ void append_solid_and_sparse_results(StoredSurfaceCollection &out,
     throw_if_cancelled(run_ctx);
     StoredExPolygonCollection sparse = clipper_diff(clipper(source.readonly()), solid_shape).to_expolygon_collection();
     throw_if_cancelled(run_ctx);
+    solid.ensure_valid();
+    sparse.ensure_valid();
     out.append_move(std::move(solid), k_internal_solid);
     out.append_move(std::move(sparse), k_internal_sparse);
 }

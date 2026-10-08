@@ -7,8 +7,12 @@
 Tests for plugin-owned temporary configurations.
 
 The suite exercises the C ABI as a plugin sees it, then uses the C++ wrappers
-to verify their ownership contract. The core SCFG codec is covered separately
+to verify buffer ownership. The core SCFG codec is covered separately
 by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
+Invalidation checks compare each option's earliest consuming step with the
+checkpoint used to replay its affected pipeline suffix.
+Setting-support checks compare definition defaults with config values and read
+only provider metadata; unregistered copies model providers with no used keys.
 */
 
 #include <catch2/catch.hpp>
@@ -44,6 +48,7 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 
 #include "libslic3r/Api/host/ApiHostUtils.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/plugin/c/slic3r_config.h"
 #include "libslic3r/Api/plugin/cpp/ConfigDefinitionViews.hpp"
 #include "libslic3r/Api/plugin/cpp/ConfigViews.hpp"
@@ -53,6 +58,19 @@ by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
 #include "libslic3r/Config/PrintConfig.hpp"
 
 namespace {
+
+// This unregistered metadata copy models a provider that declares no setting
+// support; the borrowed ABI callbacks are never executed by these checks.
+class PluginWithoutSettingSupport final : public Slic3r::Plugin
+{
+public:
+    // Copy a borrowed provider's metadata and clear its used-key declarations;
+    // retained ABI pointers remain provider-owned, with allocation failures propagated.
+    explicit PluginWithoutSettingSupport(const Slic3r::Plugin &provider) : Plugin(provider)
+    {
+        m_used_config_keys.clear();
+    }
+};
 
 // This small static store exercises the API rejection path without depending
 // on the global print-config caches initialized by the larger slicing fixture.
@@ -1270,12 +1288,14 @@ TEST_CASE("Former skirt catch-all options resume at their verified first consume
         slicing_step_t consumer;
         Checkpoint checkpoint;
     };
+    // The wipe-tower tool-change plugin reads both temperatures, so their invalidation is tightened
+    // from the G-code step to the tower step, which still replays every later step.
     const Routing routing = GENERATE(
         Routing{"gcode_flavor", "klipper", STEP_ORDERING, Checkpoint::Print},
         Routing{"travel_speed", "187", STEP_LAYER_EXTRUSION_EDIT, Checkpoint::Ordering},
         Routing{"travel_speed_z", "13", STEP_GCODE, Checkpoint::Plan},
-        Routing{"first_layer_temperature", "205", STEP_GCODE, Checkpoint::Plan},
-        Routing{"temperature", "215", STEP_GCODE, Checkpoint::Plan},
+        Routing{"first_layer_temperature", "205", STEP_WIPETOWER, Checkpoint::Ordering},
+        Routing{"temperature", "215", STEP_WIPETOWER, Checkpoint::Ordering},
         Routing{"idle_temperature", "160", STEP_GCODE, Checkpoint::Plan},
         Routing{"ooze_prevention", "1", STEP_GCODE, Checkpoint::Plan},
         Routing{"z_offset", "0.05", STEP_GCODE, Checkpoint::Plan},
@@ -1351,30 +1371,16 @@ TEST_CASE("Former skirt catch-all options resume at their verified first consume
     CHECK_FALSE(Test::GCode::read_text_file(path).empty());
 }
 
+// Read registered option metadata without mutating source owners and compare exact producer/checkpoint routing; missing definitions fail explicitly.
 TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers conservative",
           "[plugins][config][checkpoint][invalidation][replay-options]")
 {
     using namespace Slic3r;
     Test::Plugins::ensure_plugin_test_runtime_initialized();
-    const std::array<const char *, 59> kept {
+    const std::array<const char *, 12> kept {
         "complete_objects", "draft_shield", "min_skirt_length", "skirt_brim", "skirt_distance",
         "skirt_distance_from_brim", "skirt_height", "skirt_extrusion_width", "skirts",
-        "cooling_tube_retraction", "cooling_tube_length", "filament_max_wipe_tower_speed",
-        "filament_loading_speed", "filament_enable_toolchange_temp", "filament_use_fast_skinnydip",
-        "filament_enable_toolchange_part_fan", "filament_toolchange_part_fan_speed", "filament_use_skinnydip",
-        "filament_melt_zone_pause", "filament_cooling_zone_pause", "filament_dip_insertion_speed",
-        "filament_dip_extraction_speed", "filament_toolchange_temp", "filament_skinnydip_distance",
-        "filament_loading_speed_start", "filament_unloading_speed", "filament_unloading_speed_start",
-        "filament_toolchange_delay", "filament_cooling_moves", "filament_cooling_initial_speed",
-        "filament_minimal_purge_on_wipe_tower", "filament_cooling_final_speed", "filament_ramming_parameters",
-        "filament_multitool_ramming", "filament_multitool_ramming_volume", "filament_multitool_ramming_flow",
-        "filament_type", "high_current_on_filament_swap", "parking_pos_retraction", "extra_loading_move",
-        "priming_position", "single_extruder_multi_material", "wipe_tower", "wipe_tower_speed",
-        "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width", "wiping_volumes_extruders",
-        "wiping_volumes_matrix", "wipe_tower_brim_width", "wipe_tower_no_sparse_layers",
-        "wipe_tower_rest_in_middle", "wipe_tower_x", "wipe_tower_y", "wipe_tower_width",
-        "wipe_tower_rotation_angle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
-        "wipe_tower_bridging", "wipe_tower_extruder"
+        "filament_type", "priming_position", "single_extruder_multi_material"
     };
     for (const char *key : kept) {
         CAPTURE(key);
@@ -1383,4 +1389,152 @@ TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers con
         CHECK(definition->invalidates_step == STEP_SKIRT_BRIM);
         CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Slicing);
     }
+    // Tower envelopes and controls, and the purge, ramming and filament-swap settings read by
+    // the tool-change wipe, replay the ordered plan rather than source slicing.
+    for (const char *key : {"filament_max_wipe_tower_speed", "filament_minimal_purge_on_wipe_tower",
+         "wiping_volumes_extruders", "wiping_volumes_matrix",
+         "cooling_tube_retraction", "cooling_tube_length", "parking_pos_retraction", "extra_loading_move",
+         "high_current_on_filament_swap", "filament_loading_speed", "filament_loading_speed_start",
+         "filament_unloading_speed", "filament_unloading_speed_start", "filament_cooling_moves",
+         "filament_cooling_initial_speed", "filament_cooling_final_speed", "filament_enable_toolchange_temp",
+         "filament_toolchange_temp", "filament_enable_toolchange_part_fan", "filament_toolchange_part_fan_speed",
+         "filament_use_skinnydip", "filament_use_fast_skinnydip", "filament_skinnydip_distance",
+         "filament_dip_insertion_speed", "filament_dip_extraction_speed", "filament_melt_zone_pause",
+         "filament_cooling_zone_pause", "filament_toolchange_delay", "filament_ramming_parameters",
+         "filament_multitool_ramming", "filament_multitool_ramming_volume", "filament_multitool_ramming_flow",
+         "single_extruder_multi_material_priming",
+         "wipe_tower_speed", "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width",
+         "wipe_tower_no_sparse_layers", "wipe_tower_rest_in_middle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
+         "wipe_tower_bridging", "wipe_tower_extruder_toolchange", "wipe_tower_brim_width",
+         "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle", "wipe_tower_extruder",
+         "wipe_tower_object_x", "wipe_tower_object_y"}) {
+        CAPTURE(key);
+        const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+        REQUIRE(definition != nullptr);
+        CHECK(definition->invalidates_step == STEP_WIPETOWER);
+        CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Ordering);
+    }
+    // The wipe-into ordering plugin reads the tower presence at STEP_ORDERING, which still replays
+    // the tower step and everything after it.
+    for (const char *key : {"wipe_tower", "wipe_tower_per_object"}) {
+        CAPTURE(key);
+        const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+        REQUIRE(definition != nullptr);
+        CHECK(definition->invalidates_step == STEP_ORDERING);
+        CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Print);
+    }
+    // The tool-change unretraction wipe reads the retraction and speed settings of the incoming
+    // tool at STEP_LAYER_EXTRUSION_EDIT, so their invalidation is tightened there from the G-code
+    // step. The layered speed percentages need solid_infill_speed as their fallback base.
+    // filament_diameter keeps the earlier skirt/brim consumer instead.
+    for (const char *key : {"retract_restart_wipe_toolchange", "deretract_speed",
+         "use_firmware_retraction", "support_material_speed", "solid_infill_speed"}) {
+        CAPTURE(key);
+        const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+        REQUIRE(definition != nullptr);
+        CHECK(definition->invalidates_step == STEP_LAYER_EXTRUSION_EDIT);
+        CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Ordering);
+    }
+}
+
+// Check a minimal definition/config against borrowed provider metadata without
+// changing registration. Resolver counts prove absent/default values skip selection.
+TEST_CASE("Active settings require support from the selected exclusive-group plugin",
+          "[plugins][config][gcode][setting-support]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const Plugin *marlin = Orchestrator::instance().get_plugin("gcode.firmware.marlin2");
+    REQUIRE(marlin != nullptr);
+    REQUIRE_FALSE(marlin->get_exclusive_group_label().empty());
+    PluginWithoutSettingSupport unsupported(*marlin);
+    ConfigDef definitions;
+    ConfigOptionDef *definition = definitions.add("single_extruder_multi_material", coBool);
+    definition->label = "Material multiplexing";
+    definition->required_plugin_group = "gcode_firmware_plugin";
+    definition->set_default_value(new ConfigOptionBool(false));
+    DynamicConfig config;
+    config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(true));
+    const Plugin *selected = marlin;
+    size_t resolutions = 0;
+    const std::function<const Plugin *(const std::string &)> resolver =
+        [&selected, &resolutions](const std::string &group_id) -> const Plugin * {
+            CHECK(group_id == "gcode_firmware_plugin");
+            ++resolutions;
+            return selected;
+        };
+
+    SECTION("a default value is inactive") {
+        config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(false));
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 0);
+    }
+    SECTION("an absent value is skipped") {
+        config.clear();
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 0);
+    }
+    SECTION("an empty requirement is skipped") {
+        definition->required_plugin_group.clear();
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 0);
+    }
+    SECTION("the selected provider declares the key") {
+        CHECK_FALSE(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 1);
+    }
+    SECTION("the selected provider lacks the key") {
+        selected = &unsupported;
+        const std::optional<std::string> error = Steps::unsupported_active_setting(definitions, config, resolver);
+        REQUIRE(error);
+        CHECK(error->find("single_extruder_multi_material") != std::string::npos);
+        CHECK(error->find("Material multiplexing") != std::string::npos);
+        CHECK(error->find(marlin->get_exclusive_group_label()) != std::string::npos);
+        CHECK(error->find(marlin->get_name()) != std::string::npos);
+        CHECK(error->find(marlin->get_id()) != std::string::npos);
+        CHECK(resolutions == 1);
+    }
+    SECTION("no provider is selected") {
+        selected = nullptr;
+        const std::optional<std::string> error = Steps::unsupported_active_setting(definitions, config, resolver);
+        REQUIRE(error);
+        CHECK(error->find("single_extruder_multi_material") != std::string::npos);
+        CHECK(error->find("Material multiplexing") != std::string::npos);
+        CHECK(error->find("gcode_firmware_plugin") != std::string::npos);
+        CHECK(error->find("no plugin is selected") != std::string::npos);
+        CHECK(resolutions == 1);
+    }
+    SECTION("false is active when the default is true") {
+        definition->set_default_value(new ConfigOptionBool(true));
+        config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(false));
+        selected = &unsupported;
+        CHECK(Steps::unsupported_active_setting(definitions, config, resolver));
+        CHECK(resolutions == 1);
+    }
+}
+
+// Validate an applied model with an explicit built-in firmware selection, and
+// audit that the SEMM definition targets its exclusive group, not a numeric step.
+TEST_CASE("Print validation accepts active SEMM with a supporting built-in firmware",
+          "[plugins][config][gcode][setting-support][integration]")
+{
+    using namespace Slic3r;
+    Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const ConfigOptionDef *definition = PrintConfigDef::instance().get("single_extruder_multi_material");
+    REQUIRE(definition != nullptr);
+    CHECK(definition->required_plugin_group == "gcode_firmware_plugin");
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict("single_extruder_multi_material", "1");
+    config.set_deserialize_strict("gcode_firmware_plugin", "gcode.firmware.marlin2");
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20}, print, model, config);
+    const Plugin *selected = Steps::selected_active_plugin_from_group(
+        Orchestrator::instance(), GCODE_FIRMWARE, "gcode_firmware_plugin", &print.full_print_config());
+    REQUIRE(selected != nullptr);
+    CHECK(selected->get_id() == "gcode.firmware.marlin2");
+    const std::pair<PrintBase::PrintValidationError, std::string> validation = print.validate();
+    INFO(validation.second);
+    CHECK(validation.first == PrintBase::PrintValidationError::pveNone);
+    CHECK(validation.second.empty());
 }

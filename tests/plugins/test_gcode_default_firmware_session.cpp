@@ -73,6 +73,26 @@ using namespace Slic3r;
 using namespace Slic3r::Printing;
 using namespace Slic3r::Test::GCode;
 
+// Read E words from generated movement lines into an owned vector; malformed numbers throw.
+std::vector<double> firmware_move_e_values(const std::string &gcode);
+
+// Borrow generated G-code, scan G1/G2/G3 lines and copy their displayed E numbers;
+// stod reports malformed numeric output, and lines without E leave no entry.
+std::vector<double> firmware_move_e_values(const std::string &gcode)
+{
+    std::vector<double> values;
+    std::istringstream stream(gcode);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.rfind("G1 ", 0) != 0 && line.rfind("G2 ", 0) != 0 && line.rfind("G3 ", 0) != 0)
+            continue;
+        const size_t e_pos = line.find(" E");
+        if (e_pos != std::string::npos)
+            values.push_back(std::stod(line.substr(e_pos + 2)));
+    }
+    return values;
+}
+
 class CustomFanFirmwareSession final :
     public slic3r_api::GCodeGeneration::DefaultGCodeFirmwareSession
 {
@@ -1340,6 +1360,136 @@ TEST_CASE("Firmware object boundaries keep exit work with the source instance",
     });
 }
 
+// Borrow a two-object catalog with an appended synthetic tower, then serialize
+// real/tower/tower/real paths. Exact boundary prefixes prove tower motion is
+// outside cancellation labels while real IDs and role markers remain intact.
+TEST_CASE("Firmware prints global and instance wipe towers outside object labels",
+          "[plugins][gcode][firmware][object-instance][wipe-tower][tower-labels]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const LabelObjectsStyle style = GENERATE(LabelObjectsStyle::Disabled,
+        LabelObjectsStyle::Octoprint, LabelObjectsStyle::Firmware, LabelObjectsStyle::Both);
+    const bool klipper = GENERATE(false, true);
+    const bool instance_tower = GENERATE(false, true);
+    CAPTURE(style, klipper, instance_tower);
+    const bool enabled = style != LabelObjectsStyle::Disabled;
+    const bool octoprint = style == LabelObjectsStyle::Octoprint || style == LabelObjectsStyle::Both;
+    const bool firmware = style == LabelObjectsStyle::Firmware || style == LabelObjectsStyle::Both;
+
+    Model model;
+    Print print;
+    Test::init_print({Test::TestMesh::cube_20x20x20, Test::TestMesh::cube_20x20x20}, print, model);
+    ModelObject *first_object = const_cast<ModelObject *>(print.object(0).model_object());
+    ModelObject *second_object = const_cast<ModelObject *>(print.object(1).model_object());
+    REQUIRE(first_object != nullptr);
+    REQUIRE(second_object != nullptr);
+    first_object->name = "First object";
+    second_object->name = "Second object";
+    configure_standard_firmware(print);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.gcode_label_objects.value = style;
+    config.gcode_flavor.value = klipper ? gcfKlipper : gcfMarlinFirmware;
+    PrintingPlan plan = build_printing_plan_by_object(print);
+    PluginStorage storage;
+    slic3r_api::Ordering::ObjectInstanceCatalogPlugin::populate_object_instance_catalog(
+        reinterpret_cast<const print_handle *>(&print),
+        reinterpret_cast<printing_plan_handle *>(&plan),
+        reinterpret_cast<storage_handle *>(&storage));
+    REQUIRE(plan.object_instances.size() == 2);
+    const std::string first_name = plan.object_instances[0].name;
+    const std::string second_name = plan.object_instances[1].name;
+    const std::string tower_name = instance_tower ? "Wipe tower First object #1" : "Wipe tower";
+    const uint32_t tower_id = plan.add_synthetic_object_instance(tower_name,
+        Polygon(Points{Point::new_scale(40., 40.), Point::new_scale(60., 40.),
+                       Point::new_scale(60., 60.), Point::new_scale(40., 60.)}));
+    REQUIRE(tower_id == 2);
+    CHECK(plan.object_instances[0].name == first_name);
+    CHECK(plan.object_instances[1].name == second_name);
+    CHECK(plan.object_instances[0].object == &print.object(0));
+    CHECK(plan.object_instances[1].object == &print.object(1));
+    CHECK(plan.object_instances[tower_id].object == nullptr);
+
+    PrintingToolGroup tool;
+    tool.extruder_id = 0;
+    const uint32_t ids[] = {0, tower_id, tower_id, 1};
+    for (uint32_t idx = 0; idx < 4; ++idx) {
+        append_path_extrusion(tool, make_firmware_path(
+            ArcPolyline(Points{Point::new_scale(double(idx), 0.), Point::new_scale(double(idx + 1), 0.)}),
+            20.f, 500.f, -1.f, -1.f, -1.f,
+            ids[idx] == tower_id ? ExtrusionRole::WipeTower : ExtrusionRole::Perimeter));
+        tool.extrusions.back().printing_catalog_id = ids[idx];
+    }
+    std::unique_ptr<slic3r_api::GCodeGeneration::DefaultGCodeFirmwareSession> session;
+    if (klipper)
+        session.reset(new slic3r_api::GCodeGeneration::Firmware::KlipperGCodeFirmwareSession());
+    else
+        session.reset(new slic3r_api::GCodeGeneration::Firmware::Marlin2GCodeFirmwareSession());
+    std::string output = session->begin_print(
+        slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)),
+        slic3r_api::ConstPrintingPlan(reinterpret_cast<const printing_plan_handle *>(&plan)));
+    INFO(output);
+    CHECK(count_occurrences(output, "EXCLUDE_OBJECT_DEFINE") == (firmware && klipper ? 2 : 0));
+    CHECK(count_occurrences(output, "M486 T2\n") == (firmware && !klipper ? 1 : 0));
+    if (firmware && klipper) {
+        CHECK(output.find("EXCLUDE_OBJECT_DEFINE NAME='" + first_name + "'") != std::string::npos);
+        CHECK(output.find("EXCLUDE_OBJECT_DEFINE NAME='" + second_name + "'") != std::string::npos);
+    }
+    output += session->begin_tool_group(slic3r_api::ConstPrintingToolGroup(
+        reinterpret_cast<const printing_tool_group_handle *>(&tool)));
+    const std::string first = session->write_extrusion(slic3r_api::ConstPrintingExtrusion(
+        reinterpret_cast<const printing_extrusion_handle *>(&tool.extrusions[0])));
+    const std::string tower = session->write_extrusion(slic3r_api::ConstPrintingExtrusion(
+        reinterpret_cast<const printing_extrusion_handle *>(&tool.extrusions[1])));
+    const std::string continued_tower = session->write_extrusion(slic3r_api::ConstPrintingExtrusion(
+        reinterpret_cast<const printing_extrusion_handle *>(&tool.extrusions[2])));
+    const std::string second = session->write_extrusion(slic3r_api::ConstPrintingExtrusion(
+        reinterpret_cast<const printing_extrusion_handle *>(&tool.extrusions[3])));
+    output += first + tower + continued_tower + second + session->end_print();
+    INFO(output);
+
+    std::string close_first;
+    std::string open_first;
+    std::string open_second;
+    if (octoprint) {
+        close_first += "; stop printing object " + first_name + "\n";
+        open_first += "; printing object " + first_name + "\n";
+        open_second += "; printing object " + second_name + "\n";
+    }
+    if (firmware) {
+        close_first += klipper ? "EXCLUDE_OBJECT_END NAME='" + first_name + "'\n" : "M486 S-1\n";
+        open_first += klipper ? "EXCLUDE_OBJECT_START NAME='" + first_name + "'\n" : "M486 S0\n";
+        open_second += klipper ? "EXCLUDE_OBJECT_START NAME='" + second_name + "'\n" : "M486 S1\n";
+    }
+    if (enabled) {
+        close_first += "; SLIC3R_OBJECT_INSTANCE_ID=-1\n";
+        open_first += "; SLIC3R_OBJECT_INSTANCE_ID=0\n";
+        open_second += "; SLIC3R_OBJECT_INSTANCE_ID=1\n";
+    }
+    CHECK(first.compare(0, open_first.size(), open_first) == 0);
+    CHECK(tower.compare(0, close_first.size(), close_first) == 0);
+    CHECK(second.compare(0, open_second.size(), open_second) == 0);
+    const size_t tower_move = tower.find("G1 X2 E");
+    REQUIRE(tower_move != std::string::npos);
+    CHECK(tower_move >= close_first.size());
+    CHECK(tower.find(";TYPE:Wipe tower\n") != std::string::npos);
+    CHECK(continued_tower.find("G1 X3 E") != std::string::npos);
+    CHECK(continued_tower.find("SLIC3R_OBJECT_INSTANCE_ID") == std::string::npos);
+    CHECK(continued_tower.find("printing object") == std::string::npos);
+    CHECK(continued_tower.find("M486") == std::string::npos);
+    CHECK(continued_tower.find("EXCLUDE_OBJECT") == std::string::npos);
+    CHECK(output.find("printing object Wipe tower") == std::string::npos);
+    CHECK(output.find("M486 S2\n") == std::string::npos);
+    CHECK(output.find("EXCLUDE_OBJECT_START NAME='Wipe tower") == std::string::npos);
+    CHECK(output.find("EXCLUDE_OBJECT_DEFINE NAME='Wipe tower") == std::string::npos);
+    CHECK(output.find("; SLIC3R_OBJECT_INSTANCE_ID=2\n") == std::string::npos);
+    if (!enabled) {
+        CHECK(output.find("printing object") == std::string::npos);
+        CHECK(output.find("SLIC3R_OBJECT_INSTANCE_ID") == std::string::npos);
+        CHECK(output.find("M486") == std::string::npos);
+        CHECK(output.find("EXCLUDE_OBJECT") == std::string::npos);
+    }
+}
+
 TEST_CASE("Klipper object declarations use the PrintingPlan instance catalog",
           "[plugins][gcode][firmware][printing][plan][object-instance][klipper]")
 {
@@ -2052,6 +2202,455 @@ TEST_CASE("Default firmware writes the E value prepared by the extruder state",
     remove_output_pair(output_path);
 }
 
+// Exercise signed fixed filament lengths without startup commands or file publication.
+TEST_CASE("Default firmware distributes geometric EXTRUSION over planar segments",
+          "[plugins][gcode][firmware][retraction][fixed-e]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool relative_e = GENERATE(false, true);
+    const bool negative = GENERATE(false, true);
+    const bool arc = GENERATE(false, true);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize("use_relative_e_distances", relative_e ? "1" : "0");
+    config.set_deserialize("extrusion_multiplier", "2");
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+    slic3r_api::GCodeGeneration::ExtrusionAxisState &axis = firmware.machine_extruder(0).extrusion_axis();
+    axis.set_retracted(negative ? 0.0 : 2.0, 0.0);
+
+    Geometry::ArcWelder::Path segments;
+    segments.emplace_back(Point::new_scale(0.0, 0.0));
+    segments.emplace_back(Point::new_scale(1.0, 0.0));
+    if (arc)
+        segments.emplace_back(Point::new_scale(3.0, 0.0), float(scale_i(1.0)),
+                              Geometry::ArcWelder::Orientation::CCW);
+    else
+        segments.emplace_back(Point::new_scale(3.0, 0.0));
+    segments.emplace_back(Point::new_scale(7.0, 0.0));
+    std::unique_ptr<ExtrusionPath> path = make_firmware_path(ArcPolyline(segments), 17.f, 500.f);
+    slic3r_api::MutableExtrusionEntity view(reinterpret_cast<extrusion_entity_handle *>(path.get()));
+    view.get_mutable(slic3r_api::EPropertyAttributes::key)->width(0.f).height(0.f).mm3_per_mm(0.0);
+    const double delta = negative ? -1.00001 : 1.00001;
+    view.get_or_add(slic3r_api::EPropertySpecialCommand::key).set(C_EXTRUSION_SPECIAL_COMMAND_EXTRUSION, delta);
+    const std::string output = firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(path.get())));
+    INFO(output);
+    const std::vector<double> values = firmware_move_e_values(output);
+    REQUIRE(values.size() == 3);
+    const double total_length = 5.0 + (arc ? PI : 2.0);
+    CHECK(values[0] == Approx(delta / total_length).margin(0.00001));
+    CHECK((relative_e ? values[1] : values[1] - values[0]) ==
+          Approx(delta * (arc ? PI : 2.0) / total_length).margin(0.00001));
+    CHECK((relative_e ? values[2] : values[2] - values[1]) ==
+          Approx(delta * 4.0 / total_length).margin(0.00001));
+    CHECK((relative_e ? values[0] + values[1] + values[2] : values[2]) == Approx(delta).margin(1e-12));
+    // A fixed-E EXTRUSION is a raw filament move: it leaves the retraction state
+    // exactly as the caller configured it.
+    CHECK(axis.retracted() == Approx(negative ? 0.0 : 2.0));
+    CHECK(output.find(";TYPE:Perimeter\n") != std::string::npos);
+    CHECK(output.find(";WIDTH:") == std::string::npos);
+    CHECK(output.find(";HEIGHT:") == std::string::npos);
+    CHECK(output.find("F1020") != std::string::npos);
+    CHECK(count_occurrences(output, "G1 E") == 0);
+    if (arc)
+        CHECK(output.find("G3 X3 R1 E") != std::string::npos);
+}
+
+// Logical filament selection transfers all live physical state but retains destination settings.
+TEST_CASE("Default firmware shares complete extruder runtime state only in SEMM",
+          "[plugins][gcode][firmware][state][semm]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool semm = GENERATE(false, true);
+    const bool relative_e = GENERATE(false, true);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize("single_extruder_multi_material", semm ? "1" : "0");
+    config.set_deserialize("use_relative_e_distances", relative_e ? "1" : "0");
+    config.set_deserialize("filament_diameter", "1.75,2.85");
+    config.set_deserialize("extrusion_multiplier", "1,2");
+    config.set_deserialize("retract_speed", "40,55");
+    config.set_deserialize("deretract_speed", "18,23");
+    config.set_deserialize("extruder_temperature_offset", "0,5");
+    config.set_deserialize("extruder_fan_offset", "0,10");
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+    slic3r_api::GCodeGeneration::DefaultExtruder &first = firmware.machine_extruder(0);
+    first.heater().request_temperature(200);
+    first.heater().mark_encoded_with_wait();
+    first.fan().request_speed_percent(50.0);
+    first.fan().mark_encoded();
+    first.pressure_advance().request(0.04);
+    first.pressure_advance().mark_encoded();
+    first.extrusion_axis().extrude(0.000004);
+    first.extrusion_axis().retract(2.0);
+    first.extrusion_axis().schedule_restart_extra(0.1, false);
+    first.extrusion_axis().schedule_restart_extra(0.2, true);
+
+    std::unique_ptr<ExtrusionEntity> next = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 1.0);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(next.get()))) ==
+        (relative_e ? "T1\n" : "T1\nG92 E0\n"));
+    slic3r_api::GCodeGeneration::DefaultExtruder &second = firmware.machine_extruder(1);
+    CHECK(second.id() == 1);
+    CHECK(second.extrusion_axis().filament_diameter() == Approx(2.85));
+    CHECK(second.extrusion_axis().e_per_mm3() == Approx(2.0 / (PI * 2.85 * 2.85 / 4.0)));
+    CHECK(second.extrusion_axis().retract_speed() == Approx(55.0));
+    CHECK(second.extrusion_axis().deretract_speed() == Approx(23.0));
+    if (semm) {
+        // Leaving the event clears lexical requests, but encoded physical
+        // history survives. New filament requests use destination corrections.
+        CHECK_FALSE(second.heater().requested_temperature());
+        CHECK(second.heater().encoded_temperature() == 200);
+        CHECK(second.heater().encoded_temperature_with_wait() == 200);
+        second.heater().request_temperature(200);
+        CHECK(second.heater().effective_temperature() == 205);
+        CHECK_FALSE(second.fan().requested_speed_percent());
+        CHECK(second.fan().encoded_speed_percent() == 50.0);
+        second.fan().request_speed_percent(50.0);
+        CHECK(second.fan().effective_speed_percent() == 60.0);
+        CHECK_FALSE(second.pressure_advance().requested());
+        CHECK(second.pressure_advance().encoded() == 0.04);
+        CHECK(second.extrusion_axis().position() == 0.0);
+        CHECK(second.extrusion_axis().extruded_dE_left() ==
+              (relative_e ? first.extrusion_axis().extruded_dE_left() : 0.0));
+        CHECK(second.extrusion_axis().retracted() == Approx(2.0));
+        CHECK(second.extrusion_axis().restart_extra() == Approx(0.1));
+        CHECK(second.extrusion_axis().used_filament() == first.extrusion_axis().used_filament());
+
+        std::unique_ptr<ExtrusionEntity> full = marker_test_retraction(false);
+        full->add_property(ExtrusionPropertySpeed(-1.f, -1.f, -1.f, -1.f, 200.f));
+        full->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().unretract(0.1);
+        const std::string output = firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(full.get())));
+        INFO(output);
+        CHECK(output.find("M104 S205\n") != std::string::npos);
+        const std::vector<double> values = firmware_move_e_values(output);
+        REQUIRE(values.size() == 1);
+        CHECK(values.front() == Approx(2.3));
+        CHECK(output.find("F1380") != std::string::npos);
+        CHECK_FALSE(second.extrusion_axis().need_unretract());
+        firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+        CHECK(first.extrusion_axis().position() == 0.0);
+        CHECK_FALSE(first.extrusion_axis().need_unretract());
+    } else {
+        CHECK_FALSE(second.heater().requested_temperature());
+        CHECK_FALSE(second.fan().requested_speed_percent());
+        CHECK_FALSE(second.pressure_advance().requested());
+        CHECK(second.extrusion_axis().retracted() == 0.0);
+        CHECK(second.extrusion_axis().position() == 0.0);
+        CHECK(second.extrusion_axis().extruded_dE_left() == 0.0);
+        CHECK(first.extrusion_axis().retracted() == Approx(2.0));
+    }
+}
+
+// A native retraction remains active when SEMM selects another filament on the same extruder.
+TEST_CASE("Default firmware shares native retraction protocol state in SEMM",
+          "[plugins][gcode][firmware][retraction][semm]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize("single_extruder_multi_material", "1");
+    config.set_deserialize("filament_diameter", "1.75,1.75");
+    config.set_deserialize("use_firmware_retraction", "1");
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+    std::unique_ptr<ExtrusionEntity> retract = marker_test_retraction(true);
+    retract->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().retract_to(2.0);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(retract.get()))) == "G10\n");
+    std::unique_ptr<ExtrusionEntity> next = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 1.0);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(next.get()))) == "T1\nG92 E0\n");
+    retract->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().retract_to(3.0);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(retract.get()))).empty());
+    std::unique_ptr<ExtrusionEntity> full = marker_test_retraction(false);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(full.get()))) == "G11\n");
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(retract.get()))) == "G10\n");
+}
+
+// Coordinate resets never repay the physical retraction or consume its pending restart extras.
+TEST_CASE("Tool selection resets absolute E without changing retraction accounting",
+          "[plugins][gcode][firmware][retraction][toolchange-reset]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool semm = GENERATE(false, true);
+    const bool relative_e = GENERATE(false, true);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize("single_extruder_multi_material", semm ? "1" : "0");
+    config.set_deserialize("use_relative_e_distances", relative_e ? "1" : "0");
+    config.set_deserialize("filament_diameter", "1.75,1.75");
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get()))) ==
+        (relative_e ? "T0\n" : "T0\nG92 E0\n"));
+    slic3r_api::GCodeGeneration::ExtrusionAxisState &first = firmware.machine_extruder(0).extrusion_axis();
+    first.extrude(10.0);
+    first.retract(2.0);
+    first.schedule_restart_extra(0.1, false);
+    first.schedule_restart_extra(0.2, true);
+    const double used_before = first.used_filament();
+    std::unique_ptr<ExtrusionEntity> next = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 1.0);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(next.get()))) ==
+        (relative_e ? "T1\n" : "T1\nG92 E0\n"));
+    CHECK(firmware.machine_extruder(1).extrusion_axis().position() == 0.0);
+    CHECK(firmware.machine_extruder(1).extrusion_axis().retracted() == (semm ? 2.0 : 0.0));
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get()))) ==
+        (relative_e ? "T0\n" : "T0\nG92 E0\n"));
+    CHECK(first.position() == 0.0);
+    CHECK(first.retracted() == 2.0);
+    CHECK(first.restart_extra() == Approx(0.1));
+    CHECK(first.used_filament() == used_before);
+    // Selecting the already active tool emits nothing and does not reset E.
+    // A raw filament move changes the coordinate but not the retraction state;
+    // only the explicit operation below extends the retraction.
+    first.extrude(-1.0);
+    const double retained_position = first.position();
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get()))).empty());
+    CHECK(first.position() == retained_position);
+    CHECK(first.retracted() == 2.0);
+    first.add_retraction(1.0);
+    CHECK(first.retracted() == 3.0);
+    std::unique_ptr<ExtrusionEntity> full = marker_test_retraction(false);
+    full->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().unretract(0.1);
+    const std::string output = firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(full.get())));
+    const std::vector<double> values = firmware_move_e_values(output);
+    REQUIRE(values.size() == 1);
+    CHECK(values.front() == Approx(relative_e ? 3.3 : 2.3));
+    CHECK_FALSE(first.need_unretract());
+    CHECK(first.used_filament() == Approx(used_before + 0.3));
+}
+
+// Point-less and parent EXTRUSION remain entry events; invalid geometric requests fail.
+TEST_CASE("Default firmware keeps EXTRUSION entry events and rejects conflicting geometry",
+          "[plugins][gcode][firmware][fixed-e]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+
+    SECTION("point-less leaf") {
+        std::unique_ptr<ExtrusionEntity> event = special_command_entity(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, -2.0);
+        event->add_property(ExtrusionPropertySpeed(12.f, 300.f));
+        const std::string output = firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(event.get())));
+        CHECK(output.find("G1 E-2 F720\n") != std::string::npos);
+        // The E-only EXTRUSION is raw: it does not add retraction.
+        CHECK(firmware.machine_extruder(0).extrusion_axis().retracted() == 0.0);
+    }
+    SECTION("parent") {
+        ExtrusionEntity::Children children;
+        children.push_back(std::unique_ptr<ExtrusionNop>(new ExtrusionNop()));
+        ExtrusionEntity parent(std::move(children), false, true, true);
+        parent.add_property(ExtrusionPropertySpeed(12.f, 300.f));
+        parent.add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, 2.0));
+        const std::string output = firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(&parent)));
+        CHECK(output.find("G1 E2 F720\n") != std::string::npos);
+        CHECK(firmware_move_e_values(output).size() == 1);
+    }
+    SECTION("zero planar length") {
+        std::unique_ptr<ExtrusionPath> path = make_firmware_path(
+            ArcPolyline(Points{Point::new_scale(0.0, 0.0), Point::new_scale(0.0, 0.0)}), 12.f, 300.f);
+        path->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, 2.0));
+        CHECK_THROWS_AS(firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(path.get()))), std::invalid_argument);
+    }
+    SECTION("simultaneous semantic axis") {
+        std::unique_ptr<ExtrusionPath> path = make_firmware_path(
+            ArcPolyline(Points{Point::new_scale(0.0, 0.0), Point::new_scale(1.0, 0.0)}), 12.f, 300.f);
+        path->add_property(ExtrusionPropertySpecialCommand(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, 2.0));
+        path->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().unretract();
+        CHECK_THROWS_AS(firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(path.get()))), std::invalid_argument);
+    }
+}
+
+// A fixed-E EXTRUSION never changes the retraction state, while the explicit
+// RETRACT command keeps its retract/deretract meaning.
+TEST_CASE("Default firmware keeps raw filament moves out of the retraction state",
+          "[plugins][gcode][firmware][retraction][fixed-e]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+    slic3r_api::GCodeGeneration::ExtrusionAxisState &axis =
+        firmware.machine_extruder(0).extrusion_axis();
+
+    SECTION("an explicit retraction survives a raw unload and is restored once") {
+        std::unique_ptr<ExtrusionEntity> retract = marker_test_retraction(true);
+        firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(retract.get())));
+        CHECK(axis.retracted() == Approx(0.2));
+        std::unique_ptr<ExtrusionEntity> unload = special_command_entity(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, -5.0);
+        unload->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+        firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(unload.get())));
+        CHECK(axis.retracted() == Approx(0.2));
+        std::unique_ptr<ExtrusionEntity> full = marker_test_retraction(false);
+        const std::string output = firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(full.get())));
+        const std::vector<double> values = firmware_move_e_values(output);
+        REQUIRE(values.size() == 1);
+        CHECK(values.front() == Approx(-5.0));
+        CHECK_FALSE(axis.need_unretract());
+    }
+    SECTION("a raw negative EXTRUSION alone needs no unretraction") {
+        std::unique_ptr<ExtrusionEntity> unload = special_command_entity(
+            ExtrusionPropertySpecialCommand::Code::EXTRUSION, -2.0);
+        unload->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+        firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(unload.get())));
+        CHECK(axis.retracted() == 0.0);
+        CHECK_FALSE(axis.need_unretract());
+        CHECK(axis.unretract() == 0.0);
+    }
+    SECTION("the explicit RETRACT command still retracts and deretracts") {
+        std::unique_ptr<ExtrusionEntity> retract = special_command_entity(
+            ExtrusionPropertySpecialCommand::Code::RETRACT, -2.0);
+        retract->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+        firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(retract.get())));
+        CHECK(axis.retracted() == Approx(2.0));
+        std::unique_ptr<ExtrusionEntity> deretract = special_command_entity(
+            ExtrusionPropertySpecialCommand::Code::RETRACT, 2.0);
+        deretract->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+        firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(deretract.get())));
+        CHECK(axis.retracted() == 0.0);
+    }
+}
+
+// Restore a limited static amount, leaving all extras for the final moving restore.
+TEST_CASE("Default firmware clamps partial static unretraction before a Wipe leaf",
+          "[plugins][gcode][firmware][retraction][partial-unretract]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool relative_e = GENERATE(false, true);
+    const double partial_length = GENERATE(8.0, 20.0, 0.0);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize("use_relative_e_distances", relative_e ? "1" : "0");
+    config.set_deserialize("deretract_speed", "23");
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+    std::unique_ptr<ExtrusionEntity> retract = marker_test_retraction(true);
+    retract->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().retract_to(10.0, true);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(retract.get())));
+    slic3r_api::GCodeGeneration::ExtrusionAxisState &axis = firmware.machine_extruder(0).extrusion_axis();
+    axis.schedule_restart_extra(0.3, true);
+
+    std::unique_ptr<ExtrusionEntity> partial = marker_test_retraction(false);
+    slic3r_api::EPropertyExtrusionAxis &request =
+        partial->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().unretract_partial(partial_length, true);
+    // Positive limits ignore even a supplied extra; zero retains full-event semantics.
+    request.restart_extra = 0.7;
+    const std::string static_output = firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(partial.get())));
+    INFO(static_output);
+    const std::vector<double> static_e = firmware_move_e_values(static_output);
+    REQUIRE(static_e.size() == 1);
+    const double restored = partial_length == 0.0 ? 10.7 : std::min(partial_length, 10.0);
+    CHECK(static_e[0] == Approx(relative_e ? restored : restored - 10.0));
+    CHECK(static_output.find("F1380") != std::string::npos);
+    CHECK(axis.retracted() == Approx(partial_length == 8.0 ? 2.0 : 0.0));
+    CHECK(axis.need_unretract() == (partial_length > 0.0));
+
+    std::unique_ptr<ExtrusionPath> wipe = marker_test_wipe(0.0, 5.0);
+    slic3r_api::MutableExtrusionEntity wipe_view(reinterpret_cast<extrusion_entity_handle *>(wipe.get()));
+    wipe_view.get_mutable(slic3r_api::EPropertyAttributes::key)->extrusion_role(
+        RAW_EXTRUSION_ROLE_TRAVEL | RAW_EXTRUSION_ROLE_WIPE | RAW_EXTRUSION_ROLE_UNRETRACT);
+    wipe_view.get_or_add(slic3r_api::EPropertyExtrusionAxis::key).unretract(0.3, true);
+    const std::string moving_output = firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(wipe.get())));
+    INFO(moving_output);
+    const std::vector<double> moving_e = firmware_move_e_values(moving_output);
+    REQUIRE(moving_e.size() == 1);
+    const double remaining = partial_length == 8.0 ? 2.3 : 0.3;
+    CHECK(moving_e[0] == Approx(relative_e ? remaining : (partial_length == 0.0 ? 1.0 : 0.3)));
+    CHECK(moving_output.find("G1 X5 E") != std::string::npos);
+    CHECK_FALSE(axis.need_unretract());
+}
+
+// A partial request neither primes an idle tool nor splits a native G11 command.
+TEST_CASE("Default firmware skips partial unretraction without explicit outstanding filament",
+          "[plugins][gcode][firmware][retraction][partial-unretract]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool native = GENERATE(false, true);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize("use_firmware_retraction", native ? "1" : "0");
+    ScriptStateFirmwareProbe firmware;
+    firmware.setup(slic3r_api::Config(ApiHost::to_config_handle(&config)));
+    std::unique_ptr<ExtrusionEntity> select = special_command_entity(
+        ExtrusionPropertySpecialCommand::Code::TOOLCHANGE, 0.0);
+    firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(select.get())));
+    std::unique_ptr<ExtrusionEntity> partial = marker_test_retraction(false);
+    partial->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().unretract_partial(8.0);
+    CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(partial.get()))).empty());
+    if (native) {
+        std::unique_ptr<ExtrusionEntity> retract = marker_test_retraction(true);
+        retract->get_or_add_property<slic3r_api::EPropertyExtrusionAxis>().retract_to(10.0);
+        CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(retract.get()))).find("G10\n") != std::string::npos);
+        CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(partial.get()))).empty());
+        CHECK(firmware.machine_extruder(0).extrusion_axis().retracted() == Approx(10.0));
+        std::unique_ptr<ExtrusionEntity> full = marker_test_retraction(false);
+        CHECK(firmware.write_event(slic3r_api::ExtrusionEntity(
+            reinterpret_cast<const extrusion_entity_handle *>(full.get()))).find("G11\n") != std::string::npos);
+        CHECK_FALSE(firmware.machine_extruder(0).extrusion_axis().need_unretract());
+    }
+}
+
 TEST_CASE("E-only unretraction resolves zero speed per extruder without inherited speed",
           "[plugins][gcode][firmware][retraction][deretract-zero]")
 {
@@ -2202,6 +2801,7 @@ TEST_CASE("Default firmware encodes semantic retract wipe and unretract leaves",
     remove_output_pair(output_path);
 }
 
+// Motion-only wipe segments have no E words even when tool selection resets the E coordinate.
 TEST_CASE("Default firmware accepts a motion-only wipe without an E request",
           "[plugins][gcode][firmware][wipe]")
 {
@@ -2237,7 +2837,11 @@ TEST_CASE("Default firmware accepts a motion-only wipe without an E request",
         INFO(output);
         CHECK(output.find(";WIPE_START\n") != std::string::npos);
         CHECK(output.find("G1 X5") != std::string::npos);
-        CHECK(output.find(" E") == std::string::npos);
+        CHECK(count_occurrences(output, "G92 E0\n") == 1);
+        for (const std::string &line : machine_command_lines(output))
+            if (line.rfind("G0 ", 0) == 0 || line.rfind("G1 ", 0) == 0 ||
+                line.rfind("G2 ", 0) == 0 || line.rfind("G3 ", 0) == 0)
+                CHECK(line.find(" E") == std::string::npos);
     } catch (...) {
         remove_output_pair(output_path);
         throw;
@@ -2470,6 +3074,7 @@ TEST_CASE("Default firmware restores inherited requests between sibling nodes",
     }
     remove_output_pair(output_path);
 }
+// Ordered events retain their command sequence, including coordinate resets after emitted selections.
 TEST_CASE("Default firmware handles ordered special commands and custom G-code",
           "[plugins][gcode][firmware]")
 {
@@ -2528,9 +3133,10 @@ TEST_CASE("Default firmware handles ordered special commands and custom G-code",
         run_file_writer_with_firmware(print, output_path, firmware.instance());
         const std::string output = read_text_file(output_path);
         INFO(output);
-        CHECK(output.find("T0\nT1\n") != std::string::npos);
-        CHECK(output.find("M220 B\nM220 S80\n") != std::string::npos);
-        CHECK(output.find("M220 R\n") != std::string::npos);
+        CHECK(output.find("T0\nG92 E0\nT1\nG92 E0\n") != std::string::npos);
+        CHECK(output.find("M220 S80\nM220 S100\n") != std::string::npos);
+        CHECK(output.find("M220 B\n") == std::string::npos);
+        CHECK(output.find("M220 R\n") == std::string::npos);
         CHECK(output.find("G4 S0\n") != std::string::npos);
         CHECK(output.find("G1 E") != std::string::npos);
         CHECK(output.find(" F720\n") != std::string::npos);
@@ -2548,6 +3154,7 @@ TEST_CASE("Default firmware handles ordered special commands and custom G-code",
     remove_output_pair(output_path);
 }
 
+// Semantic tool selection emits one command/reset pair rather than duplicating the automatic selection.
 TEST_CASE("Tool-group semantic selection suppresses the automatic firmware command",
           "[plugins][gcode][firmware][toolchange]")
 {
@@ -2579,7 +3186,7 @@ TEST_CASE("Tool-group semantic selection suppresses the automatic firmware comma
     INFO(output);
     CHECK(count_command_lines(output, "T0") == 1);
     CHECK(count_command_lines(output, "T1") == 1);
-    CHECK(output.find("T0\nT1\n") != std::string::npos);
+    CHECK(output.find("T0\nG92 E0\nT1\nG92 E0\n") != std::string::npos);
 }
 TEST_CASE("Default firmware distinguishes raw G-code, comments and scripts",
           "[plugins][gcode][firmware][custom-gcode]")
@@ -3023,6 +3630,7 @@ TEST_CASE("Thumbnail encoder adapter contains errors and owns its session once",
     CHECK_THROWS(slic3r_api::GCodeThumbnailEncoderView(&incomplete));
 }
 
+// Startup heats only the initial SEMM filament, selecting it with the dialect's shared-tool command.
 TEST_CASE("Preamble heats physical tools but only one MMU nozzle",
           "[plugins][gcode][firmware][preamble]")
 {
@@ -3043,10 +3651,18 @@ TEST_CASE("Preamble heats physical tools but only one MMU nozzle",
     INFO(text);
     CHECK(text.find("S220") != std::string::npos);
     CHECK((text.find("S205") != std::string::npos) == !mmu);
+    if (mmu) {
+        CHECK(count_occurrences(text, "M109 S220\n") == 1);
+        CHECK(text.find("M104 S220") == std::string::npos);
+    }
+    const std::string initial_selection = std::string(firmware_id) == "gcode.firmware.klipper" && !mmu ?
+        "ACTIVATE_EXTRUDER EXTRUDER=extruder1\n" : "T1\n";
+    CHECK(text.find(initial_selection + "G92 E0\n") != std::string::npos);
     if (std::string(firmware_id) == "gcode.firmware.klipper") {
         // M109 has no tool selector in this dialect: the intended physical
         // heater must be active before each request.
-        CHECK(text.find("ACTIVATE_EXTRUDER EXTRUDER=extruder1\n") < text.find("M109 S220"));
+        const std::string selection = mmu ? "T1\n" : "ACTIVATE_EXTRUDER EXTRUDER=extruder1\n";
+        CHECK(text.find(selection) < text.find("M109 S220"));
         if (!mmu) CHECK(text.find("ACTIVATE_EXTRUDER EXTRUDER=extruder\n") < text.find("M109 S205"));
     }
 }

@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Arrange scene construction borrows GUI selection/model data. Only the global
+   tower has an arrangement handler; instance-tower proxies are not model parts
+   and contribute neither selected object indices nor separate arrange shapes. */
 #include "ArrangeJob2.hpp"
 
 #include <iterator>
@@ -29,16 +32,20 @@ class GUISelectionMask: public arr2::SelectionMask {
 public:
     explicit GUISelectionMask(const Selection *sel) : m_sel{sel} {}
 
+    // Read borrowed proxy selection and return true only for the global volume_id=0 tower, without mutation or ownership transfer.
     bool is_wipe_tower() const override
     {
-        return m_sel->is_wipe_tower();
+        return m_sel->is_wipe_tower() && m_sel->get_first_volume()->volume_idx() == 0;
     }
 
+    // Copy borrowed model selection into an owned per-object mask; tower proxies contribute no model indices, and allocation failures propagate.
     std::vector<bool> selected_objects() const override
     {
         auto selmap = m_sel->get_object_idxs();
 
         std::vector<bool> ret(m_sel->get_model()->objects().size(), false);
+        if (m_sel->is_wipe_tower())
+            return ret;
 
         for (auto sel : selmap) {
             ret[sel] = true;

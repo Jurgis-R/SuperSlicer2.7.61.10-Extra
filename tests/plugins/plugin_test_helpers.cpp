@@ -1,3 +1,4 @@
+/* Shared test startup registers module-owned plugins and config definitions once, then applies test activation choices. */
 #include "plugin_test_helpers.hpp"
 
 #include <cassert>
@@ -96,6 +97,9 @@
 #include "libslic3r/Plugins/Surface/InfillRegionCompatibilitySplitter.hpp"
 #include "libslic3r/Plugins/Surface/SolidShells.hpp"
 #include "libslic3r/Plugins/Surface/TopSurfaceExpansion.hpp"
+#include "libslic3r/Plugins/WipeTower/ToolChangeUnretract.hpp"
+#include "libslic3r/Plugins/WipeTower/ToolChangeWipe.hpp"
+#include "libslic3r/Plugins/WipeTower/WipeTowerManager.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
 #include "libslic3r/SLA/SLAPrintConfig.hpp"
 #include "plugins_cpp/FlatAreaLayerHeight/FlatAreaLayerHeight.hpp"
@@ -521,6 +525,10 @@ void ensure_plugin_test_runtime_initialized()
             orchestrator_handle_value);
         slic3r_api::DenseInfillPlugin::register_dense_infill_plugins(orchestrator_handle_value);
         slic3r_api::Ordering::DefaultOrderingPlugin::register_default_ordering_plugins(orchestrator_handle_value);
+        slic3r_api::WipeTower::register_wipe_tower_manager_plugin(orchestrator_handle_value);
+        slic3r_api::WipeTower::register_tool_change_wipe_plugin(orchestrator_handle_value);
+        slic3r_api::WipeTower::ToolChangeUnretractPlugin::
+            register_tool_change_unretract_plugin(orchestrator_handle_value);
         slic3r_api::SeamPlacement::AlignedPlugin::register_aligned_seam_placer_plugin(orchestrator_handle_value);
         slic3r_api::SeamPlacement::ContiguousPlugin::register_contiguous_seam_placer_plugin(
             orchestrator_handle_value);
@@ -531,6 +539,7 @@ void ensure_plugin_test_runtime_initialized()
         register_regional_seam_test_provider(orchestrator_handle_value);
         register_support_toolpath_test_providers(orchestrator_handle_value);
         register_support_step_test_providers(orchestrator_handle_value);
+        register_plugin_storage_test_provider(orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateToolChangePlugin::register_create_tool_change_plugin(
             orchestrator_handle_value);
         slic3r_api::LayerExtrusionEdit::CreateTransitionScopePlugin::register_create_transition_scope_plugin(
@@ -658,7 +667,6 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "stars");
         activate_plugin_or_fail(orchestrator, "cubic");
         activate_plugin_or_fail(orchestrator, "line");
-        activate_plugin_or_fail(orchestrator, "monotoniclines");
         activate_plugin_or_fail(orchestrator, "concentric");
         activate_plugin_or_fail(orchestrator, "honeycomb");
         activate_plugin_or_fail(orchestrator, "supportbase");
@@ -684,7 +692,11 @@ void ensure_plugin_test_runtime_initialized()
         activate_plugin_or_fail(orchestrator, "ordering.tool_groups.default");
         activate_plugin_or_fail(orchestrator, "ordering.custom_gcode_event_tools");
         activate_plugin_or_fail(orchestrator, "ordering.printing_extrusion.presort.default");
+        activate_plugin_or_fail(orchestrator, "ordering.wipe_into_first.default");
         activate_plugin_or_fail(orchestrator, "ordering.extrusion_tree.default");
+        activate_plugin_or_fail(orchestrator, "wipe_tower.manager.default");
+        activate_plugin_or_fail(orchestrator, "wipe_tower.wipe.toolchange.default");
+        activate_plugin_or_fail(orchestrator, "wipe_tower.toolchange_unretract.default");
         activate_plugin_or_fail(orchestrator, "seam_placer.aligned");
         activate_plugin_or_fail(orchestrator, "seam_placer.contiguous");
         activate_plugin_or_fail(orchestrator, "seam_placer.cost");
@@ -777,6 +789,7 @@ void ensure_plugin_test_runtime_initialized()
                                "test.support_toolpath.top", "test.support_toolpath.alternate",
                                "test.support_toolpath.patterns"})
             orchestrator.set_plugin_active(id, false);
+        orchestrator.set_plugin_active("test.plugin_storage.support", false);
         orchestrator.set_plugin_active("seam_placer.aligned", false);
         orchestrator.set_plugin_active("seam_placer.contiguous", false);
         orchestrator.set_plugin_active("seam_placer.cost", false);

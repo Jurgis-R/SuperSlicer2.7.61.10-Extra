@@ -42,17 +42,17 @@ static bool may_insert_children(const ExtrusionEntity &entity)
 
 extern "C" {
 
+// Retain an empty extrusion in the locked registry; null storage returns null and insertion errors release the new entity.
 extrusion_entity_handle *extrusion_create_empty(storage_handle *storage)
 {
     if (storage == nullptr)
         return nullptr;
 
     Slic3r::PluginStorage *plugin_storage = Slic3r::to_storage(storage);
-    Slic3r::ExtrusionEntity &entity = plugin_storage->extrusions.emplace_back(true);
-    plugin_storage->generic_storage.insert(&entity);
-    return Slic3r::to_handle(&entity);
+    return Slic3r::to_handle(plugin_storage->store(std::make_unique<Slic3r::ExtrusionEntity>(true)));
 }
 
+// Clone the source into the locked registry; missing storage or source returns null and insertion errors release the clone.
 extrusion_entity_handle *extrusion_clone(storage_handle *storage, const extrusion_entity_handle *src)
 {
     if (storage == nullptr || src == nullptr)
@@ -60,9 +60,7 @@ extrusion_entity_handle *extrusion_clone(storage_handle *storage, const extrusio
 
     Slic3r::PluginStorage *plugin_storage = Slic3r::to_storage(storage);
     std::unique_ptr<Slic3r::ExtrusionEntity> clone(Slic3r::to_extrusion(src)->clone());
-    Slic3r::ExtrusionEntity &entity = plugin_storage->extrusions.push_back(std::move(clone));
-    plugin_storage->generic_storage.insert(&entity);
-    return Slic3r::to_handle(&entity);
+    return Slic3r::to_handle(plugin_storage->store(std::move(clone)));
 }
 
 int32_t extrusion_copy_from(extrusion_entity_handle *dst, const extrusion_entity_handle *src)

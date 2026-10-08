@@ -30,11 +30,13 @@ The implementation intentionally contains no command strings. Reader plugins
 own syntax; the host owns presentation and aggregate calculations. A movement
 listener compares the state before and after an event, classifies the move,
 then updates the viewer vertex and statistics from the same normalized delta.
+Consumption is accumulated by extrusion role and logical tool, independently
+of object labels. Single-extruder multi-material (SEMM) shares one retraction
+debt in filament mm, while E coordinates remain per logical tool.
 
-Some legacy viewer metadata is textual or structurally richer than the current
-numeric Reader event vocabulary. Those listeners are already part of the
-dispatch below and carry focused TODO comments naming the missing payload. This
-makes the second phase additive without hiding parsing in the host again.
+Some viewer metadata is textual or structurally richer than the numeric Reader
+event vocabulary. Listeners below carry focused TODO comments for missing
+payloads; syntax parsing remains the Reader plugin's responsibility.
 */
 
 namespace Slic3r {
@@ -247,6 +249,9 @@ GCodeReaderResultBuilder::GCodeReaderResultBuilder(
         process_object_change(static_cast<uint32_t>(*object));
 }
 
+// Borrow a matching Print/plan pair or two null pointers, copy viewer metadata
+// and SEMM mode, and replace local source-island area statistics. No pointers
+// are retained; mismatched inputs/catalogs throw and allocation failures propagate.
 void GCodeReaderResultBuilder::initialize_result(
     Print *print,
     const Printing::PrintingPlan *plan,
@@ -271,6 +276,7 @@ void GCodeReaderResultBuilder::initialize_result(
     }
 
     const PrintConfig &config = print->config();
+    m_single_extruder_multi_material = config.single_extruder_multi_material.value;
     const size_t tool_count = std::max<size_t>(config.nozzle_diameter.size(), 1);
     m_result.extruders_count = tool_count;
     m_result.max_print_height = static_cast<float>(config.max_print_height.value);
@@ -699,6 +705,9 @@ void GCodeReaderResultBuilder::process_invalidation(
     // movement listener will resume only when enough position data is known.
 }
 
+// Inspect borrowed event/post-state without retaining either. Clear debt when E
+// changes with no active tool; otherwise clear a tool's debt on unknown E, using
+// the active tool's E for shared SEMM debt. Other retained debts are unchanged.
 void GCodeReaderResultBuilder::invalidate_derived_state(
     const raw_gcode_reader_event &event,
     const slic3r_api::GCodeStateTracker &state)
@@ -721,6 +730,16 @@ void GCodeReaderResultBuilder::invalidate_derived_state(
         return;
     }
 
+    // Shared physical debt follows the active logical tool's E-known state.
+    // Losing ACTIVE_TOOL alone preserves debt until a tool is known again,
+    // unless an E change already made attribution unreliable above.
+    if (m_single_extruder_multi_material) {
+        const std::optional<uint32_t> active_tool = state.active_tool();
+        if (active_tool && !state.e(*active_tool))
+            std::fill(m_retracted_filament.begin(), m_retracted_filament.end(), 0.0);
+        return;
+    }
+
     // A Reader may invalidate one E slot while preserving other tools. Keep
     // independent debts only where the corresponding E position remains known.
     for (size_t tool = 0; tool < m_retracted_filament.size(); ++tool)
@@ -728,6 +747,10 @@ void GCodeReaderResultBuilder::invalidate_derived_state(
             m_retracted_filament[tool] = 0.0;
 }
 
+// Borrow a validated event/state and known endpoints, classify their delta and
+// append a viewer move with time/material totals. Positive E repays shared SEMM
+// or per-tool debt before role/tool consumption; no-op deltas change nothing.
+// Inputs are not retained; unrepresentable tool/object IDs throw and allocations may fail.
 void GCodeReaderResultBuilder::append_move(
     const raw_gcode_reader_event &event,
     const slic3r_api::GCodeStateTracker &state,
@@ -740,6 +763,7 @@ void GCodeReaderResultBuilder::append_move(
     const std::optional<uint32_t> active_tool = state.active_tool();
     const uint32_t tool = active_tool.value_or(0);
     ensure_tool(tool);
+    const size_t debt_slot = m_single_extruder_multi_material ? 0 : tool;
     const extruder_index_t extruder_id = checked_extruder_index(tool);
     const Vec3d delta = end - start;
     const double xyz_distance = delta.norm();
@@ -760,10 +784,8 @@ void GCodeReaderResultBuilder::append_move(
     const uint32_t raw_role = static_cast<uint32_t>(
         state.value(RAW_GCODE_READER_ITEM_EXTRUSION_ROLE).value_or(0.0));
 
-    // TODO: built-in Readers do not yet publish LAYER, OBJECT,
-    // EXTRUSION_ROLE, WIDTH or HEIGHT from slicer comments. The host already
-    // consumes and calculates with these normalized values when supplied, but
-    // otherwise keeps the documented neutral/default viewer values below.
+    // Reader role/object markers drive classification and accounting; missing
+    // geometry metadata uses the neutral/default viewer values below.
 
     // Positive E first restores any preceding retraction. Only the remainder
     // deposits material and may classify an XY move as an extrusion. Compute
@@ -772,7 +794,7 @@ void GCodeReaderResultBuilder::append_move(
     double restored_filament = 0.0;
     double consumed_filament = 0.0;
     if (e_delta > 0.0) {
-        restored_filament = std::min(e_delta, m_retracted_filament[tool]);
+        restored_filament = std::min(e_delta, m_retracted_filament[debt_slot]);
         consumed_filament = e_delta - restored_filament;
     }
 
@@ -796,9 +818,9 @@ void GCodeReaderResultBuilder::append_move(
         return;
 
     if (e_delta < 0.0)
-        m_retracted_filament[tool] += -e_delta;
+        m_retracted_filament[debt_slot] += -e_delta;
     else if (e_delta > 0.0) {
-        m_retracted_filament[tool] -= restored_filament;
+        m_retracted_filament[debt_slot] -= restored_filament;
     }
     const double volume = consumed_filament * filament_area * extrusion_factor;
 
@@ -856,6 +878,7 @@ void GCodeReaderResultBuilder::append_move(
 
     if (volume > 0.0) {
         m_result.print_statistics.volumes_per_extruder[extruder_id] += volume;
+        m_result.print_statistics.volumes_per_role_per_extruder[role][extruder_id] += volume;
         const uint16_t object = viewer_object_id(state);
         if (object != GCodeProcessorResult::OBJECT_INSTANCE_ID_NONE)
             m_result.print_statistics.volumes_per_role_per_extruder_per_object[object][extruder_id][role] += volume;
@@ -876,12 +899,16 @@ void GCodeReaderResultBuilder::append_move(
     }
 }
 
+// Ensure owned logical-tool metadata covers tool, with one debt slot for SEMM
+// or one per tool otherwise. Reject IDs outside the signed extruder range;
+// vector allocation failures propagate, and no external ownership is changed.
 void GCodeReaderResultBuilder::ensure_tool(uint32_t tool)
 {
     (void)checked_extruder_index(tool);
     const size_t required = static_cast<size_t>(tool) + 1;
-    if (m_retracted_filament.size() < required)
-        m_retracted_filament.resize(required, 0.0);
+    const size_t debt_slots = m_single_extruder_multi_material ? 1 : required;
+    if (m_retracted_filament.size() < debt_slots)
+        m_retracted_filament.resize(debt_slots, 0.0);
     if (m_result.extruders_count >= required)
         return;
 

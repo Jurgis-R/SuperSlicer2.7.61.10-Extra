@@ -55,6 +55,7 @@ TYPE_ALIASES = {
     "lengthsqr_t": "uint64_t",
     "raw_surface_type": "uint16_t",
     "c_infill_connection": "int32_t",
+    "c_wipe_tower_phase": "int32_t",
     "raw_layer_adhesion_kind": "uint32_t",
     "raw_layer_adhesion_flag": "uint32_t",
     "raw_extrusion_role": "int32_t",

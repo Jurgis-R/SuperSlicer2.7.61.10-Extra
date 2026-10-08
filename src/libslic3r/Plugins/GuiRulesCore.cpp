@@ -66,7 +66,7 @@ using namespace Slic3r;
 // enums; plugins read the mirrored values instead of the configuration headers.
 static_assert(int(Slic3r::PerimeterGeneratorType::Classic) == 0, "perimeter generator selector changed");
 static_assert(int(Slic3r::PerimeterGeneratorType::Arachne) == 1, "perimeter generator selector changed");
-static_assert(int(Slic3r::InfillPattern::ipSmooth) == 18, "infill pattern selector changed");
+static_assert(int(Slic3r::InfillPattern::ipSmooth) == 17, "infill pattern selector changed");
 
 // Shared conjunctions used by several rules below.
 const GuiCondition has_top = any_of({
@@ -161,7 +161,8 @@ int32_t GuiRulesCore::priority_impl() const noexcept
     return 0;
 }
 
-// Register FFF setting activation conditions with the host GUI registry; related settings share conditions and scratch storage is unused.
+// Register FFF setting activation conditions with the host GUI registry; the wipe tower
+// controls tell global positions from per-instance offsets.
 void GuiRulesCore::inilialize_impl(storage_handle *) const
 {
     // Register one FFF activation rule: all targets share the FFF scope and
@@ -432,13 +433,15 @@ void GuiRulesCore::inilialize_impl(storage_handle *) const
     add_rule({ "parallel_objects_step_max_z", "parallel_islands" }, parallel_possible);
     add_rule({ "standby_temperature_delta" }, true_("ooze_prevention"));
 
-    const GuiCondition wipe_available = any_of({
-        false_("parallel_objects_step"),
-        true_("parallel_islands")
-    });
-    add_rule({ "wipe_tower" }, wipe_available);
-    const GuiCondition wipe_ready = all_of({ wipe_available, true_("wipe_tower") });
-    add_rule({ "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
+    const GuiCondition tower_possible = false_("spiral_vase");
+    add_rule({ "wipe_tower" }, tower_possible);
+    add_rule({ "wipe_tower_per_object" }, false_("spiral_vase"));
+    const GuiCondition wipe_ready = all_of({ tower_possible, any_of({ true_("wipe_tower"), true_("wipe_tower_per_object") }) });
+    add_rule({ "wipe_tower_object_x", "wipe_tower_object_y" }, all_of({ wipe_ready,
+        any_of({ true_("complete_objects"), true_("wipe_tower_per_object") }) }));
+    add_rule({ "wipe_tower_extruder_toolchange" }, all_of({ wipe_ready, non_zero("wipe_tower_extruder") }));
+    add_rule({ "wipe_tower_x", "wipe_tower_y" }, all_of({ tower_possible, true_("wipe_tower"), false_("complete_objects") }));
+    add_rule({ "wipe_tower_width", "wipe_tower_rotation_angle",
                "wipe_tower_brim_width", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
                "wipe_tower_bridging", "wipe_tower_brim", "wipe_tower_no_sparse_layers",
                "single_extruder_multi_material_priming", "wipe_tower_speed",
