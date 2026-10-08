@@ -490,6 +490,12 @@ set(SLIC3R_SOURCES
 	Plugins/Surface/SolidShells.hpp
 	Plugins/Surface/TopSurfaceExpansion.cpp
 	Plugins/Surface/TopSurfaceExpansion.hpp
+	Plugins/Support/Common/PerimeterFill.cpp
+	Plugins/Support/Common/PerimeterFill.hpp
+	Plugins/Support/Common/SupportParams.cpp
+	Plugins/Support/Common/SupportParams.hpp
+	Plugins/Support/Common/SupportSettings.cpp
+	Plugins/Support/Common/SupportSettings.hpp
 	Plugins/Support/Grid/GridSupportGenerator.cpp
 	Plugins/Support/Grid/GridSupportGenerator.hpp
 	Plugins/Support/Grid/GridSupportLayers.hpp
