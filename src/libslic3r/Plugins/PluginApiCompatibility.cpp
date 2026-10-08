@@ -65,6 +65,7 @@
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_support_demand.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_support_spot.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_surface_generation.h"
+#include "libslic3r/Api/plugin/c/steps/slic3r_step_wipe_tower_wipe.h"
 #include "libslic3r/Api/plugin/c/steps/slic3r_step_wipetower.h"
 
 namespace Slic3r {

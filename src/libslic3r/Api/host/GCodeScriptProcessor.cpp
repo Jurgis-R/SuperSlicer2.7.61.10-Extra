@@ -30,6 +30,7 @@
 #include "libslic3r/PlaceholderParser.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Config/PrintConfig.hpp"
+#include "libslic3r/Printing/PrintingPlan.hpp"
 #include "libslic3r/PrintObject.hpp"
 
 /*
@@ -62,6 +63,8 @@ std::array<std::optional<double>, 3> position_after_gcode(
     const std::vector<double> &initial_position,
     const std::string &gcode);
 bool is_machine_option_key(const std::string &key);
+// Return true when any finalized plan extrusion belongs to a wipe tower; a missing plan holds none.
+bool plan_has_wipe_tower(const Printing::PrintingPlan *plan);
 
 void copy_option(DynamicConfig &destination,
                  const DynamicConfig &source,
@@ -144,6 +147,21 @@ bool is_machine_option_key(const std::string &key)
     for (const char *machine_key : k_machine_option_keys)
         if (key == machine_key)
             return true;
+    return false;
+}
+
+// The plan stores a wipe tower as printing extrusions with a wipe tower role. The G-code step
+// runs after every plan editor, so this is the final exported answer.
+bool plan_has_wipe_tower(const Printing::PrintingPlan *plan)
+{
+    if (plan == nullptr)
+        return false;
+    for (const Printing::PrintingGroup &group : plan->groups)
+        for (const Printing::PrintingLayerGroup &layer : group.layers)
+            for (const Printing::PrintingToolGroup &tool : layer.tool_groups)
+                for (const Printing::PrintingExtrusion &extrusion : tool.extrusions)
+                    if (extrusion.sregion_island_role.is_wipetower())
+                        return true;
     return false;
 }
 
@@ -231,6 +249,15 @@ GCodeScriptProcessor::Impl::Impl(const Print &print,
     if (!print.config().filament_custom_variables.empty())
         m_parser.parse_custom_variables(print.config().filament_custom_variables);
     m_parser.apply_config(print.physical_printer_config());
+
+    // Wipe tower facts are persistent parser globals shared by every custom G-code script of this
+    // export, like the legacy generator. The plan is final when the G-code step builds this
+    // processor, and a missing plan means no tower. SEMM priming needs a tower to prime on.
+    const bool has_wipe_tower = plan_has_wipe_tower(print.printing_plan());
+    m_parser.set("has_wipe_tower", has_wipe_tower);
+    m_parser.set("has_single_extruder_multi_material_priming", has_wipe_tower &&
+        print.config().single_extruder_multi_material.value &&
+        print.config().single_extruder_multi_material_priming.value);
 
     // Object script contexts store compact indices. Copy sanitized labels now
     // so processing later never retains model pointers from the Print view.

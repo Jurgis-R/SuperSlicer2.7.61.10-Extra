@@ -444,6 +444,7 @@ TEST_CASE("Derived firmware completes a script context immediately before parsin
           "M117 Z12.5\n");
     CHECK(firmware.completion_count() == 1);
 }
+// Script-owned selection keeps its stored tool context, suppresses selection-time output and resets E afterwards.
 TEST_CASE("Toolchange scripts use the structural Config stored at insertion",
           "[plugins][gcode][firmware][custom-gcode][printing-plan]")
 {
@@ -499,12 +500,180 @@ TEST_CASE("Toolchange scripts use the structural Config stored at insertion",
     firmware.setup(print_view.config());
     REQUIRE(firmware.begin_group(group_view).empty());
     REQUIRE(firmware.begin_layer(layer_view) == ";LAYER_CHANGE\n;Z:0.2\n");
-    CHECK(firmware.begin_tool_group(first_tool) == "T1\n");
+    CHECK(firmware.begin_tool_group(first_tool) == "T1\nG92 E0\n");
     REQUIRE(firmware.end_tool_group().empty());
+    // Suppressed selection leaves the coordinate alone: the script owns the
+    // real tool command, so no host-generated G92 may be inserted here.
+    firmware.machine_extruder(0).extrusion_axis().set_position(8.0);
     REQUIRE(firmware.begin_tool_group(second_tool).empty());
+    CHECK(firmware.machine_extruder(0).extrusion_axis().position() == 8.0);
     CHECK(firmware.write_event(second_tool.events().before()) ==
-          "; FINAL_TOOL P1 N0\n");
+          "; FINAL_TOOL P1 N0\nG92 E0\n");
+    CHECK(firmware.machine_extruder(0).extrusion_axis().position() == 0.0);
 }
+
+// Script-owned T commands always establish a post-script absolute origin without repaying debt;
+// both static and geometric E preparation then start from that origin.
+TEST_CASE("Toolchange scripts reset E before static and geometric extrusion without consuming retraction",
+          "[plugins][gcode][firmware][custom-gcode][toolchange-reset]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool relative_e = GENERATE(false, true);
+    const bool script_reset = GENERATE(false, true);
+    const bool semm = GENERATE(false, true);
+    const int movement = GENERATE(0, 1, 2, 3);
+    CAPTURE(relative_e, script_reset, semm, movement);
+    Print print;
+    configure_standard_firmware(print, 2);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.use_relative_e_distances.value = relative_e;
+    config.single_extruder_multi_material.value = semm;
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    plan.groups.front().layers.emplace_back();
+    PrintingLayerGroup &layer = plan.groups.front().layers.front();
+    layer.tool_groups.emplace_back();
+    layer.tool_groups.back().extruder_id = 0;
+    layer.tool_groups.emplace_back();
+    layer.tool_groups.back().extruder_id = 1;
+    ExtrusionNop script;
+    slic3r_api::MutableExtrusionEntity script_view(reinterpret_cast<extrusion_entity_handle *>(&script));
+    script_view.script_gcode(std::string("T1\n") + (script_reset ? "G92 E0\n" : "") + "; SCRIPT_DONE\n",
+                            GCODE_SCRIPT_TYPE_TOOLCHANGE_GCODE);
+    layer.tool_groups.back().events.append_before(script);
+    GCodeScriptProcessor processor(print, Orchestrator::instance());
+    ScriptStateFirmwareProbe firmware(slic3r_api::GCodeGeneration::GCodeScriptProcessorView(processor.c_processor()));
+    firmware.set_gcode_reader_context(reinterpret_cast<orchestrator_handle *>(&Orchestrator::instance()),
+                                     reinterpret_cast<const print_handle *>(&print));
+    firmware.setup(slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)).config());
+    const slic3r_api::ConstPrintingToolGroup first(reinterpret_cast<const printing_tool_group_handle *>(&layer.tool_groups[0]));
+    const slic3r_api::ConstPrintingToolGroup next(reinterpret_cast<const printing_tool_group_handle *>(&layer.tool_groups[1]));
+    firmware.begin_tool_group(first);
+    for (size_t idx = 0; idx < 2; ++idx) {
+        firmware.machine_extruder(idx).extrusion_axis().set_position(8.0);
+        firmware.machine_extruder(idx).extrusion_axis().set_retracted(2.0, 0.2);
+        firmware.machine_extruder(idx).extrusion_axis().schedule_restart_extra(0.3, true);
+    }
+    REQUIRE(firmware.begin_tool_group(next).empty());
+    slic3r_api::GCodeGeneration::ExtrusionAxisState &axis = firmware.machine_extruder(1).extrusion_axis();
+    const double used_before = axis.used_filament();
+    const std::string script_output = firmware.write_event(next.events().before());
+    INFO(script_output);
+    CHECK(script_output.find("T1\n") == 0);
+    if (!relative_e) {
+        const size_t script_end = script_output.find("; SCRIPT_DONE\n");
+        const size_t reset = script_output.find("G92 E0\n", script_end);
+        REQUIRE(script_end != std::string::npos);
+        REQUIRE(reset != std::string::npos);
+        CHECK(script_end < reset);
+    }
+    CHECK(axis.position() == 0.0);
+    CHECK(axis.retracted() == 2.0);
+    CHECK(axis.restart_extra() == Approx(0.2));
+    CHECK(axis.used_filament() == used_before);
+    CHECK(count_occurrences(script_output, "G92 E0\n") == size_t(script_reset) + size_t(!relative_e));
+
+    std::unique_ptr<ExtrusionEntity> move;
+    if (movement == 0) {
+        move = special_command_entity(ExtrusionPropertySpecialCommand::Code::EXTRUSION, 1.25);
+    } else if (movement == 2) {
+        move.reset(new ExtrusionNop());
+    } else {
+        move = make_firmware_travel(ArcPolyline(Points{Point::new_scale(0.0, 0.0), Point::new_scale(1.0, 0.0)}),
+                                    20.f, 500.f);
+    }
+    slic3r_api::MutableExtrusionEntity move_view(reinterpret_cast<extrusion_entity_handle *>(move.get()));
+    move_view.get_or_add(slic3r_api::EPropertySpeed::key).speed(20.f);
+    if (movement == 1) {
+        move_view.get_or_add(slic3r_api::EPropertySpecialCommand::key).set(C_EXTRUSION_SPECIAL_COMMAND_EXTRUSION, 1.25);
+    } else if (movement >= 2) {
+        move_view.get_or_add(slic3r_api::EPropertyAttributes::key).extrusion_role(movement == 2 ?
+            RAW_EXTRUSION_ROLE_UNRETRACT : RAW_EXTRUSION_ROLE_TRAVEL | RAW_EXTRUSION_ROLE_WIPE | RAW_EXTRUSION_ROLE_UNRETRACT);
+        move_view.get_or_add(slic3r_api::EPropertyExtrusionAxis::key).unretract(0.2);
+    }
+    const std::string move_output = firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(move.get())));
+    INFO(move_output);
+    const std::string expected_e = movement >= 2 ? " E2.5" : " E1.25";
+    CHECK(move_output.find(expected_e) != std::string::npos);
+    CHECK(move_output.find("G92") == std::string::npos);
+    CHECK(axis.position() == Approx(relative_e ? 0.0 : (movement >= 2 ? 2.5 : 1.25)));
+    // Static EXTRUSION is raw and keeps the retraction; only the explicit
+    // UNRETRACT events restore it.
+    CHECK(axis.retracted() == Approx(movement >= 2 ? 0.0 : 2.0));
+    if (movement >= 2)
+        CHECK_FALSE(axis.need_unretract());
+    std::unique_ptr<ExtrusionEntity> second = special_command_entity(ExtrusionPropertySpecialCommand::Code::EXTRUSION, 0.5);
+    second->add_property(ExtrusionPropertySpeed(20.f, 500.f));
+    const std::string second_output = firmware.write_event(slic3r_api::ExtrusionEntity(
+        reinterpret_cast<const extrusion_entity_handle *>(second.get())));
+    CHECK(second_output.find(relative_e ? " E.5" : (movement >= 2 ? " E3" : " E1.75")) != std::string::npos);
+    CHECK(second_output.find("G92") == std::string::npos);
+}
+
+// Custom G-code declares its retraction on the same line: a negative E move
+// retracts only with "; retraction", a positive E move restores only with
+// "; unretraction", and the comment ignores case and surrounding spaces.
+TEST_CASE("Custom G-code declares retraction on the same line",
+          "[plugins][gcode][firmware][custom-gcode][retraction]")
+{
+    Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
+    const bool relative_e = GENERATE(false, true);
+    Print print;
+    configure_standard_firmware(print, 2);
+    PrintConfig &config = const_cast<PrintConfig &>(print.config());
+    config.use_relative_e_distances.value = relative_e;
+    PrintingPlan &plan = print.mutable_printing_plan();
+    plan.groups.emplace_back();
+    plan.groups.front().layers.emplace_back();
+    plan.groups.front().layers.front().tool_groups.emplace_back();
+    plan.groups.front().layers.front().tool_groups.front().extruder_id = 0;
+    GCodeScriptProcessor processor(print, Orchestrator::instance());
+    ScriptStateFirmwareProbe firmware(slic3r_api::GCodeGeneration::GCodeScriptProcessorView(processor.c_processor()));
+    firmware.setup(slic3r_api::Print(reinterpret_cast<const print_handle *>(&print)).config());
+    slic3r_api::GCodeGeneration::ExtrusionAxisState &axis = firmware.machine_extruder(0).extrusion_axis();
+
+    // Build one move with an explicit filament delta and an optional comment.
+    double position = 0.0;
+    const auto move = [&](const double delta, const std::string &comment = std::string()) {
+        position += delta;
+        const std::string text = "G1 E" + std::to_string(relative_e ? delta : position) + comment;
+        return firmware.process_script(GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM, text);
+    };
+    // The first script establishes the addressing mode for the following moves.
+    CHECK_FALSE(firmware.process_script(GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM,
+        relative_e ? "M83" : "M82").empty());
+
+    CHECK_FALSE(move(-10.0).empty());
+    CHECK(axis.retracted() == 0.0);
+
+    CHECK_FALSE(move(-10.0, " ; retraction").empty());
+    CHECK(axis.retracted() == Approx(10.0));
+
+    // A positive move without its own declaration does not repay.
+    CHECK_FALSE(move(4.0).empty());
+    CHECK(axis.retracted() == Approx(10.0));
+
+    // Case and surrounding spaces are ignored.
+    CHECK_FALSE(move(4.0, " ;Unretraction  ").empty());
+    CHECK(axis.retracted() == Approx(6.0));
+
+    CHECK_FALSE(move(-2.0, " ;  RETRACTION  ").empty());
+    CHECK(axis.retracted() == Approx(8.0));
+
+    // A comment on another line does not declare the move.
+    position -= 1.0;
+    CHECK_FALSE(firmware.process_script(GCODE_SCRIPT_TYPE_EXTRUSION_CUSTOM,
+        "; retraction\nG1 E" + std::to_string(relative_e ? -1.0 : position)).empty());
+    CHECK(axis.retracted() == Approx(8.0));
+
+    // A declaration with the wrong sign leaves the state alone.
+    CHECK_FALSE(move(1.0, " ; retraction").empty());
+    CHECK(axis.retracted() == Approx(8.0));
+    CHECK_FALSE(move(-1.0, " ; unretraction").empty());
+    CHECK(axis.retracted() == Approx(8.0));
+}
+
 TEST_CASE("G-code script types have stable built-in and runtime identities", "[plugins][gcode][script-type]") {
     Slic3r::Test::Plugins::ensure_plugin_test_runtime_initialized();
 

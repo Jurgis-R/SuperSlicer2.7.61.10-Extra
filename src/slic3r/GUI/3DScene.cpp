@@ -12,6 +12,11 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Scene volumes own display/raycast meshes. A tower proxy is a deliberately
+   approximate display estimate from configured purge volumes and layer heights,
+   not generated wipe geometry. Its orange rectangular body has a +Y open-side
+   zig-zag and brim, but no cone. A local 0.3 mm safety expansion supports tower
+   arrangement; this estimate is excluded from outside-bed shader detection. */
 #include "3DScene.hpp"
 
 #include <cassert>
@@ -79,6 +84,36 @@ void glAssertRecentCallImpl(const char* file_name, unsigned int line, const char
 #endif // HAS_GLSAFE
 
 namespace Slic3r {
+
+// Borrow populated print options, sum each source tool's largest destination purge volume, and divide by layer height and width in millimeters.
+// Return a deliberately approximate depth of at least 10 mm, also for non-positive divisors; config remains unchanged, no ownership is taken, and option type errors propagate.
+double wipe_tower_preview_depth(const DynamicPrintConfig& config, double width)
+{
+    const ConfigOption* nozzles = config.option("nozzle_diameter");
+    double layer_height = config.option("layer_height")->get_float();
+    const double first_layer_height = config.option<ConfigOptionFloatOrPercent>("first_layer_height")->get_effective_value(nozzles->get_float(0));
+    if (first_layer_height > 0.0)
+        layer_height = std::min(layer_height, first_layer_height);
+    if (layer_height <= 0.0 || width <= 0.0)
+        return 10.0;
+
+    // A complete matrix supplies source-to-destination volumes; otherwise only destination minima apply.
+    const size_t n = nozzles->size();
+    const ConfigOption* matrix = config.option("wiping_volumes_matrix");
+    const ConfigOption* minimal_purge = config.option("filament_minimal_purge_on_wipe_tower");
+    const bool has_matrix = matrix->size() == n * n;
+    double maximum = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double row_maximum = 0.0;
+        for (size_t j = 0; j < n; ++j) {
+            const double minimum = minimal_purge->get_float(j);
+            const double volume = has_matrix ? std::max(matrix->get_float(i * n + j), minimum) : minimum;
+            row_maximum = std::max(row_maximum, volume);
+        }
+        maximum += row_maximum;
+    }
+    return std::max(maximum / layer_height / width, 10.0);
+}
 
 const float GLVolume::SinkingContours::HalfWidth = 0.25f;
 
@@ -512,13 +547,13 @@ int GLVolumeCollection::load_object_volume(
 }
 
 #if ENABLE_OPENGL_ES
+// Build owned jagged preview/raycast meshes from positive millimeter dimensions (depth clamped to 10 mm, zero height to 0.1 mm), degrees rotation and a 0.3 mm safety margin; append an orange volume excluded from outside-bed detection, return its index, optionally copy its mesh to borrowed out_mesh, and propagate allocation failures.
 int GLVolumeCollection::load_wipe_tower_preview(
-    float pos_x, float pos_y, float width, float depth, const std::vector<std::pair<float, float>>& z_and_depth_pairs, float height, float cone_angle,
-    float rotation_angle, bool size_unknown, float brim_width, TriangleMesh* out_mesh)
+    float pos_x, float pos_y, float width, float depth, float height, float rotation_angle, float brim_width, TriangleMesh* out_mesh)
 #else
+// Build owned jagged preview/raycast meshes from positive millimeter dimensions (depth clamped to 10 mm, zero height to 0.1 mm), degrees rotation and a 0.3 mm safety margin; append an orange volume excluded from outside-bed detection, return its index, and propagate allocation failures.
 int GLVolumeCollection::load_wipe_tower_preview(
-    float pos_x, float pos_y, float width, float depth, const std::vector<std::pair<float, float>>& z_and_depth_pairs, float height, float cone_angle,
-    float rotation_angle, bool size_unknown, float brim_width)
+    float pos_x, float pos_y, float width, float depth, float height, float rotation_angle, float brim_width)
 #endif // ENABLE_OPENGL_ES
 {
     if (height == 0.0f)
@@ -527,30 +562,22 @@ int GLVolumeCollection::load_wipe_tower_preview(
     // Because the GLVolume is also used for arrangement, it must be safely larger
     // than the actual extruded tower, otherwise the arranged tower ends up out of bed.
     float offset = 0.3f;
-    pos_x -= offset;
-    pos_y -= offset;
     width += 2.f * offset;
     depth += 2.f * offset;
-    brim_width += offset;
 
     static const float brim_height = 0.2f;
-//    const float scaled_brim_height = brim_height / height;
 
     TriangleMesh mesh;
     ColorRGBA color = ColorRGBA::DARK_YELLOW();
+    color.r(0.9f);
+    color.g(0.6f);
 
-    // In case we don't know precise dimensions of the wipe tower yet, we'll draw
-    // the box with different color with one side jagged:
-    if (size_unknown) {
-        color.r(0.9f);
-        color.g(0.6f);
-
-        // Too narrow tower would interfere with the teeth. The estimate is not precise anyway.
+    {
+        // A depth of at least 10 mm keeps the inward tooth tip at or behind the front edge.
         depth = std::max(depth, 10.f);
         float min_width = 30.f;
 
-        // We'll now create the box with jagged edge. y-coordinates of the pre-generated model
-        // are shifted so that the front edge has y=0 and centerline of the back edge has y=depth:
+        // Shift the table by depth in Y so the front is at zero and the open edge has teeth at depth +/-10 mm.
         float out_points_idx[][3] = { { 0, -depth, 0 }, { 0, 0, 0 }, { 38.453f, 0, 0 }, { 61.547f, 0, 0 }, { 100.0f, 0, 0 }, { 100.0f, -depth, 0 }, { 55.7735f, -10.0f, 0 }, { 44.2265f, 10.0f, 0 },
             { 38.453f, 0, 1 }, { 0, 0, 1 }, { 0, -depth, 1 }, { 100.0f, -depth, 1 }, { 100.0f, 0, 1 }, { 61.547f, 0, 1 }, { 55.7735f, -10.0f, 1 }, { 44.2265f, 10.0f, 1 } };
         static constexpr const int out_facets_idx[][3] = {
@@ -565,9 +592,7 @@ int GLVolumeCollection::load_wipe_tower_preview(
             its.indices.emplace_back(face);
         TriangleMesh tooth_mesh(std::move(its));
 
-        // We have the mesh ready. It has one tooth and width of min_width. We will now
-        // append several of these together until we are close to the required width
-        // of the block. Than we can scale it precisely.
+        // Repeat the 30 mm tooth segment, then scale X to the exact body width and Z to its height.
         size_t n = std::max(1, int(width / min_width)); // How many shall be merged?
         for (size_t i = 0; i < n; ++i) {
             mesh.merge(tooth_mesh);
@@ -576,41 +601,14 @@ int GLVolumeCollection::load_wipe_tower_preview(
 
         mesh.scale(Vec3f(width / (n * min_width), 1.f, height)); // Scaling to proper width
     }
-    else {
-        for (size_t i=1; i<z_and_depth_pairs.size(); ++i) {
-            TriangleMesh m = make_cube(width, z_and_depth_pairs[i-1].second, z_and_depth_pairs[i].first-z_and_depth_pairs[i-1].first);
-            m.translate(0.f, -z_and_depth_pairs[i-1].second/2.f + z_and_depth_pairs[0].second/2.f, z_and_depth_pairs[i-1].first);
-            mesh.merge(m);
-        }
-        if (z_and_depth_pairs.empty()) {
-            depth = 0;
-        } else {
-            depth = z_and_depth_pairs.front().second;
-        }
-    }
-
-    if (depth > 0) {
+    {
         // We'll make another mesh to show the brim (fixed layer height):
-        TriangleMesh brim_mesh = make_cube(width + 2.f * brim_width, depth + 2.f * brim_width, 0.2f);
+        TriangleMesh brim_mesh = make_cube(width + 2.f * brim_width, depth + 2.f * brim_width, brim_height);
         brim_mesh.translate(-brim_width, -brim_width, 0.f);
         mesh.merge(brim_mesh);
 
-        // Now the stabilization cone and its base.
-        const auto [R, scale_x] = WipeTower::get_wipe_tower_cone_base(width, height, depth, cone_angle);
-        if (R > 0.) {
-            TriangleMesh cone_mesh(its_make_cone(R, height));
-            cone_mesh.scale(Vec3f(1.f / scale_x, 1.f, 1.f));
-
-            TriangleMesh disk_mesh(its_make_cylinder(R, brim_height));
-            disk_mesh.scale(Vec3f(1. / scale_x, 1., 1.)); // Now it matches the base, which may be elliptic.
-            disk_mesh.scale(Vec3f(1.f + scale_x * brim_width / R, 1.f + brim_width / R,
-                                  1.f)); // Scale so the brim is not deformed.
-            cone_mesh.merge(disk_mesh);
-            cone_mesh.translate(width / 2., depth / 2., 0.);
-            mesh.merge(cone_mesh);
-        }
     }
-
+    mesh.translate(-offset, -offset, 0.f);
     volumes.emplace_back(new GLVolume(color));
     GLVolume& v = *volumes.back();
 #if ENABLE_OPENGL_ES
@@ -627,7 +625,7 @@ int GLVolumeCollection::load_wipe_tower_preview(
     v.geometry_id.first = 0;
     v.geometry_id.second = wipe_tower_instance_id().id;
     v.is_wipe_tower = true;
-    v.shader_outside_printer_detection_enabled = !size_unknown;
+    v.shader_outside_printer_detection_enabled = false;
     return int(volumes.size() - 1);
 }
 

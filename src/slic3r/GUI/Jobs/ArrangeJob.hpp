@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* The arrange job owns input polygons and computed placements while borrowing
+   plater instances. It includes the global tower as a separate item, excludes
+   instance-tower proxies, and applies model-instance results back to the plater. */
 #ifndef ARRANGEJOB_HPP
 #define ARRANGEJOB_HPP
 
@@ -41,6 +44,7 @@ class ArrangeJob : public Job
     
     // Prepare the selected and unselected items separately. If nothing is
     // selected, behaves as if everything would be selected.
+    // Populate arrange inputs from selected model instances or the global tower.
     void prepare_selected();
 
     ArrangePolygon get_arrange_poly_(ModelInstance *mi);

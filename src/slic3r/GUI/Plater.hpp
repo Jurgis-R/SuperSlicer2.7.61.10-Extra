@@ -17,6 +17,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Plater coordinates model editing and background slicing/export. Sidebar
+   controls display measured print totals, times and object/wipe-tower length
+   and cost shares without owning core results. */
 #ifndef slic3r_Plater_hpp_
 #define slic3r_Plater_hpp_
 
@@ -138,6 +141,8 @@ public:
     void                    update_objects_list_extruder_column(size_t extruders_count);
     void                    show_info_sizer();
     void                    show_sliced_info_sizer(const bool show);
+    // Refresh measured sliced-print totals, times and visibility in the sidebar.
+    // Refresh measured print totals and object/wipe-tower details in the sidebar.
     void                    update_sliced_info_sizer();
     void                    enable_buttons(bool enable);
     void                    set_btn_label(const ActionButtonType btn_type, const wxString& label) const;

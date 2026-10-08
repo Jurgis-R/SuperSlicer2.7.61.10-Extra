@@ -538,11 +538,17 @@ group:Extruders
 	setting:support_material_extruder
 	setting:support_material_interface_extruder
 	setting:wipe_tower_extruder
+	setting:wipe_tower_extruder_toolchange
 group:Ooze prevention
 	setting:ooze_prevention
 	setting:standby_temperature_delta
 group:Wipe tower
 	setting:wipe_tower
+	setting:wipe_tower_per_object
+	line:Instance tower offset
+		setting:wipe_tower_object_x
+		setting:wipe_tower_object_y
+	end_line
 	line:Wipe tower position
 		setting:label_width$3:width$5:sidetext$mm:wipe_tower_x
 		setting:label_width$3:width$5:sidetext$mm:wipe_tower_y

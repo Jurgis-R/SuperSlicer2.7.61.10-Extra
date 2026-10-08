@@ -7,6 +7,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* The object list maps model objects, volumes and instances to sidebar rows.
+   Settings rows summarize per-object option categories; refreshing their digest
+   and any selected settings panel leaves the canvas selection unchanged. */
 #include "GUI_ObjectList.hpp"
 
 #include <boost/algorithm/string.hpp>
@@ -4432,6 +4435,17 @@ void ObjectList::update_and_show_object_settings_item()
     // To get object item use GetTopParent(item). This function guarantees return of item with itObject type
     const wxDataViewItem obj_item = m_objects_model->GetTopParent(item);
     select_item([this, obj_item](){ return add_settings_item(obj_item, &get_item_config(obj_item).get()); });
+}
+
+// Resolve a valid borrowed model-object index, refresh its settings row and any selected panel, and preserve canvas selection; invalid indices do nothing, ownership stays unchanged and UI/allocation failures propagate.
+void ObjectList::refresh_object_settings_item(int obj_idx)
+{
+    if (obj_idx < 0 || size_t(obj_idx) >= m_model->objects().size())
+        return;
+    const wxDataViewItem item = m_objects_model->GetItemById(obj_idx);
+    wxDataViewItemArray selections;
+    GetSelections(selections);
+    update_settings_item_and_selection(item, selections);
 }
 
 // Update settings item for item had it

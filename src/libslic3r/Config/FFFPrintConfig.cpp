@@ -21,6 +21,10 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Built-in FFF option definitions and preset key lists. Tower options invalidate
+   tower generation, and export merges their current envelopes with the cached
+   slicing hull. Object tower offsets use model-instance XY. Active single-extruder
+   multi-material (SEMM) requires support from the selected firmware provider. */
 #include "FFFPrintConfig.hpp"
 
 #include <algorithm>
@@ -39,6 +43,9 @@
 #include "Api/plugin/c/slic3r_slicing_step.h"
 
 namespace Slic3r {
+
+// Populate borrowed preset/category key lists in the definition; copied lists remain definition-owned and allocation failures propagate.
+void init_categories(PrintConfigDef &definition);
 
 
 static t_config_enum_names enum_names_from_keys_map(const t_config_enum_values &enum_keys_map)
@@ -696,6 +703,7 @@ ConfigOptionVectorBase *enable_default_option(ConfigOptionVectorBase *option, bo
 
 }
 
+// Populate borrowed definition preset/category key lists, including object tower controls; definition owns the copied lists and allocation failures propagate.
 void init_categories(PrintConfigDef &definition)
 {
 
@@ -1007,6 +1015,7 @@ void init_categories(PrintConfigDef &definition)
 //        "threads",
         // wipe tower
         "wipe_tower", "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle",
+        "wipe_tower_per_object", "wipe_tower_object_x", "wipe_tower_object_y", "wipe_tower_extruder_toolchange",
         "wipe_tower_bridging",
         "wipe_tower_brim_width",
         "priming_position",
@@ -1403,6 +1412,9 @@ void init_milling_params(PrintConfigDef &definition)
 
 }
 
+// Register built-in FFF options/defaults in the borrowed definition, including
+// the SEMM firmware requirement; definitions own default values, tower
+// controls invalidate tower generation, and definition/allocation failures propagate.
 void init_fff_params(PrintConfigDef &definition)
 {
     init_milling_params(definition);
@@ -1562,7 +1574,10 @@ void init_fff_params(PrintConfigDef &definition)
     def->invalidates_step = STEP_GCODE;
     def->tooltip = L("This custom code is inserted at every layer change, right before the Z move. "
                    "Note that you can use placeholder variables for all Slic3r settings as well "
-                   "as {layer_num} and {layer_z}.");
+                   "as {layer_num} and {layer_z}. "
+                   "A negative E move counts as a retraction only with '; retraction' on the same line, "
+                   "and a positive E move restores it only with '; unretraction'; other E moves do not "
+                   "change the retraction state.");
     def->multiline = true;
     def->full_width = true;
     def->height = 5;
@@ -1864,7 +1879,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("cooling_tube_retraction", coFloat, ptFFF);
     def->label = L("Cooling tube position");
     def->category = OptionCategory::mmsetup;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Distance of the center-point of the cooling tube from the extruder tip.");
     def->sidetext = L("mm");
     def->min = 0;
@@ -1874,7 +1889,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("cooling_tube_length", coFloat, ptFFF);
     def->label = L("Cooling tube length");
     def->category = OptionCategory::mmsetup;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Length of the cooling tube to limit space for cooling moves inside it.");
     def->sidetext = L("mm");
     def->min = 0;
@@ -2541,16 +2556,16 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_max_wipe_tower_speed", coFloats, ptFFF);
     def->label = L("Max speed on the wipe tower");
-    def->invalidates_step = STEP_SKIRT_BRIM;
-    def->tooltip = L("This setting is used to set the maximum speed when extruding inside the wipe tower (use M220)."
-        " In %, set 0 to disable and use the Filament type instead."
-        "\nIf disabled, these filament types will have a default value of:"
-        "\n - PVA: 80% to 60%"
+    def->invalidates_step = STEP_WIPETOWER;
+    def->tooltip = L("Percentage of the purge speed of the new filament on the wipe tower, starting ramp included."
+        "\n0 uses a fallback by filament type:"
+        "\n - soluble: 35%"
+        "\n - PVA: 60% below 0.8mm of tower height, 80% above"
         "\n - SCAFF: 35%"
         "\n - FLEX: 35%"
-        "\n - OTHERS: 100%"
-        "\nNote that the wipe tower reset the speed at 100% for the unretract in any case." // TODO: "reset" -> "resets"?
-        "\nIf using marlin, M220 B/R is used to save the speed override before the wipe tower print.");
+        "\n - others: 100%"
+        "\nThe SEMM loading, cooling and ramming moves and the tower maintenance are not affected."
+        "\nThe wipe tower forces the printer speed to 100% around every tool change (M220 B/R on Marlin).");
     def->sidetext = L("%");
     def->min = 0;
     def->max = 400;
@@ -2560,7 +2575,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_loading_speed", coFloats, ptFFF);
     def->label = L("Loading speed");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Speed used for loading the filament on the wipe tower. ");
     def->sidetext = L("mm/s");
     def->min = 0;
@@ -2571,7 +2586,7 @@ void init_fff_params(PrintConfigDef &definition)
     //skinnydip section starts
     def = definition.add("filament_enable_toolchange_temp", coBools, ptFFF);
     def->label = L("Toolchange temperature enabled");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Determines whether toolchange temperatures will be applied");
     def->mode = comAdvancedE | comSuSi;
     def->is_vector_extruder = true;
@@ -2579,7 +2594,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_use_fast_skinnydip", coBools, ptFFF);
     def->label = L("Fast mode");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Experimental: drops nozzle temperature during cooling moves instead of prior to extraction to reduce wait time.");
     def->mode = comExpert | comSuSi;
     def->is_vector_extruder = true;
@@ -2587,7 +2602,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_enable_toolchange_part_fan", coBools, ptFFF);
     def->label = L("Use part fan to cool hotend");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Experimental setting.  May enable the hotend to cool down faster during toolchanges");
     def->mode = comExpert | comSuSi;
     def->is_vector_extruder = true;
@@ -2595,7 +2610,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_toolchange_part_fan_speed", coInts, ptFFF);
     def->label = L("Toolchange part fan speed");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Experimental setting.  Fan speeds that are too high can clash with the hotend's PID routine.");
     def->sidetext = L("%");
     def->min = 0;
@@ -2606,7 +2621,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_use_skinnydip", coBools, ptFFF);
     def->label = L("Enable Skinnydip string reduction");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Skinnydip performs a secondary dip into the meltzone to burn off fine strings of filament");
     def->mode = comAdvancedE | comSuSi;
     def->is_vector_extruder = true;
@@ -2614,7 +2629,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_melt_zone_pause", coInts, ptFFF);
     def->label = L("Pause in melt zone");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Stay in melt zone for this amount of time before extracting the filament.  Not usually necessary.");
     def->sidetext = L("milliseconds");
     def->min = 0;
@@ -2624,7 +2639,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_cooling_zone_pause", coInts, ptFFF);
     def->label = L("Pause before extraction ");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Can be useful to avoid bondtech gears deforming hot tips, but not ordinarily needed");
     def->sidetext = L("milliseconds");
     def->min = 0;
@@ -2634,7 +2649,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_dip_insertion_speed", coFloats, ptFFF);
     def->label = L("Speed to move into melt zone");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("usually not necessary to change this");
     def->sidetext = L("mm/sec");
     def->min = 0;
@@ -2644,7 +2659,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_dip_extraction_speed", coFloats, ptFFF);
     def->label = L("Speed to extract from melt zone");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("usually not necessary to change this");
     def->sidetext = L("mm/sec");
     def->min = 0;
@@ -2654,7 +2669,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_toolchange_temp", coInts, ptFFF);
     def->label = L("Toolchange temperature");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("To further reduce stringing, it can be helpful to set a lower temperature just prior to extracting filament from the hotend.");
     def->sidetext = L("°C");
     def->min = 0;
@@ -2664,7 +2679,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_skinnydip_distance", coFloats, ptFFF);
     def->label = L("Insertion distance");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("For stock extruders, usually 40-42mm.  For bondtech extruder upgrade, usually 30-32mm.  Start with a low value and gradually increase it until strings are gone.  If there are blobs on your wipe tower, your value is too high.");
     def->sidetext = L("mm");
     def->min = 0;
@@ -2675,7 +2690,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_loading_speed_start", coFloats, ptFFF);
     def->label = L("Loading speed at the start");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Speed used at the very beginning of loading phase. ");
     def->sidetext = L("mm/s");
     def->min = 0;
@@ -2685,7 +2700,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_unloading_speed", coFloats, ptFFF);
     def->label = L("Unloading speed");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Speed used for unloading the filament on the wipe tower (does not affect "
                       " initial part of unloading just after ramming). ");
     def->sidetext = L("mm/s");
@@ -2696,7 +2711,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_unloading_speed_start", coFloats, ptFFF);
     def->label = L("Unloading speed at the start");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Speed used for unloading the tip of the filament immediately after ramming. ");
     def->sidetext = L("mm/s");
     def->min = 0;
@@ -2706,7 +2721,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_toolchange_delay", coFloats, ptFFF);
     def->label = L("Delay after unloading");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Time to wait after the filament is unloaded. "
                    "May help to get reliable toolchanges with flexible materials "
                    "that may need more time to shrink to original dimensions. ");
@@ -2718,7 +2733,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_cooling_moves", coInts, ptFFF);
     def->label = L("Number of cooling moves");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Filament is cooled by being moved back and forth in the "
                    "cooling tubes. Specify desired number of these moves.");
     def->max = 0;
@@ -2729,7 +2744,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_cooling_initial_speed", coFloats, ptFFF);
     def->label = L("Speed of the first cooling move");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Cooling moves are gradually accelerated, starting at this speed. ");
     def->sidetext = L("mm/s");
     def->min = 0;
@@ -2739,7 +2754,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_minimal_purge_on_wipe_tower", coFloats, ptFFF);
     def->label = L("Minimal purge on wipe tower");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("After a tool change, the exact position of the newly loaded filament inside "
                      "the nozzle may not be known, and the filament pressure is likely not yet stable. "
                      "Before purging the print head into an infill or a sacrificial object, Slic3r will always prime "
@@ -2752,7 +2767,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_cooling_final_speed", coFloats, ptFFF);
     def->label = L("Speed of the last cooling move");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Cooling moves are gradually accelerated towards this speed. ");
     def->sidetext = L("mm/s");
     def->min = 0;
@@ -2944,7 +2959,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_ramming_parameters", coStrings, ptFFF);
     def->label = L("Ramming parameters");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("This string is edited by RammingDialog and contains ramming specific parameters.");
     def->mode = comExpert | comPrusa;
     def->is_vector_extruder = true;
@@ -2963,7 +2978,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_multitool_ramming", coBools, ptFFF);
     def->label = L("Enable ramming for multitool setups");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Perform ramming when using multitool printer (i.e. when the 'Single Extruder Multimaterial' in Printer Settings is unchecked). "
                      "When checked, a small amount of filament is rapidly extruded on the wipe tower just before the toolchange. "
                      "This option is only used when the wipe tower is enabled.");
@@ -2972,7 +2987,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_multitool_ramming_volume", coFloats, ptFFF);
     def->label = L("Multitool ramming volume");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("The volume to be rammed before the toolchange.");
     def->sidetext = L("mm³");
     def->min = 0;
@@ -2981,7 +2996,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("filament_multitool_ramming_flow", coFloats, ptFFF);
     def->label = L("Multitool ramming flow");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Flow used for ramming the filament before the toolchange.");
     def->sidetext = L("mm³/s");
     def->min = 0;
@@ -3660,7 +3675,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("high_current_on_filament_swap", coBool, ptFFF);
     def->label = L("High extruder current on filament swap");
     def->category = OptionCategory::general;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("It may be beneficial to increase the extruder motor current during the filament exchange"
                    " sequence to allow for rapid ramming feed rates and to overcome resistance when loading"
                    " a filament with an ugly shaped tip.");
@@ -4097,7 +4112,10 @@ void init_fff_params(PrintConfigDef &definition)
     def->invalidates_step = STEP_GCODE;
     def->tooltip = L("This custom code is inserted at every layer change, right after the Z move "
         "and before the extruder moves to the first layer point. Note that you can use "
-        "placeholder variables for all Slic3r settings as well as {layer_num} and {layer_z}.");
+        "placeholder variables for all Slic3r settings as well as {layer_num} and {layer_z}. "
+        "A negative E move counts as a retraction only with '; retraction' on the same line, "
+        "and a positive E move restores it only with '; unretraction'; other E moves do not "
+        "change the retraction state.");
     def->cli = "after-layer-gcode|layer-gcode";
     def->multiline = true;
     def->full_width = true;
@@ -4870,7 +4888,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("parking_pos_retraction", coFloat, ptFFF);
     def->label = L("Filament parking position");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Distance of the extruder tip from the position where the filament is parked "
                       "when unloaded. This should match the value in printer firmware. ");
     def->sidetext = L("mm");
@@ -4880,7 +4898,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("extra_loading_move", coFloat, ptFFF);
     def->label = L("Extra loading distance");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("When set to zero, the distance the filament is moved from parking position during load "
                       "is exactly the same as it was moved back during unload. When positive, it is loaded further, "
                       " if negative, the loading move is shorter than unloading. ");
@@ -5586,9 +5604,11 @@ void init_fff_params(PrintConfigDef &definition)
     def->label = L("Wipe the unretraction");
     def->full_label = L("Wipe the unretraction (Toolchange)");
     def->invalidates_step = STEP_GCODE;
-    def->tooltip = L("When unretraction is triggered after changing tool in a wipe tower, the last part of the "
-                     "unretraction is made into a wipe move instead of a static unretraction on top of the wipe "
-                     "tower. This percentage is the perdcetage of the unretraction that is made into a wipe move");
+    def->tooltip = L("When unretraction is triggered after changing tool in a wipe tower, 100% minus this "
+                     "percentage of the unretraction is done in place at the first point of the tower.\n"
+                     "The rest, plus the restart extra, is wiped back and forth over the start of the tower path.\n"
+                     "The wipe speed is capped by the fastest of the sparse infill and support speeds.\n"
+                     "Nothing is done with firmware retraction or single-extruder multi-material.");
     def->sidetext = L("%");
     def->mode = comExpert | comSuSi;
     def->is_vector_extruder = true;
@@ -5599,7 +5619,9 @@ void init_fff_params(PrintConfigDef &definition)
     def->full_label = L("Wipe the unretraction (Toolchange)");
     def->invalidates_step = STEP_GCODE;
     def->tooltip = L("When unretraction is triggered after changing tool in a wipe tower, the first bit is done on "
-                     "the perimeter instead than in the air next to it. This may prevent too much oozing while unretracting.");
+                     "the perimeter instead than in the air next to it. This may prevent too much oozing while unretracting.\n"
+                     "Not used yet by the plugin pipeline: the in-place part naturally starts on the tower perimeter at "
+                     "the first change of a layer.");
     def->mode = comExpert | comSuSi;
     def->is_vector_extruder = true;
     def->set_default_value(new ConfigOptionBools { true });
@@ -6164,6 +6186,7 @@ void init_fff_params(PrintConfigDef &definition)
     def->label = L("Single Extruder Multi Material");
     def->category = OptionCategory::mmsetup;
     def->invalidates_step = STEP_SKIRT_BRIM;
+    def->required_plugin_group = "gcode_firmware_plugin";
     def->tooltip = L("The printer multiplexes filaments into a single hot end.");
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
@@ -6171,7 +6194,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("single_extruder_multi_material_priming", coBool, ptFFF);
     def->label = L("Prime all printing extruders");
     def->category = OptionCategory::mmsetup;
-    def->invalidates_step = STEP_GCODE;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("If enabled, all printing extruders will be primed at the front edge of the print bed at the start of the print.");
     def->mode = comAdvancedE | comPrusa;
     def->set_default_value(new ConfigOptionBool(true));
@@ -7104,7 +7127,7 @@ void init_fff_params(PrintConfigDef &definition)
     def->label = L("Enable");
     def->full_label = L("Enable wipe tower");
     def->category = OptionCategory::general;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Multi material printers may need to prime or purge extruders on tool changes. "
                    "Extrude the excess material into the wipe tower.");
     def->mode = comAdvancedE | comPrusa;
@@ -7113,7 +7136,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_speed", coFloat, ptFFF);
     def->label = L("Wipe Tower Speed");
     def->category = OptionCategory::speed;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Printing speed of the wipe tower. Capped by filament_max_volumetric_speed (if set)."
         "\nIf set to zero, a value of 80mm/s is used.");
     def->sidetext = L("mm/s");
@@ -7123,7 +7146,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_wipe_starting_speed", coFloatOrPercent, ptFFF);
     def->label = L("Wipe tower wipe starting speed");
     def->category = OptionCategory::speed;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Start of the wiping speed ramp up (for wipe tower)."
         "\nCan be a % of the 'Wipe tower main speed'."
         "\nSet to 0 to disable.");
@@ -7134,7 +7157,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_extrusion_width", coFloatOrPercent, ptFFF);
     def->label = L("Wipe Tower purge line width");
     def->category = OptionCategory::width;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("When wiping, the extrusion should be at least 125% of the nozzle diameter."
         " This setting allow you to vary it, in case you need a wider one to properly flush the nozzle.");
     def->sidetext = L("mm or %");
@@ -7143,7 +7166,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("wiping_volumes_extruders", coFloats, ptFFF);
     def->label = L("Purging volumes - load/unload volumes");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("This vector saves required volumes to change from/to each tool used on the "
                      "wipe tower. These values are used to simplify creation of the full purging "
                      "volumes below. ");
@@ -7152,7 +7175,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("wiping_volumes_matrix", coFloats, ptFFF);
     def->label = L("Purging volumes - matrix");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("This matrix describes volumes (in cubic milimetres) required to purge the"
                      " new filament on the wipe tower for any given pair of tools. ");
     def->mode = comSimpleAE | comPrusa;
@@ -7216,7 +7239,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("wipe_tower_brim_width", coFloatOrPercent, ptFFF);
     def->label = L("Wipe tower brim width");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Width of the brim for the wipe tower. Can be in mm or in % of the (assumed) only one nozzle diameter.");
     def->ratio_over = "nozzle_diameter";
     def->mode = comAdvancedE | comPrusa;
@@ -7228,7 +7251,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_no_sparse_layers", coBool, ptFFF);
     def->label = L("No sparse layers (EXPERIMENTAL)");
     def->category = OptionCategory::mmsetup;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("If enabled, the wipe tower will not be printed on layers with no toolchanges. "
                      "On layers with a toolchange, extruder will travel downward to print the wipe tower. "
                      "User is responsible for ensuring there is no collision with the print.");
@@ -7238,7 +7261,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_rest_in_middle", coBool, ptFFF);
     def->label = L("toolchange inside the wipe tower");
     def->category = OptionCategory::mmsetup;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("If enabled, there will be a travel inside the wipe tower before the toolchange.");
     def->mode = comAdvancedE | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
@@ -7247,7 +7270,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_x", coFloat, ptFFF);
     def->label = L("X");
     def->full_label = L("Wipe tower X");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("X coordinate of the left front corner of a wipe tower");
     def->sidetext = L("mm");
     def->mode = comAdvancedE | comPrusa;
@@ -7257,7 +7280,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_y", coFloat, ptFFF);
     def->label = L("Y");
     def->full_label = L("Wipe tower Y");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Y coordinate of the left front corner of a wipe tower");
     def->sidetext = L("mm");
     def->mode = comAdvancedE | comPrusa;
@@ -7266,7 +7289,7 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_width", coFloat, ptFFF);
     def->label = L("Width");
     def->full_label = L("Wipe tower Width");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Width of a wipe tower");
     def->sidetext = L("mm");
     def->mode = comAdvancedE | comPrusa;
@@ -7274,7 +7297,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("wipe_tower_rotation_angle", coFloat, ptFFF);
     def->label = L("Wipe tower rotation angle");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Wipe tower rotation angle with respect to x-axis.");
     def->sidetext = L("°");
     def->mode = comAdvancedE | comPrusa;
@@ -7282,7 +7305,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("wipe_tower_cone_angle", coFloat, ptFFF);
     def->label = L("Stabilization cone apex angle");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Angle at the apex of the cone that is used to stabilize the wipe tower. "
                      "Larger angle means wider base.");
     def->sidetext = L("°");
@@ -7293,7 +7316,7 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("wipe_tower_extra_spacing", coPercent, ptFFF);
     def->label = L("Wipe tower purge lines spacing");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Spacing of purge lines on the wipe tower.");
     def->sidetext = L("%");
     def->mode = comExpert |comPrusa;
@@ -7303,11 +7326,16 @@ void init_fff_params(PrintConfigDef &definition)
 
     def = definition.add("wipe_into_infill", coBool, ptFFF);
     def->category = OptionCategory::wipe;
-    def->invalidates_step = STEP_WIPETOWER;
+    // Region compatibility compares this flag while constructing fill surfaces.
+    def->invalidates_step = STEP_SURFACE_GENERATION;
     def->label = L("Wipe into this object's infill");
-    def->tooltip = L("Purging after toolchange will be done inside this object's infills. "
-                     "This lowers the amount of waste but may result in longer print time "
-                     " due to additional travel moves.");
+    def->tooltip = L("Purging after a tool change can use the sparse infill of this object, which "
+                     "lowers the amount of waste but may result in longer print time due to "
+                     "additional travel moves. After a tool change, the sparse infill of the first "
+                     "island with this option is printed first by the new tool (before that island's "
+                     "perimeters when the new tool prints them), and the wipe tower purges less by "
+                     "the volume printed there. Nothing is reassigned to another tool, and nothing "
+                     "is done when either filament is soluble.");
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
 
@@ -7315,15 +7343,17 @@ void init_fff_params(PrintConfigDef &definition)
     def->category = OptionCategory::wipe;
     def->invalidates_step = STEP_WIPETOWER;
     def->label = L("Wipe into this object");
-    def->tooltip = L("Object will be used to purge the nozzle after a toolchange to save material "
-        "that would otherwise end up in the wipe tower and decrease print time. "
-        "Colours of the objects will be mixed as a result.");
+    def->tooltip = L("Object will be used to purge the nozzle after a tool change, to save material "
+        "that would otherwise end up in the wipe tower and decrease print time. Colours of the "
+        "objects will be mixed as a result. After a tool change, this object's extrusions are "
+        "printed first by the new tool, and the wipe tower purges less by the volume printed there. "
+        "Nothing is reassigned to another tool, and nothing is done when either filament is soluble.");
     def->mode = comSimpleAE | comPrusa;
     def->set_default_value(new ConfigOptionBool(false));
 
     def = definition.add("wipe_tower_bridging", coFloat, ptFFF);
     def->label = L("Maximal bridging distance");
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("Maximal distance between supports on sparse infill sections. ");
     def->sidetext = L("mm");
     def->mode = comAdvancedE | comPrusa;
@@ -7332,12 +7362,47 @@ void init_fff_params(PrintConfigDef &definition)
     def = definition.add("wipe_tower_extruder", coInt, ptFFF);
     def->label = L("Wipe tower extruder");
     def->category = OptionCategory::extruders;
-    def->invalidates_step = STEP_SKIRT_BRIM;
+    def->invalidates_step = STEP_WIPETOWER;
     def->tooltip = L("The extruder to use when printing perimeter of the wipe tower. "
                      "Set to 0 to use the one that is available (non-soluble would be preferred).");
     def->min = 0;
     def->mode = comAdvancedE |comPrusa;
     def->set_default_value(new ConfigOptionInt(0));
+
+    // Tower eligibility and XY envelopes are read at generation and export.
+    def = definition.add("wipe_tower_per_object", coBool, ptFFF);
+    def->label = L("Wipe tower per instance");
+    def->category = OptionCategory::wipe;
+    def->invalidates_step = STEP_WIPETOWER;
+    def->tooltip = L("Give every instance of this object its own wipe tower, using the object's tower settings.");
+    def->mode = comAdvancedE | comPrusa;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = definition.add("wipe_tower_object_x", coFloat, ptFFF);
+    def->label = L("Instance tower X offset");
+    def->category = OptionCategory::wipe;
+    def->invalidates_step = STEP_WIPETOWER;
+    def->tooltip = L("X offset of the tower from the model instance origin. Does not rotate with the instance. Moving one tower moves all towers of this object.");
+    def->sidetext = L("mm");
+    def->mode = comAdvancedE | comPrusa;
+    def->set_default_value(new ConfigOptionFloat(50.));
+
+    def = definition.add("wipe_tower_object_y", coFloat, ptFFF);
+    def->label = L("Instance tower Y offset");
+    def->category = OptionCategory::wipe;
+    def->invalidates_step = STEP_WIPETOWER;
+    def->tooltip = L("Y offset of the tower from the model instance origin. Does not rotate with the instance. Moving one tower moves all towers of this object.");
+    def->sidetext = L("mm");
+    def->mode = comAdvancedE | comPrusa;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = definition.add("wipe_tower_extruder_toolchange", coBool, ptFFF);
+    def->label = L("Force tower contour tool change");
+    def->category = OptionCategory::extruders;
+    def->invalidates_step = STEP_WIPETOWER;
+    def->tooltip = L("Force a tool change to print the tower contour with the selected wipe tower extruder. When disabled, do not add a visit just for the contour.");
+    def->mode = comAdvancedE | comPrusa;
+    def->set_default_value(new ConfigOptionBool(true));
 
     def = definition.add("solid_infill_every_layers", coInt, ptFFF);
     def->label = L("Solid infill every");

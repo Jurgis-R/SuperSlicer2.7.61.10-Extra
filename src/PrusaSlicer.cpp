@@ -1,3 +1,6 @@
+/* CLI actions load models/config and run exports or launch the GUI. FFF export
+   explicitly rereads its published G-code for statistics before resolving
+   measured filename placeholders and running post-processing scripts. */
 #ifdef WIN32
     // Why?
     #define _WIN32_WINNT 0x0502
@@ -41,6 +44,7 @@
 #endif // ENABLE_GL_CORE_PROFILE
 #include "libslic3r/Config/AppConfig.hpp"
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Steps/StepReadGeneratedGcode.hpp"
 #include "libslic3r/Config/ConfigOption.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/GCode/PostProcessor.hpp"
@@ -126,6 +130,10 @@ static std::string default_app_data_path()
 
 CLI::~CLI() = default;
 
+// Parse borrowed argc/argv into owned CLI state, apply requested model actions
+// and export or launch the GUI. FFF reads measured statistics before filename
+// finalization; return an exit status, with operational errors reported to stderr
+// and initialization/allocation failures able to propagate. No argv ownership is taken.
 int CLI::run(int argc, char **argv)
 {
     // Mark the main thread for the debugger and for runtime checks.
@@ -706,6 +714,7 @@ int CLI::run(int argc, char **argv)
                         if (printer_technology == ptFFF) {
                             // The outfile is processed by a PlaceholderParser.
                             outfile = Orchestrator::instance().export_gcode(fff_print, outfile, nullptr, nullptr);
+                            Steps::StepReadGeneratedGcode::read_statistics(Orchestrator::instance(), fff_print);
                             outfile_final = fff_print.print_statistics().finalize_output_path(outfile);
                         } else if (printer_technology == ptSLA) {
                             outfile = sla_print.output_filepath(outfile);

@@ -39,8 +39,22 @@ struct ExtrusionAxisSettings
     int32_t e_precision = 5;
 };
 
+/*
+Retraction effect declared by the comment of one external G-code E move.
+A negative E move retracts only under Retraction; a positive E move repays
+only under Unretraction; None leaves the retraction state unchanged.
+*/
+enum class ExternalMoveRetraction : uint8_t
+{
+    None,
+    Retraction,
+    Unretraction
+};
+
 // Owns the physical E-axis and accounting state for one logical extruder. It
 // alone converts exact requested distances into quantized firmware numbers.
+// Raw filament moves change the E position and the usage statistics only;
+// the retraction state changes through explicit retraction operations alone.
 class ExtrusionAxisState
 {
 public:
@@ -50,10 +64,16 @@ public:
 
     // Update every E-axis counter and return the already-quantized number for
     // the firmware. An empty result means the delta is below output precision;
-    // a present zero remains a valid absolute E0 command.
+    // a present zero remains a valid absolute E0 command. This is a raw
+    // filament move: it neither adds nor repays retraction. Use the explicit
+    // retraction operations below to change the retraction state.
     std::optional<double> extrude(double delta_e);
     double retract(double target);
     double unretract();
+    /* Add an explicit retraction amount in filament millimetres. */
+    void add_retraction(double amount);
+    /* Repay an explicit positive extrusion amount, with a zero floor. */
+    void repay_retraction(double amount);
     /*
     Distribute one semantic operation over planar segment lengths.
 
@@ -100,8 +120,16 @@ public:
     bool synchronize_after_external_gcode(std::optional<double> e_position,
                                           double retracted,
                                           double restart_extra);
-    // Observe an E word which was already emitted by external G-code.
-    void observe_external_move(double e_value, bool relative_mode);
+    /*
+    Observe an E word which was already emitted by external G-code. Custom
+    G-code declares a retraction on the same line with the comment
+    "; retraction" and its restore with "; unretraction"; every other E move is
+    raw and leaves the retraction state unchanged. Comment matching ignores
+    case and surrounding spaces. Firmware-retraction commands keep their own
+    meaning and are not interpreted here.
+    */
+    void observe_external_move(double e_value, bool relative_mode,
+                               ExternalMoveRetraction declared = ExternalMoveRetraction::None);
     void set_relative_mode(bool relative_mode);
 
     double filament_diameter() const { return m_filament_diameter; }

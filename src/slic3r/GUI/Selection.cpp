@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Scene selection and temporary transforms. Tower proxies are selected as single
+   volumes, independently of model instances, so their shared object offsets can
+   be persisted by the canvas drag event without moving model geometry. */
 #include "Selection.hpp"
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -136,6 +139,7 @@ void Selection::set_model(Model* model)
     update_valid();
 }
 
+// Select a borrowed scene volume with undo bookkeeping; tower proxies select individually in volume mode, invalid indices are ignored, and allocation failures propagate without ownership transfer.
 void Selection::add(unsigned int volume_idx, bool as_single_selection, bool check_for_already_contained)
 {
     if (!m_valid || (unsigned int)m_volumes->volumes.size() <= volume_idx)
@@ -148,7 +152,7 @@ void Selection::add(unsigned int volume_idx, bool as_single_selection, bool chec
         return;
 
     // wipe tower is already selected
-    if (is_wipe_tower() && volume->is_wipe_tower)
+    if (is_wipe_tower() && volume->is_wipe_tower && contains_volume(volume_idx))
         return;
 
     bool keep_instance_mode = (m_mode == Instance) && !as_single_selection;
@@ -167,7 +171,9 @@ void Selection::add(unsigned int volume_idx, bool as_single_selection, bool chec
         if (needs_reset)
             clear();
 
-        if (!keep_instance_mode)
+        if (volume->is_wipe_tower)
+            m_mode = Volume;
+        else if (!keep_instance_mode)
             m_mode = volume->is_modifier ? Volume : Instance;
     }
     else

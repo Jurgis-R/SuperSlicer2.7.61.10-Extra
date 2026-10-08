@@ -123,6 +123,7 @@ add_executable(${_TEST_NAME}_tests
     test_surface_solid_shells.cpp
     test_surface_top_surface_expansion.cpp
     test_vase_multi_island_connector.cpp
+    test_wipe_tower_footprint.cpp
     )
 
 add_library(plugin_loader_missing_register_fixture SHARED plugin_loader_fixture.cpp)

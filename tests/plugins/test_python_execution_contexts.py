@@ -149,6 +149,30 @@ class PythonExecutionContextTests(unittest.TestCase):
         self.assertEqual(context.infill_pattern_output().address, 9)
         self.assertTrue(keepalive)
 
+    def test_wipe_tower_context_borrows_print_and_mutable_whole_plan(self):
+        """Match the whole-plan C payload and reject a missing plan or wrong step."""
+        payload = self.generated.RunCtxGenerateWipeTower()
+        payload.print = ctypes.c_void_p(71)
+        payload.plan = ctypes.c_void_p(72)
+        common, keepalive = self.make_common(self.generated.STEP_WIPETOWER, payload)
+        api = types.SimpleNamespace(host=types.SimpleNamespace())
+        context = self.execution.WipeTowerContext.from_wipe_tower_run_context(
+            api, ctypes.addressof(common)
+        )
+        self.assertEqual(context.wipe_tower_print().address, 71)
+        self.assertEqual(context.wipe_tower_plan().address, 72)
+        self.assertIsInstance(context.wipe_tower_plan(), self.execution.MutablePrintingPlan)
+        payload.plan = None
+        self.assertIsNone(self.execution.WipeTowerContext.from_wipe_tower_run_context(
+            api, ctypes.addressof(common)
+        ))
+        payload.plan = ctypes.c_void_p(72)
+        common.step = self.generated.STEP_ORDERING
+        self.assertIsNone(self.execution.WipeTowerContext.from_wipe_tower_run_context(
+            api, ctypes.addressof(common)
+        ))
+        self.assertTrue(keepalive)
+
     def test_support_demand_callbacks_preserve_move_and_borrow_semantics(self):
         generated = self.generated
         islands = (ctypes.c_void_p * 1)(ctypes.c_void_p(41))

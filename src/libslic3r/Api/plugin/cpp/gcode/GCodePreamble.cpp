@@ -8,6 +8,7 @@
 #include "GCodeLineParser.hpp"
 #include "MachineEnvelope.hpp"
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <limits>
@@ -18,7 +19,11 @@
 /* Startup composition and shared script interpreter.
    All public geometry stays in the plan. This helper emits initialization and
    existing event trees, and updates the owning session after encoding commands.
-   Thumbnail text may be retained for end_print, but no source view survives begin. */
+   Thumbnail text may be retained for end_print, but no source view survives begin.
+   A custom G-code E move changes the retraction state only when its own line
+   declares it: a negative E move retracts with the comment "; retraction" and a
+   positive E move restores with "; unretraction", ignoring case and surrounding
+   spaces. Every other E move is raw. */
 namespace slic3r_api { namespace GCodeGeneration {
 namespace {
 // Parse an exact command token, excluding comments and numeric suffixes.
@@ -42,6 +47,33 @@ size_t start_script_count(const ExtrusionEntity &root)
     for (uint32_t idx = 0; idx < root.child_count(); ++idx)
         count += start_script_count(root.child(idx));
     return count;
+}
+
+// Classify the retraction declared by the comment of one external E move.
+// Matching ignores case and surrounding spaces: "; retraction" declares a
+// retraction and "; unretraction" declares its restore. Every other comment
+// leaves the move raw, so it changes no retraction state.
+ExternalMoveRetraction declared_retraction(const std::string_view comment)
+{
+    const auto matches = [comment](const std::string_view word) {
+        size_t begin = 0;
+        size_t end = comment.size();
+        while (begin < end && std::isspace(static_cast<unsigned char>(comment[begin])))
+            ++begin;
+        while (end > begin && std::isspace(static_cast<unsigned char>(comment[end - 1])))
+            --end;
+        if (end - begin != word.size())
+            return false;
+        for (size_t idx = 0; idx < word.size(); ++idx)
+            if (std::tolower(static_cast<unsigned char>(comment[begin + idx])) != word[idx])
+                return false;
+        return true;
+    };
+    if (matches("retraction"))
+        return ExternalMoveRetraction::Retraction;
+    if (matches("unretraction"))
+        return ExternalMoveRetraction::Unretraction;
+    return ExternalMoveRetraction::None;
 }
 }
 class DefaultGCodeFirmwareSession::GCodeStateInterpreter
@@ -188,7 +220,8 @@ private:
             const std::optional<extruder_index_t> tool_id = addressed_tool(line, 'T');
             if (tool_id)
                 m_session.extruder(*tool_id).extrusion_axis().observe_external_move(
-                    *e * scale, m_session.m_e_relative_mode);
+                    *e * scale, m_session.m_e_relative_mode,
+                    declared_retraction(line.comment()));
         }
     }
 

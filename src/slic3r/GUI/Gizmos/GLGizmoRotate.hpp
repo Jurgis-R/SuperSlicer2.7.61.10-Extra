@@ -5,6 +5,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Rotation gizmos manipulate selected scene transforms. The global tower can
+   use mouse rotation; instance-tower proxies (volume_id owner-index+1) retain
+   rotation from object configuration and cannot activate the rotation gizmo. */
 #ifndef slic3r_GLGizmoRotate_hpp_
 #define slic3r_GLGizmoRotate_hpp_
 
@@ -168,6 +171,7 @@ protected:
         if (id < 3)
             m_gizmos[id].disable_grabber();
     }
+    // Test whether the current selection supports mouse rotation, excluding instance towers.
     bool on_is_activable() const override;
     void on_start_dragging() override;
     void on_stop_dragging() override;

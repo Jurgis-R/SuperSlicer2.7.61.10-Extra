@@ -713,6 +713,7 @@ TEST_CASE("Unsupported dialect operations remain explicit G-code comments",
     CHECK(klipper.encode_extruder_current(0, 650.0) ==
           "; Unsupported firmware operation: extruder current\n");
 }
+// Shared fan history changes across tools; independent heater caches survive coordinate-only resets.
 TEST_CASE("Marlin 2 shares fan state but keeps heater state per extruder",
           "[plugins][gcode][firmware]")
 {
@@ -745,11 +746,11 @@ TEST_CASE("Marlin 2 shares fan state but keeps heater state per extruder",
         CHECK(count_occurrences(output, "M900 K0.01\n") == 1);
         CHECK(count_occurrences(output, "M900 K0.02\n") == 1);
 
-        // Tool zero resumes its own heater and absolute E histories. The fan
-        // is re-encoded because M106 controls shared hardware whose last value
-        // was changed while tool one was active.
+        // Tool zero resumes its heater history but starts at a zero E origin.
+        // The fan is re-encoded because M106 controls shared hardware whose
+        // last value was changed while tool one was active.
         CHECK(output.find("G1 X2 E.03326") != std::string::npos);
-        CHECK(output.find("G1 X3 E.06652") != std::string::npos);
+        CHECK(output.find("G1 X3 E.03326") != std::string::npos);
     } catch (...) {
         remove_output_pair(output_path);
         throw;

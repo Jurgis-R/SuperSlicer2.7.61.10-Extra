@@ -3,14 +3,21 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* The pipeline defines executable order, checkpoint replay, and metadata for
+   built-in producer and service steps. Exclusive groups select one provider;
+   active setting requirements check that provider's declared option keys.
+   Requested preview reads also fill Print's measured statistics; CLI reads are explicit. */
 #include "StepPipeline.hpp"
 
 #include "libslic3r/Api/host/Orchestrator.hpp"
+#include "libslic3r/Api/host/Plugin.hpp"
 #include "libslic3r/Api/internal/LayerAccess.hpp"
 #include "libslic3r/Api/internal/LayerRegionAccess.hpp"
 #include "libslic3r/Api/internal/PrintObjectAccess.hpp"
 #include "libslic3r/Config/ConfigDef.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/I18N.hpp"
+#include "libslic3r/format.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintObject.hpp"
@@ -239,6 +246,11 @@ bool validate_execution_order_against_dependencies()
 
 namespace {
 
+// Recognize built-in producer and service identities without changing scheduling state; unknown values return false.
+bool is_known_builtin_step(slicing_step_t step);
+// Map producer and service identities to option categories; unclassified steps use the slicing category.
+raw_option_category option_category_for_step(slicing_step_t step);
+
 std::string exclusive_group_ui_fragment(const std::string &key,
                                         const std::string &line_label)
 {
@@ -288,6 +300,7 @@ std::string option_key_for_plugin_group(const Orchestrator &orchestrator,
            sanitized_config_key_part(group_id) + "_plugin";
 }
 
+// Compare the numeric identity with the built-in list; services are recognized but are not added to execution order.
 bool is_known_builtin_step(slicing_step_t step)
 {
     switch (step) {
@@ -325,12 +338,14 @@ bool is_known_builtin_step(slicing_step_t step)
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
     case GCODE_READER:
+    case WIPE_TOWER_WIPE:
         return true;
     default:
         return false;
     }
 }
 
+// Classify the supplied step for option presentation, returning slicing for unclassified values without mutation.
 raw_option_category option_category_for_step(slicing_step_t step)
 {
     switch (step) {
@@ -353,6 +368,7 @@ raw_option_category option_category_for_step(slicing_step_t step)
     case GCODE_READER:
     case STEP_ORDERING:
     case STEP_WIPETOWER:
+    case WIPE_TOWER_WIPE:
     case STEP_LAYER_STICHING:
         return RAW_OPTION_CATEGORY_OUTPUT;
     default:
@@ -755,6 +771,39 @@ Plugin *selected_active_plugin_from_group(Orchestrator &orchestrator,
     return selected_plugin_from_group(group, group_plugins, config);
 }
 
+// Borrow definitions/config and a resolver returning borrowed group providers;
+// compare required values with their typed defaults and return the first owned,
+// translatable error, or nullopt. Required definitions need compatible defaults;
+// resolver/comparison/formatting failures propagate. No input is mutated or retained.
+std::optional<std::string> unsupported_active_setting(
+    const ConfigDef &definitions, const ConfigBase &config,
+    const std::function<const Plugin *(const std::string &group_id)> &selected_plugin_of_group)
+{
+    for (const auto &[key, definition] : definitions.options) {
+        if (definition.required_plugin_group.empty())
+            continue;
+        const ConfigOption *value = config.option(key);
+        if (value == nullptr || *value == *definition.default_value)
+            continue;
+
+        const Plugin *plugin = selected_plugin_of_group(definition.required_plugin_group);
+        if (plugin == nullptr)
+            return format(_u8L("The setting \"%1%\" (%2%) is active, but no plugin is selected in the \"%3%\" group."),
+                          key, definition.translated_label(), definition.required_plugin_group);
+        const std::vector<Plugin::UsedConfigKey> &used_keys = plugin->get_used_config_keys();
+        if (std::any_of(used_keys.begin(), used_keys.end(), [&key](const Plugin::UsedConfigKey &used) {
+                return used.key == key;
+            }))
+            continue;
+
+        const std::string &group = plugin->get_exclusive_group_label().empty() ?
+            definition.required_plugin_group : plugin->get_exclusive_group_label();
+        return format(_u8L("The setting \"%1%\" (%2%) is active, but the plugin \"%3%\" (%4%) selected in the \"%5%\" group does not support it."),
+                      key, definition.translated_label(), plugin->get_name(), plugin->get_id(), group);
+    }
+    return std::nullopt;
+}
+
 namespace {
 
 void initialize_pipeline_progress(Orchestrator &orchestrator,
@@ -872,6 +921,11 @@ void run_post_slicing(Orchestrator &orchestrator, Print &print, const std::strin
     });
 }
 
+// Borrow the host/Print and optional renderer/result destinations, executing
+// marked steps through until. Export publishes the source/reader pair and only
+// reads when a viewer result is requested, filling measured statistics on success.
+// No borrowed pointers are retained; pipeline failures/cancellation propagate,
+// while optional preview-read failures remain non-critical warnings.
 void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::string &path,
                          slicing_step_t until = STEP_GCODE,
                          const raw_gcode_thumbnail_renderer *thumbnail_renderer = nullptr,
@@ -1032,6 +1086,9 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
         StepGenerateGcode::prepare(print);
         const std::string selected_reader = StepGenerateGcode::run_step(
             orchestrator, print, path, thumbnail_renderer);
+        // The writer published the source; associate its already-selected
+        // reader so an explicit CLI reread needs no new firmware session.
+        print.set_gcode_reader_source_path(print.gcode_reader_source_path(), selected_reader);
         if (reader_plugin_id != nullptr)
             *reader_plugin_id = selected_reader;
 
@@ -1039,6 +1096,8 @@ void run_remaining_steps(Orchestrator &orchestrator, Print &print, const std::st
             try {
                 StepReadGeneratedGcode::run(
                     orchestrator, print, selected_reader, *gcode_result);
+                StepReadGeneratedGcode::fill_print_statistics(
+                    *gcode_result, print.config(), print.print_statistics());
             } catch (const CanceledException &) {
                 // Preview generation is optional when it fails, but an
                 // explicit slicing cancellation must still unwind the whole

@@ -21,6 +21,11 @@ The extrusion state accumulates exact requested distances and retains the
 sub-precision difference left by formatting. Firmware code receives only a
 quantized number to display; it never has to reconstruct or commit physical E
 state itself.
+
+A raw filament move (extrude) advances the E position and the usage statistics
+without changing the retraction state. Only the explicit operations retract,
+unretract, retract_along, unretract_along, retract_with_firmware,
+unretract_with_firmware, add_retraction and repay_retraction change it.
 */
 
 namespace slic3r_api { namespace GCodeGeneration {
@@ -93,13 +98,20 @@ void ExtrusionAxisState::set_relative_mode(bool relative_mode)
     m_dE_left = 0.0;
 }
 
-void ExtrusionAxisState::observe_external_move(double e_value, bool relative_mode)
+void ExtrusionAxisState::observe_external_move(double e_value, bool relative_mode,
+                                               const ExternalMoveRetraction declared)
 {
     if (!std::isfinite(e_value))
         throw std::invalid_argument("External G-code contains a non-finite E value.");
     set_relative_mode(relative_mode);
     const double delta = relative_mode ? e_value : e_value - m_machine_E;
     (void)extrude(delta);
+    // Only the comment declared on the same line makes the move a retraction or
+    // a repayment; any other external E move stays raw.
+    if (declared == ExternalMoveRetraction::Retraction && delta < 0.0)
+        add_retraction(-delta);
+    else if (declared == ExternalMoveRetraction::Unretraction && delta > 0.0)
+        repay_retraction(delta);
     // Text already contains the exact displayed value. No rounding remainder
     // may be carried into the next host-generated command.
     m_dE_left = 0.0;
@@ -141,17 +153,29 @@ std::optional<double> ExtrusionAxisState::extrude(double delta_e)
         m_dE_left = m_E - extrusion_number;
     }
 
-    // Physical statistics and retraction follow the requested distance even
-    // when no visible E word is produced at the configured precision.
+    // Physical statistics follow the requested distance even when no visible
+    // E word is produced at the configured precision. This is a raw filament
+    // move: the retraction state changes only through the explicit operations.
     m_machine_E += delta_e;
     m_absolute_E += delta_e;
-    if (delta_e < 0.0)
-        m_retracted -= delta_e;
-    else
-        m_retracted = std::max(0.0, m_retracted - delta_e);
 
     return extrusion_number != previous_number ?
         std::optional<double>(extrusion_number) : std::optional<double>();
+}
+
+void ExtrusionAxisState::add_retraction(const double amount)
+{
+    if (!std::isfinite(amount) || amount < 0.0)
+        throw std::invalid_argument("The requested retraction amount is invalid.");
+    m_retracted += amount;
+}
+
+void ExtrusionAxisState::repay_retraction(const double amount)
+{
+    if (!std::isfinite(amount))
+        throw std::invalid_argument("The requested retraction repayment is invalid.");
+    if (amount > 0.0)
+        m_retracted = std::max(0.0, m_retracted - amount);
 }
 
 double ExtrusionAxisState::retract(const double target)
@@ -161,6 +185,7 @@ double ExtrusionAxisState::retract(const double target)
 
     const double amount = retract_to_go(target);
     const std::optional<double> extrusion_number = extrude(-amount);
+    add_retraction(amount);
     return extrusion_number.value_or(0.0);
 }
 
@@ -202,6 +227,7 @@ std::vector<std::optional<double>> ExtrusionAxisState::retract_along(
             requested_amount - distributed_amount :
             requested_amount * segment_lengths[idx] / total_length;
         encoded_values[idx] = extrude(-amount);
+        add_retraction(amount);
         distributed_amount += amount;
     }
     return encoded_values;

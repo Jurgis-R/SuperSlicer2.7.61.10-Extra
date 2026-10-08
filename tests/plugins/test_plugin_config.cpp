@@ -7,8 +7,10 @@
 Tests for plugin-owned temporary configurations.
 
 The suite exercises the C ABI as a plugin sees it, then uses the C++ wrappers
-to verify their ownership contract. The core SCFG codec is covered separately
+to verify buffer ownership. The core SCFG codec is covered separately
 by libslic3r tests; this suite verifies the ABI buffer and merge semantics.
+Invalidation checks compare each option's earliest consuming step with the
+checkpoint used to replay its affected pipeline suffix.
 */
 
 #include <catch2/catch.hpp>
@@ -1351,30 +1353,16 @@ TEST_CASE("Former skirt catch-all options resume at their verified first consume
     CHECK_FALSE(Test::GCode::read_text_file(path).empty());
 }
 
+// Read registered option metadata without mutating source owners and compare exact producer/checkpoint routing; missing definitions fail explicitly.
 TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers conservative",
           "[plugins][config][checkpoint][invalidation][replay-options]")
 {
     using namespace Slic3r;
     Test::Plugins::ensure_plugin_test_runtime_initialized();
-    const std::array<const char *, 59> kept {
+    const std::array<const char *, 12> kept {
         "complete_objects", "draft_shield", "min_skirt_length", "skirt_brim", "skirt_distance",
         "skirt_distance_from_brim", "skirt_height", "skirt_extrusion_width", "skirts",
-        "cooling_tube_retraction", "cooling_tube_length", "filament_max_wipe_tower_speed",
-        "filament_loading_speed", "filament_enable_toolchange_temp", "filament_use_fast_skinnydip",
-        "filament_enable_toolchange_part_fan", "filament_toolchange_part_fan_speed", "filament_use_skinnydip",
-        "filament_melt_zone_pause", "filament_cooling_zone_pause", "filament_dip_insertion_speed",
-        "filament_dip_extraction_speed", "filament_toolchange_temp", "filament_skinnydip_distance",
-        "filament_loading_speed_start", "filament_unloading_speed", "filament_unloading_speed_start",
-        "filament_toolchange_delay", "filament_cooling_moves", "filament_cooling_initial_speed",
-        "filament_minimal_purge_on_wipe_tower", "filament_cooling_final_speed", "filament_ramming_parameters",
-        "filament_multitool_ramming", "filament_multitool_ramming_volume", "filament_multitool_ramming_flow",
-        "filament_type", "high_current_on_filament_swap", "parking_pos_retraction", "extra_loading_move",
-        "priming_position", "single_extruder_multi_material", "wipe_tower", "wipe_tower_speed",
-        "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width", "wiping_volumes_extruders",
-        "wiping_volumes_matrix", "wipe_tower_brim_width", "wipe_tower_no_sparse_layers",
-        "wipe_tower_rest_in_middle", "wipe_tower_x", "wipe_tower_y", "wipe_tower_width",
-        "wipe_tower_rotation_angle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
-        "wipe_tower_bridging", "wipe_tower_extruder"
+        "filament_type", "priming_position", "single_extruder_multi_material"
     };
     for (const char *key : kept) {
         CAPTURE(key);
@@ -1382,5 +1370,30 @@ TEST_CASE("The skirt option audit keeps unproven and native-prefix consumers con
         REQUIRE(definition != nullptr);
         CHECK(definition->invalidates_step == STEP_SKIRT_BRIM);
         CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Slicing);
+    }
+    // Tower envelopes and controls, and the purge, ramming and filament-swap settings read by
+    // the tool-change wipe, replay the ordered plan rather than source slicing.
+    for (const char *key : {"filament_max_wipe_tower_speed", "filament_minimal_purge_on_wipe_tower",
+         "wiping_volumes_extruders", "wiping_volumes_matrix",
+         "cooling_tube_retraction", "cooling_tube_length", "parking_pos_retraction", "extra_loading_move",
+         "high_current_on_filament_swap", "filament_loading_speed", "filament_loading_speed_start",
+         "filament_unloading_speed", "filament_unloading_speed_start", "filament_cooling_moves",
+         "filament_cooling_initial_speed", "filament_cooling_final_speed", "filament_enable_toolchange_temp",
+         "filament_toolchange_temp", "filament_enable_toolchange_part_fan", "filament_toolchange_part_fan_speed",
+         "filament_use_skinnydip", "filament_use_fast_skinnydip", "filament_skinnydip_distance",
+         "filament_dip_insertion_speed", "filament_dip_extraction_speed", "filament_melt_zone_pause",
+         "filament_cooling_zone_pause", "filament_toolchange_delay", "filament_ramming_parameters",
+         "filament_multitool_ramming", "filament_multitool_ramming_volume", "filament_multitool_ramming_flow",
+         "single_extruder_multi_material_priming",
+         "wipe_tower_speed", "wipe_tower_wipe_starting_speed", "wipe_tower_extrusion_width",
+         "wipe_tower_no_sparse_layers", "wipe_tower_rest_in_middle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing",
+         "wipe_tower_bridging", "wipe_tower_extruder_toolchange", "wipe_tower", "wipe_tower_brim_width",
+         "wipe_tower_x", "wipe_tower_y", "wipe_tower_width", "wipe_tower_rotation_angle", "wipe_tower_extruder",
+         "wipe_tower_per_object", "wipe_tower_object_x", "wipe_tower_object_y"}) {
+        CAPTURE(key);
+        const ConfigOptionDef *definition = PrintConfigDef::instance().get(key);
+        REQUIRE(definition != nullptr);
+        CHECK(definition->invalidates_step == STEP_WIPETOWER);
+        CHECK(Steps::checkpoint_before_step(definition->invalidates_step) == Steps::Checkpoint::Ordering);
     }
 }

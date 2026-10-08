@@ -1,6 +1,9 @@
 #ifndef SLIC3R_HPP
 #define SLIC3R_HPP
 
+/* CLI owns parsed models/config and dispatches actions or GUI startup. FFF
+   exports explicitly read statistics before finalizing measured output names. */
+
 #include <memory>
 
 #include "libslic3r/Config/ConfigOption.hpp"
@@ -25,6 +28,7 @@ class CLI {
 public:
     ~CLI();
 
+    // Execute CLI actions or GUI startup and return the process exit status.
     int run(int argc, char **argv);
 
     DynamicPrintConfig& full_print_config() { return m_print_config; }

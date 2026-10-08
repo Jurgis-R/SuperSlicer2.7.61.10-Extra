@@ -95,7 +95,14 @@ struct EPropertyCustomGcode :
     }
 };
 
-/* A non-geometric command embedded in the ordered extrusion stream. */
+/*
+An entry command embedded in the ordered extrusion stream. EXTRUSION on a leaf
+with segments instead distributes its signed filament length over planar lengths
+(including arcs), at the leaf's XY speed, ignoring flow and extrusion multiplier.
+Zero width/height omit dimension markers; zero planar length or a simultaneous
+extrusion-axis request is invalid. Parents and point-less leaves emit E-only.
+Signed deltas update retraction accounting: negative retracts, positive repays.
+*/
 struct EPropertySpecialCommand :
     EPropertyPayload<EPropertySpecialCommand, c_extrusion_property_special_command, EXTRUSION_PROPERTY_TYPE_SPECIAL_COMMAND>
 {
@@ -180,6 +187,9 @@ retract_to() and unretract() may describe either an empty E-only event or a
 geometric Wipe leaf. For geometry, the firmware session distributes the
 remaining semantic operation over the complete planar path. The selected
 firmware remains free to encode the same request as explicit E or G10/G11.
+unretract_partial() describes an E-only event, clamped to outstanding retraction
+without scheduling or consuming restart extras. Native G10/G11 cannot restore a
+partial amount, so this event does nothing until a full unretraction follows.
 */
 struct EPropertyExtrusionAxis :
     EPropertyPayload<EPropertyExtrusionAxis, c_extrusion_property_extrusion_axis, EXTRUSION_PROPERTY_TYPE_EXTRUSION_AXIS>
@@ -197,6 +207,14 @@ struct EPropertyExtrusionAxis :
         operation = C_EXTRUSION_AXIS_OPERATION_UNRETRACT;
         value = 0.0;
         restart_extra = extra;
+        toolchange = is_toolchange ? 1 : 0;
+        return *this;
+    }
+    /* Configure an E-only event to restore at most a positive filament length in mm. */
+    EPropertyExtrusionAxis &unretract_partial(double length_mm, bool is_toolchange = false) {
+        operation = C_EXTRUSION_AXIS_OPERATION_UNRETRACT;
+        value = length_mm;
+        restart_extra = 0.0;
         toolchange = is_toolchange ? 1 : 0;
         return *this;
     }

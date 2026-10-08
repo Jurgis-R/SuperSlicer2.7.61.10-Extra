@@ -12,6 +12,9 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Scene volumes own meshes, transforms and raycasters for display/selection.
+   Tower proxies are display estimates with a rectangular body, +Y open-side
+   teeth and a brim slab; their arrangement envelope includes a safety expansion. */
 #ifndef slic3r_3DScene_hpp_
 #define slic3r_3DScene_hpp_
 
@@ -58,6 +61,9 @@ class ExtrusionEntityCollection;
 class ModelObject;
 class ModelVolume;
 enum ModelInstanceEPrintVolumeState : uint8_t;
+
+// Return a deliberately approximate wipe-tower display depth from purge volumes and layer heights.
+double wipe_tower_preview_depth(const DynamicPrintConfig& config, double width);
 
 // Return appropriate color based on the ModelVolume.
 extern ColorRGBA color_from_model_volume(const ModelVolume& model_volume);
@@ -418,11 +424,13 @@ public:
         int                instance_idx);
 
 #if ENABLE_OPENGL_ES
+    // Add an orange estimated tower with an open-side zig-zag and rectangular brim, optionally copying its mesh.
     int load_wipe_tower_preview(
-        float pos_x, float pos_y, float width, float depth, const std::vector<std::pair<float, float>>& z_and_depth_pairs, float height, float cone_angle, float rotation_angle, bool size_unknown, float brim_width, TriangleMesh* out_mesh = nullptr);
+        float pos_x, float pos_y, float width, float depth, float height, float rotation_angle, float brim_width, TriangleMesh* out_mesh = nullptr);
 #else
+    // Add an orange estimated tower with an open-side zig-zag and rectangular brim to the scene.
     int load_wipe_tower_preview(
-        float pos_x, float pos_y, float width, float depth, const std::vector<std::pair<float, float>>& z_and_depth_pairs, float height, float cone_angle, float rotation_angle, bool size_unknown, float brim_width);
+        float pos_x, float pos_y, float width, float depth, float height, float rotation_angle, float brim_width);
 #endif // ENABLE_OPENGL_ES
 
     // Load SLA auxiliary GLVolumes (for support trees or pad).

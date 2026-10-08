@@ -286,8 +286,10 @@ PluginActivationConfig read_plugin_configuration();
 wxString unavailable_plugin_tooltip(const std::string &plugin_id,
                                     const PluginActivationConfig &config);
 wxString plugin_package_load_diagnostic(const PluginPackageLoadReport &report);
+// Translate built-in step identities into display labels; unknown identities use a numeric label.
 wxString step_name(slicing_step_t step);
 wxString phase_name(PluginPhase phase);
+// Classify producer and service steps for navigation; unclassified values return no phase.
 std::optional<PluginPhase> phase_for_step(slicing_step_t step);
 std::optional<size_t> pipeline_step_index(slicing_step_t step);
 bool is_pipeline_step(slicing_step_t step);
@@ -402,6 +404,7 @@ wxString unavailable_plugin_tooltip(const std::string &plugin_id,
         from_u8(plugin_id), from_u8(package_id));
 }
 
+// Return a translated label for the supplied identity or a numeric fallback, without changing catalog state.
 wxString step_name(slicing_step_t step)
 {
     switch (step) {
@@ -424,6 +427,7 @@ wxString step_name(slicing_step_t step)
     case STEP_CHECK_CONFLICT:            return _L("Conflict detection");
     case STEP_ORDERING:                  return _L("Extrusion ordering");
     case STEP_WIPETOWER:                 return _L("Wipe tower");
+    case WIPE_TOWER_WIPE:                return _L("Wipe tower wipes");
     case STEP_SUPPORT_SPOT:              return _L("Support spot detection");
     case STEP_LAYER_EXTRUSION_EDIT:      return _L("Layer extrusion editing");
     case STEP_LAYER_STICHING:            return _L("Layer stitching");
@@ -456,6 +460,7 @@ wxString phase_name(PluginPhase phase)
     return wxEmptyString;
 }
 
+// Map a numeric producer or service identity to a navigation phase; unsupported values return an empty optional.
 std::optional<PluginPhase> phase_for_step(slicing_step_t step)
 {
     switch (step) {
@@ -482,6 +487,7 @@ std::optional<PluginPhase> phase_for_step(slicing_step_t step)
     case STEP_SKIRT_BRIM:
     case STEP_ALERT_SUPPORTS_NEEDED:
     case STEP_WIPETOWER:
+    case WIPE_TOWER_WIPE:
     case STEP_SUPPORT_SPOT:
     case STEP_FINALIZE_SLICING:
         return PluginPhase::SupportAdhesion;
@@ -1174,6 +1180,7 @@ void PluginConfigDialog::build_catalog()
     }
 }
 
+// Rebuild dialog-owned navigation items from phase and step lists, retaining catalog activation state.
 void PluginConfigDialog::build_navigation()
 {
     wxTreeCtrl *tree = m_state->navigation;
@@ -1202,7 +1209,7 @@ void PluginConfigDialog::build_navigation()
         STEP_SURFACE_GENERATION, STEP_PRE_INFILL, STEP_INFILL_GROUP, STEP_INFILL, STEP_POST_INFILL,
         INFILL_PATTERN, INFILL_SURFACE_RECIPE_MODIFIER, BRIDGE_DETECTOR,
         STEP_ALERT_SUPPORTS_NEEDED, STEP_SKIRT_BRIM, STEP_SUPPORT_DEMAND, STEP_SUPPORT,
-        STEP_WIPETOWER, STEP_SUPPORT_SPOT,
+        STEP_WIPETOWER, WIPE_TOWER_WIPE, STEP_SUPPORT_SPOT,
         STEP_FINALIZE_SLICING, STEP_ORDERING, SEAM_PLACER,
         STEP_CHECK_CONFLICT, STEP_LAYER_EXTRUSION_EDIT, STEP_LAYER_STICHING,
         STEP_EXTRUSION_EDIT, STEP_EXTRUSION_SIMPLIFICATION,

@@ -36,6 +36,7 @@ public:
 private:
     void build();
     void build_catalog();
+    // Build navigation entries for built-in producer and service steps.
     void build_navigation();
     void refresh_navigation_counts();
     void refresh_plugin_list();

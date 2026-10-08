@@ -405,4 +405,146 @@ TEST_CASE("Extrusion axis state owns E quantization and its rounding remainder",
     }
 }
 
+// Signed wipe retraction counts toward the target before semantic retraction fills the remainder.
+TEST_CASE("Wipe extrusion is counted before the remaining retraction",
+          "[plugins][gcode][firmware][state][retraction-accounting]")
+{
+    const bool relative_e = GENERATE(false, true);
+    const double before_wipe = GENERATE(0.0, 80.0);
+    const double wipe_fraction = GENERATE(0.5, 1.0);
+    CAPTURE(relative_e, before_wipe, wipe_fraction);
+    ExtrusionAxisSettings settings;
+    settings.filament_diameter = 1.75;
+    settings.use_relative_e_distances = relative_e;
+    ExtrusionAxisState axis;
+    axis.setup(settings);
+
+    const double initial_retraction = 0.4 * before_wipe / 100.0;
+    CHECK((axis.retract_to_go(initial_retraction) == 0.0) == (before_wipe == 0.0));
+    axis.retract(initial_retraction);
+    const double wiped = (0.4 - initial_retraction) * wipe_fraction;
+    // The retracting wipe path is an explicit retraction toward the total target.
+    axis.retract_along(initial_retraction + wiped, {1.0});
+    CHECK(axis.retracted() == Approx(initial_retraction + wiped));
+    CHECK((axis.retract_to_go(0.4) == 0.0) == (wipe_fraction == 1.0));
+    axis.retract(0.4);
+    CHECK(axis.retracted() == Approx(0.4));
+    REQUIRE(axis.need_unretract());
+    axis.unretract();
+    CHECK(axis.retracted() == 0.0);
+    CHECK(axis.used_filament() == Approx(0.0).margin(1e-9));
+    CHECK_FALSE(axis.need_unretract());
+    CHECK(axis.unretract() == 0.0);
+}
+
+// Printing extrusion repays retraction but never consumes scheduled restart extras.
+TEST_CASE("Printing extrusion consumes outstanding retraction",
+          "[plugins][gcode][firmware][state][retraction-accounting]")
+{
+    const bool relative_e = GENERATE(false, true);
+    ExtrusionAxisSettings settings;
+    settings.filament_diameter = 1.75;
+    settings.use_relative_e_distances = relative_e;
+    ExtrusionAxisState axis;
+    axis.setup(settings);
+    axis.retract(0.4);
+    CHECK(axis.retracted() == Approx(0.4));
+
+    // A printing extrusion is a raw move that repays the outstanding retraction,
+    // exactly as DefaultGCodeFirmwareSession writes a flow-based segment.
+    const auto printing_extrusion = [&axis](const double amount) {
+        (void)axis.extrude(amount);
+        axis.repay_retraction(amount);
+    };
+
+    SECTION("Partial priming leaves only the remainder") {
+        printing_extrusion(0.15);
+        CHECK(axis.retracted() == Approx(0.25));
+        CHECK(axis.unretract() == Approx(relative_e ? 0.25 : 0.0));
+        CHECK(axis.used_filament() == Approx(0.0).margin(1e-9));
+    }
+    SECTION("Complete priming does not require another unretraction") {
+        printing_extrusion(0.4);
+        CHECK_FALSE(axis.need_unretract());
+        CHECK(axis.unretract() == 0.0);
+    }
+    SECTION("Excess priming is deposited filament, not negative retraction") {
+        printing_extrusion(0.6);
+        CHECK(axis.retracted() == 0.0);
+        CHECK_FALSE(axis.need_unretract());
+        CHECK(axis.used_filament() == Approx(0.2));
+    }
+    SECTION("Priming preserves the configured restart extra") {
+        axis.schedule_restart_extra(0.1, false);
+        printing_extrusion(0.4);
+        CHECK(axis.need_unretract());
+        CHECK(axis.unretract() == Approx(0.1));
+        CHECK(axis.used_filament() == Approx(0.1));
+    }
+    CHECK(axis.retracted() == 0.0);
+    CHECK_FALSE(axis.need_unretract());
+    CHECK(axis.unretract() == 0.0);
+}
+
+// Raw filament moves change E and its statistics but never the retraction state;
+// only explicit retraction operations do, and an UNRETRACT restores exactly what
+// they retracted.
+TEST_CASE("Only explicit retraction operations change the retraction state",
+          "[plugins][gcode][firmware][state][retraction-accounting]")
+{
+    const bool relative_e = GENERATE(false, true);
+    ExtrusionAxisSettings settings;
+    settings.filament_diameter = 1.75;
+    settings.use_relative_e_distances = relative_e;
+    ExtrusionAxisState axis;
+    axis.setup(settings);
+
+    SECTION("raw EXTRUSION does not retract and UNRETRACT has nothing to restore") {
+        axis.extrude(-10.0);
+        CHECK(axis.retracted() == 0.0);
+        CHECK(axis.position() == Approx(relative_e ? 0.0 : -10.0));
+        CHECK(axis.used_filament() == Approx(-10.0));
+        CHECK_FALSE(axis.need_unretract());
+        CHECK(axis.unretract() == 0.0);
+        CHECK(axis.retracted() == 0.0);
+    }
+
+    SECTION("an explicit retraction is restored in full after a raw move") {
+        axis.retract(2.0);
+        CHECK(axis.retracted() == Approx(2.0));
+        axis.extrude(1.0);
+        CHECK(axis.retracted() == Approx(2.0));
+        CHECK(axis.need_unretract());
+        CHECK(axis.unretract() == Approx(relative_e ? 2.0 : 1.0));
+        CHECK(axis.retracted() == 0.0);
+        // The raw move advanced the tachometer, so the restored filament leaves
+        // one millimetre of it deposited.
+        CHECK(axis.used_filament() == Approx(1.0).margin(1e-9));
+    }
+
+    SECTION("an explicit retraction is only partially repaid by printing") {
+        axis.retract(2.0);
+        axis.extrude(0.5);
+        axis.repay_retraction(0.5);
+        CHECK(axis.retracted() == Approx(1.5));
+        CHECK(axis.unretract() == Approx(relative_e ? 1.5 : 0.0));
+    }
+
+    SECTION("an explicit retract command still retracts") {
+        axis.retract(1.25);
+        axis.extrude(-0.5);
+        axis.add_retraction(0.5);
+        CHECK(axis.retracted() == Approx(1.75));
+        CHECK(axis.unretract() == Approx(relative_e ? 1.75 : 0.0));
+    }
+
+    SECTION("raw positive moves do not repay an explicit retraction") {
+        axis.retract(0.4);
+        axis.extrude(0.3);
+        CHECK(axis.retracted() == Approx(0.4));
+        CHECK(axis.need_unretract());
+        CHECK(axis.unretract() == Approx(relative_e ? 0.4 : 0.3));
+    }
+}
+
 } // namespace

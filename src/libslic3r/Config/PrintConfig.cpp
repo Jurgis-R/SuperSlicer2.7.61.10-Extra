@@ -21,6 +21,11 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* Print configuration loading, normalization and preset conversion. Dynamic
+   object overrides contain only a subset of printer settings: normalization
+   can clamp a tower tool's upper bound only when nozzle data is present.
+   Output-statistics definitions describe measured filename placeholders;
+   wipe-tower filament is a length in mm, not an extruded volume. */
 #include "PrintConfig.hpp"
 #include "FFFPrintConfig.hpp"
 #include "SLA/SLAPrintConfig.hpp"
@@ -2674,6 +2679,7 @@ OutputFormat output_format(const ConfigBase& cfg)
     return ofUnknown;
 }
 
+// Normalize this owned option subset in place, expanding extruder aliases and vase constraints; clamp tower tools against nozzle count only when supplied, and propagate option/allocation failures.
 void DynamicPrintConfig::normalize_fdm()
 {
     if (this->has("extruder")) {
@@ -2699,8 +2705,8 @@ void DynamicPrintConfig::normalize_fdm()
     if (this->has("wipe_tower_extruder")) {
         // If invalid, replace with 0.
         int extruder = this->opt<ConfigOptionInt>("wipe_tower_extruder")->value;
-        int num_extruders = this->opt<ConfigOptionFloats>("nozzle_diameter")->size();
-        if (extruder < 0 || extruder > num_extruders)
+        const ConfigOptionFloats *nozzles = this->opt<ConfigOptionFloats>("nozzle_diameter");
+        if (extruder < 0 || (nozzles != nullptr && size_t(extruder) > nozzles->size()))
             this->opt<ConfigOptionInt>("wipe_tower_extruder")->value = 0;
     }
 
@@ -3637,6 +3643,9 @@ OtherSlicingStatesConfigDef::OtherSlicingStatesConfigDef()
     def->tooltip = L("Vector of booleans stating whether a given extruder is used in the print.");
 }
 
+// Populate this owned definition with measured-print placeholder labels and
+// units, including wipe-tower filament length in mm. Definitions own allocated
+// metadata; no caller inputs are retained and allocation failures propagate.
 PrintStatisticsConfigDef::PrintStatisticsConfigDef()
 {
     ConfigOptionDef* def;
@@ -3678,8 +3687,8 @@ PrintStatisticsConfigDef::PrintStatisticsConfigDef()
     def->tooltip = L("Total cost of the material wasted on the wipe tower. Calculated from cost in Filament Settings.");
 
     def = this->add("total_wipe_tower_filament", coFloat);
-    def->label = L("Wipe tower volume");
-    def->tooltip = L("Total filament volume extruded on the wipe tower.");
+    def->label = L("Wipe tower filament length");
+    def->tooltip = L("Total length of filament used on the wipe tower, in millimeters.");
 
     def = this->add("used_filament", coFloat);
     def->label = L("Used filament");

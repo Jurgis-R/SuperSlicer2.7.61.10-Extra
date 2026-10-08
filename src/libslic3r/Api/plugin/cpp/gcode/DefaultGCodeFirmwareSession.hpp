@@ -40,6 +40,10 @@ The class lives in the public C++ plugin API so another firmware provider may
 derive from it and replace only the encoders whose syntax differs. It does not
 register a plugin by itself. PrintingPlanFileWriter remains responsible for the
 output artifact and writes each returned string in plan order.
+
+Object labels identify cancellable model instances. Synthetic catalog entries
+have no source object (wipe towers are synthetic) and are printed outside all
+labels; their plan IDs remain available for extrusion lookup, not cancellation.
 */
 
 namespace slic3r_api { namespace GCodeGeneration {
@@ -63,6 +67,7 @@ public:
     // machine state. The borrowed Config view is not retained.
     void setup(const Config &config);
 
+    // Initialize export state and declare only real catalog instances for cancellation.
     std::string begin_print(const Print &print, const ConstPrintingPlan &plan) override;
     // Renderer and orchestrator are borrowed until firmware destruction.
     void set_thumbnail_services(orchestrator_handle *, const raw_gcode_thumbnail_renderer *);
@@ -93,6 +98,8 @@ protected:
         std::string name;
         c_point projected_outline_center{};
         std::vector<c_point> projected_outline;
+        // Synthetic entries have no source object and never receive cancellation labels.
+        bool is_synthetic = false;
     };
 
     // Called once per export; derived firmwares may mix providers and placements.
@@ -127,6 +134,8 @@ protected:
     const std::vector<DefaultExtruder> &extruders() const { return m_extruders; }
     DefaultExtruder &current_extruder();
     const DefaultExtruder &current_extruder() const;
+    // Report whether logical filament tools share one physical extruder.
+    bool single_extruder_multi_material() const { return m_single_extruder_multi_material; }
     std::optional<extruder_index_t> current_extruder_id() const { return m_current_extruder_idx; }
 
     // Give dialect encoders the same numeric formatting policy as the base
@@ -200,9 +209,7 @@ protected:
     // changing the extrusion traversal performed by write_lines().
     virtual std::string write_acceleration(PreparedMove::Kind kind);
 
-    // Apply the dialect's state-sharing policy when a different extruder is
-    // selected. The generic implementation shares nothing: a concrete
-    // firmware must copy only the components addressed as shared hardware.
+    // Apply additional dialect sharing after the base transfers SEMM runtime state.
     virtual void synchronize_selected_extruder_state(const DefaultExtruder *previous,
                                                       DefaultExtruder &selected);
 
@@ -210,6 +217,9 @@ protected:
     // not mutate session state; write_lines() validates state only after an
     // encoder returns successfully.
     virtual std::string encode_tool_change(extruder_index_t tool_id) const;
+    // Encode a coordinate-only reset of the active extrusion axis to zero.
+    virtual std::string encode_extrusion_axis_reset() const;
+    // Encode a heater target, omitting the logical tool address for a shared SEMM heater.
     virtual std::string encode_tool_temperature(extruder_index_t tool_id,
                                                 int16_t temperature,
                                                 bool wait) const;
@@ -222,7 +232,9 @@ protected:
     virtual std::string encode_move(const PreparedMove &move, bool include_speed) const;
     virtual std::string encode_custom_gcode(c_extrusion_custom_gcode_kind kind,
                                             const std::string &text) const;
+    // Encode a speed multiplier without backup in dialects lacking firmware save support.
     virtual std::string encode_save_speed_ratio(double ratio) const;
+    // Encode the 100% speed fallback in dialects lacking firmware restore support.
     virtual std::string encode_restore_speed_ratio() const;
     virtual std::string encode_flush_planner() const;
     virtual std::string encode_pause(double milliseconds) const;
@@ -246,15 +258,20 @@ private:
     class ExtrusionWriterVisitor;
     class GCodeStateInterpreter;
 
+    // Select a tool, transfer SEMM runtime and reset absolute E after emitted selections.
     std::string select_extruder(extruder_index_t tool_id, bool emit_command = true);
     std::string move_to_group_start(const ConstPrintingGroup &group);
     std::string write_extrusion_tree(const ExtrusionEntity &root);
     std::optional<float> reliable_layer_height(const ConstPrintingLayerGroup &layer) const;
-    std::string write_printable_markers(const EPropertyAttributes &attributes);
+    // Emit changed role/dimension tags, permitting zero dimensions for fixed-E paths.
+    std::string write_printable_markers(const EPropertyAttributes &attributes, bool fixed_e = false);
     std::string write_seam_marker(const ExtrusionEntity &loop) const;
     std::string transition_wipe_marker(bool wipe);
+    // Emit required state commands and a prepared move, restoring a zero E origin when unknown.
     std::string write_lines(const PreparedMove &move);
+    // Emit planar segments with flow-derived E, a fixed filament delta, or semantic retraction.
     std::string write_leaf_geometry(const ExtrusionEntity &leaf, const RequestedState &state);
+    // Emit static retraction or full/limited unretraction for the active tool.
     std::string write_extrusion_axis_event(const EPropertyExtrusionAxis &axis,
                                            const RequestedState &state);
     // Update the semantic E state and emit at most one native retract command
@@ -264,19 +281,22 @@ private:
     std::string write_native_unretract();
     std::string write_special_command(const EPropertySpecialCommand &command,
                                       const RequestedState &state);
-    // Emit one user-provided script and reconcile the cached machine state
-    // before returning to generated G-code. The entity only borrows the script
+    // Emit a script, reconcile machine state and establish its post-toolchange E origin.
+    // The entity only borrows the script
     // data; this session never takes ownership of it.
     std::string write_custom_gcode(const ExtrusionEntity &entity,
                                    const EPropertyCustomGcode &custom_gcode);
+    // Close/open object labels, treating synthetic catalog IDs as outside every object.
     std::string transition_object(uint32_t printing_catalog_id);
     const ObjectLabel &object_label(uint32_t printing_catalog_id) const;
 
-    // Read already-emitted custom G-code from the current firmware state, then
-    // replace each cached value with the reader's final known value. Unknown
-    // reader values deliberately invalidate the corresponding cache so later
-    // generated commands establish a safe, explicit state. This does not
-    // emit G-code and is a no-op when no reader service is available.
+    // Reconcile custom G-code after it was interpreted. Replace each cached
+    // value with the reader's final known value; the retraction state stays
+    // whatever the explicit retraction operations and declarations set,
+    // because the reader cannot prove it. Unknown reader values deliberately
+    // invalidate the corresponding cache so later generated commands establish
+    // a safe, explicit state. This does not emit G-code and is a no-op when no
+    // reader service is available.
     void synchronize_after_custom_gcode(const std::string &text);
     void apply_requested_state(const RequestedState &state);
     c_vec3d machine_position(c_point point, coord_t z_offset) const;
@@ -303,6 +323,9 @@ private:
     bool m_e_position_known = true;
     bool m_seen_object_group = false;
     bool m_use_firmware_retraction = false;
+    // SEMM means single-extruder multi-material: tool IDs select filaments,
+    // while heater, fan, pressure advance and extrusion state share hardware.
+    bool m_single_extruder_multi_material = false;
     // G10/G11 expose one binary protocol state per tool even though the
     // semantic retraction target may advance through several plan events.
     std::vector<uint8_t> m_native_retraction_active;

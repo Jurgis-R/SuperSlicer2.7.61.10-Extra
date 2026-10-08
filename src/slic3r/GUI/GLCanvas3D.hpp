@@ -6,6 +6,10 @@
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 
+/* The canvas owns scene volumes and translates interactions into plater events.
+   Tower proxies have object_id INT_MAX: volume_id zero is global, owner-index+1
+   is an instance tower. Move-event Z uses that owner identity and XY carries
+   global position or an offset from ModelInstance translation, respectively. */
 #ifndef slic3r_GLCanvas3D_hpp_
 #define slic3r_GLCanvas3D_hpp_
 
@@ -898,6 +902,7 @@ public:
 
     void mirror_selection(Axis axis);
 
+    // Rebuild model and generic tower volumes while preserving selection identity.
     void reload_scene(bool refresh_immediately, bool force_full_scene_refresh = false);
 
     void load_gcode_shells();
@@ -906,6 +911,7 @@ public:
     void set_gcode_view_preview_type(GCodeViewer::EViewType type) { return m_gcode_viewer.set_view_type(type); }
     GCodeViewer::EViewType get_gcode_view_preview_type() const { return m_gcode_viewer.get_view_type(); }
     void load_sla_preview();
+    // Load skirt/object preview toolpaths, leaving tower toolpaths to G-code preview.
     void load_preview(const std::vector<std::string>& str_tool_colors, const std::vector<CustomGCode::Item>& color_print_values);
     void bind_event_handlers();
     void unbind_event_handlers();
@@ -933,7 +939,9 @@ public:
     void set_tooltip(const std::string& tooltip);
 
     // the following methods add a snapshot to the undo/redo stack, unless the given string is empty
+    // Persist selected model/tower translations with an optional undo snapshot.
     void do_move(const std::string& snapshot_type);
+    // Persist selected model or global-tower rotation with an optional snapshot.
     void do_rotate(const std::string& snapshot_type);
     void do_scale(const std::string& snapshot_type);
     void do_mirror(const std::string& snapshot_type);
@@ -973,6 +981,7 @@ public:
         static void apply_wipe_tower(Vec2d pos, double rot);
     };
     
+    // Return arrangement information for the global tower only.
     WipeTowerInfo get_wipe_tower_info() const;
 
     // Returns the view ray line, in world coordinate, at the given mouse position.
@@ -1161,7 +1170,6 @@ private:
     void _load_print_object_toolpaths(const PrintObject& print_object, const BuildVolume &build_volume,
         const std::vector<std::string>& str_tool_colors, const std::vector<CustomGCode::Item>& color_print_values);
     // Create 3D thick extrusion lines for wipe tower extrusions, updates collision with the build_volume.
-    void _load_wipe_tower_toolpaths(const BuildVolume &build_volume, const std::vector<std::string>& str_tool_colors);
 
     // Load SLA objects and support structures for objects, for which the slaposSliceSupports step has been finished.
 	void _load_sla_shells();

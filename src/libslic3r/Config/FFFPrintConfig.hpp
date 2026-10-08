@@ -358,8 +358,11 @@ PRINT_CONFIG_CLASS_DEFINE_WITH_SCOPE(
     ((ConfigOptionFloat,                wipe_tower_cone_angle))
     ((ConfigOptionPercent,              wipe_tower_extra_spacing))
     ((ConfigOptionInt,                  wipe_tower_extruder))
+    ((ConfigOptionBool,                 wipe_tower_extruder_toolchange))
     ((ConfigOptionFloatOrPercent,       wipe_tower_extrusion_width))
-    ((ConfigOptionFloat,                wipe_tower_per_color_wipe))
+    ((ConfigOptionFloat,                wipe_tower_object_x))
+    ((ConfigOptionFloat,                wipe_tower_object_y))
+    ((ConfigOptionBool,                 wipe_tower_per_object))
     ((ConfigOptionBool,                 wipe_tower_rest_in_middle))
     ((ConfigOptionFloat,                wipe_tower_rotation_angle))
     ((ConfigOptionFloat,                wipe_tower_width))
@@ -826,6 +829,7 @@ std::string validate(const FullPrintConfig &config);
 bool is_XL_printer(const PrintConfig &cfg);
 Points get_bed_shape(const PrintConfig &cfg);
 
+// Register built-in FFF option definitions and defaults.
 void init_fff_params(PrintConfigDef &definition);
 
 } // namespace Slic3r

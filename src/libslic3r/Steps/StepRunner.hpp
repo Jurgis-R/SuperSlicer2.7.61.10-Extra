@@ -34,6 +34,7 @@ std::vector<Plugin *> selected_or_active_plugins_for_step(Orchestrator &orchestr
 
 namespace Slic3r::Steps::Detail {
 
+// Name a built-in pipeline or service step for diagnostics.
 inline const char *builtin_step_name(slicing_step_t step)
 {
     switch (step) {
@@ -68,6 +69,7 @@ inline const char *builtin_step_name(slicing_step_t step)
     case GCODE_FIRMWARE:             return "GCODE_FIRMWARE";
     case GCODE_THUMBNAIL:            return "GCODE_THUMBNAIL";
     case GCODE_READER:               return "GCODE_READER";
+    case WIPE_TOWER_WIPE:            return "WIPE_TOWER_WIPE";
     default:                         return nullptr;
     }
 }

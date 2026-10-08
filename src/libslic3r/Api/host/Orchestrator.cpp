@@ -2,6 +2,7 @@
 ///|/
 ///|/ SuperSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+/* The orchestrator owns plugin registration and run contexts, and resolves service invalidation to executable producers. */
 #include "Orchestrator.hpp"
 #include "GCodeReaderService.hpp"
 #include "GCodeThumbnailRenderer.hpp"
@@ -50,6 +51,9 @@
 #include "Plugin.hpp"
 
 namespace Slic3r {
+
+// Resolve a borrowed plugin to its executable invalidation producer, returning STEP_NONE for unsupported steps.
+static slicing_step_t plan_owner_step(const Plugin &plugin);
 
 static bool graph_coordinate_equal(double lhs, double rhs);
 static bool graph_enforced_values_equal(const GraphSettings &lhs, const GraphSettings &rhs);
@@ -530,6 +534,7 @@ static void populate_config_option_def_from_raw(ConfigOptionDef &out,
         out.set_default_value(temp_default_option);
 }
 
+// Map a borrowed plugin's service step to its executable producer for invalidation; unknown steps return STEP_NONE.
 static slicing_step_t plan_owner_step(const Plugin &plugin)
 {
     const slicing_step_t step = plugin.get_step();
@@ -542,6 +547,8 @@ static slicing_step_t plan_owner_step(const Plugin &plugin)
         return STEP_PERIMETER;
     case SEAM_PLACER:
         return STEP_ORDERING;
+    case WIPE_TOWER_WIPE:
+        return STEP_WIPETOWER;
     case GCODE_FIRMWARE:
     case GCODE_THUMBNAIL:
     case GCODE_READER:
