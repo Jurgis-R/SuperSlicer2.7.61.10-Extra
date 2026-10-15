@@ -11,7 +11,7 @@ The five-axis implementation must remain opt-in until the complete toolpath, mac
 - `src/libslic3r/FiveAxisKinematics.hpp`: configurable two-joint orientation solving, rotary-bed point transforms, and rotary-head tool-tip compensation.
 - `src/libslic3r/FiveAxisEngine.hpp`: candidate-path checks for finite coordinates, rotary limits, simultaneous-axis policy, rotary change per linear distance, and estimated rotary rate; emits XYZ, two configured rotary words, E, and F only after whole-path validation.
 - `src/libslic3r/FiveAxisSurfaceNormals.hpp`: transforms a source volume mesh into print-object space, samples surface normals, and provides `FiveAxisSurfaceCorrespondence` to choose one candidate source volume for an entire path. It rejects equally plausible volume matches instead of silently mixing normals across overlapping volumes.
-- `src/libslic3r/FiveAxisBuildDirectionPlanner.hpp`: scores candidate build-up directions using mesh face-area-weighted overhang area and projected build height, and chooses the lowest-scoring valid candidate. This is the first geometry-only automatic orientation heuristic, not a complete slicer planner.
+- `src/libslic3r/FiveAxisBuildDirectionPlanner.hpp`: generates a deterministic full-sphere set of build-up candidates (including six cardinal axes), scores directions using a mesh face-area-weighted overhang proxy and projected build height, and chooses the lowest-scoring valid candidate. Candidate generation and scoring are now automated as a geometry-only first heuristic, not a complete slicer planner.
 - `tests/libslic3r/test_five_axis_kinematics.cpp` and `tests/libslic3r/test_five_axis_engine.cpp`: unit coverage for the isolated math and output helpers.
 
 These are helper-level primitives. They are not yet a complete slicer-to-machine pipeline, and output validation is not a geometric collision test. The current slicer merges multiple model-volume slices into region geometry, so a generated perimeter or infill path does not yet retain reliable source-volume provenance. The correspondence helper is deliberately explicit: a caller must supply candidate meshes in the path's coordinate frame, and it only accepts a single source that explains every vertex. It does not yet resolve competing faces inside one mesh (for example, opposite sides of a thin wall), nor does it infer path provenance from merged regions.
@@ -25,9 +25,10 @@ These are helper-level primitives. They are not yet a complete slicer-to-machine
    - Next: preserve provenance during slicing/region construction and add within-mesh ambiguity checks for thin walls and nearby faces. `GCodeGenerator::extrude_path_3D()` currently emits XYZ-only moves and ignores `tool_axis_normals`.
 
 2. **Automatic build-direction candidate scoring (initial helper)**
-   - Score supplied candidate build directions by area-weighted overhang proxy and projected part height.
+   - Generate a deterministic, approximately uniform full-sphere candidate set, including the six cardinal directions.
+   - Score candidate directions by area-weighted overhang proxy and projected part height.
    - Reject invalid directions, malformed triangle indices, degenerate-only meshes, and invalid scoring settings.
-   - This score does not yet simulate supports, choose multidirectional regions, check machine reachability, evaluate tool access, or perform collision checks. Candidate generation and machine-aware filtering remain future work.
+   - This score does not yet simulate supports, choose multidirectional regions, check machine reachability, evaluate tool access, or perform collision checks. Machine-aware candidate filtering remains future work.
 
 3. **Machine configuration and coordinate frames**
    - Define rotary axis order, local axis vectors, pivots, zero offsets, sign conventions, tool-center/tool-tip offsets, and joint limits.
