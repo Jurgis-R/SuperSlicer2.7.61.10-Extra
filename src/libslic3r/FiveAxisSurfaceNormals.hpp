@@ -121,15 +121,18 @@ public:
         const FiveAxisVec3 &point_mm,
         FiveAxisVec3 &normal_out,
         double *distance_mm = nullptr,
-        double max_distance_mm = std::numeric_limits<double>::infinity()) const
+        double max_distance_mm = std::numeric_limits<double>::infinity(),
+        double competing_face_distance_mm = 0.25) const
     {
         normal_out = {};
         if (!five_axis_finite(point_mm) ||
             (!std::isfinite(max_distance_mm) &&
              max_distance_mm != std::numeric_limits<double>::infinity()))
             return { false, "Surface-normal query point or distance limit is invalid." };
-        if (max_distance_mm < 0.0)
-            return { false, "Surface-normal maximum distance must be non-negative." };
+        if (max_distance_mm < 0.0 ||
+            !std::isfinite(competing_face_distance_mm) ||
+            competing_face_distance_mm < 0.0)
+            return { false, "Surface-normal distance limits must be finite and non-negative." };
         if (m_mesh->indices.empty())
             return { false, "Cannot sample tool directions from an empty triangle mesh." };
 
@@ -147,6 +150,35 @@ public:
         normal_out = { n.x(), n.y(), n.z() };
         if (!five_axis_finite(normal_out) || !five_axis_normalize(normal_out))
             return { false, "Nearest triangle has a degenerate or invalid normal." };
+
+        // A nearest-face query cannot distinguish the two sides of a thin
+        // wall. Probe through the nearest surface along its normal and reject
+        // a nearby second face whose normal substantially opposes the first.
+        // This is intentionally conservative and can be disabled with a zero
+        // threshold by callers that have an independently verified source face.
+        if (competing_face_distance_mm > 0.0) {
+            const Vec3d surface = closest;
+            const Vec3d normal(normal_out.x, normal_out.y, normal_out.z);
+            const double epsilon = 1e-4;
+            for (const double sign : { -1.0, 1.0 }) {
+                const Vec3d ray_origin = surface + normal * (sign * epsilon);
+                const Vec3d ray_direction = normal * (-sign);
+                const auto hits = m_index.query_ray_hits(ray_origin, ray_direction);
+                for (const auto &hit : hits) {
+                    if (!hit.is_hit() || hit.face() == face_id)
+                        continue;
+                    const double hit_distance = hit.distance() - epsilon;
+                    if (hit_distance <= 1e-3 ||
+                        hit_distance > competing_face_distance_mm)
+                        continue;
+                    const Vec3d other_normal = m_index.normal_by_face_id(hit.face());
+                    if (other_normal.allFinite() &&
+                        other_normal.norm() > 1e-12 &&
+                        (other_normal.normalized().dot(normal) < -0.5))
+                        return { false, "Surface normal is ambiguous: an opposing face lies within the thin-wall ambiguity distance." };
+                }
+            }
+        }
         if (distance_mm != nullptr)
             *distance_mm = distance;
         return { true, {} };
