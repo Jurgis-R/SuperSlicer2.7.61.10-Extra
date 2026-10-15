@@ -215,3 +215,48 @@ TEST_CASE("Hybrid surface extrusion conversion rejects invalid input without par
     REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ valid }, 2.0, attributes, paths));
     REQUIRE(paths.empty());
 }
+
+
+TEST_CASE("Hybrid surface planning and extrusion conversion fail closed on a colliding segment",
+          "[HybridNonplanarExtrusion]")
+{
+    const indexed_triangle_set mesh = make_flat_surface();
+    HybridSurfacePlannerOptions options;
+    options.sample_spacing_mm = 0.5;
+    options.section_start_z = 1.5;
+    options.section_top_z = 2.0;
+    options.max_z_offset_mm = 0.2;
+    ExtrusionAttributes attributes(ExtrusionRole::ExternalPerimeter,
+                                   ExtrusionFlow(0.08, 0.4f, 0.2f));
+    std::vector<ExtrusionPath3D> paths(1);
+    paths.front().push_back(Point::new_scale(0.0, 0.0), 0);
+
+    const auto colliding = [](const Vec3d &, const Vec3d &) { return false; };
+    REQUIRE_FALSE(plan_hybrid_surface_extrusion_paths(
+        mesh, options, 2.0, attributes, colliding, paths));
+    REQUIRE(paths.empty());
+}
+
+TEST_CASE("Hybrid surface planning can produce converted paths only after segment validation",
+          "[HybridNonplanarExtrusion]")
+{
+    const indexed_triangle_set mesh = make_flat_surface();
+    HybridSurfacePlannerOptions options;
+    options.sample_spacing_mm = 0.5;
+    options.section_start_z = 1.5;
+    options.section_top_z = 2.0;
+    options.max_z_offset_mm = 0.2;
+    ExtrusionAttributes attributes(ExtrusionRole::ExternalPerimeter,
+                                   ExtrusionFlow(0.08, 0.4f, 0.2f));
+    std::vector<ExtrusionPath3D> paths;
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+
+    REQUIRE(plan_hybrid_surface_extrusion_paths(
+        mesh, options, 2.0, attributes, clear, paths));
+    REQUIRE_FALSE(paths.empty());
+    for (const ExtrusionPath3D &path : paths) {
+        REQUIRE(path.polyline.size() >= 2);
+        REQUIRE(path.z_offsets.size() == path.polyline.size());
+        REQUIRE(path.mm3_per_mm() == Approx(0.08));
+    }
+}

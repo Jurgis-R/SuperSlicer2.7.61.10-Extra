@@ -76,6 +76,27 @@ inline bool make_hybrid_surface_extrusion_paths(
     return true;
 }
 
+
+ // Run candidate generation, mandatory segment validation, and coordinate/extrusion
+ // conversion as one fail-closed operation. The supplied validator must check the
+ // actual swept nozzle/tool envelope against relevant model geometry; a permissive
+ // placeholder callback is not a collision validator. Approach and departure
+ // moves must also be validated by the caller before G-code emission.
+inline bool plan_hybrid_surface_extrusion_paths(
+    const indexed_triangle_set &mesh,
+    const HybridSurfacePlannerOptions &options,
+    double base_z_mm,
+    const ExtrusionAttributes &attributes,
+    const std::function<bool(const Vec3d &, const Vec3d &)> &swept_tool_segment_is_clear,
+    std::vector<ExtrusionPath3D> &output)
+{
+    output.clear();
+    std::vector<HybridSurfacePath> candidates;
+    if (!plan_hybrid_surface_paths(mesh, options, swept_tool_segment_is_clear, candidates))
+        return false;
+    return make_hybrid_surface_extrusion_paths(candidates, base_z_mm, attributes, output);
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_HybridNonplanarExtrusion_hpp_
