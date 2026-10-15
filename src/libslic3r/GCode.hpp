@@ -306,7 +306,7 @@ private:
     std::string     extrude_multi_path(const ExtrusionMultiPath &multipath, const std::string_view description, double speed = -1.);
     std::string     extrude_multi_path3D(const ExtrusionMultiPath3D &multipath, const std::string_view description, double speed = -1.);
     std::string     extrude_path(const ExtrusionPath &path, const std::string_view description, double speed = -1.);
-    std::string     extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed = -1.);
+    std::string     extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed = -1., double max_speed_mm_s = -1.);
 
     void            split_at_seam_pos(ExtrusionLoop &loop, bool was_clockwise);
     template <typename THING = ExtrusionEntity> // can be templated safely because private
@@ -627,7 +627,7 @@ private:
     std::string               _extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1);
     void                      _extrude_line(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, ExtrusionRole role);
     void                      _extrude_line_cut_corner(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, Point& last_pos, const double path_width);
-    std::string               _before_extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1);
+    std::string               _before_extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1, double max_speed_mm_s = -1);
     std::string               _travel_before_extrude(const ExtrusionPath &path, const std::string_view description, double speed_mm_s = -1);
     double_t                  _compute_speed_mm_per_sec(const ExtrusionPath &path_attrs, const double speed, double &fan_speed, std::string *comment) const;
     std::pair<double, double> _compute_acceleration(const ExtrusionPath &path);
