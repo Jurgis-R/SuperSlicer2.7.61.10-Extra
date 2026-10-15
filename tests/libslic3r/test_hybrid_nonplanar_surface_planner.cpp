@@ -392,3 +392,46 @@ TEST_CASE("Hybrid swept-tool validator rejects a path whose tool envelope approa
     REQUIRE_FALSE(validator.segment_is_clear(Vec3d(0.5, 0.5, 1.0),
                                              Vec3d(0.6, 0.5, 1.0)));
 }
+
+
+TEST_CASE("Hybrid swept-tool validator accepts a closed outward-oriented mesh",
+          "[HybridNonplanarCollision]")
+{
+    const indexed_triangle_set mesh = make_closed_cube();
+    AABBMesh aabb(mesh);
+    HybridSweptToolOptions options;
+    HybridSweptToolCollisionValidator validator(mesh, aabb, options);
+
+    REQUIRE(validator.valid());
+}
+
+TEST_CASE("Hybrid swept-tool validator rejects open meshes and invalid envelopes",
+          "[HybridNonplanarCollision]")
+{
+    const indexed_triangle_set open_mesh = make_flat_surface();
+    AABBMesh open_aabb(open_mesh);
+    HybridSweptToolOptions options;
+    HybridSweptToolCollisionValidator open_validator(open_mesh, open_aabb, options);
+    REQUIRE_FALSE(open_validator.valid());
+
+    const indexed_triangle_set closed_mesh = make_closed_cube();
+    AABBMesh closed_aabb(closed_mesh);
+    options.path_sample_step_mm = 0.0;
+    HybridSweptToolCollisionValidator invalid_options_validator(closed_mesh, closed_aabb, options);
+    REQUIRE_FALSE(invalid_options_validator.valid());
+}
+
+TEST_CASE("Hybrid swept-tool validator rejects a sampled shaft sweep through the model",
+          "[HybridNonplanarCollision]")
+{
+    const indexed_triangle_set mesh = make_closed_cube();
+    AABBMesh aabb(mesh);
+    HybridSweptToolOptions options;
+    HybridSweptToolCollisionValidator validator(mesh, aabb, options);
+    REQUIRE(validator.valid());
+
+    CHECK_FALSE(validator.segment_is_clear(Vec3d(0.25, 0.5, -0.5),
+                                           Vec3d(0.75, 0.5, -0.5)));
+    CHECK(validator.segment_is_clear(Vec3d(0.25, 0.5, 2.0),
+                                     Vec3d(0.75, 0.5, 2.0)));
+}
