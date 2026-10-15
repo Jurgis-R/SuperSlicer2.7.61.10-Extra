@@ -3681,7 +3681,7 @@ LayerResult GCodeGenerator::process_layer(
     // the H-section planner here (not per object or per extruder), so the
     // completed-section metadata describes the entire planar group.
     m_hybrid_completed_section.reset();
-    if (m_config.hybrid_nonplanar_enabled.value || m_config.hybrid_surface_pass_preflight.value || m_config.hybrid_surface_pass_enabled.value) {
+    if (m_config.hybrid_nonplanar_enabled.value || m_config.hybrid_surface_pass_preflight.value) {
         m_hybrid_completed_section = m_hybrid_nonplanar_section_planner.after_planar_layer(
             layer.bottom_z(), print_z);
         if (!m_hybrid_nonplanar_section_planner.valid())
@@ -3693,7 +3693,7 @@ LayerResult GCodeGenerator::process_layer(
     // The preflight switch remains strictly no-output. Actual surface-pass
     // emission has its own default-off opt-in and always runs the same complete
     // collision checks first; it never reuses or mutates ordinary planar paths.
-    if ((m_config.hybrid_surface_pass_preflight.value || m_config.hybrid_surface_pass_enabled.value) &&
+    if (m_config.hybrid_surface_pass_preflight.value &&
         m_hybrid_completed_section) {
         if (print.objects().size() != 1 || print.objects().front()->instances().size() != 1 ||
             print.config().nozzle_diameter.size() != 1 || print.config().complete_objects.value ||
@@ -3832,74 +3832,11 @@ LayerResult GCodeGenerator::process_layer(
         if (!collision_validator.segment_is_clear(previous_quantized_safe, safe_current))
             throw RuntimeError("Hybrid surface-pass preflight rejected the quantized final return transition");
 
-        if (m_config.hybrid_surface_pass_enabled.value) {
-            // Save the live writer state. Return to this same point after the
-            // pass so the following ordinary layer begins at its prior XY/Z.
-            const Vec3d saved_writer_position = m_writer.get_position();
-            const bool saved_last_pos_defined = last_pos_defined();
-            const Point saved_last_pos = saved_last_pos_defined ? last_pos() : Point(0, 0);
-            const double safe_z = clearance_z;
-            const Vec3d safe_start(current_tip.x(), current_tip.y(), safe_z);
-            const Vec3d safe_start_scaled(scale_t(safe_start.x()), scale_t(safe_start.y()), scale_t(safe_start.z()));
-            const std::string pass_comment = "Hybrid surface finishing pass";
-            const double travel_speed = std::max(1.0, planner_options.travel_speed_mm_s);
-
-            gcode += ";HYBRID_SURFACE_PASS_BEGIN\n";
-            gcode += m_writer.get_travel_to_z_gcode(safe_z, "Hybrid pass: raise to validated clearance");
-            gcode += m_writer.travel_to_xyz(
-                this->point_to_gcode(safe_start_scaled), false, travel_speed,
-                "Hybrid pass: move to validated start");
-
-            for (const ExtrusionPath3D &path : surface_paths) {
-                const Point &first_xy = path.polyline.get_point(0);
-                const double first_z = nominal_z + unscaled<double>(path.z_offsets.front());
-                const Vec3d safe_first_scaled(double(first_xy.x()), double(first_xy.y()),
-                                              double(scale_t(safe_z)));
-                gcode += m_writer.travel_to_xyz(
-                    this->point_to_gcode(safe_first_scaled), false, travel_speed,
-                    "Hybrid pass: validated high-Z transition");
-                const Vec3d first_scaled(double(first_xy.x()), double(first_xy.y()),
-                                         double(scale_t(first_z)));
-                gcode += m_writer.travel_to_xyz(
-                    this->point_to_gcode(first_scaled), false, travel_speed,
-                    "Hybrid pass: validated approach");
-                set_last_pos(first_xy);
-                gcode += this->extrude_path_3D(
-                    path, pass_comment, travel_speed,
-                    m_config.hybrid_nonplanar_speed.value > 0.0
-                        ? m_config.hybrid_nonplanar_speed.value : -1.0);
-
-                const Point &last_xy = path.polyline.get_point(path.polyline.size() - 1);
-                gcode += m_writer.get_travel_to_z_gcode(safe_z, "Hybrid pass: validated departure");
-                const Vec3d safe_last_scaled(double(last_xy.x()), double(last_xy.y()),
-                                             double(scale_t(safe_z)));
-                gcode += m_writer.travel_to_xyz(
-                    this->point_to_gcode(safe_last_scaled), false, travel_speed,
-                    "Hybrid pass: validated high-Z transition");
-                set_last_pos(last_xy);
-            }
-
-            // The original departure segment was validated above; reverse it
-            // to restore the writer to its prior position after the pass.
-            const Vec3d return_safe_scaled(scale_t(current_tip.x()), scale_t(current_tip.y()),
-                                           scale_t(safe_z));
-            gcode += m_writer.travel_to_xyz(
-                this->point_to_gcode(return_safe_scaled), false, travel_speed,
-                "Hybrid pass: return above original position");
-            gcode += m_writer.get_travel_to_z_gcode(saved_writer_position.z(),
-                                                    "Hybrid pass: restore original Z");
-            if (saved_last_pos_defined)
-                set_last_pos(saved_last_pos);
-            else
-                unset_last_pos();
-            gcode += ";HYBRID_SURFACE_PASS_END\n";
-        }
 
         BOOST_LOG_TRIVIAL(info) << "Hybrid surface-pass preflight accepted "
                                 << candidates.size() << " candidate paths at H-section boundary "
                                 << m_hybrid_completed_section->boundary_z
-                                << " mm; finishing-pass emission "
-                                << (m_config.hybrid_surface_pass_enabled.value ? "enabled" : "disabled") << ".";
+                                << " mm; no finishing-pass G-code was emitted.";
     }
 
     // Legacy Mode B still queues deformed existing paths. This is deliberately
