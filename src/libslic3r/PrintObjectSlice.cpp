@@ -342,6 +342,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                     // Identifier of this region in PrintObjectRegions::all_regions
                     int         region_id;
                     ObjectID    volume_id;
+                    FiveAxisSourceProvenance provenance;
                     bool operator<(const RegionSlice &rhs) const {
                         bool this_empty = this->region_id < 0 || this->expolygons.empty();
                         bool rhs_empty  = rhs.region_id < 0 || rhs.expolygons.empty();
