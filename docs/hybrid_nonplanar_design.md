@@ -2,7 +2,22 @@
 
 ## Status
 
-This is an implementation plan for the SuperSlicer EXTRA branch, not a claim that the full hybrid feature is complete. The branch currently contains a narrow correction to the existing `ExtrusionPath3D` G-code writer. It has not yet been compiled or validated on a printer.
+This document tracks the implementation in the SuperSlicer EXTRA development branch. The feature is still experimental, has not been compiled in this environment, and has not been validated on a printer.
+
+### Implemented in the development branch
+
+- Added a **Hybrid non-planar printing** checkbox, mutually exclusive with ZAA during G-code generation.
+- Added configurable interval `H` (default 2.0 mm), maximum slope angle (default 30 degrees), and maximum Z offset (default 0.4 mm).
+- Added an initial **Mode B** path-deformation implementation: on the existing layer whose vertical span crosses each H boundary, eligible perimeter and top-solid paths are sampled against the model mesh and receive bounded Z offsets.
+- Added an adjacent-sample slope limiter and ramps the path offsets back to nominal layer Z at both ends.
+- Corrected the existing `ExtrusionPath3D` G-code writer to use each destination vertex's Z offset and true 3D segment length.
+
+### Not yet implemented / not yet verified
+
+- This first Mode B increment deforms paths on an existing layer; it does **not** insert a separate additional non-planar pass between planar layer groups.
+- Mode A (generating new surface-following paths) is not implemented yet.
+- Full nozzle, heater block, fan duct, probe, and carriage-envelope collision checking is not implemented.
+- C++ compilation, G-code regression tests, and physical printer tests remain outstanding. Do not treat the branch as printer-ready.
 
 Target workflow:
 
@@ -154,3 +169,15 @@ The current source does not yet have a printer-specific CAD envelope for these p
 - CurviSlicer: https://github.com/mfx-inria/curvislicer
 - RotBot: https://github.com/RotBotSlicer/Nonplanar_Slicing
 - Slic3r non-planar fork: https://github.com/DrEricEbert/Slic3r_NonPlanar_Slicing/tree/nonplanar
+
+
+## Implementation status
+
+- [x] Add the Hybrid non-planar checkbox and keep it mutually exclusive with ZAA in generated G-code.
+- [x] Add H interval, maximum slope angle, and maximum Z-offset controls.
+- [x] Implement the first Mode B increment: interval-triggered deformation of eligible existing paths.
+- [ ] Insert a separate non-planar pass between planar layer groups (the current interval trigger selects an existing layer instead).
+- [ ] Implement generated surface-following paths (Mode A).
+- [ ] Add full toolhead-envelope collision checks and safe fallback to planar paths.
+- [ ] Compile the C++ application and add automated G-code regression tests.
+- [ ] Validate with a small test print on the target Cartesian printer.
