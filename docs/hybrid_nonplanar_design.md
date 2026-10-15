@@ -141,7 +141,8 @@ The current source does not yet have a printer-specific CAD envelope for these p
 - [x] Compare the main source-code approaches in AtomSlicer, CurviSlicer, RotBot, and the Slic3r non-planar fork.
 - [x] Create an isolated development branch and commit the narrow 3D extrusion correctness fix.
 - [ ] Compile and test the fix in the SuperSlicer build.
-- [ ] Add settings and the H-interval scheduler.
+- [x] Add an experimental `Hybrid non-planar printing` checkbox beside ZAA; selecting it suppresses ZAA so both modes cannot run together.
+- [ ] Implement the H-interval scheduler. The checkbox is only a reserved switch at this stage; it does not yet generate non-planar passes.
 - [ ] Implement both path-generation modes.
 - [ ] Implement and validate the collision envelope and motion constraints.
 - [ ] Add end-to-end G-code regression tests.
