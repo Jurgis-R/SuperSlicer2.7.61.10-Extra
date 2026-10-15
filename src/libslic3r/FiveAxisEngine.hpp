@@ -3,7 +3,9 @@
 #ifndef slic3r_FiveAxisEngine_hpp_
 #define slic3r_FiveAxisEngine_hpp_
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <iomanip>
 #include <sstream>
 #include <string>
