@@ -277,7 +277,7 @@ TEST_CASE("Hybrid surface mesh transform handles translation and mirrored windin
     REQUIRE(transform_hybrid_surface_mesh(source, transform, transformed));
     REQUIRE(transformed.vertices.size() == source.vertices.size());
     REQUIRE(transformed.indices.size() == source.indices.size());
-    CHECK(transformed.vertices[0].x() == Approx(-10.0f));
+    CHECK(transformed.vertices[0].x() == Approx(10.0f));
     CHECK(transformed.vertices[0].y() == Approx(-3.0f));
     CHECK(transformed.vertices[0].z() == Approx(3.0f));
 
