@@ -14,6 +14,7 @@ add_executable(${_TEST_NAME}_tests
 	test_five_axis_motion_planner.cpp
 	test_five_axis_extrusion_adapter.cpp
 	test_five_axis_machine_profile.cpp
+	test_five_axis_klipper_gcode_emitter.cpp
 	test_five_axis_surface_normals.cpp
 	test_extrusion_path_3d_normals.cpp
 	test_kdtreeindirect.cpp
