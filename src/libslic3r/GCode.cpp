@@ -793,32 +793,12 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     // Enabled and either not done, or marked as done while the output file is missing.
     monitor.set_started(psGCodeExport);
 
-    // Reset interval state for each G-code export; boundaries are consumed once
-    // in print-Z order, not independently by each extrusion path.
-    m_hybrid_nonplanar_scheduler.reset(print->config().hybrid_nonplanar_interval.value);
+    // Reset export-local state. The selected object's full G-code config is
+    // available in process_layer, where the configured H interval is applied.
+    m_hybrid_nonplanar_scheduler.reset();
     m_hybrid_nonplanar_layer_due = false;
     m_hybrid_nonplanar_queue.clear();
     m_hybrid_path_deferred = false;
-
-    // The current hybrid prototype flushes inside per-object/per-extruder layer
-    // processing. Until the section planner owns the complete layer-group
-    // boundary, fail closed for layouts where this can split or reorder a pass.
-    // This is intentionally conservative; support belongs in the future outer
-    // layer-group scheduler, not in a larger per-object path queue.
-    if (print->config().hybrid_nonplanar_enabled.value) {
-        const bool multiple_objects = print->objects().size() != 1;
-        const bool multiple_instances = !multiple_objects &&
-            print->objects().front()->instances().size() != 1;
-        const bool multiple_extruders = print->config().nozzle_diameter.size() != 1;
-        const bool sequential_ordering = print->config().complete_objects.value ||
-            print->config().parallel_objects_step.value > 0;
-        if (multiple_objects || multiple_instances || multiple_extruders || sequential_ordering) {
-            throw RuntimeError(
-                "Hybrid non-planar printing currently requires one object, one instance, "
-                "one extruder, and layer-by-layer ordering; export aborted because safe "
-                "finishing-pass ordering is not implemented for this print layout");
-        }
-    }
 
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
@@ -3318,11 +3298,29 @@ LayerResult GCodeGenerator::process_layer(
     m_config.apply(print.default_region_config(), true);
     m_config.apply(layer.object()->config(), true);
 
-    // Complete-object mode restarts Z for each object, so its interval
-    // schedule must restart too rather than inheriting the previous object's Z.
-    if (single_object_instance_idx != size_t(-1) && layer.id() == 0) {
+    // Start a fresh interval sequence at the first layer of each print order.
+    // This also gives the scheduler the active full G-code config; Print::config()
+    // is a narrower type and does not expose GCodeConfig-only options.
+    if (layer.id() == 0) {
         m_hybrid_nonplanar_scheduler.reset(m_config.hybrid_nonplanar_interval.value);
         m_hybrid_nonplanar_queue.clear();
+
+        // The current finishing queue is not yet a whole-section planner. Fail
+        // closed on layouts whose object/tool ordering it cannot safely handle.
+        if (m_config.hybrid_nonplanar_enabled.value) {
+            const bool multiple_objects = print.objects().size() != 1;
+            const bool multiple_instances = !multiple_objects &&
+                print.objects().front()->instances().size() != 1;
+            const bool multiple_extruders = print.config().nozzle_diameter.size() != 1;
+            const bool sequential_ordering = print.config().complete_objects.value ||
+                print.config().parallel_objects_step.value > 0;
+            if (multiple_objects || multiple_instances || multiple_extruders || sequential_ordering) {
+                throw RuntimeError(
+                    "Hybrid non-planar printing currently requires one object, one instance, "
+                    "one extruder, and layer-by-layer ordering; export aborted because safe "
+                    "finishing-pass ordering is not implemented for this print layout");
+            }
+        }
     }
 
     // The scheduler advances once per exported planar layer. Mode B consults
