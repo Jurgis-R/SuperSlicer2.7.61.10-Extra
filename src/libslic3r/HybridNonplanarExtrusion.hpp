@@ -16,6 +16,46 @@
 
 namespace Slic3r {
 
+// Convert absolute print-space XYZ (millimetres) to the writer's coordinate
+// frame. XY includes the same origin and active-tool offset as point_to_gcode();
+// Z is absolute print Z because the writer applies its configured Z offset when
+// formatting G-code. This is a coordinate conversion only, not a lift-state fix.
+inline bool hybrid_print_to_writer_xyz(
+    const Vec3d &print_point,
+    const Vec2d &origin,
+    const Vec2d &tool_offset,
+    Vec3d &writer_point)
+{
+    if (!print_point.allFinite() || !origin.allFinite() || !tool_offset.allFinite())
+        return false;
+    const Vec3d converted(print_point.x() + origin.x() - tool_offset.x(),
+                          print_point.y() + origin.y() - tool_offset.y(),
+                          print_point.z());
+    if (!converted.allFinite())
+        return false;
+    writer_point = converted;
+    return true;
+}
+
+// Inverse of hybrid_print_to_writer_xyz(), used to interpret the live writer
+// position in the same print-space frame as collision-preflight routes.
+inline bool hybrid_writer_to_print_xyz(
+    const Vec3d &writer_point,
+    const Vec2d &origin,
+    const Vec2d &tool_offset,
+    Vec3d &print_point)
+{
+    if (!writer_point.allFinite() || !origin.allFinite() || !tool_offset.allFinite())
+        return false;
+    const Vec3d converted(writer_point.x() - origin.x() + tool_offset.x(),
+                          writer_point.y() - origin.y() + tool_offset.y(),
+                          writer_point.z());
+    if (!converted.allFinite())
+        return false;
+    print_point = converted;
+    return true;
+}
+
 // Convert planner coordinates (millimetres, absolute Z) to SuperSlicer's
 // scaled XY coordinates plus Z offsets relative to the G-code writer's nominal
 // Z at the start of this pass. base_z_mm MUST be that nominal writer Z, not
