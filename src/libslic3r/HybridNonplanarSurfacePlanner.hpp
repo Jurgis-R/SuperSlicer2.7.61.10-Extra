@@ -72,6 +72,11 @@ inline bool plan_hybrid_surface_paths(
     if (!std::isfinite(nx_d) || !std::isfinite(ny_d) || nx_d < 2.0 || ny_d < 1.0 ||
         nx_d * ny_d > static_cast<double>(options.max_grid_samples))
         return false;
+    // This deliberately simple first planner is bounded against pathological
+    // mesh/grid combinations; a spatial acceleration structure is required
+    // before raising this budget for production-size models.
+    if (nx_d * ny_d * static_cast<double>(mesh.indices.size()) > 50000000.0)
+        return false;
     const std::size_t nx = static_cast<std::size_t>(nx_d);
     const std::size_t ny = static_cast<std::size_t>(ny_d);
     const double max_slope = std::tan(options.max_slope_angle_degrees * PI / 180.0);
