@@ -15,6 +15,7 @@
 #include <cmath>
 #include <array>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -192,6 +193,110 @@ public:
 private:
     const indexed_triangle_set *m_mesh;
     AABBMesh m_index;
+};
+
+ 
+// Resolves a complete extrusion path against a set of candidate source-volume
+// meshes. A single source must explain every vertex; near-equal candidates are
+// rejected instead of silently switching between overlapping volumes. This
+// does not infer provenance from the slicer's merged region paths: callers must
+// supply the candidate volumes in the same print-space coordinate frame.
+class FiveAxisSurfaceCorrespondence {
+public:
+    FiveAxisValidationResult add_source(
+        int volume_id,
+        const indexed_triangle_set &print_space_mesh)
+    {
+        if (print_space_mesh.vertices.empty() || print_space_mesh.indices.empty())
+            return { false, "Cannot register an empty source-volume mesh." };
+        for (const auto &source : m_sources)
+            if (source->volume_id == volume_id)
+                return { false, "A source-volume ID may only be registered once." };
+        m_sources.emplace_back(std::make_unique<SourceSampler>(volume_id, print_space_mesh));
+        return { true, {} };
+    }
+
+    std::size_t source_count() const { return m_sources.size(); }
+
+    FiveAxisValidationResult assign_path_normals(
+        ExtrusionPath3D &path,
+        double base_z_mm,
+        double max_distance_mm,
+        double ambiguity_margin_mm = 0.05,
+        int *matched_volume_id = nullptr) const
+    {
+        if (path.polyline.size() < 2)
+            return { false, "A surface-oriented extrusion path requires at least two vertices." };
+        if (!std::isfinite(base_z_mm) ||
+            (!std::isfinite(max_distance_mm) &&
+             max_distance_mm != std::numeric_limits<double>::infinity()) ||
+            max_distance_mm < 0.0 || !std::isfinite(ambiguity_margin_mm) ||
+            ambiguity_margin_mm < 0.0)
+            return { false, "Surface-correspondence settings are invalid." };
+        if (m_sources.empty())
+            return { false, "No candidate source volumes have been registered." };
+
+        struct Candidate {
+            int volume_id;
+            double mean_distance;
+            std::vector<std::array<double, 3>> normals;
+        };
+        std::vector<Candidate> viable;
+        viable.reserve(m_sources.size());
+
+        for (const auto &source : m_sources) {
+            Candidate candidate { source->volume_id, 0.0, {} };
+            candidate.normals.reserve(path.polyline.size());
+            bool complete = true;
+            double distance_sum = 0.0;
+            for (std::size_t i = 0; i < path.polyline.size(); ++i) {
+                const Point &xy = path.polyline.get_point(i);
+                const double z = base_z_mm + (i < path.z_offsets.size()
+                    ? double(path.z_offsets[i]) * SCALING_FACTOR : 0.0);
+                FiveAxisVec3 normal;
+                double distance = 0.0;
+                const auto result = source->sampler.sample({
+                    double(xy.x()) * SCALING_FACTOR,
+                    double(xy.y()) * SCALING_FACTOR,
+                    z
+                }, normal, &distance, max_distance_mm);
+                if (!result.valid) {
+                    complete = false;
+                    break;
+                }
+                distance_sum += distance;
+                candidate.normals.push_back({ { normal.x, normal.y, normal.z } });
+            }
+            if (complete) {
+                candidate.mean_distance = distance_sum / double(path.polyline.size());
+                viable.emplace_back(std::move(candidate));
+            }
+        }
+
+        if (viable.empty())
+            return { false, "No single source-volume mesh matches every path vertex within the distance limit." };
+
+        std::sort(viable.begin(), viable.end(), [](const Candidate &a, const Candidate &b) {
+            return a.mean_distance < b.mean_distance;
+        });
+        if (viable.size() > 1 &&
+            viable[1].mean_distance - viable[0].mean_distance <= ambiguity_margin_mm)
+            return { false, "Path-to-volume correspondence is ambiguous; two source meshes are equally plausible." };
+
+        path.tool_axis_normals.swap(viable[0].normals);
+        if (matched_volume_id != nullptr)
+            *matched_volume_id = viable[0].volume_id;
+        return { true, {} };
+    }
+
+private:
+    struct SourceSampler {
+        int volume_id;
+        FiveAxisSurfaceNormalSampler sampler;
+        SourceSampler(int id, const indexed_triangle_set &mesh)
+            : volume_id(id), sampler(mesh) {}
+    };
+    std::vector<std::unique_ptr<SourceSampler>> m_sources;
 };
 
 } // namespace Slic3r
