@@ -4,6 +4,7 @@
 #define slic3r_FiveAxisExtrusionAdapter_hpp_
 
 #include "ExtrusionEntity.hpp"
+#include "FiveAxisMachineProfile.hpp"
 #include "FiveAxisMotionPlanner.hpp"
 
 #include <cmath>
@@ -70,6 +71,39 @@ inline FiveAxisValidationResult make_five_axis_poses_from_extrusion_path(
 
     poses.swap(candidate);
     return { true, {} };
+}
+
+ 
+// End-to-end helper from an existing oriented SuperSlicer extrusion entity
+// through profile validation and motion planning. This remains an explicit
+// API; GCodeGenerator does not invoke it until persistent UI/configuration,
+// coordinate-frame handling, and controller-specific output are integrated.
+inline FiveAxisValidationResult plan_five_axis_extrusion_path(
+    const FiveAxisMachineProfile &profile,
+    const ExtrusionPath3D &path,
+    double base_z_mm,
+    double initial_e,
+    double e_per_mm,
+    double feed_mm_min,
+    std::vector<FiveAxisCommand> &commands,
+    double initial_rotary_1_deg = 0.0,
+    double initial_rotary_2_deg = 0.0)
+{
+    commands.clear();
+    if (!profile.enabled)
+        return { false, "Five-axis mode is disabled in the selected machine profile." };
+    const auto profile_validation = validate_five_axis_machine_profile(profile);
+    if (!profile_validation.valid)
+        return profile_validation;
+
+    std::vector<FiveAxisToolPose> poses;
+    const auto conversion = make_five_axis_poses_from_extrusion_path(
+        path, base_z_mm, initial_e, e_per_mm, feed_mm_min, poses);
+    if (!conversion.valid)
+        return conversion;
+
+    return plan_five_axis_path(profile.kinematics, profile.output, profile.collision,
+        poses, commands, initial_rotary_1_deg, initial_rotary_2_deg);
 }
 
 } // namespace Slic3r
