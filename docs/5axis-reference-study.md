@@ -93,6 +93,17 @@ Catch2 tests were added in `tests/libslic3r/test_five_axis_motion_planner.cpp` a
 
 This is only the data contract for a future model-derived surface-path producer. Existing path producers do not populate the directions, and `GCodeGenerator::extrude_path_3D()` does not yet consume them. No five-axis output is enabled by this change. A Catch2 test covers alignment detection, copy, reverse, and stale metadata detection; it has been registered but has not been compiled or run.
 
+### Oriented extrusion adapter and typed machine profile
+
+The engine now has two additional helper-level pieces:
+
+- `FiveAxisMachineProfile.hpp` defines an opt-in machine profile containing the rotary mounting/axis/pivot configuration, rotary output words and limits, collision sampling settings, an explicit postprocessor identifier, and an XYZ envelope. Validation rejects mismatched kinematics/output limits and invalid envelopes. This is currently a C++ schema, not yet persisted in `PrintConfig` or exposed in the settings UI. The XYZ envelope is validated but not yet enforced by the motion planner.
+- `FiveAxisExtrusionAdapter.hpp` converts an existing `ExtrusionPath3D` with complete per-vertex tool-axis directions into normalized planner poses. It converts SuperSlicer scaled coordinates to millimetres, applies the supplied nominal layer Z and path Z offsets, and calculates cumulative E from an explicitly supplied E-per-mm value. `plan_five_axis_extrusion_path()` then validates the profile and runs the poses through the motion planner. It rejects disabled profiles, missing/misaligned directions, invalid settings, and planning failures without returning partial commands.
+
+Catch2 tests cover the adapter, cumulative extrusion, fail-closed behavior, and profile validation. They are registered in the test target but have not been compiled or run.
+
+These changes establish a path-data-to-planner API; they do not mean the regular slicer currently produces the normals or calls the adapter. The current `GCodeGenerator` still uses its ordinary `extrude_path_3D()` implementation. Do not enable physical five-axis printing based on these helpers alone.
+
 ## Safety and verification status
 
 The present helper-level kinematics and output code does not yet establish complete collision safety, slicer integration, or a validated machine postprocessor. Do not use its output for physical printing until those pieces and the end-to-end tests are complete. No successful Windows build is claimed by this document.
