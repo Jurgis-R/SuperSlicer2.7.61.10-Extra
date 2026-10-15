@@ -532,6 +532,27 @@ private:
     std::vector<char>         m_zaa_active; // v3: per sample of the last _zaa_contour(): 1 = follows the surface, 0 = flat
     HybridNonplanarScheduler  m_hybrid_nonplanar_scheduler;
     bool                      m_hybrid_nonplanar_layer_due { false };
+
+    // Paths selected for the hybrid finishing pass are deferred until the
+    // planar layer section has completed. Keep the layer/config/origin with
+    // each typed path so extrusion uses the same geometry and feature settings.
+    struct HybridNonplanarQueuedPath {
+        ExtrusionPath3D path;
+        const Layer* layer { nullptr };
+        FullPrintConfig config;
+        Vec2d origin { Vec2d::Zero() };
+        std::string description;
+        double speed_mm_per_sec { -1.0 };
+        uint16_t extruder_id { 0 };
+
+        HybridNonplanarQueuedPath(const ExtrusionPath3D& p, const Layer* l,
+                                  const FullPrintConfig& c, const Vec2d& o,
+                                  std::string d, double speed, uint16_t extruder)
+            : path(p), layer(l), config(c), origin(o), description(std::move(d)),
+              speed_mm_per_sec(speed), extruder_id(extruder) {}
+    };
+    std::vector<HybridNonplanarQueuedPath> m_hybrid_nonplanar_queue;
+    void flush_hybrid_nonplanar_queue(std::string& gcode);
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
     double                              m_last_mm3_per_mm;
 #endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
