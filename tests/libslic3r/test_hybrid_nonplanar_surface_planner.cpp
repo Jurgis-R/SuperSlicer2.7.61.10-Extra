@@ -483,7 +483,7 @@ TEST_CASE("Hybrid swept-tool validator rejects non-finite and excessively long s
     CHECK_FALSE(validator.segment_is_clear(Vec3d(-1.0e7, 0.5, 2.0),
                                            Vec3d(1.0e7, 0.5, 2.0)));
 }
-\n
+
 TEST_CASE("Hybrid non-planar approach validates exact XYZ route from live writer position",
           "[HybridNonplanarEmission]")
 {
