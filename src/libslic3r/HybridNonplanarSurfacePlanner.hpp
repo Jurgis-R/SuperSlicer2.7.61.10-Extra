@@ -79,7 +79,7 @@ inline bool plan_hybrid_surface_paths(
     if (!(width > 0.0) || !(depth > 0.0)) return false;
     const double nx_d = std::floor(width / spacing) + 1.0;
     const double ny_d = std::floor(depth / spacing) + 1.0;
-    if (!std::isfinite(nx_d) || !std::isfinite(ny_d) || nx_d < 2.0 || ny_d < 1.0 ||
+    if (!std::isfinite(nx_d) || !std::isfinite(ny_d) || nx_d < 2.0 || ny_d < 2.0 ||
         nx_d * ny_d > static_cast<double>(options.max_grid_samples))
         return false;
     // This deliberately simple first planner is bounded against pathological
