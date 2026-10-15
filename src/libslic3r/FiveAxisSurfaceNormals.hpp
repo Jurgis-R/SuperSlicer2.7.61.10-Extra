@@ -7,6 +7,9 @@
 #include "ExtrusionEntity.hpp"
 #include "FiveAxisEngine.hpp"
 #include "FiveAxisKinematics.hpp"
+#include "Point.hpp"
+
+#include <Eigen/Geometry>
 
 #include <cmath>
 #include <array>
@@ -16,7 +19,48 @@
 
 namespace Slic3r {
 
-// Accelerated nearest-surface normal lookup for an indexed model mesh.
+
+ 
+// Transform a source mesh into the same millimetre coordinate frame used by
+// print-space toolpaths. The caller must supply the correct composed object,
+// volume, and instance transform; this function does not guess which instance
+// is being sliced. Face winding is reversed for mirrored transforms so the
+// resulting triangle normals retain their intended orientation.
+inline FiveAxisValidationResult transform_five_axis_surface_mesh(
+    const indexed_triangle_set &source,
+    const Transform3d &source_to_print_mm,
+    indexed_triangle_set &output)
+{
+    if (source.vertices.empty() || source.indices.empty())
+        return { false, "Cannot transform an empty surface mesh." };
+
+    const Eigen::Matrix4d matrix = source_to_print_mm.matrix();
+    if (!matrix.allFinite())
+        return { false, "Surface mesh transform contains non-finite values." };
+    const double determinant = source_to_print_mm.linear().determinant();
+    if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-12)
+        return { false, "Surface mesh transform must have a non-singular linear part." };
+
+    indexed_triangle_set transformed;
+    transformed.vertices.reserve(source.vertices.size());
+    transformed.indices = source.indices;
+    for (const Vec3f &vertex : source.vertices) {
+        const Vec3d point = source_to_print_mm * Vec3d(
+            double(vertex.x()), double(vertex.y()), double(vertex.z()));
+        if (!point.allFinite())
+            return { false, "Surface mesh transform produced a non-finite vertex." };
+        transformed.vertices.emplace_back(
+            float(point.x()), float(point.y()), float(point.z()));
+    }
+
+    if (determinant < 0.0) {
+        for (Vec3i32 &face : transformed.indices)
+            std::swap(face[1], face[2]);
+    }
+    output = std::move(transformed);
+    return { true, {} };
+}
+\n// Accelerated nearest-surface normal lookup for an indexed model mesh.
 // The mesh must outlive this sampler. Query points and mesh vertices must be
 // in the SAME coordinate frame and in millimetres. No instance/object transform
 // is guessed or applied here.
