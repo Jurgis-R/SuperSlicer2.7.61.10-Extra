@@ -16,8 +16,9 @@ This document tracks the implementation in the SuperSlicer EXTRA development bra
 ### Scheduler foundation added (not yet connected to G-code emission)
 
 - Added the header-only `HybridNonplanarScheduler` in `src/libslic3r/HybridNonplanarScheduler.hpp`. It tracks a configurable positive interval, emits each due Z boundary at most once, tolerates floating-point boundary error, handles variable-height layers, and rejects invalid/non-monotonic layer input.
+- Connected the scheduler to `GCodeGenerator`: it resets for each export, advances once for each processed planar layer, and Mode B now checks the scheduler's boundary result instead of recomputing an interval band with `floor()` per extrusion path.
 - Added Catch2 coverage in `tests/libslic3r/test_hybrid_nonplanar_scheduler.cpp` and registered it in `tests/libslic3r/CMakeLists.txt`.
-- This is the scheduling primitive only. It is not yet called by `GCodeGenerator`, does not yet insert a separate pass, and does not yet change Mode B's current inline path-deformation behavior.
+- The scheduler is now called by `GCodeGenerator` and controls Mode B eligibility, but it does not yet insert a separate finishing pass. Mode B still emits its contoured segments inline while the planar layer is generated; typed deferred-path queuing and safe separate-pass emission remain outstanding.
 - The C++ test target has not been compiled or run in this environment. Treat these tests as authored, not passed.
 
 ### Not yet implemented / not yet verified
