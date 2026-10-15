@@ -111,6 +111,37 @@ inline FiveAxisBuildDirectionCandidate score_five_axis_build_direction(
     return result;
 }
 
+// Generate a deterministic, approximately uniform full-sphere candidate set.
+// The six cardinal directions are included explicitly; remaining samples use
+// a Fibonacci sphere. This is candidate generation only, not a claim that each
+// direction is reachable or collision-free on the configured machine.
+inline std::vector<FiveAxisVec3> generate_five_axis_build_direction_candidates(
+    std::size_t sample_count = 42)
+{
+    std::vector<FiveAxisVec3> candidates;
+    if (sample_count < 6)
+        sample_count = 6;
+    candidates.reserve(sample_count + 6);
+    candidates.push_back({ 1.0, 0.0, 0.0 });
+    candidates.push_back({ -1.0, 0.0, 0.0 });
+    candidates.push_back({ 0.0, 1.0, 0.0 });
+    candidates.push_back({ 0.0, -1.0, 0.0 });
+    candidates.push_back({ 0.0, 0.0, 1.0 });
+    candidates.push_back({ 0.0, 0.0, -1.0 });
+
+    const double golden_angle = 2.3999632297286533222;
+    const std::size_t remaining = sample_count - 6;
+    for (std::size_t i = 0; i < remaining; ++i) {
+        // Midpoint sampling avoids placing additional samples exactly at poles.
+        const double y = 1.0 - 2.0 * (double(i) + 0.5) / double(remaining);
+        const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
+        const double angle = golden_angle * double(i);
+        candidates.push_back({ radius * std::cos(angle), y,
+                               radius * std::sin(angle) });
+    }
+    return candidates;
+}
+
 // Scores candidates independently and returns the lowest-scoring valid one.
 // Candidate directions must be expressed in the same frame as mesh vertices.
 // This is an early geometric heuristic only: it does not model supports,
