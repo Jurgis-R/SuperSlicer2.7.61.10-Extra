@@ -99,9 +99,9 @@ inline FiveAxisValidationResult load_five_axis_machine_profile(
 
 
 /*
- * Export gate used by GCodeGenerator. A controller writer must explicitly
- * register the exact postprocessor identifier. An enabled profile without a
- * matching writer is rejected instead of silently producing XYZ-only G-code.
+ * Export gate used by GCodeGenerator. The live export path must explicitly
+ * identify a writer that is connected to the generator. Merely having a
+ * standalone emitter/dispatcher compiled into the engine is not sufficient.
  */
 inline FiveAxisValidationResult validate_five_axis_export_gate(
     const FiveAxisMachineProfile &profile, const std::string &registered_postprocessor_id)
@@ -113,7 +113,7 @@ inline FiveAxisValidationResult validate_five_axis_export_gate(
         return validation;
     if (registered_postprocessor_id.empty() ||
         registered_postprocessor_id != profile.postprocessor_id)
-        return { false, "Five-axis output is enabled, but no matching controller-specific G-code writer is registered." };
+        return { false, "Five-axis output is enabled, but no matching controller-specific writer is connected to the live GCodeGenerator export path." };
     return { true, {} };
 }
 
