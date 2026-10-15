@@ -6652,8 +6652,10 @@ std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::strin
         const std::string comment_zaa = m_config.gcode_comments ? descr : "";
         double zaa_fan = 0.;
         const double zaa_base_speed = this->_compute_speed_mm_per_sec(path, speed, zaa_fan, nullptr);
-        const bool   zaa_cap        = m_config.zaa_speed.value > 0.;
-        const double zaa_speed_mm_s = zaa_cap ? std::min(zaa_base_speed, m_config.zaa_speed.value) : zaa_base_speed;
+        const double nonplanar_speed_limit = m_config.hybrid_nonplanar_enabled.value
+            ? m_config.hybrid_nonplanar_speed.value : m_config.zaa_speed.value;
+        const bool   zaa_cap        = nonplanar_speed_limit > 0.;
+        const double zaa_speed_mm_s = zaa_cap ? std::min(zaa_base_speed, nonplanar_speed_limit) : zaa_base_speed;
         const std::string zaa_marker = m_enable_cooling_markers
             ? std::string(GCodeGenerator::_cooldown_marker_speed[uint8_t(extrusion_role_to_gcode_extrusion_role(path.role()))])
             : std::string();
