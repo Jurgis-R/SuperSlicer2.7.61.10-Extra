@@ -976,11 +976,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat,                skip_tiny_fill_diagonal))
     ((ConfigOptionFloat,                skip_tiny_perimeter_length))
     ((ConfigOptionBool,                 zaa_enabled))
-    ((ConfigOptionBool,                 hybrid_nonplanar_enabled))
-    ((ConfigOptionFloat,                hybrid_nonplanar_interval))
-    ((ConfigOptionFloat,                hybrid_nonplanar_max_slope))
-    ((ConfigOptionFloat,                hybrid_nonplanar_max_offset))
-    ((ConfigOptionFloat,                hybrid_nonplanar_speed))
     ((ConfigOptionBool,                 zaa_contour_perimeters))
     ((ConfigOptionFloat,                zaa_min_z))
     ((ConfigOptionFloat,                zaa_sample_distance))
@@ -1288,6 +1283,11 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     (MachineEnvelopeConfig, GCodeConfig),
 
     ((ConfigOptionBool,                 allow_empty_layers))
+    ((ConfigOptionBool,                 hybrid_nonplanar_enabled))
+    ((ConfigOptionFloat,                hybrid_nonplanar_interval))
+    ((ConfigOptionFloat,                hybrid_nonplanar_max_slope))
+    ((ConfigOptionFloat,                hybrid_nonplanar_max_offset))
+    ((ConfigOptionFloat,                hybrid_nonplanar_speed))
     ((ConfigOptionBool,                 avoid_crossing_curled_overhangs))
     ((ConfigOptionBool,                 avoid_crossing_perimeters))
     ((ConfigOptionBool,                 avoid_crossing_not_first_layer))
