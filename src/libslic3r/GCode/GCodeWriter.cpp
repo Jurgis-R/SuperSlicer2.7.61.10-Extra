@@ -739,20 +739,24 @@ std::string GCodeWriter::travel_to_xyz_route(
         throw std::logic_error("XYZ route start does not match the live G-code writer position");
 
     for (const Vec3d &point : points) {
+        // GCodeWriter's coordinate formatter and machine-coordinate contract
+        // use the same absolute bound on all three axes. Check Z here as well,
+        // before the first waypoint can mutate writer state.
         if (!point.allFinite() || std::abs(point.x()) >= 120000. ||
-            std::abs(point.y()) >= 120000.)
+            std::abs(point.y()) >= 120000. || std::abs(point.z()) >= 120000.)
             throw std::invalid_argument("XYZ route contains an invalid or out-of-range waypoint");
     }
 
-    // From here on, a failure cannot physically roll back emitted motion. The
-    // caller must abort the export if an invariant fails after any waypoint.
+    // From here on, an invariant failure must abort the complete export: the
+    // writer state may already have advanced and cannot be rolled back safely.
+    // Callers must also discard the accumulated string on exception.
     std::string gcode;
     for (size_t i = 1; i < points.size(); ++i) {
         if (coincides(points[i - 1], points[i]))
             continue;
         gcode += this->travel_to_xyz(points[i], false, 0.0, comment);
         if (!coincides(this->get_position(), points[i]))
-            throw std::runtime_error("G-code writer position diverged while executing XYZ route");
+            throw std::runtime_error("G-code writer position diverged while executing XYZ route; abort export");
     }
     return gcode;
 }
