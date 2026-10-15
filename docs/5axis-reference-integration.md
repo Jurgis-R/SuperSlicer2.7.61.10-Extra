@@ -90,3 +90,10 @@ The printer configuration now declares opt-in `five_axis_*` settings for the mou
 `ExtrusionPath3D` now carries conservative source metadata, defaulting to unknown. Copies preserve metadata, while adding vertices or simplifying geometry resets it to unknown. This deliberately does not copy a layer-region volume ID onto a path: region provenance is not triangle-level proof. No production surface-correspondence stage currently upgrades path provenance, so it remains unknown unless a future exact correspondence stage explicitly establishes it.
 
 These changes are configuration and fail-closed metadata groundwork, not live G-code integration. The normal G-code generator has not been switched to this profile, no controller-specific rotary writer has been connected, and no build or regression tests have been run.
+
+
+## G-code export gate milestone
+
+The live `GCodeGenerator::do_export` now reads the persisted five-axis options and validates them before opening the output file. When the option is disabled, the gate returns immediately and the established export path continues unchanged. When enabled, the exporter requires an explicit matching controller writer registration; because no production controller writer is registered yet, it fails with a clear error rather than silently writing ordinary XYZ-only output for a five-axis request.
+
+The gate and profile validation have unit coverage for disabled profiles, missing writers, mismatched writer identifiers, and matching identifiers. This is not yet a controller writer and does not establish byte-for-byte three-axis regression: no build or tests have been run in this environment. Actual controller output remains blocked until a specific controller's axis conventions, coordinate modes, pivot/tool-tip compensation, and extrusion/writer state are implemented and tested.
