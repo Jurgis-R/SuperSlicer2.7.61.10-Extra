@@ -177,6 +177,60 @@ inline bool validate_hybrid_nonplanar_approach(
     return true;
 }
 
+
+// Complete, pre-emission route contract. The extrusion points are the exact
+// absolute XYZ vertices that will be emitted; departure and return are explicit
+// travel polylines. This validates geometry only and never mutates GCodeWriter.
+struct HybridNonplanarPassRoute
+{
+    HybridNonplanarApproach approach;
+    std::vector<Vec3d> extrusion_points;
+    std::vector<Vec3d> departure_points;
+    std::vector<Vec3d> return_points;
+};
+
+inline bool validate_hybrid_nonplanar_pass_route(
+    const HybridNonplanarPassRoute &route,
+    const Vec3d &tracked_writer_position,
+    const std::function<bool(const Vec3d &, const Vec3d &)> &swept_tool_segment_is_clear,
+    double position_tolerance_mm = 1e-4)
+{
+    if (!swept_tool_segment_is_clear || route.extrusion_points.size() < 2 ||
+        route.departure_points.size() < 2 || route.return_points.size() < 2 ||
+        !std::isfinite(position_tolerance_mm) || position_tolerance_mm < 0.0)
+        return false;
+
+    const double tolerance_sq = position_tolerance_mm * position_tolerance_mm;
+    auto coincides = [tolerance_sq](const Vec3d &a, const Vec3d &b) {
+        return a.allFinite() && b.allFinite() && (a - b).squaredNorm() <= tolerance_sq;
+    };
+    if (!coincides(route.approach.extrusion_start, route.extrusion_points.front()) ||
+        !coincides(route.departure_points.front(), route.extrusion_points.back()) ||
+        !coincides(route.return_points.front(), route.departure_points.back()))
+        return false;
+
+    if (!validate_hybrid_nonplanar_approach(
+            route.approach, tracked_writer_position, route.extrusion_points.front(),
+            swept_tool_segment_is_clear, position_tolerance_mm))
+        return false;
+
+    auto validate_segments = [&swept_tool_segment_is_clear](
+        const std::vector<Vec3d> &points) {
+        for (const Vec3d &point : points)
+            if (!point.allFinite())
+                return false;
+        for (size_t i = 1; i < points.size(); ++i) {
+            if ((points[i] - points[i - 1]).squaredNorm() > 0.0 &&
+                !swept_tool_segment_is_clear(points[i - 1], points[i]))
+                return false;
+        }
+        return true;
+    };
+    return validate_segments(route.extrusion_points) &&
+           validate_segments(route.departure_points) &&
+           validate_segments(route.return_points);
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_HybridNonplanarExtrusion_hpp_
