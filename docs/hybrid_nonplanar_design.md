@@ -8,6 +8,7 @@ This document tracks the implementation in the SuperSlicer EXTRA development bra
 
 - Added a **Hybrid non-planar printing** checkbox, mutually exclusive with ZAA during G-code generation.
 - Added configurable interval `H` (default 2.0 mm), maximum slope angle (default 30 degrees), and maximum Z offset (default 0.4 mm).
+- Added a conservative non-planar speed cap (default 20 mm/s) for active deformed sections.
 - Added an initial **Mode B** path-deformation implementation: on the existing layer whose vertical span crosses each H boundary, eligible perimeter and top-solid paths are sampled against the model mesh and receive bounded Z offsets.
 - Added an adjacent-sample slope limiter and ramps the path offsets back to nominal layer Z at both ends.
 - Corrected the existing `ExtrusionPath3D` G-code writer to use each destination vertex's Z offset and true 3D segment length.
