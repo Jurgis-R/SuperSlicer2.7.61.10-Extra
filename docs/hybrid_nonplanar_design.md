@@ -13,6 +13,13 @@ This document tracks the implementation in the SuperSlicer EXTRA development bra
 - Added an adjacent-sample slope limiter and ramps the path offsets back to nominal layer Z at both ends.
 - Corrected the existing `ExtrusionPath3D` G-code writer to use each destination vertex's Z offset and true 3D segment length.
 
+### Scheduler foundation added (not yet connected to G-code emission)
+
+- Added the header-only `HybridNonplanarScheduler` in `src/libslic3r/HybridNonplanarScheduler.hpp`. It tracks a configurable positive interval, emits each due Z boundary at most once, tolerates floating-point boundary error, handles variable-height layers, and rejects invalid/non-monotonic layer input.
+- Added Catch2 coverage in `tests/libslic3r/test_hybrid_nonplanar_scheduler.cpp` and registered it in `tests/libslic3r/CMakeLists.txt`.
+- This is the scheduling primitive only. It is not yet called by `GCodeGenerator`, does not yet insert a separate pass, and does not yet change Mode B's current inline path-deformation behavior.
+- The C++ test target has not been compiled or run in this environment. Treat these tests as authored, not passed.
+
 ### Not yet implemented / not yet verified
 
 - This first Mode B increment deforms paths on an existing layer; it does **not** insert a separate additional non-planar pass between planar layer groups.
