@@ -74,7 +74,28 @@ inline FiveAxisValidationResult transform_five_axis_surface_mesh(
     output = std::move(transformed);
     return { true, {} };
 }
-\n// Accelerated nearest-surface normal lookup for an indexed model mesh.
+
+
+ 
+// SuperSlicer slices a model volume using the composition
+// PrintObject::trafo_centered() * ModelVolume::get_matrix(). Keep this
+// composition explicit here so callers do not accidentally omit the volume
+// transform or apply the centering transform twice. The input mesh is the
+// volume's untransformed indexed mesh; output is in PrintObject slicing space.
+inline FiveAxisValidationResult transform_five_axis_volume_mesh(
+    const indexed_triangle_set &volume_mesh,
+    const Transform3d &print_object_centered_transform,
+    const Transform3d &volume_transform,
+    indexed_triangle_set &output)
+{
+    if (!print_object_centered_transform.matrix().allFinite() ||
+        !volume_transform.matrix().allFinite())
+        return { false, "Print-object or volume transform contains non-finite values." };
+    return transform_five_axis_surface_mesh(
+        volume_mesh, print_object_centered_transform * volume_transform, output);
+}
+
+// Accelerated nearest-surface normal lookup for an indexed model mesh.
 // The mesh must outlive this sampler. Query points and mesh vertices must be
 // in the SAME coordinate frame and in millimetres. No instance/object transform
 // is guessed or applied here.
