@@ -121,6 +121,60 @@ inline bool plan_hybrid_surface_extrusion_paths(
         print_mesh, options, base_z_mm, attributes, swept_tool_segment_is_clear, output);
 }
 
+
+ 
+// A non-planar approach is an explicit XYZ polyline from the writer's live
+// position, through a configured high-clearance waypoint, to the first
+// extrusion vertex. Coordinates are absolute millimetres in print space.
+// This helper validates the route; it does not itself emit G-code.
+struct HybridNonplanarApproach
+{
+    std::vector<Vec3d> points;
+    Vec3d expected_start { Vec3d::Zero() };
+    Vec3d extrusion_start { Vec3d::Zero() };
+    double clearance_z_mm { 0.0 };
+};
+
+inline bool validate_hybrid_nonplanar_approach(
+    const HybridNonplanarApproach &approach,
+    const Vec3d &tracked_writer_position,
+    const Vec3d &path_start,
+    const std::function<bool(const Vec3d &, const Vec3d &)> &swept_tool_segment_is_clear,
+    double position_tolerance_mm = 1e-4)
+{
+    if (!swept_tool_segment_is_clear || approach.points.size() < 3 ||
+        !tracked_writer_position.allFinite() || !path_start.allFinite() ||
+        !approach.expected_start.allFinite() || !approach.extrusion_start.allFinite() ||
+        !std::isfinite(approach.clearance_z_mm) ||
+        !std::isfinite(position_tolerance_mm) || position_tolerance_mm < 0.0)
+        return false;
+
+    const double tolerance_sq = position_tolerance_mm * position_tolerance_mm;
+    if ((approach.expected_start - tracked_writer_position).squaredNorm() > tolerance_sq ||
+        (approach.extrusion_start - path_start).squaredNorm() > tolerance_sq ||
+        (approach.points.front() - tracked_writer_position).squaredNorm() > tolerance_sq ||
+        (approach.points.back() - path_start).squaredNorm() > tolerance_sq)
+        return false;
+
+    double max_z = -std::numeric_limits<double>::infinity();
+    for (const Vec3d &point : approach.points) {
+        if (!point.allFinite())
+            return false;
+        max_z = std::max(max_z, point.z());
+    }
+    if (max_z + position_tolerance_mm < approach.clearance_z_mm)
+        return false;
+
+    // Validate the exact segments the emitter must write. Coincident
+    // waypoints are omitted by the emitter and therefore need no sweep check.
+    for (size_t i = 1; i < approach.points.size(); ++i) {
+        if ((approach.points[i] - approach.points[i - 1]).squaredNorm() > 0.0 &&
+            !swept_tool_segment_is_clear(approach.points[i - 1], approach.points[i]))
+            return false;
+    }
+    return true;
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_HybridNonplanarExtrusion_hpp_
