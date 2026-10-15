@@ -7764,6 +7764,9 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
 }
 
 std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s, double max_speed_mm_s) {
+    // Keep the planar lifecycle in its original order: compute speed, perform the
+    // normal travel (including travel acceleration/deceleration), then run the
+    // shared post-travel extrusion preparation.
     std::string gcode;
     gcode.reserve(512);
     std::string description{ description_in };
@@ -7777,28 +7780,60 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
         speed_mm_s = std::min(speed_mm_s, max_speed_mm_s);
 
     gcode += this->_travel_before_extrude(path, description_in, speed_mm_s);
+    gcode += this->_prepare_extrusion_after_travel(path, description_in, speed_mm_s, speed_comment, false, nullptr);
+    return gcode;
+}
+
+std::string GCodeGenerator::_prepare_extrusion_after_travel(
+    const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s,
+    const std::string &speed_comment, bool route_established_state,
+    const HybridPreExtrusionTravelContract *route_contract)
+{
+    std::string gcode;
+    gcode.reserve(512);
+    std::string description{ description_in };
+
+    // The experimental route must prove its exact writer state before shared
+    // preparation mutates retraction, pending G-code, PA, or role tracking.
+    if (route_established_state) {
+        if (route_contract == nullptr ||
+            !validate_hybrid_pre_extrusion_state(*route_contract, m_writer.get_position(),
+                                                 m_writer.get_lift(), true))
+            throw std::runtime_error("Hybrid non-planar pre-extrusion writer state does not match its declared contract.");
+        if (!m_delayed_layer_change.empty())
+            throw std::runtime_error("Hybrid non-planar route cannot consume a delayed layer change.");
+    } else if (route_contract != nullptr) {
+        throw std::runtime_error("A hybrid pre-extrusion route contract was supplied without an established route state.");
+    }
+
 
     //if needed, write the gcode_label_objects_end then gcode_label_objects_start
     //should be already done by travel_to, but just in case
     _add_object_change_labels(gcode);
 
-    // compensate retraction
-    if (m_delayed_layer_change.empty()) {
-        gcode += m_writer.unlift();//this->unretract();
-        assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) || m_loop_vase_mode);
-    } else {
-        //check if an unlift happens
-        std::string unlift = m_writer.unlift();
-        assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON));
-        if (unlift.empty()) {
-            unlift = m_delayed_layer_change;
+    // Compensate retraction. Ordinary planar extrusion keeps the historical
+    // unlift path. A hybrid route skips it only after its declared end state has
+    // been validated above; the route owns the Z/lift transition.
+    if (!route_established_state) {
+        if (m_delayed_layer_change.empty()) {
+            gcode += m_writer.unlift();//this->unretract();
+            assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) || m_loop_vase_mode);
+        } else {
+            //check if an unlift happens
+            std::string unlift = m_writer.unlift();
+            assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON));
+            if (unlift.empty()) {
+                unlift = m_delayed_layer_change;
+            }
+            m_delayed_layer_change.clear();
+            gcode += unlift;
+            //now that we move to the new layer, forget previous layer wipe (if any).
+            //gcode += "; m_wipe.reset_path(); after m_delayed_layer_change\n";
         }
-        m_delayed_layer_change.clear();
-        gcode += unlift;
-        //now that we move to the new layer, forget previous layer wipe (if any).
-        //gcode += "; m_wipe.reset_path(); after m_delayed_layer_change\n";
+        gcode += m_writer.unretract();
+    } else {
+        gcode += m_writer.unretract();
     }
-    gcode += m_writer.unretract();
 
     if (!m_pending_pre_extrusion_gcode.empty()) {
         // There is G-Code that is due to be inserted before an extrusion starts. Insert it.
@@ -7940,6 +7975,7 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     // F     is mm per minute.
     // speed is mm per second
     gcode += m_writer.set_speed_mm_s(speed_mm_s, speed_comment, cooling_marker_setspeed_comments);
+
 
     return gcode;
 }
