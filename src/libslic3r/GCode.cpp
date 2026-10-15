@@ -54,7 +54,6 @@
 #include <cmath>
 #include "AABBTreeIndirect.hpp"
 #include "TriangleMesh.hpp"
-#include "HybridNonplanarSectionPlanner.hpp"
 #include <cstdlib>
 #include <chrono>
 #include <map>
@@ -792,15 +791,6 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     
     // Enabled and either not done, or marked as done while the output file is missing.
     monitor.set_started(psGCodeExport);
-
-    // Reset export-local state. The selected object's full G-code config is
-    // available in process_layer, where the configured H interval is applied.
-    m_hybrid_nonplanar_scheduler.reset();
-    m_hybrid_nonplanar_section_planner.reset();
-    m_hybrid_completed_section.reset();
-    m_hybrid_nonplanar_layer_due = false;
-    m_hybrid_nonplanar_queue.clear();
-    m_hybrid_path_deferred = false;
 
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
@@ -3300,43 +3290,6 @@ LayerResult GCodeGenerator::process_layer(
     m_config.apply(print.default_region_config(), true);
     m_config.apply(layer.object()->config(), true);
 
-    // Start a fresh interval sequence at the first layer of each print order.
-    // This also gives the scheduler the active full G-code config; Print::config()
-    // is a narrower type and does not expose GCodeConfig-only options.
-    if (layer.id() == 0) {
-        m_hybrid_nonplanar_scheduler.reset(m_config.hybrid_nonplanar_interval.value);
-        m_hybrid_nonplanar_section_planner.reset(
-            m_config.hybrid_nonplanar_interval.value, 1e-6, layer.bottom_z());
-        m_hybrid_completed_section.reset();
-        m_hybrid_nonplanar_queue.clear();
-
-        // The current finishing queue is not yet a whole-section planner. Fail
-        // closed on layouts whose object/tool ordering it cannot safely handle.
-        if (m_config.hybrid_nonplanar_enabled.value) {
-            const bool multiple_objects = print.objects().size() != 1;
-            const bool multiple_instances = !multiple_objects &&
-                print.objects().front()->instances().size() != 1;
-            const bool multiple_extruders = print.config().nozzle_diameter.size() != 1;
-            const bool sequential_ordering = print.config().complete_objects.value ||
-                print.config().parallel_objects_step.value > 0;
-            if (multiple_objects || multiple_instances || multiple_extruders || sequential_ordering) {
-                throw RuntimeError(
-                    "Hybrid non-planar printing currently requires one object, one instance, "
-                    "one extruder, and layer-by-layer ordering; export aborted because safe "
-                    "finishing-pass ordering is not implemented for this print layout");
-            }
-        }
-    }
-
-    // The scheduler advances once per exported planar layer. Mode B consults
-    // this result instead of independently guessing a boundary with floor().
-    m_hybrid_nonplanar_layer_due = false;
-    if (m_config.hybrid_nonplanar_enabled.value) {
-        const std::vector<double> due = m_hybrid_nonplanar_scheduler.after_planar_layer(
-            layer.bottom_z(), layer.print_z);
-        m_hybrid_nonplanar_layer_due = !due.empty();
-    }
-
     // Check whether it is possible to apply the spiral vase logic for this layer.
     // Just a reminder: A spiral vase mode is allowed for a single object, single material print only.
     m_enable_loop_clipping = true;
@@ -3674,25 +3627,6 @@ LayerResult GCodeGenerator::process_layer(
     }
     layer_area = unscaled(unscaled(layer_area));
     status_monitor.stats().layer_area_stats.emplace_back(print_z, layer_area);
-
-    // This is the outer print-Z layer-group boundary: all objects and tools
-    // participating at this height have completed their planar work. Advance
-    // the H-section planner here (not per object or per extruder), so the
-    // completed-section metadata describes the entire planar group.
-    m_hybrid_completed_section.reset();
-    if (m_config.hybrid_nonplanar_enabled.value) {
-        m_hybrid_completed_section = m_hybrid_nonplanar_section_planner.after_planar_layer(
-            layer.bottom_z(), print_z);
-        if (!m_hybrid_nonplanar_section_planner.valid())
-            throw RuntimeError(
-                "Hybrid non-planar section planning encountered an invalid or ambiguous layer group; "
-                "export aborted rather than guessing a section boundary");
-    }
-
-    // Legacy Mode B still queues deformed existing paths. This is deliberately
-    // kept separate from the new section metadata; it must not be mistaken for
-    // the future mesh-derived surface-patch finishing pass.
-    this->flush_hybrid_nonplanar_queue(gcode);
 
     BOOST_LOG_TRIVIAL(trace) << "Exported layer " << layer.id() << " print_z " << print_z <<
     log_memory_info();
@@ -5817,12 +5751,10 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     for(int i=1;i<simplifed_path.polyline.size();++i)
         assert(!simplifed_path.polyline.get_point(i - 1).coincides_with_epsilon(simplifed_path.polyline.get_point(i)));
     // print the path
-    m_hybrid_path_deferred = false;
     gcode += this->_extrude(simplifed_path, description, speed_mm_per_sec);
 
-    // A deferred path has not been extruded yet, so do not advertise it as a
-    // completed wipe path. The actual finishing pass updates wipe state later.
-    if (!m_hybrid_path_deferred && m_wipe.is_enabled()) {
+    //simplifed_path will be discarded i can reuse it to create the wipe
+    if (m_wipe.is_enabled()) {
         simplifed_path.reverse();
         m_wipe.set_path(simplifed_path.polyline.get_arc(), false);
     }
@@ -5831,7 +5763,7 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     return gcode;
 }
 
-std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed, double max_speed_mm_s) {
+std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed) {
     //path.simplify(SCALED_RESOLUTION);
     ExtrusionPath3D simplifed_path = path;
     if (this->visitor_flipped) {
@@ -5848,7 +5780,7 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
     }
 
     std::string gcode;
-    gcode += this->_before_extrude(simplifed_path, description, speed, max_speed_mm_s);
+    gcode += this->_before_extrude(simplifed_path, description, speed);
 
     // calculate extrusion length per distance unit
     double e_per_mm = _compute_e_per_mm(simplifed_path);
@@ -5859,19 +5791,10 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
         for (size_t i = 0; i < simplifed_path.polyline.size()-1;i++) {
             assert(!simplifed_path.polyline.has_arc()); //FIXME extrude_to_arc_xyz ?
             Line line(simplifed_path.polyline.get_point(i), simplifed_path.polyline.get_point(i + 1));
-            // z_offsets is indexed per polyline vertex. This move ends at vertex i + 1,
-            // so use that vertex's offset for the destination Z. Extrusion must follow
-            // the true 3D segment length, not only its XY projection.
-            const coord_t z_start = simplifed_path.z_offsets.size() > i
-                ? simplifed_path.z_offsets[i] : 0;
-            const coord_t z_end = simplifed_path.z_offsets.size() > i + 1
-                ? simplifed_path.z_offsets[i + 1] : 0;
-            const double dz = static_cast<double>(z_end) - static_cast<double>(z_start);
-            const double line_length = std::hypot(
-                static_cast<double>(line.length()), dz) * SCALING_FACTOR;
+            const double line_length = line.length() * SCALING_FACTOR;
             path_length += line_length;
             gcode += m_writer.extrude_to_xyz(
-                this->point_to_gcode(line.b, z_end),
+                this->point_to_gcode(line.b, simplifed_path.z_offsets.size()>i ? simplifed_path.z_offsets[i] : 0),
                 e_per_mm * line_length,
                 comment);
         }
@@ -6484,71 +6407,6 @@ double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path, double speed
     return e_per_mm;
 }
 
-void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
-{
-    if (m_hybrid_nonplanar_queue.empty())
-        return;
-
-    // Preflight the whole queue before writing even the pass markers. A bad
-    // deferred record must not leave a partially emitted finishing pass.
-    for (const HybridNonplanarQueuedPath& queued : m_hybrid_nonplanar_queue) {
-        if (queued.layer == nullptr || !std::isfinite(queued.layer->print_z) ||
-            queued.path.polyline.size() < 2 ||
-            queued.path.z_offsets.size() != size_t(queued.path.polyline.size()) ||
-            !std::isfinite(queued.speed_mm_per_sec) ||
-            !std::isfinite(queued.perimeter_extrusion_width) ||
-            queued.perimeter_extrusion_width <= 0. ||
-            m_writer.tool() == nullptr ||
-            m_writer.tool()->id() != queued.extruder_id) {
-            throw RuntimeError("Hybrid non-planar finishing queue failed metadata validation; export aborted");
-        }
-    }
-
-    std::vector<HybridNonplanarQueuedPath> queued_paths;
-    queued_paths.swap(m_hybrid_nonplanar_queue);
-
-    gcode += ";HYBRID_PLANAR_SECTION_END\n";
-    gcode += ";HYBRID_FINISHING_PASS_BEGIN\n";
-
-    const Layer* saved_layer = m_layer;
-    const FullPrintConfig saved_config = m_config;
-    const Vec2d saved_origin = m_origin;
-    const double saved_perimeter_width = m_current_perimeter_extrusion_width;
-    const bool saved_object_layer_over_raft = m_object_layer_over_raft;
-
-    for (HybridNonplanarQueuedPath& queued : queued_paths) {
-        m_layer = queued.layer;
-        m_config = queued.config;
-        m_origin = queued.origin;
-        m_current_perimeter_extrusion_width = queued.perimeter_extrusion_width;
-        m_object_layer_over_raft = queued.object_layer_over_raft;
-
-        const double base_z = queued.layer->print_z;
-        if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
-            gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: return to layer Z");
-
-        // extrude_path_3D/_before_extrude owns the approach travel, retract and
-        // unretract sequence. Do not call travel_to here as well: that would
-        // mutate the travel plan without writing its returned polyline.
-        const double speed_limit = m_config.hybrid_nonplanar_speed.value;
-        gcode += this->extrude_path_3D(
-            queued.path, queued.description, queued.speed_mm_per_sec,
-            speed_limit > 0. ? speed_limit : -1.);
-
-        // The contour sampler ramps both endpoints to nominal layer Z. Keep
-        // the writer synchronized with that nominal Z before restoring context.
-        if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
-            gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: restore layer Z");
-    }
-
-    m_layer = saved_layer;
-    m_config = saved_config;
-    m_origin = saved_origin;
-    m_current_perimeter_extrusion_width = saved_perimeter_width;
-    m_object_layer_over_raft = saved_object_layer_over_raft;
-    gcode += ";HYBRID_FINISHING_PASS_END\n";
-}
-
 // ======== ZAA (Z contouring) ========
 struct GCodeGenerator::ZaaMeshData {
     indexed_triangle_set     its;
@@ -6576,20 +6434,13 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 {
     out.clear();
     m_zaa_active.clear();
-    // Hybrid mode reuses the existing mesh-following path sampler, but only on
-    // layers that cross an H interval. It is mutually exclusive with standalone ZAA.
-    const bool hybrid = m_config.hybrid_nonplanar_enabled.value;
-    if ((!hybrid && !m_config.zaa_enabled.value) ||
-        m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
-        return false;
-    if (hybrid && !m_hybrid_nonplanar_layer_due)
+    if (!m_config.zaa_enabled.value || m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
         return false;
     const ExtrusionRole role = path.role();
     const bool real_top = role == ExtrusionRole::TopSolidInfill;
-    const bool contour_solid_infill = !hybrid && m_config.zaa_contour_perimeters.value;
     const bool is_top   = real_top ||
-                          ((hybrid || contour_solid_infill) && role == ExtrusionRole::SolidInfill);
-    const bool is_peri  = (hybrid || m_config.zaa_contour_perimeters.value) &&
+                          (m_config.zaa_contour_perimeters.value && role == ExtrusionRole::SolidInfill);
+    const bool is_peri  = m_config.zaa_contour_perimeters.value &&
                           (role == ExtrusionRole::Perimeter || role == ExtrusionRole::ExternalPerimeter);
     if (!is_top && !is_peri)
         return false;
@@ -6603,14 +6454,10 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const double h         = m_layer->height;
     const double print_z   = m_layer->print_z;
     const double ray_z     = m_layer->slice_z;                              // inside the solid under a top surface
-    const double min_line  = std::max(0., m_config.zaa_min_z.value);        // ZAA minimum line height
-    const double max_line  = std::max(h, m_config.zaa_max_height.value);    // ZAA maximum line height
-    const double hybrid_offset = std::max(0.05, m_config.hybrid_nonplanar_max_offset.value);
-    // In hybrid mode keep the deposited line from collapsing and limit upward
-    // displacement conservatively on top-solid paths.
-    const double max_down  = hybrid ? std::min(h - std::min(h, 0.05), hybrid_offset)
-                                    : std::max(0., h - min_line);
-    const double max_up    = hybrid ? hybrid_offset : std::max(0., max_line - h);
+    const double min_line  = std::max(0., m_config.zaa_min_z.value);        // thinnest line
+    const double max_line  = std::max(h, m_config.zaa_max_height.value);    // thickest line
+    const double max_down  = std::max(0., h - min_line);                    // lowest offset  = -max_down
+    const double max_up    = std::max(0., max_line - h);                    // highest offset = +max_up
     const double tol       = 0.03;
     // a real top surface of this layer is at most half a layer above the layer top (the layer is sliced in its middle)
     const double valid_up  = (real_top ? std::min(max_up, 0.5 * h) : max_up) + tol;
@@ -6667,14 +6514,6 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const size_t n = spts.size();
     if (n < 2)
         return false;
-
-    if (hybrid) {
-        // Use the shared fail-closed constraint planner so offsets and the
-        // endpoint ramps are tested independently of G-code emission.
-        const double max_angle = std::max(1.0, std::min(60.0, m_config.hybrid_nonplanar_max_slope.value));
-        if (!constrain_hybrid_nonplanar_offsets(ss, sd, hybrid_offset, max_angle))
-            return false; // malformed samples: preserve the original planar path
-    }
 
     // --- x-ray: which samples follow the surface ---
     std::vector<char> act(n, 0);
@@ -6743,31 +6582,10 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 
 std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::string_view description, double speed) {
 
-    m_hybrid_path_deferred = false;
     std::string descr = description.empty() ? gcode_extrusion_role_to_string(extrusion_role_to_gcode_extrusion_role(path.role())) : std::string(description);
     // ZAA: decide before the speed is used
     std::vector<std::pair<Point, coord_t>> zaa_points;
     const bool zaa_active = this->_zaa_contour(path, zaa_points);
-
-    // Hybrid Mode B replaces selected planar paths with deferred 3D paths.
-    // They are emitted after the planar layer's paths have completed.
-    if (zaa_active && m_config.hybrid_nonplanar_enabled.value) {
-        if (m_layer == nullptr || zaa_points.size() < 2 || zaa_points.size() != m_zaa_active.size())
-            throw RuntimeError("Hybrid non-planar contour has invalid layer/sample context");
-
-        ExtrusionPath3D deferred(path.attributes(), false);
-        for (size_t i = 0; i < zaa_points.size(); ++i)
-            deferred.push_back(zaa_points[i].first, zaa_points[i].second);
-
-        const uint16_t extruder_id = m_writer.tool() != nullptr
-            ? static_cast<uint16_t>(m_writer.tool()->id()) : uint16_t(0);
-        m_hybrid_nonplanar_queue.emplace_back(
-            deferred, m_layer, m_config, m_origin, descr, speed, extruder_id,
-            m_current_perimeter_extrusion_width, m_object_layer_over_raft);
-        m_hybrid_path_deferred = true;
-        return {};
-    }
-
     // v3: the ZAA speed cap is applied later, only on the active runs of the path
     std::string gcode = this->_before_extrude(path, descr, speed);
     if (zaa_active) {
@@ -6779,10 +6597,8 @@ std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::strin
         const std::string comment_zaa = m_config.gcode_comments ? descr : "";
         double zaa_fan = 0.;
         const double zaa_base_speed = this->_compute_speed_mm_per_sec(path, speed, zaa_fan, nullptr);
-        const double nonplanar_speed_limit = m_config.hybrid_nonplanar_enabled.value
-            ? m_config.hybrid_nonplanar_speed.value : m_config.zaa_speed.value;
-        const bool   zaa_cap        = nonplanar_speed_limit > 0.;
-        const double zaa_speed_mm_s = zaa_cap ? std::min(zaa_base_speed, nonplanar_speed_limit) : zaa_base_speed;
+        const bool   zaa_cap        = m_config.zaa_speed.value > 0.;
+        const double zaa_speed_mm_s = zaa_cap ? std::min(zaa_base_speed, m_config.zaa_speed.value) : zaa_base_speed;
         const std::string zaa_marker = m_enable_cooling_markers
             ? std::string(GCodeGenerator::_cooldown_marker_speed[uint8_t(extrusion_role_to_gcode_extrusion_role(path.role()))])
             : std::string();
@@ -7586,7 +7402,7 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
     return gcode;
 }
 
-std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s, double max_speed_mm_s) {
+std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s) {
     std::string gcode;
     gcode.reserve(512);
     std::string description{ description_in };
@@ -7594,10 +7410,6 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     // compute speed here to be able to know it for travel_deceleration_use_target
     std::string speed_comment = "";
     speed_mm_s = _compute_speed_mm_per_sec(path, speed_mm_s, m_overhang_fan_override, m_config.gcode_comments ? &speed_comment : nullptr);
-    // Apply the hybrid cap after role/feature speed calculation so it is not
-    // multiplied again and so travel-deceleration planning sees the final cap.
-    if (max_speed_mm_s > 0.)
-        speed_mm_s = std::min(speed_mm_s, max_speed_mm_s);
 
     gcode += this->_travel_before_extrude(path, description_in, speed_mm_s);
 
