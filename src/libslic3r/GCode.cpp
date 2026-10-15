@@ -792,6 +792,11 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     // Enabled and either not done, or marked as done while the output file is missing.
     monitor.set_started(psGCodeExport);
 
+    // Reset interval state for each G-code export; boundaries are consumed once
+    // in print-Z order, not independently by each extrusion path.
+    m_hybrid_nonplanar_scheduler.reset(print->config().hybrid_nonplanar_interval.value);
+    m_hybrid_nonplanar_layer_due = false;
+
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
     std::vector<std::pair<std::string, std::string>> validation_res = DoExport::validate_custom_gcode(*print);
@@ -3289,6 +3294,15 @@ LayerResult GCodeGenerator::process_layer(
     // Initialize config with the 1st object to be printed at this layer.
     m_config.apply(print.default_region_config(), true);
     m_config.apply(layer.object()->config(), true);
+
+    // The scheduler advances once per exported planar layer. Mode B consults
+    // this result instead of independently guessing a boundary with floor().
+    m_hybrid_nonplanar_layer_due = false;
+    if (m_config.hybrid_nonplanar_enabled.value) {
+        const std::vector<double> due = m_hybrid_nonplanar_scheduler.after_planar_layer(
+            layer.bottom_z(), layer.print_z);
+        m_hybrid_nonplanar_layer_due = !due.empty();
+    }
 
     // Check whether it is possible to apply the spiral vase logic for this layer.
     // Just a reminder: A spiral vase mode is allowed for a single object, single material print only.
@@ -6449,18 +6463,8 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     if ((!hybrid && !m_config.zaa_enabled.value) ||
         m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
         return false;
-    if (hybrid) {
-        const double interval = std::max(0.2, m_config.hybrid_nonplanar_interval.value);
-        const double bottom_z = m_layer->bottom_z();
-        const double top_z = m_layer->print_z;
-        // Select the layer whose vertical span crosses an H boundary. This works
-        // with variable layer heights and avoids relying on an exact floating-point modulo.
-        const auto interval_band = [interval](double z) -> long long {
-            return static_cast<long long>(std::floor((z + 1e-6) / interval));
-        };
-        if (interval_band(top_z) <= interval_band(bottom_z))
-            return false;
-    }
+    if (hybrid && !m_hybrid_nonplanar_layer_due)
+        return false;
     const ExtrusionRole role = path.role();
     const bool real_top = role == ExtrusionRole::TopSolidInfill;
     const bool contour_solid_infill = !hybrid && m_config.zaa_contour_perimeters.value;
