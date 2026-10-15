@@ -3813,6 +3813,9 @@ void GCodeGenerator::process_layer_single_object(
             }
         }
     }
+    // Finish the current planar section before emitting the deferred non-planar paths.
+    this->flush_hybrid_nonplanar_queue(gcode);
+
     // Don't set m_gcode_label_objects_end if you don't had to write the m_gcode_label_objects_start.
     // m_gcode_label_objects_start != "" => start_object has been called, but not written on gcode.
     // first == true => start_object has NOT been called
@@ -6430,6 +6433,61 @@ double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path, double speed
         e_per_mm *= flow_map->interpolate(map_x) * 0.01;
     }
     return e_per_mm;
+}
+
+void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
+{
+    if (m_hybrid_nonplanar_queue.empty())
+        return;
+
+    std::vector<HybridNonplanarQueuedPath> queued_paths;
+    queued_paths.swap(m_hybrid_nonplanar_queue);
+
+    gcode += ";HYBRID_PLANAR_SECTION_END\n";
+    gcode += ";HYBRID_FINISHING_PASS_BEGIN\n";
+
+    const Layer* saved_layer = m_layer;
+    const FullPrintConfig saved_config = m_config;
+    const Vec2d saved_origin = m_origin;
+
+    for (HybridNonplanarQueuedPath& queued : queued_paths) {
+        if (queued.layer == nullptr || m_writer.tool() == nullptr ||
+            m_writer.tool()->id() != queued.extruder_id) {
+            // A context mismatch must abort export rather than silently omit
+            // deferred extrusion or print it with the wrong filament.
+            throw RuntimeError("Hybrid non-planar finishing path has invalid layer/extruder context");
+        }
+
+        m_layer = queued.layer;
+        m_config = queued.config;
+        m_origin = queued.origin;
+
+        const double base_z = queued.layer->print_z;
+        if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
+            gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: return to layer Z");
+
+        // Use the normal travel planner/retraction logic before the deferred
+        // extrusion, then emit the typed 3D path with its original attributes.
+        this->travel_to(gcode, queued.path.first_point(), queued.path.role());
+
+        double speed = queued.speed_mm_per_sec;
+        const double speed_limit = m_config.hybrid_nonplanar_speed.value;
+        if (speed_limit > 0.) {
+            double fan_speed = 0.;
+            speed = std::min(this->_compute_speed_mm_per_sec(queued.path, speed, fan_speed, nullptr), speed_limit);
+        }
+        gcode += this->extrude_path_3D(queued.path, queued.description, speed);
+
+        // The contour sampler ramps both endpoints to nominal layer Z. Keep
+        // the writer synchronized with that nominal Z before restoring context.
+        if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
+            gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: restore layer Z");
+    }
+
+    m_layer = saved_layer;
+    m_config = saved_config;
+    m_origin = saved_origin;
+    gcode += ";HYBRID_FINISHING_PASS_END\n";
 }
 
 // ======== ZAA (Z contouring) ========
