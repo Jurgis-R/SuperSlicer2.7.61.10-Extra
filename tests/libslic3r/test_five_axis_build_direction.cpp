@@ -90,3 +90,70 @@ TEST_CASE("Five-axis build-direction planner generates and scores candidates in 
     CHECK(std::isfinite(result.score));
     CHECK(result.projected_height_mm > 0.0);
 }
+
+ 
+TEST_CASE("Machine-aware orientation filter rejects unreachable rotary poses", "[FiveAxisBuildDirection]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = "test-post";
+    profile.kinematics.rotary_1_min_deg = -10.0;
+    profile.kinematics.rotary_1_max_deg = 10.0;
+    profile.kinematics.rotary_2_min_deg = -10.0;
+    profile.kinematics.rotary_2_max_deg = 10.0;
+    profile.output.rotary_1_min_deg = -10.0;
+    profile.output.rotary_1_max_deg = 10.0;
+    profile.output.rotary_2_min_deg = -10.0;
+    profile.output.rotary_2_max_deg = 10.0;
+
+    std::vector<FiveAxisBuildDirectionCandidate> candidates(2);
+    candidates[0].valid = true;
+    candidates[0].build_up = {0.0, 0.0, 1.0};
+    candidates[0].score = 0.1;
+    candidates[1].valid = true;
+    candidates[1].build_up = {0.0, 1.0, 0.0};
+    candidates[1].score = 0.2;
+
+    const std::vector<std::vector<FiveAxisToolPose>> poses = {
+        { {{10.0, 10.0, 10.0}, {0.0, 0.0, 1.0}, 0.0, 600.0},
+          {{11.0, 10.0, 10.0}, {0.0, 0.0, 1.0}, 0.1, 600.0} },
+        { {{10.0, 10.0, 10.0}, {0.0, 1.0, 0.0}, 0.0, 600.0},
+          {{11.0, 10.0, 10.0}, {0.0, 1.0, 0.0}, 0.1, 600.0} }
+    };
+    const auto filtered = filter_five_axis_build_direction_candidates(candidates, poses, profile);
+    REQUIRE(filtered.size() == 2);
+    CHECK(filtered[0].valid);
+    CHECK_FALSE(filtered[1].valid);
+    CHECK(filtered[1].error.find("Machine feasibility rejected") != std::string::npos);
+}
+
+TEST_CASE("Machine-aware orientation filter rejects candidates outside XYZ envelope", "[FiveAxisBuildDirection]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = "test-post";
+    std::vector<FiveAxisBuildDirectionCandidate> candidates(1);
+    candidates[0].valid = true;
+    candidates[0].build_up = {0.0, 0.0, 1.0};
+    const std::vector<std::vector<FiveAxisToolPose>> poses = {
+        { {{300.0, 10.0, 10.0}, {0.0, 0.0, 1.0}, 0.0, 600.0},
+          {{301.0, 10.0, 10.0}, {0.0, 0.0, 1.0}, 0.1, 600.0} }
+    };
+    const auto filtered = filter_five_axis_build_direction_candidates(candidates, poses, profile);
+    REQUIRE(filtered.size() == 1);
+    CHECK_FALSE(filtered[0].valid);
+    CHECK(filtered[0].error.find("XYZ envelope rejected") != std::string::npos);
+}
+
+TEST_CASE("Machine-aware orientation filter fails closed for mismatched candidate pose sets", "[FiveAxisBuildDirection]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = "test-post";
+    std::vector<FiveAxisBuildDirectionCandidate> candidates(1);
+    candidates[0].valid = true;
+    const auto filtered = filter_five_axis_build_direction_candidates(candidates, {}, profile);
+    REQUIRE(filtered.size() == 1);
+    CHECK_FALSE(filtered[0].valid);
+    CHECK(filtered[0].error.find("corresponding candidate-specific") != std::string::npos);
+}
