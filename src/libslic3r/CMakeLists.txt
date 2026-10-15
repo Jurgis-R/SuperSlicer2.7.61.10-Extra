@@ -38,6 +38,7 @@ set(SLIC3R_SOURCES
     FiveAxisEngine.hpp
     FiveAxisKinematics.hpp
     FiveAxisSurfaceNormals.hpp
+    FiveAxisSurfaceNormals.cpp
     AABBTreeIndirect.hpp
     AABBTreeLines.hpp
     AABBMesh.hpp
