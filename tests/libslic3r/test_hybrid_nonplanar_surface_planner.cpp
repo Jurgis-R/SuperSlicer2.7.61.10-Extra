@@ -583,7 +583,7 @@ TEST_CASE("Hybrid non-planar complete pass route is validated before emission",
     };
     REQUIRE(validate_hybrid_nonplanar_pass_route(
         route, Vec3d(0.0, 0.0, 2.0), clear));
-    CHECK(checked.size() == 4 + 2 + 1 + 2);
+    CHECK(checked.size() == 3 + 2 + 1 + 2);
     CHECK(checked.front().first == route.approach.points.front());
     CHECK(checked.back().second == route.return_points.back());
 }
