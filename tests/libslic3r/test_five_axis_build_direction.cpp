@@ -46,3 +46,36 @@ TEST_CASE("Five-axis build-direction scorer rejects invalid mesh indices", "[Fiv
     mesh.indices[0].x() = 999;
     CHECK_FALSE(score_five_axis_build_direction(mesh, {0.0, 0.0, 1.0}).valid);
 }
+
+TEST_CASE("Five-axis build-direction candidate generation is deterministic and covers cardinal axes", "[FiveAxisBuildDirection]")
+{
+    const auto candidates = generate_five_axis_build_direction_candidates(18);
+    REQUIRE(candidates.size() == 18);
+    CHECK(candidates[0].x == 1.0);
+    CHECK(candidates[1].x == -1.0);
+    CHECK(candidates[2].y == 1.0);
+    CHECK(candidates[3].y == -1.0);
+    CHECK(candidates[4].z == 1.0);
+    CHECK(candidates[5].z == -1.0);
+
+    for (const FiveAxisVec3 &candidate : candidates) {
+        CHECK(five_axis_finite(candidate));
+        const double length = std::sqrt(candidate.x * candidate.x +
+                                        candidate.y * candidate.y +
+                                        candidate.z * candidate.z);
+        CHECK(length == Approx(1.0).margin(1e-9));
+    }
+    CHECK(generate_five_axis_build_direction_candidates(18).size() == candidates.size());
+}
+
+TEST_CASE("Automatic build-direction candidates can be scored without a manually supplied list", "[FiveAxisBuildDirection]")
+{
+    const indexed_triangle_set mesh = make_direction_test_mesh();
+    const auto candidates = generate_five_axis_build_direction_candidates();
+    REQUIRE(candidates.size() >= 6);
+    FiveAxisBuildDirectionConfig config;
+    config.height_penalty_weight = 0.0;
+    const auto result = choose_five_axis_build_direction(mesh, candidates, config);
+    REQUIRE(result.valid);
+    CHECK(std::isfinite(result.score));
+}
