@@ -17,14 +17,14 @@ TEST_CASE("Klipper five-axis emitter writes configured GCODE_AXIS words with ext
     FiveAxisMachineProfile profile = klipper_test_profile();
     std::vector<FiveAxisCommand> commands = {
         { 10.0, 20.0, 5.0, 1.0, 0.0, 0.0, 600.0 },
-        { 11.0, 20.0, 5.2, 1.2, 5.0, -2.0, 540.0 }
+        { 11.0, 20.0, 5.2, 1.2, 2.0, -1.0, 540.0 }
     };
     std::string output;
     const auto result = emit_klipper_five_axis_gcode(profile, commands, output);
 
     REQUIRE(result.valid);
     CHECK(output.find("G1 X10.000 Y20.000 Z5.000 A0.000 B0.000 E1.000 F600.000") != std::string::npos);
-    CHECK(output.find("G1 X11.000 Y20.000 Z5.200 A5.000 B-2.000 E1.200 F540.000") != std::string::npos);
+    CHECK(output.find("G1 X11.000 Y20.000 Z5.200 A2.000 B-1.000 E1.200 F540.000") != std::string::npos);
 }
 
 TEST_CASE("Klipper five-axis emitter honors configured rotary axis letters", "[FiveAxisKlipperGCodeEmitter]")
