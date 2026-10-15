@@ -23,9 +23,11 @@
 #include <devpkey.h>
 #include <usbioctl.h>
 
+#if defined(_MSC_VER)
 #include <atlbase.h>
 #include <atlcom.h>
 #include <shldisp.h>
+#endif
 #else
 // unix, linux & OSX includes
 #include <errno.h>
@@ -89,7 +91,7 @@ std::vector<DriveData> RemovableDriveManager::search_for_removable_drives() cons
 namespace {
 
 
-#if 0
+#if defined(__MINGW32__)
 // From https://github.com/microsoft/Windows-driver-samples/tree/main/usb/usbview
 typedef struct _STRING_DESCRIPTOR_NODE
 {
@@ -596,6 +598,7 @@ void eject_alt(std::string path, wxEvtHandler* callback_evt_handler, DriveData d
 // $driveEject = New - Object - comObject Shell.Application
 // $driveEject.Namespace(17).ParseName("E:").InvokeVerb("Eject")
 // from https://superuser.com/a/1750403
+#if defined(_MSC_VER)
 bool eject_inner(const std::string& path)
 {
 	std::wstring wpath = boost::nowide::widen(path);
@@ -642,6 +645,7 @@ bool eject_inner(const std::string& path)
 	return true;
 }
 
+#endif
 } // namespace
 // Called from UI therefore it blocks the UI thread.
 // It also blocks updates at the worker thread.

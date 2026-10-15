@@ -3889,7 +3889,14 @@ void PerimeterGenerator::process(// Input:
                 perimeter_spacing_for_encroach = std::min(params.perimeter_flow.spacing(), params.ext_perimeter_flow.spacing());
             else //if(layerm->region().config().perimeters > 1)
                 perimeter_spacing_for_encroach = params.perimeter_flow.spacing();
-            infill_peri_overlap = scale_t(params.config.get_abs_value("infill_overlap", perimeter_spacing_for_encroach));
+            // Fill surfaces are classified as sparse, solid, top-solid, or bridge later.
+            // Expand the fill boundary by the largest configured overlap so every fill type
+            // has enough geometry. Fill.cpp selects the actual overlap for each surface.
+            const double sparse_overlap = params.config.infill_overlap.get_abs_value(perimeter_spacing_for_encroach);
+            const double solid_overlap = params.config.solid_infill_wall_overlap.get_abs_value(perimeter_spacing_for_encroach);
+            const double top_solid_overlap = params.config.top_solid_infill_wall_overlap.get_abs_value(perimeter_spacing_for_encroach);
+            const double bridge_overlap = params.config.bridge_wall_overlap.get_abs_value(perimeter_spacing_for_encroach);
+            infill_peri_overlap = scale_t(std::max({ sparse_overlap, solid_overlap, top_solid_overlap, bridge_overlap }));
         }
 
         // simplify infill contours according to resolution

@@ -173,6 +173,8 @@ struct ExtrusionAttributes : ExtrusionFlow
     ExtrusionRole   role{ ExtrusionRole::None };
     // set to true to prevent seam on this path.
     bool no_seam = false;
+    // Sparse-infill portion of a path that lies in the perimeter overlap band.
+    bool sparse_infill_perimeter_overlap = false;
     // OVerhangAttributes are currently computed for perimeters if dynamic overhangs are enabled. 
     // They are used to control fan and print speed in export.
     std::optional<OverhangAttributes> overhang_attributes;
@@ -181,7 +183,8 @@ struct ExtrusionAttributes : ExtrusionFlow
 inline bool operator==(const ExtrusionAttributes &lhs, const ExtrusionAttributes &rhs)
 {
     return static_cast<const ExtrusionFlow&>(lhs) == static_cast<const ExtrusionFlow&>(rhs) &&
-           lhs.role == rhs.role;
+           lhs.role == rhs.role &&
+           lhs.sparse_infill_perimeter_overlap == rhs.sparse_infill_perimeter_overlap;
 }
 
 class ExtrusionPath : public ExtrusionEntity

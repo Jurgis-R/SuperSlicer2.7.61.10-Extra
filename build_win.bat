@@ -129,7 +129,7 @@ CALL :PARSE_OPTION_VALUE %PS_CONFIG_LIST:;= % PS_CONFIG
 IF "%PS_CONFIG%" EQU "" GOTO :HELP
 CALL :PARSE_OPTION_VALUE "normal low" PS_PRIORITY
 SET PS_PRIORITY=%PS_PRIORITY:normal= %
-SET PS_PRIORITY=%PS_PRIORITY:low=-low% 
+SET PS_PRIORITY=%PS_PRIORITY:low=-low%
 REM RESOLVE_DESTDIR_CACHE must go after PS_ARCH and PS_CONFIG, but before PS STEPS
 CALL :RESOLVE_DESTDIR_CACHE
 IF "%PS_STEPS%" EQU "" SET PS_STEPS=%PS_STEPS_DEFAULT%
@@ -220,7 +220,7 @@ IF %ERRORLEVEL% NEQ 0 IF "%PS_STEPS_DIRTY%" NEQ "" (
     (del CMakeCache.txt && cmake.exe .. -DDESTDIR="%PS_DESTDIR%") || GOTO :END
 ) ELSE GOTO :END
 (echo %PS_DESTDIR%)> "%PS_DEPS_PATH_FILE%"
-msbuild /m ALL_BUILD.vcxproj /p:Configuration=%PS_CONFIG% /v:quiet %PS_PRIORITY% || GOTO :END
+msbuild /m:7 ALL_BUILD.vcxproj /p:Configuration=%PS_CONFIG% /v:quiet %PS_PRIORITY% || GOTO :END
 cd ..\..
 IF /I "%PS_STEPS:~0,4%" EQU "deps" GOTO :RUN_APP
 
@@ -243,7 +243,7 @@ IF %ERRORLEVEL% NEQ 0 IF "%PS_STEPS_DIRTY%" NEQ "" (
     (del CMakeCache.txt && cmake.exe .. -DCMAKE_PREFIX_PATH="%PS_DESTDIR%\usr\local" -DCMAKE_CONFIGURATION_TYPES=%PS_CONFIG_LIST%) || GOTO :END
 ) ELSE GOTO :END
 REM Skip the build step if we're using the undocumented app-cmake to regenerate the full config from inside devenv
-IF "%PS_STEPS%" NEQ "app-cmake" msbuild /m ALL_BUILD.vcxproj /p:Configuration=%PS_CONFIG% /v:quiet %PS_PRIORITY% || GOTO :END
+IF "%PS_STEPS%" NEQ "app-cmake" msbuild /m:7 ALL_BUILD.vcxproj /p:Configuration=%PS_CONFIG% /v:quiet %PS_PRIORITY% || GOTO :END
 (echo %PS_DESTDIR%)> "%PS_DEPS_PATH_FILE_FOR_CONFIG%"
 
 REM Run app

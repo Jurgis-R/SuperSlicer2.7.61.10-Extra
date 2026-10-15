@@ -8,6 +8,8 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include <cstdio>
+#include <algorithm>
+#include <iterator>
 #include <numeric>
 
 #include "../ClipperUtils.hpp"
@@ -39,6 +41,171 @@
 // #define INFILL_DEBUG_OUTPUT
 
 namespace Slic3r {
+
+namespace {
+
+struct SparseOverlapPiece {
+    Polyline line;
+    bool overlap = false;
+};
+
+static std::vector<SparseOverlapPiece> split_sparse_overlap_polyline(const Polyline &source, const ExPolygons &overlap_band)
+{
+    std::vector<SparseOverlapPiece> pieces;
+    for (size_t i = 1; i < source.size(); ++i) {
+        Polyline edge{source[i - 1], source[i]};
+        Polylines inside = intersection_pl(edge, overlap_band);
+        Polylines outside = diff_pl(edge, overlap_band);
+        std::vector<SparseOverlapPiece> edge_pieces;
+        for (auto &part : inside)
+            if (part.size() > 1) edge_pieces.push_back({std::move(part), true});
+        for (auto &part : outside)
+            if (part.size() > 1) edge_pieces.push_back({std::move(part), false});
+        auto projection = [&](const Point &point) {
+            const double dx = double(source[i].x()) - double(source[i - 1].x());
+            const double dy = double(source[i].y()) - double(source[i - 1].y());
+            const double px = double(point.x()) - double(source[i - 1].x());
+            const double py = double(point.y()) - double(source[i - 1].y());
+            return px * dx + py * dy;
+        };
+        std::sort(edge_pieces.begin(), edge_pieces.end(), [&](const SparseOverlapPiece &a, const SparseOverlapPiece &b) {
+            return projection(a.line.front()) < projection(b.line.front());
+        });
+        for (auto &piece : edge_pieces) {
+            if (projection(piece.line.front()) > projection(piece.line.back()))
+                std::reverse(piece.line.points.begin(), piece.line.points.end());
+        }
+        pieces.insert(pieces.end(), std::make_move_iterator(edge_pieces.begin()),
+                      std::make_move_iterator(edge_pieces.end()));
+    }
+
+    std::vector<SparseOverlapPiece> merged;
+    for (auto &piece : pieces) {
+        if (!merged.empty() && merged.back().overlap == piece.overlap &&
+            merged.back().line.back() == piece.line.front()) {
+            merged.back().line.points.insert(merged.back().line.points.end(),
+                std::next(piece.line.points.begin()), piece.line.points.end());
+        } else {
+            merged.emplace_back(std::move(piece));
+        }
+    }
+    return merged;
+}
+
+static ExtrusionPaths split_sparse_overlap_path(const ExtrusionPath &path, const ExPolygons &overlap_band)
+{
+    ExtrusionPaths split_paths;
+    if (path.role() != ExtrusionRole::InternalInfill) {
+        split_paths.emplace_back(path);
+        return split_paths;
+    }
+    Polyline source = path.as_polyline().to_polyline(scale_t(0.01));
+    std::vector<SparseOverlapPiece> pieces = split_sparse_overlap_polyline(source, overlap_band);
+    if (pieces.empty()) {
+        split_paths.emplace_back(path);
+        return split_paths;
+    }
+    const ExtrusionAttributes attributes = path.attributes();
+    for (auto &piece : pieces) {
+        ExtrusionAttributes split_attributes = attributes;
+        split_attributes.sparse_infill_perimeter_overlap = piece.overlap;
+        split_paths.emplace_back(ArcPolyline(piece.line), split_attributes, path.can_reverse());
+    }
+    return split_paths;
+}
+
+static void split_sparse_overlap_path_list(ExtrusionPaths &paths, const ExPolygons &overlap_band)
+{
+    ExtrusionPaths split_paths;
+    for (const ExtrusionPath &path : paths) {
+        ExtrusionPaths split = split_sparse_overlap_path(path, overlap_band);
+        split_paths.insert(split_paths.end(), std::make_move_iterator(split.begin()),
+                           std::make_move_iterator(split.end()));
+    }
+    paths = std::move(split_paths);
+}
+
+static void split_sparse_overlap_paths(ExtrusionEntityCollection &collection, const ExPolygons &overlap_band)
+{
+    auto &entities = collection.set_entities();
+    for (size_t i = 0; i < entities.size();) {
+        if (entities[i]->is_collection()) {
+            split_sparse_overlap_paths(*static_cast<ExtrusionEntityCollection *>(entities[i]), overlap_band);
+            ++i;
+            continue;
+        }
+        if (auto *multi_path = dynamic_cast<ExtrusionMultiPath *>(entities[i])) {
+            split_sparse_overlap_path_list(multi_path->paths, overlap_band);
+            ++i;
+            continue;
+        }
+        if (auto *loop = dynamic_cast<ExtrusionLoop *>(entities[i])) {
+            split_sparse_overlap_path_list(loop->paths, overlap_band);
+            ++i;
+            continue;
+        }
+        auto *path = dynamic_cast<ExtrusionPath *>(entities[i]);
+        if (path == nullptr || path->role() != ExtrusionRole::InternalInfill) {
+            ++i;
+            continue;
+        }
+        ExtrusionPaths replacements_paths = split_sparse_overlap_path(*path, overlap_band);
+        if (replacements_paths.size() == 1 && replacements_paths.front().attributes().sparse_infill_perimeter_overlap ==
+                                                  path->attributes().sparse_infill_perimeter_overlap) {
+            ++i;
+            continue;
+        }
+        // One infill line = ONE continuous multipath (wall part, open part, wall part): the pieces can no longer be
+        // reordered or reversed separately, so the line is printed in one go, with no travel or retraction in between.
+        ExtrusionMultiPath *line_multipath = new ExtrusionMultiPath(replacements_paths);
+        line_multipath->set_can_reverse(path->can_reverse());
+        delete entities[i];
+        entities[i] = line_multipath;
+        ++i;
+    }
+}
+
+static void append_sparse_overlap_split_paths(ExtrusionEntityCollection &collection, Polylines &&polylines,
+                                               const ExtrusionAttributes &attributes, const ExPolygons &overlap_band,
+                                               bool can_reverse)
+{
+    for (const Polyline &source : polylines) {
+        std::vector<SparseOverlapPiece> pieces = split_sparse_overlap_polyline(source, overlap_band);
+        if (pieces.empty()) { // nothing to split: keep the whole line
+            Polylines whole;
+            whole.emplace_back(source);
+            extrusion_entities_append_paths(collection, std::move(whole), ExtrusionAttributes(attributes), can_reverse);
+            continue;
+        }
+        // One infill line = ONE continuous multipath (wall part, open part, wall part), printed in one go.
+        ExtrusionPaths line_paths;
+        for (auto &piece : pieces) {
+            ExtrusionAttributes split_attributes = attributes;
+            split_attributes.sparse_infill_perimeter_overlap = piece.overlap;
+            line_paths.emplace_back(ArcPolyline(piece.line), split_attributes, can_reverse);
+        }
+        if (line_paths.size() == 1) {
+            collection.set_entities().push_back(new ExtrusionPath(std::move(line_paths.front())));
+        } else {
+            ExtrusionMultiPath *line_multipath = new ExtrusionMultiPath(line_paths);
+            line_multipath->set_can_reverse(can_reverse);
+            collection.set_entities().push_back(line_multipath);
+        }
+    }
+}
+
+// The infill lines end half a spacing inside the surface boundary, so the real overlap ring (as thick as the
+// overlap setting) is usually too thin to ever touch them. Widen it by half a spacing so the part of the line whose
+// bead really sits in the overlap area is flagged.
+static ExPolygons sparse_overlap_band(const Surface *surface, const ExPolygons &no_overlap, double spacing)
+{
+    ExPolygons band = diff_ex(surface->expolygon, no_overlap);
+    if (band.empty())
+        return band;
+    return offset_ex(band, scale_d(0.5 * spacing));
+}
+
+} // namespace
 
 Fill* Fill::new_from_type(const InfillPattern type)
 {
@@ -263,6 +430,13 @@ void Fill::fill_surface_extrusion(const Surface *surface, const FillParams &para
                 ExtrusionModifyFlow(mult_flow).set(*all_new_paths);
             }
 
+            if (good_role == ExtrusionRole::InternalInfill && params.config != nullptr &&
+                params.config->perimeters > 0 && !this->no_overlap_expolygons.empty()) {
+                ExPolygons overlap_band = sparse_overlap_band(surface, this->no_overlap_expolygons, this->get_spacing());
+                if (!overlap_band.empty())
+                    split_sparse_overlap_paths(*all_new_paths, overlap_band);
+            }
+
             //save into layer
             if (all_new_paths->entities().size() > 0) {
                 out.push_back(all_new_paths);
@@ -316,13 +490,25 @@ void Fill::fill_surface_extrusion(const Surface *surface, const FillParams &para
             out.push_back(eec);
             //get the role
             ExtrusionRole good_role = getRoleFromSurfaceType(params, surface);
-            /// push the path
-            extrusion_entities_append_paths(*eec, std::move(simple_polylines),
-                                            ExtrusionAttributes{good_role,
-                                                                ExtrusionFlow{params.flow.mm3_per_mm() * params.flow_mult * mult_flow,
-                                                                              (float) (params.flow.width() * params.flow_mult * mult_flow),
-                                                                              (float) params.flow.height()}},
-                                            !params.monotonic);
+            ExtrusionAttributes path_attributes{good_role,
+                ExtrusionFlow{params.flow.mm3_per_mm() * params.flow_mult * mult_flow,
+                              (float) (params.flow.width() * params.flow_mult * mult_flow),
+                              (float) params.flow.height()}};
+            // Split sparse infill at the exact boundary between the infill core and
+            // the perimeter-overlap band. This lets G-code apply separate speed/flow
+            // only to the overlap portion, without changing the rest of the infill.
+            const bool split_sparse_overlap = good_role == ExtrusionRole::InternalInfill &&
+                params.config != nullptr && params.config->perimeters > 0 &&
+                !this->no_overlap_expolygons.empty();
+            ExPolygons overlap_band;
+            if (split_sparse_overlap)
+                overlap_band = sparse_overlap_band(surface, this->no_overlap_expolygons, this->get_spacing());
+            if (overlap_band.empty()) {
+                extrusion_entities_append_paths(*eec, std::move(simple_polylines), std::move(path_attributes), !params.monotonic);
+            } else {
+                append_sparse_overlap_split_paths(*eec, std::move(simple_polylines), path_attributes,
+                                                  overlap_band, !params.monotonic);
+            }
 #ifdef _DEBUGINFO
             eec->visit(LoopAssertVisitor());
 #endif

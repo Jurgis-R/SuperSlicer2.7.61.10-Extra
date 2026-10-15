@@ -10,6 +10,10 @@
 #include <cassert>
 #include <cstdio>
 #include <memory>
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <vector>
 
 #include "../ClipperUtils.hpp"
 #include "../Geometry.hpp"
@@ -291,20 +295,173 @@ struct SurfaceFill {
 
 float compute_fill_angle(const PrintRegionConfig &region_config, size_t layer_id)
 {
-    float angle = 0;
-    if (!region_config.fill_angle_template.empty()) {
-        // fill pattern: replace fill angle
-        size_t idx   = layer_id % region_config.fill_angle_template.size();
-        angle = region_config.fill_angle_template.get_at(idx);
-    } else {
-        angle = region_config.fill_angle.value;
-    }
-    angle += region_config.fill_angle_increment.value * layer_id;
+    // CUSTOM: the original angle template and the increment are not used any more (hidden from the UI).
+    // Per-layer rotation is done by sparse_infill_rotate_template / solid_infill_rotate_template.
+    (void) layer_id;
+    float angle = region_config.fill_angle.value;
     // make compute in degre, then normalize and convert into rad.
     angle = float(Geometry::deg2rad(angle));
     
     return angle;
 }
+
+// ===== CUSTOM: infill rotation (solid layers-per-90 + Orca-style templates). Self-contained, no shared state (thread safe). =====
+// Template syntax (instructions separated by commas or semicolons):
+//   45          absolute angle            25%   angle as percent of 360
+//   +30 / -30   rotate by 30 deg every layer (cumulative)
+//   10*3        repeat 3 times            10!   run once          10*   set start angle only (uses no layer)
+//   +30/10mm    rotate +30 deg smoothly over 10 mm (also Ncm, Nm, N layers, N#, N% of model height)
+//   +15#10      hold one angle for 10 layers (or 10mm / 10%), then step +15
+namespace {
+struct InfillRotateInstr {
+    bool   relative = false;
+    double angle    = 0.;
+    int    repeat   = 1;
+    bool   once     = false;
+    bool   dummy    = false;
+    char   joint    = 0;    // '/' smooth, '#' step
+    double length   = 0.;
+    int    unit     = 0;    // 0 layers, 1 mm, 2 percent of model height
+};
+
+static bool rot_starts_with(const std::string &s, size_t i, const char *what)
+{
+    const size_t n = std::char_traits<char>::length(what);
+    return i + n <= s.size() && s.compare(i, n, what) == 0;
+}
+
+static bool rot_parse_number(const std::string &s, size_t &i, double &v)
+{
+    const size_t start = i;
+    double ip = 0., frac = 0., scale = 1.;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') { ip = ip * 10. + double(s[i] - '0'); ++i; }
+    if (i < s.size() && s[i] == '.') {
+        ++i;
+        while (i < s.size() && s[i] >= '0' && s[i] <= '9') { frac = frac * 10. + double(s[i] - '0'); scale *= 10.; ++i; }
+    }
+    if (i == start) return false;
+    v = ip + frac / scale;
+    return std::isfinite(v);
+}
+
+// returns 1 = parsed, 0 = empty token, -1 = error
+static int rot_parse_instr(const std::string &raw, InfillRotateInstr &out)
+{
+    std::string s;
+    for (char c : raw) if (c != ' ' && c != '\t' && c != '\r' && c != '\n') s += c;
+    if (s.empty()) return 0;
+    size_t i = 0;
+    bool neg = false;
+    if (s[i] == '+' || s[i] == '-') { out.relative = true; neg = (s[i] == '-'); ++i; }
+    double v = 0.;
+    if (!rot_parse_number(s, i, v)) return -1;
+    if (i < s.size() && s[i] == '%') { v *= 3.6; ++i; }
+    out.angle = neg ? -v : v;
+    while (i < s.size()) {
+        const char c = s[i];
+        if (c == '*') {
+            ++i;
+            if (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+                double r = 0.;
+                if (!rot_parse_number(s, i, r)) return -1;
+                out.repeat = int(std::max(1., std::min(r, 100000.)));
+            } else
+                out.dummy = true;
+        } else if (c == '!') {
+            out.once = true; ++i;
+        } else if (c == '/' || c == '#') {
+            out.joint = c; ++i;
+            if (i < s.size() && s[i] == '-') ++i;
+            if (!rot_parse_number(s, i, out.length)) return -1;
+            out.unit = 0;
+            if (rot_starts_with(s, i, "mm"))      { out.unit = 1; i += 2; }
+            else if (rot_starts_with(s, i, "cm")) { out.unit = 1; out.length *= 10.; i += 2; }
+            else if (i < s.size() && s[i] == 'm') { out.unit = 1; out.length *= 1000.; ++i; }
+            else if (i < s.size() && s[i] == '#') { out.unit = 0; ++i; }
+            else if (i < s.size() && s[i] == '%') { out.unit = 2; ++i; }
+        } else
+            return -1; // unsupported symbol
+    }
+    return 1;
+}
+
+// One angle (degrees) per object layer. layer_z = print_z of every object layer.
+static std::vector<double> rot_build_table(const std::vector<InfillRotateInstr> &ins, const std::vector<double> &z)
+{
+    const size_t n = z.size();
+    std::vector<double> out(n, 0.);
+    if (n == 0) return out;
+    std::vector<char> done(ins.size(), 0);
+    const double model_h = z.back();
+    double cur = 0.;
+    size_t layer = 0;
+    while (layer < n) {
+        bool consumed = false;
+        for (size_t k = 0; k < ins.size() && layer < n; ++k) {
+            const InfillRotateInstr &in = ins[k];
+            if (in.once && done[k]) continue;
+            if (in.dummy) {
+                cur = in.relative ? cur + in.angle : in.angle;
+                if (in.once) done[k] = 1;
+                continue;
+            }
+            if (in.joint != 0 && in.relative) {
+                size_t cnt = 1;
+                if (in.unit == 0)
+                    cnt = size_t(std::max(1., std::floor(in.length + 0.5)));
+                else {
+                    const double len_mm = in.unit == 1 ? in.length : model_h * in.length / 100.;
+                    const double z0 = layer > 0 ? z[layer - 1] : 0.;
+                    cnt = 0;
+                    for (size_t j = layer; j < n && z[j] <= z0 + len_mm + 1e-6; ++j) ++cnt;
+                    cnt = std::max<size_t>(1, cnt);
+                }
+                cnt = std::min(cnt, n - layer);
+                for (size_t j = 0; j < cnt; ++j)
+                    out[layer + j] = (in.joint == '/') ? cur + in.angle * double(j + 1) / double(cnt) : cur + in.angle;
+                cur += in.angle;
+                layer += cnt;
+                consumed = true;
+            } else {
+                for (int r = 0; r < std::max(1, in.repeat) && layer < n; ++r) {
+                    cur = in.relative ? cur + in.angle : in.angle;
+                    out[layer++] = cur;
+                    consumed = true;
+                }
+            }
+            if (in.once) done[k] = 1;
+        }
+        if (!consumed) { // nothing left that uses a layer: keep the last angle
+            for (; layer < n; ++layer) out[layer] = cur;
+            break;
+        }
+    }
+    return out;
+}
+
+// Angle offset in degrees for object layer `layer_id` (added to the normal fill angle). false = empty / invalid template.
+static bool infill_rotate_template_angle(const std::string &tpl, const std::vector<double> &layer_z, size_t layer_id, double &out_deg)
+{
+    if (tpl.empty() || layer_z.empty() || layer_id >= layer_z.size())
+        return false;
+    std::vector<InfillRotateInstr> ins;
+    size_t b = 0;
+    while (b <= tpl.size()) {
+        size_t e = tpl.find_first_of(",;", b);
+        if (e == std::string::npos) e = tpl.size();
+        InfillRotateInstr in;
+        const int r = rot_parse_instr(tpl.substr(b, e - b), in);
+        if (r < 0) return false;
+        if (r > 0) ins.push_back(in);
+        b = e + 1;
+    }
+    if (ins.empty()) return false;
+    const std::vector<double> table = rot_build_table(ins, layer_z);
+    if (layer_id >= table.size()) return false;
+    out_deg = table[layer_id];
+    return std::isfinite(out_deg);
+}
+} // namespace
 
 #ifdef SLIC3R_DEBUG_SLICE_PROCESSING
 void export_group_fills_to_svg(const char *path, const std::vector<SurfaceFill> &fills)
@@ -420,7 +577,26 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
                 params.fill_exactly = region_config.enforce_full_fill_volume.get_bool();
                 params.bridge_angle = float(surface.bridge_angle);
                 params.angle         = (is_denser) ? 0 : compute_fill_angle(region_config, layerm.layer()->id());
-                params.can_angle_cross = region_config.fill_angle_cross;
+                // CUSTOM: independent solid-infill rotation + Orca-style rotation templates.
+                bool infill_rotate_custom = false;
+                if (! is_denser) {
+                    const bool is_solid_role  = params.role == ExtrusionRole::SolidInfill || params.role == ExtrusionRole::TopSolidInfill;
+                    const bool is_sparse_role = params.role == ExtrusionRole::InternalInfill;
+                    const size_t object_layer_id = layerm.layer()->id() - layer.object()->get_layer(0)->id();
+                    const std::string &rot_tpl = is_solid_role ? region_config.solid_infill_rotate_template.value
+                                                               : region_config.sparse_infill_rotate_template.value;
+                    if ((is_solid_role || is_sparse_role) && ! rot_tpl.empty()) {
+                        std::vector<double> rot_z;
+                        for (const Layer *rot_layer : layer.object()->layers())
+                            rot_z.push_back(rot_layer->print_z);
+                        double rot_deg = 0.;
+                        if (infill_rotate_template_angle(rot_tpl, rot_z, object_layer_id, rot_deg)) {
+                            params.angle = float(Geometry::deg2rad(region_config.fill_angle.value + rot_deg));
+                            infill_rotate_custom = true;
+                        }
+                    }
+                }
+                params.can_angle_cross = infill_rotate_custom ? false : bool(region_config.fill_angle_cross);
                 params.anchor_length = std::min(params.anchor_length, params.anchor_length_max);
 
                 //adjust flow (to over-extrude when needed)
@@ -1091,7 +1267,18 @@ void Layer::make_fills(FillAdaptive::Octree* adaptive_fill_octree, FillAdaptive:
             //set overlap polygons
             f->no_overlap_expolygons.clear();
             if (surface_fill.params.config->perimeters > 0) {
-                f->overlap = surface_fill.params.config->infill_overlap.get_abs_value((perimeter_spacing + (f->get_spacing())) / 2);
+                const auto &cfg = *surface_fill.params.config;
+                const double overlap_base = (perimeter_spacing + (f->get_spacing())) / 2;
+                const SurfaceType type = surface_fill.surface.surface_type;
+                if ((type & stModBridge) == stModBridge) {
+                    f->overlap = cfg.bridge_wall_overlap.get_abs_value(overlap_base);
+                } else if ((type & (stPosTop | stDensSolid)) == (stPosTop | stDensSolid)) {
+                    f->overlap = cfg.top_solid_infill_wall_overlap.get_abs_value(overlap_base);
+                } else if ((type & stDensSolid) == stDensSolid) {
+                    f->overlap = cfg.solid_infill_wall_overlap.get_abs_value(overlap_base);
+                } else {
+                    f->overlap = cfg.infill_overlap.get_abs_value(overlap_base);
+                }
                 if (f->overlap != 0) {
                     f->no_overlap_expolygons = intersection_ex(layerm->fill_no_overlap_expolygons(), ExPolygons() = {expoly});
                 } else {

@@ -24,16 +24,13 @@ static const std::string EXTRUDE_END_TAG = ";_EXTRUDE_END";
 static const std::string EXTRUDE_SET_SPEED_TAG = ";_EXTRUDE_SET_SPEED";
 //static const std::string EXTERNAL_PERIMETER_TAG = ";_EXTERNAL_PERIMETER";
 
-// Maximum segment length to split a long segment if the initial and the final flow rate differ.
-// Smaller value means a smoother transition between two different flow rates.
-static constexpr float max_segment_length = 5.f;
-
 // For how many GCode lines back will adjust a flow rate from the latest line.
 // Bigger values affect the GCode export speed a lot, and smaller values could
 // affect how distant will be propagated a flow rate adjustment.
 static constexpr int max_look_back_limit = 128;
 
-PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_relative_e_distances(config.use_relative_e_distances.value)
+PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config, float autospeed_volumetric_limit,
+                                     const std::vector<double> &retract_before_travel) : m_use_relative_e_distances(config.use_relative_e_distances.value)
 {
     // Preallocate some data, so that output_buffer.data() will return an empty string.
     output_buffer.assign(32, 0);
@@ -59,11 +56,21 @@ PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_
         m_extruder_names.push_back(str);
     }
 
-    // Volumetric rate of a 0.45mm x 0.2mm extrusion at 60mm/s XY movement: 0.45*0.2*60*60=5.4*60 = 324 mm^3/min
-    // Volumetric rate of a 0.45mm x 0.2mm extrusion at 20mm/s XY movement: 0.45*0.2*20*60=1.8*60 = 108 mm^3/min
-    // Slope of the volumetric rate, changing from 20mm/s to 60mm/s over 2 seconds: (5.4-1.8)*60*60/2=60*60*1.8 = 6480 mm^3/min^2 = 1.8 mm^3/s^2
-    m_max_volumetric_extrusion_rate_slope_positive = float(config.max_volumetric_extrusion_rate_slope_positive.value) * 60.f * 60.f;
-    m_max_volumetric_extrusion_rate_slope_negative = float(config.max_volumetric_extrusion_rate_slope_negative.value) * 60.f * 60.f;
+    m_ramp_time = float(config.pressure_equalizer_ramp_time.value);
+    m_ramp_length = float(config.pressure_equalizer_ramp_length.value);
+    m_ramp_segment_length = std::max(0.1f, float(config.pressure_equalizer_ramp_segment_length.value));
+    m_ramp_steps = std::clamp(int(config.pressure_equalizer_ramp_steps.value), 0, 100);
+    m_ramp_start_flow = std::max(0.f, float(config.pressure_equalizer_ramp_start_flow.value)); // mm^3/s, startup floor
+    m_decel_time = std::max(0.f, float(config.pressure_equalizer_decel_ramp_time.value));      // separate deceleration ramp
+    m_decel_length = std::max(0.f, float(config.pressure_equalizer_decel_ramp_length.value));
+    m_decel_end_flow = std::max(0.f, float(config.pressure_equalizer_decel_ramp_end_flow.value)); // mm^3/s
+    m_smoothing = config.pressure_equalizer_use_smoothing.value; // Prusa/Orca extrusion-rate smoothing instead of the ramps
+    m_smooth_slope_positive = float(config.max_volumetric_extrusion_rate_slope_positive.value) * 60.f * 60.f; // mm^3/s^2 -> mm^3/min^2
+    m_smooth_slope_negative = float(config.max_volumetric_extrusion_rate_slope_negative.value) * 60.f * 60.f;
+    m_autospeed_volumetric_limit = autospeed_volumetric_limit;
+    m_retract_before_travel = retract_before_travel;
+    m_max_volumetric_extrusion_rate_slope_positive = m_smoothing ? (m_smooth_slope_positive > 0.f ? 1.f : 0.f) : ((m_ramp_time > 0.f && m_autospeed_volumetric_limit > 0.f) ? 1.f : 0.f);
+    m_max_volumetric_extrusion_rate_slope_negative = m_smoothing ? (m_smooth_slope_negative > 0.f ? 1.f : 0.f) : ((m_decel_time > 0.f && m_decel_length > 0.f && m_autospeed_volumetric_limit > 0.f) ? 1.f : 0.f);
 
     m_gcode_precision_xyz = config.gcode_precision_xyz.value;
     m_gcode_precision_e = config.gcode_precision_e.value;
@@ -88,6 +95,28 @@ PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_
 #ifdef PRESSURE_EQUALIZER_DEBUG
     line_idx = 0;
 #endif
+}
+
+float PressureEqualizer::max_volumetric_rate_slope(const GCodeLine &line, bool decel) const
+{
+    if (m_smoothing) // classic extrusion-rate smoothing: fixed slope in mm^3/min^2
+        return decel ? m_smooth_slope_negative : m_smooth_slope_positive;
+    const float ramp_time   = decel ? m_decel_time   : m_ramp_time;
+    const float ramp_length = decel ? m_decel_length : m_ramp_length;
+    if (ramp_time <= 0.f || ramp_length <= 0.f || m_autospeed_volumetric_limit <= 0.f)
+        return 0.f;
+
+    float duration_seconds = ramp_time;
+    if (ramp_length > 0.f && line.feedrate() > 0.f) {
+        const float length_duration_seconds = ramp_length * 60.f / line.feedrate();
+        duration_seconds = std::min(duration_seconds, length_duration_seconds);
+    }
+    if (duration_seconds <= 0.f)
+        return 0.f;
+
+    // G-code flow is mm^3/min and line time is minutes; convert the autospeed
+    // limit (mm^3/s) and ramp duration (seconds) to mm^3/min^2.
+    return m_autospeed_volumetric_limit * 3600.f / duration_seconds;
 }
 
 void PressureEqualizer::process_layer(const std::string &gcode)
@@ -231,6 +260,38 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
     const bool found_extrude_set_speed_tag = boost::contains(str_line, EXTRUDE_SET_SPEED_TAG);
     const bool found_extrude_end_tag = boost::contains(str_line, EXTRUDE_END_TAG);
     assert(!found_extrude_set_speed_tag || !found_extrude_end_tag);
+    [[maybe_unused]] auto retract_travel_threshold = [this]() {
+        if (m_retract_before_travel.empty())
+            return 0.f;
+        const size_t idx = std::min(m_current_extruder, m_retract_before_travel.size() - 1);
+        return float(m_retract_before_travel[idx]);
+    };
+    auto ramp_down_before_retraction = [this]() {
+        if (m_smoothing || m_decel_time <= 0.f || m_decel_length <= 0.f) // deceleration ramp is its own setting (off by default)
+            return;
+        for (size_t i = m_gcode_lines.size(); i > 1; --i) {
+            GCodeLine &previous = m_gcode_lines[i - 2];
+            if (previous.type != GCODELINETYPE_EXTRUDE || previous.volumetric_extrusion_rate <= 0.f)
+                continue;
+            // One move cannot carry both a zero-start ramp-up and ramp-down.
+            if (previous.ramp_up_after_retraction || previous.volumetric_extrusion_rate_start <= 0.f)
+                break;
+            const float ramp_slope = max_volumetric_rate_slope(previous, true);
+            if (ramp_slope > 0.f) {
+                // Keep a tiny nonzero endpoint so the final G-code feedrate is never F0.
+                previous.volumetric_extrusion_rate_end = std::max(0.01f, std::min(previous.volumetric_extrusion_rate_start, m_decel_end_flow * 60.f));
+                previous.max_volumetric_extrusion_rate_slope_negative = ramp_slope;
+                previous.modified = true;
+            }
+            break;
+        }
+    };
+    auto finish_retracted_travel = [this, &retract_travel_threshold]() {
+        const bool qualifying_travel = m_retraction_active && m_retracted_travel > 0.f; // ramp always after retract + any travel
+        m_ramp_up_pending = qualifying_travel;
+        m_retraction_active = false;
+        m_retracted_travel = 0.f;
+    };
 
     if (found_extrude_set_speed_tag)
         this->opened_extrude_set_speed_block = true;
@@ -293,16 +354,28 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
                 // Extrusion, retract or unretract.
                 float diff = new_pos[3] - m_current_pos[3];
                 if (diff < 0) {
+                    ramp_down_before_retraction();
                     buf.type = GCODELINETYPE_RETRACT;
                     m_retracted = true;
+                    m_retraction_active = true;
+                    m_retracted_travel = 0.f;
+                    m_ramp_up_pending = false;
                 } else if (! changed[0] && ! changed[1] && ! changed[2]) {
                     // assert(m_retracted);
                     buf.type = GCODELINETYPE_UNRETRACT;
+                    finish_retracted_travel();
                     m_retracted = false;
                 } else {
                     assert(changed[0] || changed[1]);
                     // Moving in XY plane.
                     buf.type = GCODELINETYPE_EXTRUDE;
+                    if (m_retraction_active)
+                        finish_retracted_travel();
+                    if (m_ramp_up_pending) {
+                        buf.ramp_up_after_retraction = true;
+                        m_ramp_up_pending = false;
+                    }
+                    m_retracted = false;
                     // Calculate the volumetric extrusion rate.
                     float diff[4];
                     for (size_t i = 0; i < 4; ++ i)
@@ -328,6 +401,12 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
             } else if (changed[0] || changed[1] || changed[2]) {
                 // Moving without extrusion.
                 buf.type = GCODELINETYPE_MOVE;
+                if (m_retraction_active) {
+                    const float dx = new_pos[0] - m_current_pos[0];
+                    const float dy = new_pos[1] - m_current_pos[1];
+                    const float dz = new_pos[2] - m_current_pos[2];
+                    m_retracted_travel += std::sqrt(dx * dx + dy * dy + dz * dz);
+                }
             }
             memcpy(m_current_pos, new_pos, sizeof(float) * 5);
             break;
@@ -358,13 +437,18 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
         case 10:
         case 22:
             // Firmware retract.
+            ramp_down_before_retraction();
             buf.type = GCODELINETYPE_RETRACT;
             m_retracted = true;
+            m_retraction_active = true;
+            m_retracted_travel = 0.f;
+            m_ramp_up_pending = false;
             break;
         case 11:
         case 23:
             // Firmware unretract.
             buf.type = GCODELINETYPE_UNRETRACT;
+            finish_retracted_travel();
             m_retracted = false;
             break;
         default:
@@ -408,8 +492,15 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
 
     buf.extruder_id = m_current_extruder;
     memcpy(buf.pos_end, m_current_pos, sizeof(float)*5);
-
-    adjust_volumetric_rate();
+    if (!m_smoothing && buf.ramp_up_after_retraction && m_ramp_time > 0.f && m_ramp_length > 0.f) {
+        const float ramp_slope = max_volumetric_rate_slope(buf);
+        if (ramp_slope > 0.f) {
+            buf.volumetric_extrusion_rate_start = std::min(buf.volumetric_extrusion_rate, m_ramp_start_flow * 60.f); // startup floor (mm^3/min)
+            buf.max_volumetric_extrusion_rate_slope_positive = ramp_slope;
+            buf.modified = true;
+        }
+    }
+    adjust_volumetric_rate(); // was never called: slope limiting/propagation of the ramps never ran
 #ifdef PRESSURE_EQUALIZER_DEBUG
     ++line_idx;
 #endif
@@ -474,34 +565,50 @@ void PressureEqualizer::output_gcode_line(const size_t line_idx)
 
     // Emit the line with lowered extrusion rates.
     float l = line.dist_xyz();
-    if (auto nSegments = size_t(ceil(l / max_segment_length)); nSegments == 1) { // Just update this segment.
+    const bool has_flow_ramp = std::abs(line.volumetric_extrusion_rate_end - line.volumetric_extrusion_rate_start) > 1e-5f;
+    bool accelerating = line.volumetric_extrusion_rate_start < line.volumetric_extrusion_rate_end;
+    float max_volumetric_extrusion_rate_slope = accelerating ? line.max_volumetric_extrusion_rate_slope_positive :
+                                                               line.max_volumetric_extrusion_rate_slope_negative;
+    if (!has_flow_ramp || max_volumetric_extrusion_rate_slope <= 0.f || (m_smoothing && l <= m_ramp_segment_length)) { // A uniform or unlimited correction needs one G-code move.
         push_line_to_output(line_idx, line.feedrate() * line.volumetric_correction_avg(), comment);
     } else {
-        bool accelerating = line.volumetric_extrusion_rate_start < line.volumetric_extrusion_rate_end;
+        const float flow_delta = std::abs(line.volumetric_extrusion_rate_end - line.volumetric_extrusion_rate_start);
+        const int auto_steps = m_autospeed_volumetric_limit > 0.f
+            ? std::clamp(int(std::ceil(flow_delta / (m_autospeed_volumetric_limit * 60.f) * 100.f)), 3, 100)
+            : 3;
+        const size_t ramp_steps = size_t(m_ramp_steps == 0 ? auto_steps : std::max(3, m_ramp_steps));
+        // Ramp steps are spread across the whole ramp distance, not applied per G-code move (avoids tiny segments).
+        const float full_feed = line.pos_end[4];
+        const float ramp_len_used  = accelerating ? m_ramp_length : m_decel_length;
+        const float ramp_time_used = accelerating ? m_ramp_time   : m_decel_time;
+        const float ramp_dist = std::max(0.1f, std::min(ramp_len_used, full_feed / 60.f * ramp_time_used));
+        const float step_len  = ramp_dist / float(ramp_steps);
+        size_t nSegments = m_smoothing ? std::max<size_t>(1, size_t(std::ceil(l / m_ramp_segment_length)))
+                                       : std::max<size_t>(1, size_t(std::lround(l / step_len))); // RAMP_STEPS_PER_DISTANCE
         // Update the initial and final feed rate values.
         line.pos_start[4] = line.volumetric_extrusion_rate_start * line.pos_end[4] / line.volumetric_extrusion_rate;
         line.pos_end  [4] = line.volumetric_extrusion_rate_end   * line.pos_end[4] / line.volumetric_extrusion_rate;
         float feed_avg = 0.5f * (line.pos_start[4] + line.pos_end[4]);
         // Limiting volumetric extrusion rate slope for this segment.
-        float max_volumetric_extrusion_rate_slope = accelerating ? line.max_volumetric_extrusion_rate_slope_positive :
-                                                                   line.max_volumetric_extrusion_rate_slope_negative;
         // Total time for the segment, corrected for the possibly lowered volumetric feed rate,
         // if accelerating / decelerating over the complete segment.
         float t_total = line.dist_xyz() / feed_avg;
         // Time of the acceleration / deceleration part of the segment, if accelerating / decelerating
         // with the maximum volumetric extrusion rate slope.
-        float t_acc    = 0.5f * (line.volumetric_extrusion_rate_start + line.volumetric_extrusion_rate_end) / max_volumetric_extrusion_rate_slope;
+        float t_acc    = m_smoothing ? 0.5f * (line.volumetric_extrusion_rate_start + line.volumetric_extrusion_rate_end) / max_volumetric_extrusion_rate_slope
+                                     : std::abs(line.volumetric_extrusion_rate_end - line.volumetric_extrusion_rate_start) / max_volumetric_extrusion_rate_slope;
         float l_acc    = l;
         float l_steady = 0.f;
         if (t_acc < t_total) {
             // One may achieve higher print speeds if part of the segment is not speed limited.
             l_acc    = t_acc * feed_avg;
             l_steady = l - l_acc;
-            if (l_steady < 0.5f * max_segment_length) {
+            if (l_steady < 0.5f * m_ramp_segment_length) {
                 l_acc    = l;
                 l_steady = 0.f;
             } else
-                nSegments = size_t(ceil(l_acc / max_segment_length));
+                nSegments = m_smoothing ? size_t(ceil(l_acc / m_ramp_segment_length))
+                                        : std::max<size_t>(std::max<size_t>(1, size_t(std::lround(l_acc / step_len))), size_t(ceil(l_acc / m_ramp_segment_length)));
         }
         float pos_start[5];
         float pos_end[5];
@@ -601,9 +708,12 @@ void PressureEqualizer::adjust_volumetric_rate()
         GCodeLine &line = m_gcode_lines[line_idx];
 
         for (size_t iRole = 1; iRole < size_t(GCodeExtrusionRole::Count); ++ iRole) {
-            const float &rate_slope = m_max_volumetric_extrusion_rate_slopes[iRole].negative;
-            if (rate_slope == 0 || feedrate_per_extrusion_role[iRole] == std::numeric_limits<float>::max())
+            const float slope_enabled = m_max_volumetric_extrusion_rate_slopes[iRole].negative;
+            if (slope_enabled == 0 || feedrate_per_extrusion_role[iRole] == std::numeric_limits<float>::max())
                 continue; // The negative rate is unlimited or the rate for GCodeExtrusionRole iRole is unlimited.
+            const float rate_slope = max_volumetric_rate_slope(m_gcode_lines[line_idx], true);
+            if (rate_slope <= 0.f)
+                continue;
 
             float rate_end = feedrate_per_extrusion_role[iRole];
             if (iRole == size_t(line.extrusion_role) && rate_succ < rate_end)
@@ -666,9 +776,12 @@ void PressureEqualizer::adjust_volumetric_rate()
         GCodeLine &line = m_gcode_lines[line_idx];
 
         for (size_t iRole = 1; iRole < size_t(GCodeExtrusionRole::Count); ++ iRole) {
-            const float &rate_slope = m_max_volumetric_extrusion_rate_slopes[iRole].positive;
-            if (rate_slope == 0 || feedrate_per_extrusion_role[iRole] == std::numeric_limits<float>::max())
+            const float slope_enabled = m_max_volumetric_extrusion_rate_slopes[iRole].positive;
+            if (slope_enabled == 0 || feedrate_per_extrusion_role[iRole] == std::numeric_limits<float>::max())
                 continue; // The positive rate is unlimited or the rate for GCodeExtrusionRole iRole is unlimited.
+            const float rate_slope = max_volumetric_rate_slope(line);
+            if (rate_slope <= 0.f)
+                continue;
 
             float rate_start = feedrate_per_extrusion_role[iRole];
             if (!line.adjustable_flow || line.extrusion_role == GCodeExtrusionRole::ExternalPerimeter
@@ -680,6 +793,8 @@ void PressureEqualizer::adjust_volumetric_rate()
                 rate_start = line.volumetric_extrusion_rate_start;
             } else if (iRole == size_t(line.extrusion_role) && rate_prec < rate_start)
                 rate_start = rate_prec;
+            if (line.ramp_up_after_retraction && !m_smoothing)
+                rate_start = line.volumetric_extrusion_rate_start; // restart after retraction: keep the startup floor, do not chain to the pre-retraction rate
             if (line.volumetric_extrusion_rate_start > rate_start) {
                 line.volumetric_extrusion_rate_start = rate_start;
                 line.max_volumetric_extrusion_rate_slope_positive = rate_slope;

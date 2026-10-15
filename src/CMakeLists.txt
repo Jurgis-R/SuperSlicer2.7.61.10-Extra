@@ -137,8 +137,7 @@ else ()
 endif ()
 
 if (MINGW)
-    target_link_options(Slic3r PUBLIC "-Wl,-allow-multiple-definition")
-    set_target_properties(Slic3r PROPERTIES PREFIX "")
+set_target_properties(Slic3r PROPERTIES PREFIX "")
 endif (MINGW)
 
 if (NOT WIN32)

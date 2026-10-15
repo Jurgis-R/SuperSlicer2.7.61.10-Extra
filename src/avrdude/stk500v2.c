@@ -1,3 +1,4 @@
+#include <sys/time.h>
 /*
  * avrdude - A Downloader/Uploader for AVR device programmers
  * Copyright (C) 2005 Erik Walthinsen

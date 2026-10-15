@@ -27,7 +27,8 @@ class PressureEqualizer
 {
 public:
     PressureEqualizer() = delete;
-    explicit PressureEqualizer(const Slic3r::GCodeConfig &config);
+    explicit PressureEqualizer(const Slic3r::GCodeConfig &config, float autospeed_volumetric_limit,
+                               const std::vector<double> &retract_before_travel);
     ~PressureEqualizer() = default;
 
     // Process a next batch of G-code lines.
@@ -73,6 +74,22 @@ private:
     ExtrusionRateSlope              m_max_volumetric_extrusion_rate_slopes[size_t(GCodeExtrusionRole::Count)];
     float                           m_max_volumetric_extrusion_rate_slope_positive;
     float                           m_max_volumetric_extrusion_rate_slope_negative;
+    float                           m_ramp_time;
+    float                           m_ramp_start_flow = 0.f;
+    float                           m_decel_time = 0.f;
+    float                           m_decel_length = 0.f;
+    float                           m_decel_end_flow = 0.f;
+    bool                            m_smoothing = false;
+    float                           m_smooth_slope_positive = 0.f;
+    float                           m_smooth_slope_negative = 0.f;
+    float                           m_ramp_length;
+    float                           m_ramp_segment_length;
+    int                             m_ramp_steps;
+    float                           m_autospeed_volumetric_limit;
+    std::vector<double>             m_retract_before_travel;
+    float                           m_retracted_travel = 0.f;
+    bool                            m_retraction_active = false;
+    bool                            m_ramp_up_pending = false;
 
     // Configuration extracted from config.
     // Area of the crossestion of each filament. Necessary to calculate the volumetric flow rate.
@@ -147,6 +164,7 @@ private:
         // If modified, the raw text has to be adapted by the new extrusion rate,
         // or maybe the line needs to be split into multiple lines.
         bool                modified;
+        bool                ramp_up_after_retraction = false;
 
         // X,Y,Z,E,F. Storing the state of the currently active extruder only.
         float       pos_start[5];
@@ -188,6 +206,7 @@ private:
 #endif
 
     bool process_line(const char *line, const char *line_end, GCodeLine &buf);
+    float max_volumetric_rate_slope(const GCodeLine &line, bool decel = false) const;
     void output_gcode_line(size_t line_idx);
     void parse_activate_extruder(const std::string&);
 

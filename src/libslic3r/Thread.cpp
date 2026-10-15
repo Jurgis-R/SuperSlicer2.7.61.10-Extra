@@ -45,7 +45,7 @@ static bool WindowsGetSetThreadNameAPIInitialize()
 {
 	if (! s_SetGetThreadDescriptionInitialized) {
 		// Not thread safe! It is therefore a good idea to name the main thread before spawning worker threads
-		// to initialize 
+		// to initialize
 		s_hKernel32 = LoadLibraryW(L"Kernel32.dll");
 		if (s_hKernel32) {
 			s_fnSetThreadDescription = (SetThreadDescriptionType)::GetProcAddress(s_hKernel32, "SetThreadDescription");
@@ -111,12 +111,20 @@ static bool WindowsSetThreadName(HANDLE hThread, const char *thread_name)
 
 bool set_thread_name(std::thread &thread, const char *thread_name)
 {
-   	return WindowsSetThreadName(static_cast<HANDLE>(thread.native_handle()), thread_name);
+	#ifdef __MINGW32__
+        return false;
+#else
+        return WindowsSetThreadName(static_cast<HANDLE>(thread.native_handle()), thread_name);
+#endif
 }
 
 bool set_thread_name(boost::thread &thread, const char *thread_name)
 {
-   	return WindowsSetThreadName(static_cast<HANDLE>(thread.native_handle()), thread_name);
+	#ifdef __MINGW32__
+        return false;
+#else
+        return WindowsSetThreadName(static_cast<HANDLE>(thread.native_handle()), thread_name);
+#endif
 }
 
 bool set_current_thread_name(const char *thread_name)
@@ -148,7 +156,7 @@ bool set_thread_name(std::thread &thread, const char *thread_name)
 
 bool set_thread_name(boost::thread &thread, const char *thread_name)
 {
-// not supported	
+// not supported
 //   	pthread_setname_np(thread.native_handle(), thread_name);
 	return false;
 }
@@ -161,7 +169,7 @@ bool set_current_thread_name(const char *thread_name)
 
 std::optional<std::string> get_current_thread_name()
 {
-// not supported	
+// not supported
 //	char buf[16];
 //	return std::string(thread_getname_np(buf, 16) == 0 ? buf : "");
 	return std::nullopt;
@@ -172,13 +180,13 @@ std::optional<std::string> get_current_thread_name()
 // posix
 bool set_thread_name(std::thread &thread, const char *thread_name)
 {
-   	pthread_setname_np(thread.native_handle(), thread_name);
+	pthread_setname_np(thread.native_handle(), thread_name);
 	return true;
 }
 
 bool set_thread_name(boost::thread &thread, const char *thread_name)
 {
-   	pthread_setname_np(thread.native_handle(), thread_name);
+	pthread_setname_np(thread.native_handle(), thread_name);
 	return true;
 }
 
@@ -288,18 +296,18 @@ void name_tbb_thread_pool_threads_set_locale()
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, nthreads, 1),
         [&nthreads_running, nthreads, &master_thread_id, &cv, &cv_m, &now](const tbb::blocked_range<size_t> &range) {
-        	assert(range.begin() + 1 == range.end());
+	assert(range.begin() + 1 == range.end());
 			if (std::unique_lock<std::mutex> lk(cv_m);  ++nthreads_running == nthreads) {
 				lk.unlock();
-        		// All threads are spinning.
-        		// Wake them up.
-    			cv.notify_all();
-        	} else {
-        		// Wait for the last thread to wake the others.
+		// All threads are spinning.
+		// Wake them up.
+			cv.notify_all();
+	} else {
+		// Wait for the last thread to wake the others.
                 // here can be deadlock with the main that creates me.
                cv.wait_until(lk, now + std::chrono::milliseconds(50), [&nthreads_running, nthreads]{return nthreads_running == nthreads;});
-        	}
-        	auto thread_id = std::this_thread::get_id();
+	}
+	auto thread_id = std::this_thread::get_id();
 			if (thread_id == master_thread_id) {
 				// The calling thread runs the 0'th task.
                 //assert(range.begin() == 0);
@@ -310,7 +318,7 @@ void name_tbb_thread_pool_threads_set_locale()
 		        set_current_thread_name(name.str().c_str());
                 // Set locales of the worker thread to "C".
                 set_c_locales();
-    		}
+		}
         });
 }
 

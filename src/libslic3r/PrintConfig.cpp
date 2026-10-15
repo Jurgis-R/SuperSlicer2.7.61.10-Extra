@@ -962,6 +962,17 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(90));
 
+    def = this->add("bridge_wall_overlap", coFloatOrPercent);
+    def->label = L("Bridge vs perimeter overlap");
+    def->category = OptionCategory::width;
+    def->tooltip = L("Overlap of bridge infill into the perimeter. Percentage is calculated from nozzle diameter; direct mm values are also accepted.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "nozzle_diameter";
+    def->min = 0;
+    def->max_literal = { 0.5, true };
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloatOrPercent(25, true));
+
     def = this->add("bridge_speed", coFloatOrPercent);
     def->label = L("Bridges");
     def->full_label = L("Bridge Infill speed");
@@ -1890,6 +1901,41 @@ void PrintConfigDef::init_fff_params()
     def->is_vector_extruder = true;
     def->set_default_value(new ConfigOptionFloats { 1. });
 
+    def = this->add("filament_extrusion_multiplier_flow_map", coGraphs);
+    def->label = L("Flow map");
+    def->tooltip = L("When enabled, this map replaces this filament's Extrusion multiplier. X is print speed or volumetric flow; Y is the replacement multiplier in percent. Volumetric flow uses the requested flow after other print flow settings, before this map is applied.");
+    def->category = OptionCategory::filament;
+    def->can_be_disabled = true;
+    def->mode = comExpert;
+    def->is_vector_extruder = true;
+    def->set_default_value(disable_default_option(new ConfigOptionGraphs({GraphData(0, 2, GraphData::GraphType::LINEAR,
+        {{0, 100}, {100, 100}})})));
+    def->graph_settings = std::make_shared<GraphSettings>();
+    def->graph_settings->title = L("Filament flow map");
+    def->graph_settings->description = L("Set the filament extrusion multiplier for each print speed or volumetric flow. Values replace the filament's usual Extrusion multiplier. Volumetric flow is calculated after other print flow settings, before this map is applied.");
+    def->graph_settings->x_label = L("Print speed (mm/s) or volumetric flow (mm³/s)");
+    def->graph_settings->y_label = L("Extrusion multiplier (%)");
+    def->graph_settings->null_label = L("No points");
+    def->graph_settings->label_min_x = L("Minimum X");
+    def->graph_settings->label_max_x = L("Maximum X");
+    def->graph_settings->label_min_y = L("Minimum multiplier");
+    def->graph_settings->label_max_y = L("Maximum multiplier");
+    def->graph_settings->min_x = 0;
+    def->graph_settings->max_x = 1000;
+    def->graph_settings->step_x = 1.;
+    def->graph_settings->min_y = 0;
+    def->graph_settings->max_y = 300;
+    def->graph_settings->step_y = 1.;
+    def->graph_settings->allowed_types = {GraphData::GraphType::LINEAR, GraphData::GraphType::SQUARE, GraphData::GraphType::SPLINE};
+
+    def = this->add("filament_extrusion_multiplier_flow_map_volumetric", coBools);
+    def->label = L("Use volumetric flow for X axis");
+    def->tooltip = L("Off: X is print speed in mm/s. On: X is volumetric flow in mm³/s.");
+    def->category = OptionCategory::filament;
+    def->mode = comExpert;
+    def->is_vector_extruder = true;
+    def->set_default_value(new ConfigOptionBools({ false }));
+
     def = this->add("print_extrusion_multiplier", coPercent);
     def->label = L("Extrusion multiplier");
     def->category = OptionCategory::filament;
@@ -1904,6 +1950,23 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->max = 200;
     def->set_default_value(new ConfigOptionPercent(100));
+
+    auto add_flow_trim = [this](const char *key, const char *label) {
+        ConfigOptionDef *flow = this->add(key, coPercent);
+        flow->label = L(label);
+        flow->category = OptionCategory::width;
+        flow->tooltip = L("Adjusts extrusion amount for this feature without changing its line width or spacing. Multiplied with the filament and global extrusion multipliers.");
+        flow->sidetext = L("%");
+        flow->min = 0;
+        flow->max = 200;
+        flow->mode = comExpert | comSuSi;
+        flow->set_default_value(new ConfigOptionPercent(100));
+    };
+    add_flow_trim("external_perimeter_flow_trim", "External perimeter flow");
+    add_flow_trim("perimeter_flow_trim", "Internal perimeter flow");
+    add_flow_trim("sparse_infill_flow_trim", "Sparse infill flow");
+    add_flow_trim("solid_infill_flow_trim", "Solid infill flow");
+    add_flow_trim("gap_fill_flow_trim", "Gap fill flow");
 
     def = this->add("extrusion_width", coFloatOrPercent);
     def->label = L("Default extrusion width");
@@ -2008,6 +2071,24 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercents{100});
+
+    auto add_filament_flow_trim = [this](const char *key, const char *label) {
+        ConfigOptionDef *flow = this->add(key, coPercents);
+        flow->label = L(label);
+        flow->category = OptionCategory::filament;
+        flow->tooltip = L("Per-filament extrusion adjustment for this feature. Multiplied with the matching Width & Flow setting.");
+        flow->sidetext = L("%");
+        flow->min = 0;
+        flow->max = 200;
+        flow->mode = comExpert | comSuSi;
+        flow->is_vector_extruder = true;
+        flow->set_default_value(new ConfigOptionPercents{100});
+    };
+    add_filament_flow_trim("filament_external_perimeter_flow_trim", "External perimeter flow");
+    add_filament_flow_trim("filament_perimeter_flow_trim", "Internal perimeter flow");
+    add_filament_flow_trim("filament_sparse_infill_flow_trim", "Sparse infill flow");
+    add_filament_flow_trim("filament_solid_infill_flow_trim", "Solid infill flow");
+    add_filament_flow_trim("filament_gap_fill_flow_trim", "Gap fill flow");
 
     def = this->add("filament_first_layer_flow_ratio", coPercents);
     def->label = L("First layer");
@@ -2279,6 +2360,41 @@ void PrintConfigDef::init_fff_params()
     def->is_vector_extruder = true;
     def->set_default_value(disable_default_option(new ConfigOptionFloats({0.02})));
 
+    def = this->add("filament_pressure_advance_speed_map", coGraphs);
+    def->label = L("Pressure advance map");
+    def->tooltip = L("When enabled, this filament's map overrides the print-level pressure advance map.");
+    def->category = OptionCategory::filament;
+    def->can_be_disabled = true;
+    def->mode = comExpert;
+    def->is_vector_extruder = true;
+    def->set_default_value(disable_default_option(new ConfigOptionGraphs({GraphData(0, 2, GraphData::GraphType::LINEAR,
+        {{0, 0.02}, {100, 0.02}})})));
+    def->graph_settings = std::make_shared<GraphSettings>();
+    def->graph_settings->title = L("Filament pressure advance map");
+    def->graph_settings->description = L("Set pressure advance for each print speed or volumetric flow value. This map overrides the print-level map when enabled.");
+    def->graph_settings->x_label = L("Print speed (mm/s) or volumetric flow (mm³/s)");
+    def->graph_settings->y_label = L("Pressure advance");
+    def->graph_settings->null_label = L("No points");
+    def->graph_settings->label_min_x = L("Minimum X");
+    def->graph_settings->label_max_x = L("Maximum X");
+    def->graph_settings->label_min_y = L("Minimum PA");
+    def->graph_settings->label_max_y = L("Maximum PA");
+    def->graph_settings->min_x = 0;
+    def->graph_settings->max_x = 1000;
+    def->graph_settings->step_x = 1.;
+    def->graph_settings->min_y = 0;
+    def->graph_settings->max_y = 10;
+    def->graph_settings->step_y = 0.001;
+    def->graph_settings->allowed_types = {GraphData::GraphType::LINEAR, GraphData::GraphType::SQUARE, GraphData::GraphType::SPLINE};
+
+    def = this->add("filament_pressure_advance_map_volumetric", coBools);
+    def->label = L("Use volumetric flow for X axis");
+    def->tooltip = L("Off: X is print speed in mm/s. On: X is volumetric flow in mm³/s.");
+    def->category = OptionCategory::filament;
+    def->mode = comExpert;
+    def->is_vector_extruder = true;
+    def->set_default_value(new ConfigOptionBools({ false }));
+
     def = this->add("filament_ramming_parameters", coStrings);
     def->label = L("Ramming parameters");
     def->tooltip = L("This string is edited by RammingDialog and contains ramming specific parameters.");
@@ -2512,6 +2628,36 @@ void PrintConfigDef::init_fff_params()
     def->full_width = true;
     def->mode       = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloats(0.));
+
+    def = this->add("sparse_infill_rotate_template", coString);
+    def->label = L("Sparse infill rotation template");
+    def->full_label = L("Sparse infill rotation template");
+    def->tooltip = L("Rotates the infill direction per layer. Instructions are separated by commas. Examples: \"0,90\" alternates two angles; \"+30\" turns 30 degrees every layer; \"+45/10mm\" turns 45 degrees smoothly over 10 mm of height (also cm, layers, N% of the model height); \"+15#10\" holds an angle for 10 layers, then steps +15; \"10*3\" repeats, \"10!\" runs once, \"10*\" only sets the start angle. The Fill angle is added. Empty = normal fill angle, increment and template.");
+    def->full_width = true;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("solid_infill_rotate_template", coString);
+    def->label = L("Solid infill rotation template");
+    def->full_label = L("Solid infill rotation template");
+    def->tooltip = L("Rotates the infill direction per layer. Instructions are separated by commas. Examples: \"0,90\" alternates two angles; \"+30\" turns 30 degrees every layer; \"+45/10mm\" turns 45 degrees smoothly over 10 mm of height (also cm, layers, N% of the model height); \"+15#10\" holds an angle for 10 layers, then steps +15; \"10*3\" repeats, \"10!\" runs once, \"10*\" only sets the start angle. The Fill angle is added. Empty = normal fill angle, increment and template. Applies to solid and top solid infill and overrides the solid infill rotation step.");
+    def->full_width = true;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionString(""));
+
+    // CUSTOM: independent solid-infill rotation step.
+    // Value N means 90/N degrees per layer. There is no clamp at 90 degrees.
+    def = this->add("solid_infill_rotate_90_layers", coInt);
+    def->label = L("Solid infill rotation: nr of layers 0 to 90deg");
+    def->full_label = L("Solid infill: layers per 90 degrees");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Rotate solid infill by 90 degrees divided by this layer count on every layer. Example: 6 = 0 to 90 degrees over 6 layers (18 degrees/layer); rotation continues past 90 degrees. 0 disables.");
+    def->sidetext = L("layers");
+    def->min = 0;
+    def->max = 10000;
+    def->mode = comAdvanced | comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionInt(0));
+
 
     def = this->add("fill_density", coPercent);
     def->label = L("Fill density");
@@ -3449,6 +3595,92 @@ void PrintConfigDef::init_fff_params()
     def->can_be_disabled = true;
     def->set_default_value(disable_default_option(new ConfigOptionInts({ 100 })));
 
+    def = this->add("skip_tiny_perimeter_length", coFloat);
+    def->label = L("Skip tiny perimeters shorter than");
+    def->full_label = L("Skip tiny perimeters shorter than");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Perimeter loops or paths shorter than this length are not printed (removed at G-code generation)."
+                     "\nExternal perimeters, overhang perimeters and thin walls are never removed."
+                     "\n0 to disable.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("skip_tiny_fill_diagonal", coFloat);
+    def->label = L("Skip tiny fill below diagonal");
+    def->full_label = L("Skip tiny fill below diagonal");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Sparse infill, solid infill, bridge infill and gap fill paths whose bounding-box diagonal is smaller than this are not printed."
+                     "\nTop solid infill is never removed."
+                     "\n0 to disable.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("zaa_enabled", coBool);
+    def->label = L("Z contouring (ZAA) on top surfaces");
+    def->full_label = L("Z contouring (ZAA)");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Moves the nozzle up and down inside the thickness of the top layer so the top surface follows the real model shape (smooth slopes instead of stair steps)."
+                     "\nThe extrusion amount follows the local line height. Never applied on the first layer or in spiral vase mode."
+                     "\nPrint the top surface slowly (see ZAA speed) and test on a small part first.");
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("zaa_contour_perimeters", coBool);
+    def->label = L("Also contour perimeters");
+    def->full_label = L("ZAA: also contour perimeters");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Also apply Z contouring to perimeters. Perimeters are only ever lowered, never raised.");
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("zaa_min_z", coFloat);
+    def->label = L("Min line height");
+    def->full_label = L("ZAA: min line height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Thinnest line ZAA may print: the nozzle may go down by (layer height - this value) below the normal layer top.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 1;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.1));
+
+    def = this->add("zaa_max_height", coFloat);
+    def->label = L("Max line height");
+    def->full_label = L("ZAA: max line height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Thickest line ZAA may print: the nozzle may rise up to (this value - layer height) above the normal layer top."
+                     "\nSet it equal to the layer height to never rise above the layer top.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 2;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.5));
+
+    def = this->add("zaa_sample_distance", coFloat);
+    def->label = L("Sample every");
+    def->full_label = L("ZAA: height sample distance");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Distance between surface height measurements along a printed line. Smaller = smoother but more G-code.");
+    def->sidetext = L("mm");
+    def->min = 0.05;
+    def->max = 5;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
+    def = this->add("zaa_speed", coFloat);
+    def->label = L("Speed");
+    def->full_label = L("ZAA: max speed on contoured lines");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum speed on contoured lines. Slower printing gives a cleaner top surface and avoids the nozzle dragging. 0 = no limit (about 20 mm/s is a good start).");
+    def->sidetext = L("mm/s");
+    def->min = 0;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0));
+
     def = this->add("infill_first", coBool);
     def->label = L("Infill before perimeters");
     def->category = OptionCategory::infill;
@@ -3466,18 +3698,39 @@ void PrintConfigDef::init_fff_params()
     //def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("infill_overlap", coFloatOrPercent);
-    def->label = L("Infill/perimeters encroachment");
+    def->label = L("Sparse infill vs perimeter overlap");
     def->category = OptionCategory::width;
-    def->tooltip = L("This setting applies an additional overlap between infill and perimeters for better bonding. "
-                   "Theoretically this shouldn't be needed, but backlash might cause gaps. If expressed "
-                   "as percentage (example: 15%) it is calculated over perimeter extrusion width."
-                    "\nDon't put a value higher than 50% (of the perimeter width), as it will fuse with it and follow the perimeter.");
+    def->tooltip = L("This setting applies an additional overlap between sparse infill and perimeters for better bonding. "
+                   "If expressed as a percentage (example: 15%) it is calculated over nozzle diameter."
+                    "\nDon't use unnecessarily high values, as the infill may fuse with the perimeter.");
     def->sidetext = L("mm or %");
-    def->ratio_over = "perimeter_extrusion_width";
+    def->ratio_over = "nozzle_diameter";
     def->min = 0;
     def->max_literal = { 0.5, true };
-    def->mode = comExpert | comPrusa;
+    def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloatOrPercent(25, true));
+
+    def = this->add("sparse_infill_overlap_flow_ratio", coPercent);
+    def->label = L("Sparse infill overlap flow");
+    def->full_label = L("Sparse infill/perimeter overlap flow");
+    def->category = OptionCategory::width;
+    def->tooltip = L("Flow multiplier for only the sparse-infill path segments inside the perimeter overlap area. 100% keeps normal infill flow.");
+    def->sidetext = L("%");
+    def->min = 0;
+    def->max = 200;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionPercent(100));
+
+    def = this->add("sparse_infill_overlap_speed_ratio", coPercent);
+    def->label = L("Sparse infill overlap speed");
+    def->full_label = L("Sparse infill/perimeter overlap speed");
+    def->category = OptionCategory::width;
+    def->tooltip = L("Speed multiplier for only the sparse-infill path segments inside the perimeter overlap area. 100% uses the configured sparse infill speed.");
+    def->sidetext = L("% of sparse infill speed");
+    def->min = 1;
+    def->max = 100;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionPercent(100));
 
     def = this->add("infill_speed", coFloatOrPercent);
     def->label = L("Sparse");
@@ -3689,6 +3942,13 @@ void PrintConfigDef::init_fff_params()
     def->full_width = true;
     def->height = 5;
     def->mode = comExpert | comPrusa;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("pressure_advance_map_gcode", coString);
+    def->label = L("Pressure advance change G-code");
+    def->tooltip = L("Command sent when the map changes PA. Use {value} for the mapped value and {extruder} for the active extruder name. Examples: Klipper: SET_PRESSURE_ADVANCE EXTRUDER={extruder} ADVANCE={value} SMOOTH_TIME=0.020; Marlin: M900 K{value}. Leave empty to use the printer firmware's standard command.");
+    def->category = OptionCategory::width;
+    def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionString(""));
 
     def = this->add("feature_gcode", coString);
@@ -4025,8 +4285,93 @@ void PrintConfigDef::init_fff_params()
                    "to 5.4 mm³/s (feedrate 60 mm/s) will take at least 2 seconds.");
     def->sidetext = L("mm³/s²");
     def->min = 0;
-    def->mode = comExpert | comPrusa;
+    def->mode = comExpert | comPrusa | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("pressure_equalizer_ramp_segment_length", coFloat);
+    def->label = L("Max ramp segment length");
+    def->tooltip = L("Maximum XY length of each G-code segment used to approximate the volumetric-flow ramp. Smaller values emit more ramp points. The actual ramp length depends on the flow change, slope limit, and print speed.");
+    def->sidetext = L("mm");
+    def->min = 0.1;
+    def->max = 100;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(5));
+
+    def = this->add("pressure_equalizer_ramp_points", coInt);
+    def->label = L("Ramp points per move");
+    def->tooltip = L("Minimum number of linear subdivisions for each ramped G-code move. 0 selects automatically using Max ramp segment length; larger values create smoother ramps and more G-code.");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("pressure_equalizer_ramp_time", coFloat);
+    def->label = L("Ramp time");
+    def->tooltip = L("Time allowed for the volumetric-flow transition. Set to 0 to disable the pressure equalizer.");
+    def->sidetext = L("s");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("pressure_equalizer_ramp_length", coFloat);
+    def->label = L("Total ramp length");
+    def->tooltip = L("Maximum XY distance for the flow ramp down before a qualifying retraction and ramp up after the matching unretract. Set to 0 to disable the ramp.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 1000;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("pressure_equalizer_ramp_steps", coInt);
+    def->label = L("Ramp steps");
+    def->tooltip = L("Number of steps across the total ramp length. Set 0 for automatic: the step count is based on the calculated autospeed flow (smallest extrusion cross-section in the print multiplied by computed max print speed, capped by Volumetric auto-speed when nonzero). Enter 3–100 for a manual count. Values above 3 can create many G-code moves; use with caution on non-Klipper firmware, especially 8-bit boards.");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("pressure_equalizer_ramp_start_flow", coFloat);
+    def->label = L("Ramp start flow");
+    def->tooltip = L("Minimum volumetric flow at the start of the ramp-up after a retraction and travel. 0 = start from zero flow. Raises the starting feedrate so the nozzle does not crawl at near-zero speed.");
+    def->sidetext = L("mm³/s");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("pressure_equalizer_decel_ramp_time", coFloat);
+    def->label = L("Deceleration ramp time");
+    def->tooltip = L("Duration of the slow-down ramp before a retraction. 0 = no deceleration ramp. Separate from the acceleration ramp.");
+    def->sidetext = L("s");
+    def->min = 0;
+    def->max = 5;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("pressure_equalizer_decel_ramp_length", coFloat);
+    def->label = L("Deceleration ramp length");
+    def->tooltip = L("Maximum distance used by the slow-down ramp before a retraction. 0 = no deceleration ramp.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 50;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("pressure_equalizer_decel_ramp_end_flow", coFloat);
+    def->label = L("Deceleration end flow");
+    def->tooltip = L("Volumetric flow reached at the end of the slow-down ramp, just before the retraction. 0 = nearly zero.");
+    def->sidetext = L("mm³/s");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("pressure_equalizer_use_smoothing", coBool);
+    def->label = L("Use extrusion smoothing instead of ramps");
+    def->tooltip = L("Checked: use Prusa/Orca style extrusion-rate smoothing (the max volumetric slope settings, in mm^3/s^2) and ignore the acceleration/deceleration ramps. Unchecked: use the ramps.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("max_volumetric_extrusion_rate_slope_negative", coFloat);
     def->label = L("Max volumetric slope negative");
@@ -4037,7 +4382,7 @@ void PrintConfigDef::init_fff_params()
                    "to 1.8 mm³/s (feedrate 20 mm/s) will take at least 2 seconds.");
     def->sidetext = L("mm³/s²");
     def->min = 0;
-    def->mode = comExpert | comPrusa;
+    def->mode = comExpert | comPrusa | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
 
 #if 0
@@ -4359,6 +4704,39 @@ void PrintConfigDef::init_fff_params()
     def->graph_settings->max_y       = 100;
     def->graph_settings->step_y      = 1.;
     def->graph_settings->allowed_types = {GraphData::GraphType::LINEAR, GraphData::GraphType::SQUARE, GraphData::GraphType::SPLINE};
+
+    def = this->add("pressure_advance_speed_map", coGraph);
+    def->label = L("Pressure advance map");
+    def->category = OptionCategory::width;
+    def->tooltip = L("Choose pressure advance by print speed or volumetric flow. The filament map takes priority when enabled.");
+    def->can_be_disabled = true;
+    def->mode = comExpert;
+    def->set_default_value(disable_default_option(new ConfigOptionGraph(GraphData(0, 2, GraphData::GraphType::LINEAR,
+        {{0, 0.02}, {100, 0.02}}))));
+    def->graph_settings = std::make_shared<GraphSettings>();
+    def->graph_settings->title = L("Pressure advance map");
+    def->graph_settings->description = L("Set pressure advance for each print speed or volumetric flow value. The selected X-axis mode is controlled below.");
+    def->graph_settings->x_label = L("Print speed (mm/s) or volumetric flow (mm³/s)");
+    def->graph_settings->y_label = L("Pressure advance");
+    def->graph_settings->null_label = L("No points");
+    def->graph_settings->label_min_x = L("Minimum X");
+    def->graph_settings->label_max_x = L("Maximum X");
+    def->graph_settings->label_min_y = L("Minimum PA");
+    def->graph_settings->label_max_y = L("Maximum PA");
+    def->graph_settings->min_x = 0;
+    def->graph_settings->max_x = 1000;
+    def->graph_settings->step_x = 1.;
+    def->graph_settings->min_y = 0;
+    def->graph_settings->max_y = 10;
+    def->graph_settings->step_y = 0.001;
+    def->graph_settings->allowed_types = {GraphData::GraphType::LINEAR, GraphData::GraphType::SQUARE, GraphData::GraphType::SPLINE};
+
+    def = this->add("pressure_advance_map_volumetric", coBool);
+    def->label = L("Use volumetric flow for X axis");
+    def->category = OptionCategory::width;
+    def->tooltip = L("Off: X is print speed in mm/s. On: X is volumetric flow in mm³/s.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("overhangs_fan_speed", coInts);
     def->label = L("Overhangs Perimeter fan speed");
@@ -5611,7 +5989,7 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
     def = this->add("solid_infill_overlap", coPercent);
-    def->label = L("Solid infill overlap");
+    def->label = L("Solid infill line-to-line overlap");
     def->category = OptionCategory::width;
     def->tooltip = L("This setting allows you to reduce the overlap between the lines of the solid fill, to reduce the % filled if you see overextrusion signs on solid areas."
         " Note that you should be sure that your flow (filament extrusion multiplier) is well calibrated and your filament max overlap is set before thinking to modify this."
@@ -5621,6 +5999,20 @@ void PrintConfigDef::init_fff_params()
     def->max = 100;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(100));
+
+    def = this->add("solid_infill_wall_overlap", coFloatOrPercent);
+    def->label = L("Solid infill vs perimeter overlap");
+    def->full_label = L("Solid infill to perimeter overlap");
+    def->category = OptionCategory::width;
+    def->tooltip = L("Overlap of solid infill into the perimeter."
+        "\nIndependent of solid infill line-to-line overlap."
+        "\nPercentage is calculated from nozzle diameter; direct mm values are also accepted.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "nozzle_diameter";
+    def->min = 0;
+    def->max_literal = { 0.5, true };
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloatOrPercent(25, true));
 
     def = this->add("solid_infill_extruder", coInt);
     def->label = L("Solid infill extruder");
@@ -6702,6 +7094,19 @@ void PrintConfigDef::init_fff_params()
     def->max = 100;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionPercent(100));
+
+    def = this->add("top_solid_infill_wall_overlap", coFloatOrPercent);
+    def->label = L("Top solid infill vs perimeter overlap");
+    def->full_label = L("Top solid infill to perimeter overlap");
+    def->category = OptionCategory::width;
+    def->tooltip = L("Overlap of top solid infill into the perimeter. Independent of top solid infill line-to-line overlap. "
+        "Percentage is calculated from nozzle diameter; direct mm values are also accepted.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "nozzle_diameter";
+    def->min = 0;
+    def->max_literal = { 0.5, true };
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloatOrPercent(25, true));
 
     def = this->add("top_solid_infill_speed", coFloatOrPercent);
     def->label = L("Top solid");
@@ -9929,6 +10334,7 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "fill_angle_cross",
 "fill_angle_follow_model",
 "fill_angle_template",
+"solid_infill_rotate_90_layers",
 "fill_smooth_distribution",
 "fill_smooth_width",
 "fill_top_flow_ratio",
@@ -9999,6 +10405,14 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "milling_z_lift",
 "milling_z_offset",
 "min_width_top_surface",
+"skip_tiny_fill_diagonal",
+"skip_tiny_perimeter_length",
+"zaa_enabled",
+"zaa_contour_perimeters",
+"zaa_min_z",
+"zaa_sample_distance",
+"zaa_speed",
+"zaa_max_height",
 "model_precision",
 "no_perimeter_unsupported_algo",
 "object_gcode",
@@ -10106,6 +10520,7 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "top_fan_speed",
 "top_infill_extrusion_spacing",
 "top_solid_infill_overlap",
+"top_solid_infill_wall_overlap",
 "travel_acceleration",
 "travel_deceleration_use_target",
 "wipe_advanced_algo",

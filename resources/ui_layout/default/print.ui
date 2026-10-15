@@ -226,11 +226,9 @@ group:sidetext_width$5:Infill angle
 		setting:label_width$6:width$5:bridge_angle
 	end_line
 	line:Modifiers
-		setting:label_width$6:width$5:label$increment:fill_angle_increment
-		setting:width$5:fill_angle_cross
 		setting:width$5:fill_angle_follow_model
-	vector_line:fill_angle_template
-#	setting:fill_angle_template
+	setting:sparse_infill_rotate_template
+	setting:solid_infill_rotate_template
 group:sidetext_width$5:Advanced
 	setting:solid_infill_every_layers
 	line:Solid infill if area below
@@ -256,6 +254,20 @@ group:Advanced Infill options
 		setting:label_width$26:label$Spacing between ironing lines:width$5:sidetext_width$7:fill_smooth_width
 	end_line
 	setting:label$Small Area Infill Flow Compensation (beta):small_area_infill_flow_compensation_model
+	end_line
+	line:Z contouring (ZAA)
+		setting:label_width$0:label$_:zaa_enabled
+		setting:label$Perimeters too:label_width$14:zaa_contour_perimeters
+	end_line
+	line:ZAA settings
+		setting:label$Min height:label_width$10:width$5:sidetext_width$3:zaa_min_z
+		setting:label$Max height:label_width$10:width$5:sidetext_width$3:zaa_max_height
+		setting:label$Sample every:label_width$12:width$5:sidetext_width$3:zaa_sample_distance
+		setting:label$Speed:label_width$7:width$5:sidetext_width$4:zaa_speed
+	end_line
+	line:Skip tiny paths
+		setting:label$Perimeter shorter than:label_width$16:width$5:sidetext_width$4:skip_tiny_perimeter_length
+		setting:label$Fill diagonal below:label_width$16:width$5:sidetext_width$4:skip_tiny_fill_diagonal
 	end_line
 group:title_width$19:Ironing post-process (This will go on top of infills and perimeters)
 	line:Enable ironing post-process
@@ -417,8 +429,16 @@ group:Autospeed (advanced)
 	setting:max_volumetric_speed
 	setting:max_print_speed
 group:Pressure equalizer (experimental)
+	setting:pressure_equalizer_use_smoothing
 	setting:max_volumetric_extrusion_rate_slope_positive
 	setting:max_volumetric_extrusion_rate_slope_negative
+	setting:pressure_equalizer_ramp_time
+	setting:pressure_equalizer_ramp_length
+	setting:pressure_equalizer_ramp_steps
+	setting:pressure_equalizer_ramp_start_flow
+	setting:pressure_equalizer_decel_ramp_time
+	setting:pressure_equalizer_decel_ramp_length
+	setting:pressure_equalizer_decel_ramp_end_flow
 group:label_width$9:sidetext_width$8:Acceleration control (advanced)
 	line:Default acceleration
 		setting:width$4:default_acceleration
@@ -500,7 +520,7 @@ group:Overlap
 		setting:label_width$7:label$External:external_perimeter_overlap
 		setting:label_width$7:label$Gap Fill:gap_fill_overlap
 	end_line
-	line:Solid infill ovelrap
+	line:Solid infill line-to-line overlap
 		setting:label$Inside:width$4:solid_infill_overlap
 		setting:label$Top:width$4:top_solid_infill_overlap
 	end_line
@@ -508,7 +528,22 @@ group:Overlap
 		setting:label_width$7:bridge_overlap_min
 		setting:label_width$7:bridge_overlap
 	end_line
-	setting:width$4:sidetext_width$7:infill_overlap
+	line:Sparse infill vs perimeter overlap
+		setting:width$4:sidetext_width$7:label$_:infill_overlap
+	end_line
+	line:Sparse overlap speed/flow
+		setting:label$Speed:width$4:sparse_infill_overlap_speed_ratio
+		setting:label$Flow:width$4:sparse_infill_overlap_flow_ratio
+	end_line
+	line:Solid infill vs perimeter overlap
+		setting:width$4:sidetext_width$7:label$_:solid_infill_wall_overlap
+	end_line
+	line:Top solid infill vs perimeter overlap
+		setting:width$4:sidetext_width$7:label$_:top_solid_infill_wall_overlap
+	end_line
+	line:Bridge vs perimeter overlap
+		setting:width$4:sidetext_width$7:label$_:bridge_wall_overlap
+	end_line
 group:sidetext_width$2:Flow
 	line:Flow ratio
 		setting:bridge_flow_ratio
@@ -516,11 +551,27 @@ group:sidetext_width$2:Flow
 		setting:fill_top_flow_ratio
 		setting:first_layer_flow_ratio
 	end_line
+	line:Perimeter flow
+		setting:external_perimeter_flow_trim
+		setting:perimeter_flow_trim
+	end_line
+	line:Infill flow
+		setting:sparse_infill_flow_trim
+		setting:solid_infill_flow_trim
+	end_line
+	line:Other feature flow
+		setting:gap_fill_flow_trim
+	end_line
 	line:Bridge type
 		setting:bridge_type
 		setting:script:bool:advanced:depends$bridge_type$bridge_overlap$layer_height$nozzle_diameter:label$ Simulate Prusa 'no thick bridge':label_width$0:tooltip$Change the bridge type and the bridge overlap to compute the same extrusions as when the PrusaSlicer 'thick bridge' isn't selected.\nAs long as it's selected, it will modify them.\nUnselect it to deactivate this enforcement.:s_not_thick_bridge
 	end_line
 	setting:external_perimeter_cut_corners
+
+group:Pressure advance speed map
+	setting:width$20:height$10:pressure_advance_speed_map
+	setting:pressure_advance_map_volumetric
+	setting:width$50:pressure_advance_map_gcode
 
 page:Multiple extruders:funnel
 group:Extruders

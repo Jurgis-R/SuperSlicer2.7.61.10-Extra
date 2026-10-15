@@ -52,6 +52,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include "AABBTreeIndirect.hpp"
+#include "TriangleMesh.hpp"
 #include <cstdlib>
 #include <chrono>
 #include <map>
@@ -1224,8 +1226,9 @@ static inline bool arc_welder_enabled(const PrintConfig& print_config)
         // Not a spiral vase print
         !print_config.spiral_vase &&
         // Presure equalizer not used
-        print_config.max_volumetric_extrusion_rate_slope_negative == 0. &&
-        print_config.max_volumetric_extrusion_rate_slope_positive == 0.;
+        (print_config.pressure_equalizer_use_smoothing.value ?
+            (print_config.max_volumetric_extrusion_rate_slope_positive == 0. && print_config.max_volumetric_extrusion_rate_slope_negative == 0.) :
+            (print_config.pressure_equalizer_ramp_time == 0. && print_config.pressure_equalizer_decel_ramp_time == 0.));
 }
 
 void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, ThumbnailsGeneratorCallback thumbnail_cb)
@@ -1395,9 +1398,13 @@ void GCodeGenerator::_do_export(Print& print_mod, GCodeOutputStream &file, Thumb
     if (print.config().spiral_vase.value)
         m_spiral_vase = make_unique<SpiralVase>(print.config());
 
-    if (print.config().max_volumetric_extrusion_rate_slope_positive.value > 0 ||
-        print.config().max_volumetric_extrusion_rate_slope_negative.value > 0)
-        m_pressure_equalizer = make_unique<PressureEqualizer>(print.config());
+    if (print.config().pressure_equalizer_use_smoothing.value ? (print.config().max_volumetric_extrusion_rate_slope_positive.value > 0 || print.config().max_volumetric_extrusion_rate_slope_negative.value > 0) : (print.config().pressure_equalizer_ramp_time.value > 0 || print.config().pressure_equalizer_decel_ramp_time.value > 0)) { // EQ_LIMIT_FALLBACK
+        double eq_limit = m_volumetric_speed;
+        if (eq_limit <= 0.) eq_limit = print.config().max_volumetric_speed.value;
+        if (eq_limit <= 0.) for (double v : print.config().filament_max_volumetric_speed.get_values()) eq_limit = std::max(eq_limit, v);
+        if (eq_limit <= 0.) eq_limit = 15.;
+        m_pressure_equalizer = Slic3r::make_unique<PressureEqualizer>(print.config(), float(eq_limit), print.config().retract_before_travel.get_values());
+    }
     m_enable_extrusion_role_markers = (bool)m_pressure_equalizer;
 
     std::string preamble_to_put_start_layer = "";
@@ -5493,14 +5500,18 @@ std::string GCodeGenerator::extrude_multi_path(const ExtrusionMultiPath &multipa
         // extrude along the  reversedpath
         for (size_t idx_path = multipath.paths.size() - 1; idx_path < multipath.paths.size(); --idx_path) {
             // extrude_path will reverse the path by itself, no need to copy it do to it here.
+            m_in_multipath = true;
             gcode += extrude_path(multipath.paths[idx_path], description, speed);
+            m_in_multipath = false;
         }
         add_wipe_points(multipath.paths, false, false);
     } else {
         this->visitor_flipped = false;
         // extrude along the path
         for (const ExtrusionPath& path : multipath.paths) {
+            m_in_multipath = true;
             gcode += extrude_path(path, description, speed);
+            m_in_multipath = false;
         }
         add_wipe_points(multipath.paths, true, false);
     };
@@ -5624,7 +5635,7 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     }
 
     //check if we should reverse it
-    if (last_pos_defined() && path.can_reverse()
+    if (last_pos_defined() && path.can_reverse() && !m_in_multipath
         && simplifed_path.first_point().distance_to_square(last_pos()) > simplifed_path.last_point().distance_to_square(last_pos())) {
         simplifed_path.reverse();
     }
@@ -5847,6 +5858,61 @@ void GCodeGenerator::set_region_for_extrude(const Print &print, const PrintObjec
 }
 
 // Extrude perimeters: Decide where to put seams (hide or align seams).
+namespace {
+// Measures an extrusion entity (length in mm + bounding box in mm) to decide if it is too tiny to print.
+class TinyExtrusionMeasure : public ExtrusionVisitorConst {
+public:
+    double length_mm = 0.;
+    double minx = std::numeric_limits<double>::max(), miny = std::numeric_limits<double>::max();
+    double maxx = std::numeric_limits<double>::lowest(), maxy = std::numeric_limits<double>::lowest();
+    int    cls = -1;      // 0 = other, 1 = perimeter, 2 = fill
+    bool   mixed = false;
+    size_t nb_paths = 0;
+    static int classify(ExtrusionRole role) {
+        if (role == ExtrusionRole::Perimeter)
+            return 1;
+        if (role == ExtrusionRole::InternalInfill || role == ExtrusionRole::SolidInfill ||
+            role == ExtrusionRole::BridgeInfill || role == ExtrusionRole::InternalBridgeInfill || role == ExtrusionRole::GapFill)
+            return 2;
+        return 0;
+    }
+    void add(const ExtrusionPath &path) {
+        int c = classify(path.role());
+        if (cls < 0) cls = c; else if (cls != c) mixed = true;
+        ++nb_paths;
+        length_mm += unscaled(path.length());
+        for (size_t i = 0; i < path.polyline.size(); ++i) {
+            const Point pt = path.polyline.get_point(i);
+            const double x = unscaled(pt.x()), y = unscaled(pt.y());
+            minx = std::min(minx, x); maxx = std::max(maxx, x);
+            miny = std::min(miny, y); maxy = std::max(maxy, y);
+        }
+    }
+    virtual void use(const ExtrusionPath &path) override { add(path); }
+    virtual void use(const ExtrusionPath3D &path3D) override { mixed = true; }
+    virtual void use(const ExtrusionMultiPath &multipath) override { for (const ExtrusionPath &path : multipath.paths) add(path); }
+    virtual void use(const ExtrusionMultiPath3D &multipath) override { mixed = true; }
+    virtual void use(const ExtrusionLoop &loop) override { for (const ExtrusionPath &path : loop.paths) add(path); }
+    virtual void use(const ExtrusionEntityCollection &collection) override { for (const ExtrusionEntity *e : collection.entities()) e->visit(*this); }
+};
+
+// true if the entity is a tiny perimeter (shorter than min_perimeter_len mm) or a tiny fill (bbox diagonal below min_fill_diag mm).
+static bool is_tiny_extrusion(const ExtrusionEntity &entity, double min_perimeter_len, double min_fill_diag)
+{
+    if (min_perimeter_len <= 0. && min_fill_diag <= 0.)
+        return false;
+    TinyExtrusionMeasure m;
+    entity.visit(m);
+    if (m.nb_paths == 0 || m.mixed)
+        return false;
+    if (m.cls == 1)
+        return min_perimeter_len > 0. && m.length_mm < min_perimeter_len;
+    if (m.cls == 2)
+        return min_fill_diag > 0. && std::hypot(m.maxx - m.minx, m.maxy - m.miny) < min_fill_diag;
+    return false;
+}
+} // namespace
+
 void GCodeGenerator::extrude_perimeters(const ExtrudeArgs &print_args, const LayerIsland &island, std::string &gcode)
 {
     m_seam_perimeters = true;
@@ -5893,6 +5959,8 @@ void GCodeGenerator::extrude_perimeters(const ExtrudeArgs &print_args, const Lay
 //        OverhangAssertVisitor visitor;
 //        next_entity.extrusion_entity().visit(visitor);
 //#endif
+        if (is_tiny_extrusion(next_entity.extrusion_entity(), m_region->config().skip_tiny_perimeter_length.value, m_region->config().skip_tiny_fill_diagonal.value))
+            continue;
         gcode += this->extrude_entity(next_entity, comment_perimeter, -1.);
         if (m_travel_obstacle_tracker.is_init())
             m_travel_obstacle_tracker.mark_extruded(&next_entity.extrusion_entity(),
@@ -5904,6 +5972,11 @@ void GCodeGenerator::extrude_perimeters(const ExtrudeArgs &print_args, const Lay
 }
 
 // Chain the paths hierarchically by a greedy algorithm to minimize a travel distance.
+bool GCodeGenerator::skip_tiny_perimeter(const ExtrusionEntity &e) const
+{
+    return m_region != nullptr && is_tiny_extrusion(e, m_region->config().skip_tiny_perimeter_length.value, 0.);
+}
+
 void GCodeGenerator::extrude_infill(const ExtrudeArgs& print_args, const LayerIsland &island, bool is_infill_first, std::string &gcode)
 {
     ExtrusionEntityCollection temp_fill_extrusions;
@@ -5935,6 +6008,8 @@ void GCodeGenerator::extrude_infill(const ExtrudeArgs& print_args, const LayerIs
                 set_region_for_extrude(print, nullptr, &layerm, gcode);
                 std::vector<ExtrusionEntityReference> fills_eer = chain_extrusion_references(temp_fill_extrusions, last_pos_defined() ? &last_pos() : nullptr);
                 for (const ExtrusionEntityReference &fill_eer : fills_eer) {
+                    if (is_tiny_extrusion(fill_eer.extrusion_entity(), m_region->config().skip_tiny_perimeter_length.value, m_region->config().skip_tiny_fill_diagonal.value))
+                        continue;
                     gcode += this->extrude_entity(fill_eer, "infill"sv);
                 }
             }
@@ -6253,21 +6328,28 @@ void GCodeGenerator::_extrude_line_cut_corner(std::string& gcode_str, const Line
     }
 }
 
-double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path) {
+double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path, double speed_mm_s) {
     const double path_mm3_per_mm = path.mm3_per_mm(); 
     // no e if no extrusion axis
     if (m_writer.extrusion_axis().empty() || path_mm3_per_mm <= 0)
         return 0;
     // compute
+    const uint16_t extruder_id = m_writer.tool()->id();
+    const double effective_speed_mm_s = speed_mm_s >= 0 ? speed_mm_s : m_writer.get_speed_mm_s();
+    const bool flow_map_enabled = m_config.filament_extrusion_multiplier_flow_map.is_enabled(extruder_id) &&
+        m_config.filament_extrusion_multiplier_flow_map.get_at(extruder_id).data_size() > 0;
+    const GraphData *flow_map = flow_map_enabled
+        ? &m_config.filament_extrusion_multiplier_flow_map.get_at(extruder_id) : nullptr;
+    const double filament_area = m_writer.tool()->filament_crossection();
     double e_per_mm = path_mm3_per_mm
-        * m_writer.tool()->e_per_mm3() // inside is the filament_extrusion_multiplier
+        * (flow_map_enabled ? 1. / filament_area : m_writer.tool()->e_per_mm3())
         * this->config().print_extrusion_multiplier.get_abs_value(1);
     // extrusion mult per speed
     if (this->config().extruder_extrusion_multiplier_speed.is_enabled()) {
         GraphData eems_graph = this->config().extruder_extrusion_multiplier_speed.get_at(this->m_writer.tool()->id());
         if (eems_graph.data_size() > 0 && this->config().extruder_extrusion_multiplier_speed.is_enabled(this->m_writer.tool()->id())) {
             assert(e_per_mm > 0);
-            double current_speed_mm_s = this->writer().get_speed_mm_s();
+            double current_speed_mm_s = effective_speed_mm_s;
             if (eems_graph.data_size() > 0) {
                 e_per_mm *= eems_graph.interpolate(current_speed_mm_s);
             }
@@ -6278,18 +6360,287 @@ double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path) {
     if (path.role() == ExtrusionRole::TopSolidInfill) {
         e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_fill_top_flow_ratio, 100) * 0.01;
     }
+    // Per-feature flow trims are applied to extrusion only; geometry and line spacing stay unchanged.
+    const ExtrusionRole role = path.role();
+    double feature_flow_trim = 100.;
+    if (role.is_bridge())
+        feature_flow_trim = 100.; // bridges use bridge_flow_ratio
+    else if (role == ExtrusionRole::GapFill)
+        feature_flow_trim = m_config.gap_fill_flow_trim.value;
+    else if (role.is_external_perimeter())
+        feature_flow_trim = m_config.external_perimeter_flow_trim.value;
+    else if (role.is_perimeter())
+        feature_flow_trim = m_config.perimeter_flow_trim.value;
+    else if (role == ExtrusionRole::TopSolidInfill || role == ExtrusionRole::Ironing)
+        feature_flow_trim = 100.; // top fill uses fill_top_flow_ratio
+    else if (role.is_solid_infill())
+        feature_flow_trim = m_config.solid_infill_flow_trim.value;
+    else if (role.is_sparse_infill())
+        feature_flow_trim = m_config.sparse_infill_flow_trim.value;
+    e_per_mm *= feature_flow_trim * 0.01;
+    if (path.attributes().sparse_infill_perimeter_overlap)
+        e_per_mm *= m_config.sparse_infill_overlap_flow_ratio.value * 0.01;
+    if (role.is_bridge() || role == ExtrusionRole::TopSolidInfill || role == ExtrusionRole::Ironing)
+        ; // bridge / top fill: bridge_flow_ratio, fill_top_flow_ratio
+    else if (role == ExtrusionRole::GapFill)
+        e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_gap_fill_flow_trim, 100) * 0.01;
+    else if (role.is_external_perimeter())
+        e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_external_perimeter_flow_trim, 100) * 0.01;
+    else if (role.is_perimeter())
+        e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_perimeter_flow_trim, 100) * 0.01;
+    else if (role.is_solid_infill())
+        e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_solid_infill_flow_trim, 100) * 0.01;
+    else if (role.is_sparse_infill())
+        e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_sparse_infill_flow_trim, 100) * 0.01;
     // first layer mult
     if (this->m_layer->bottom_z() < EPSILON) {
         e_per_mm *= this->config().first_layer_flow_ratio.get_abs_value(1);
         e_per_mm *= EXTRUDER_CONFIG_WITH_DEFAULT(filament_first_layer_flow_ratio, 100) * 0.01;
     }
+    if (flow_map != nullptr) {
+        const double current_speed_mm_s = effective_speed_mm_s;
+        const double map_x = m_config.filament_extrusion_multiplier_flow_map_volumetric.get_at(extruder_id)
+            ? e_per_mm * filament_area * current_speed_mm_s
+            : current_speed_mm_s;
+        e_per_mm *= flow_map->interpolate(map_x) * 0.01;
+    }
     return e_per_mm;
+}
+
+// ======== ZAA (Z contouring) ========
+struct GCodeGenerator::ZaaMeshData {
+    indexed_triangle_set     its;
+    AABBTreeIndirect::Tree3f tree;
+};
+
+const GCodeGenerator::ZaaMeshData* GCodeGenerator::zaa_mesh_for(const PrintObject *obj)
+{
+    auto it = m_zaa_meshes.find(obj);
+    if (it != m_zaa_meshes.end())
+        return it->second.get();
+    std::shared_ptr<ZaaMeshData> data = std::make_shared<ZaaMeshData>();
+    // Same coordinates as the slicing: object-centered, on the print bed.
+    data->its = obj->model_object()->raw_indexed_triangle_set();
+    its_transform(data->its, obj->trafo_centered(), true);
+    data->tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(data->its.vertices, data->its.indices);
+    it = m_zaa_meshes.emplace(obj, std::move(data)).first;
+    return it->second.get();
+}
+
+// Cuts a top-surface (or perimeter / solid infill) path into samples and gives each one a Z offset (scaled, relative to the layer print_z)
+// that follows the real model surface. v3 "x-ray": only the stretches where the surface really leaves the flat layer are flagged
+// active (m_zaa_active, same size as 'out'); the rest of the path is flat (offset 0). Returns false when nothing needs contouring.
+bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pair<Point, coord_t>> &out)
+{
+    out.clear();
+    m_zaa_active.clear();
+    if (!m_config.zaa_enabled.value || m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
+        return false;
+    const ExtrusionRole role = path.role();
+    const bool real_top = role == ExtrusionRole::TopSolidInfill;
+    const bool is_top   = real_top ||
+                          (m_config.zaa_contour_perimeters.value && role == ExtrusionRole::SolidInfill);
+    const bool is_peri  = m_config.zaa_contour_perimeters.value &&
+                          (role == ExtrusionRole::Perimeter || role == ExtrusionRole::ExternalPerimeter);
+    if (!is_top && !is_peri)
+        return false;
+    const PrintObject *obj = m_layer->object();
+    if (obj == nullptr || obj->model_object() == nullptr)
+        return false;
+    const ZaaMeshData *mesh = this->zaa_mesh_for(obj);
+    if (mesh == nullptr || mesh->its.indices.empty())
+        return false;
+
+    const double h         = m_layer->height;
+    const double print_z   = m_layer->print_z;
+    const double ray_z     = m_layer->slice_z;                              // inside the solid under a top surface
+    const double min_line  = std::max(0., m_config.zaa_min_z.value);        // thinnest line
+    const double max_line  = std::max(h, m_config.zaa_max_height.value);    // thickest line
+    const double max_down  = std::max(0., h - min_line);                    // lowest offset  = -max_down
+    const double max_up    = std::max(0., max_line - h);                    // highest offset = +max_up
+    const double tol       = 0.03;
+    // a real top surface of this layer is at most half a layer above the layer top (the layer is sliced in its middle)
+    const double valid_up  = (real_top ? std::min(max_up, 0.5 * h) : max_up) + tol;
+    const double step_mm   = std::max(0.05, m_config.zaa_sample_distance.value);
+    const double active_thr = 0.02; // mm: below this the surface counts as flat
+    const double pad_mm     = 1.0;  // mm: active runs are extended by this much on both sides
+    const double gap_mm     = 2.0;  // mm: flat gaps shorter than this between two active runs are bridged
+
+    auto offset_at = [&](double x_mm, double y_mm) -> double {
+        igl::Hit hit;
+        if (!AABBTreeIndirect::intersect_ray_first_hit(mesh->its.vertices, mesh->its.indices, mesh->tree,
+                                                       Vec3d(x_mm, y_mm, ray_z), Vec3d(0., 0., 1.), hit))
+            return 0.;
+        double d = double(hit.t) - (print_z - ray_z);                       // surface height relative to the layer top
+        if (d > valid_up)
+            return 0.;                                                      // out of reach: print flat
+        if (!real_top && hit.id >= 0 && size_t(hit.id) < mesh->its.indices.size()) {
+            // perimeters / solid infill: only where the hit surface is really tilted (not a flat roof, not a vertical wall)
+            const auto &fi = mesh->its.indices[hit.id];
+            const Vec3f va = mesh->its.vertices[fi(0)];
+            const Vec3f vb = mesh->its.vertices[fi(1)];
+            const Vec3f vc = mesh->its.vertices[fi(2)];
+            const Vec3f nrm = (vb - va).cross(vc - va);
+            const double nl = double(nrm.norm());
+            const double nz = nl > 1e-12 ? std::abs(double(nrm.z()) / nl) : 1.;
+            if (nz > 0.9995 || nz < 0.05)
+                return 0.;
+        }
+        return std::max(-max_down, std::min(max_up, d));
+    };
+
+    const Polyline poly = path.as_polyline().to_polyline(scale_t(0.01));
+    if (poly.points.size() < 2)
+        return false;
+    std::vector<Point>  spts;   // samples
+    std::vector<double> sd;     // offset in mm
+    std::vector<double> ss;     // length along the path in mm
+    double len_acc = 0.;
+    for (size_t i = 0; i + 1 < poly.points.size(); ++i) {
+        const Point &a = poly.points[i];
+        const Point &b = poly.points[i + 1];
+        const double len_mm = unscaled(Line(a, b).length());
+        const int    n      = std::max(1, int(std::ceil(len_mm / step_mm)));
+        for (int k = (i == 0 ? 0 : 1); k <= n; ++k) {
+            const double t = double(k) / double(n);
+            const Point  p(coord_t(std::llround(double(a.x()) + double(b.x() - a.x()) * t)),
+                           coord_t(std::llround(double(a.y()) + double(b.y() - a.y()) * t)));
+            spts.push_back(p);
+            sd.push_back(offset_at(unscaled(p.x()), unscaled(p.y())));
+            ss.push_back(len_acc + len_mm * t);
+        }
+        len_acc += len_mm;
+    }
+    const size_t n = spts.size();
+    if (n < 2)
+        return false;
+
+    // --- x-ray: which samples follow the surface ---
+    std::vector<char> act(n, 0);
+    bool any = false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::abs(sd[i]) >= active_thr) {
+            act[i] = 1;
+            any = true;
+        }
+    if (!any)
+        return false;
+    std::vector<char> act2 = act;
+    for (size_t i = 0; i < n; ++i)
+        if (act[i]) {
+            for (size_t j = i; j > 0 && ss[i] - ss[j - 1] <= pad_mm; --j)
+                act2[j - 1] = 1;
+            for (size_t j = i + 1; j < n && ss[j] - ss[i] <= pad_mm; ++j)
+                act2[j] = 1;
+        }
+    for (size_t i = 0; i < n;) {
+        if (act2[i]) {
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        while (j < n && !act2[j])
+            ++j;
+        if (i > 0 && j < n && ss[j] - ss[i - 1] < gap_mm)
+            for (size_t k = i; k < j; ++k)
+                act2[k] = 1;
+        i = j;
+    }
+    std::vector<std::pair<Point, coord_t>> pts(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (!act2[i])
+            sd[i] = 0.; // flat part: exactly the layer Z
+        pts[i] = std::make_pair(spts[i], scale_t(sd[i]));
+    }
+
+    // Drop points that lie on the straight 3D line between their neighbours (keeps G-code small); never across an on/off change.
+    auto to3 = [](const std::pair<Point, coord_t> &p) {
+        return Vec3d(unscaled(p.first.x()), unscaled(p.first.y()), unscaled(p.second));
+    };
+    out.push_back(pts.front());
+    m_zaa_active.push_back(act2.front());
+    for (size_t j = 1; j + 1 < n; ++j) {
+        const Vec3d a = to3(out.back()), b = to3(pts[j + 1]), c = to3(pts[j]);
+        const Vec3d ab = b - a;
+        const double ab2 = ab.squaredNorm();
+        bool drop = false;
+        if (ab2 > 1e-12 && act2[j] == m_zaa_active.back() && act2[j] == act2[j + 1]) {
+            const double t = (c - a).dot(ab) / ab2;
+            drop = t > 0. && t < 1. && (c - (a + ab * t)).norm() < 0.002;
+        }
+        if (!drop && !(pts[j].first == out.back().first)) {
+            out.push_back(pts[j]);
+            m_zaa_active.push_back(act2[j]);
+        }
+    }
+    if (!(pts.back().first == out.back().first)) {
+        out.push_back(pts.back());
+        m_zaa_active.push_back(act2.back());
+    }
+    return out.size() >= 2;
 }
 
 std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::string_view description, double speed) {
 
     std::string descr = description.empty() ? gcode_extrusion_role_to_string(extrusion_role_to_gcode_extrusion_role(path.role())) : std::string(description);
+    // ZAA: decide before the speed is used
+    std::vector<std::pair<Point, coord_t>> zaa_points;
+    const bool zaa_active = this->_zaa_contour(path, zaa_points);
+    // v3: the ZAA speed cap is applied later, only on the active runs of the path
     std::string gcode = this->_before_extrude(path, descr, speed);
+    if (zaa_active) {
+        // Z-contoured extrusion with an "x-ray": only the runs flagged active are printed at the ZAA speed and with their own Z;
+        // flat runs of the same path keep the normal speed. Extrusion is scaled by the local line height.
+        const double e_per_mm_zaa = _compute_e_per_mm(path);
+        const double h_zaa = path.height() > 0 ? double(path.height()) : double(m_layer->height);
+        const double print_z_zaa = m_layer->print_z;
+        const std::string comment_zaa = m_config.gcode_comments ? descr : "";
+        double zaa_fan = 0.;
+        const double zaa_base_speed = this->_compute_speed_mm_per_sec(path, speed, zaa_fan, nullptr);
+        const bool   zaa_cap        = m_config.zaa_speed.value > 0.;
+        const double zaa_speed_mm_s = zaa_cap ? std::min(zaa_base_speed, m_config.zaa_speed.value) : zaa_base_speed;
+        const std::string zaa_marker = m_enable_cooling_markers
+            ? std::string(GCodeGenerator::_cooldown_marker_speed[uint8_t(extrusion_role_to_gcode_extrusion_role(path.role()))])
+            : std::string();
+        const double z_first = print_z_zaa + unscaled(zaa_points.front().second);
+        if (std::abs(m_writer.get_position().z() - z_first) > 1e-4)
+            gcode += m_writer.get_travel_to_z_gcode(z_first, "ZAA: set Z");
+        bool zaa_on = !m_zaa_active.empty() && m_zaa_active.front() != 0;
+        if (zaa_on) {
+            gcode += ";ZAA_ON\n";
+            if (zaa_cap)
+                gcode += m_writer.set_speed_mm_s(zaa_speed_mm_s, "ZAA speed", "");
+        }
+        for (size_t i = 1; i < zaa_points.size(); ++i) {
+            const bool seg_on = i < m_zaa_active.size() && (m_zaa_active[i - 1] != 0 || m_zaa_active[i] != 0);
+            if (seg_on != zaa_on) {
+                zaa_on = seg_on;
+                if (zaa_on) {
+                    gcode += ";ZAA_ON\n";
+                    if (zaa_cap)
+                        gcode += m_writer.set_speed_mm_s(zaa_speed_mm_s, "ZAA speed", "");
+                } else {
+                    gcode += ";ZAA_OFF\n";
+                    if (zaa_cap)
+                        gcode += m_writer.set_speed_mm_s(zaa_base_speed, "ZAA end", zaa_marker);
+                }
+            }
+            const double za = unscaled(zaa_points[i - 1].second);
+            const double zb = unscaled(zaa_points[i].second);
+            const double len = unscaled(Line(zaa_points[i - 1].first, zaa_points[i].first).length());
+            if (len < EPSILON)
+                continue;
+            const double ratio = std::max(0.05, std::min(4.0, (h_zaa + 0.5 * (za + zb)) / h_zaa));
+            gcode += m_writer.extrude_to_xyz(this->point_to_gcode(zaa_points[i].first, zaa_points[i].second),
+                                             e_per_mm_zaa * len * ratio, comment_zaa);
+        }
+        if (zaa_on)
+            gcode += ";ZAA_OFF\n";
+        if (std::abs(m_writer.get_position().z() - print_z_zaa) > 1e-4)
+            gcode += m_writer.get_travel_to_z_gcode(print_z_zaa, "ZAA: reset Z");
+        gcode += this->_after_extrude(path);
+        return gcode;
+    }
 
     std::function<void(std::string&, const Line&, double, const std::string&)> func = [this](std::string& gcode, const Line& line, double e_per_mm, const std::string& comment) {
         if (line.a == line.b) return; //todo: investigate if it happens (it happens in perimeters)
@@ -6694,6 +7045,12 @@ double_t GCodeGenerator::_compute_speed_mm_per_sec(const ExtrusionPath& path, co
         if(comment) *comment += ", reduced by filament_max_speed";
     }
 
+    if (path.attributes().sparse_infill_perimeter_overlap) {
+        speed *= m_config.sparse_infill_overlap_speed_ratio.value * 0.01;
+        if (comment && m_config.sparse_infill_overlap_speed_ratio.value != 100)
+            *comment += ", sparse infill overlap speed";
+    }
+
     return speed;
 }
 
@@ -7083,6 +7440,51 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
         gcode += m_pending_pre_extrusion_gcode;
         m_pending_pre_extrusion_gcode.clear();
     }
+
+    // Apply the enabled filament map first; otherwise use the print-level map.
+    const uint16_t pa_extruder_id = m_writer.tool() ? m_writer.tool()->id() : 0;
+    const GraphData *pa_map = nullptr;
+    bool pa_map_volumetric = false;
+    if (m_config.filament_pressure_advance_speed_map.is_enabled(pa_extruder_id)) {
+        pa_map = &m_config.filament_pressure_advance_speed_map.get_at(pa_extruder_id);
+        pa_map_volumetric = m_config.filament_pressure_advance_map_volumetric.get_at(pa_extruder_id);
+    } else if (m_config.pressure_advance_speed_map.is_enabled()) {
+        pa_map = &m_config.pressure_advance_speed_map.value;
+        pa_map_volumetric = m_config.pressure_advance_map_volumetric.value;
+    }
+    if (pa_map != nullptr && pa_map->data_size() > 0) {
+        double map_x = speed_mm_s;
+        if (pa_map_volumetric) {
+            const double filament_diameter = m_config.filament_diameter.get_at(pa_extruder_id);
+            const double filament_area = 0.25 * 3.14159265358979323846 * filament_diameter * filament_diameter;
+            map_x = _compute_e_per_mm(path, speed_mm_s) * filament_area * speed_mm_s;
+        }
+        const double mapped_pa = pa_map->interpolate(map_x);
+        if (pa_extruder_id != m_last_pressure_advance_map_extruder ||
+            !std::isfinite(m_last_pressure_advance_map_value) ||
+            std::abs(mapped_pa - m_last_pressure_advance_map_value) >= 0.00005) {
+            std::string pa_gcode;
+            if (m_config.pressure_advance_map_gcode.value.empty()) {
+                pa_gcode = m_writer.set_pressure_advance(mapped_pa);
+            } else {
+                pa_gcode = m_config.pressure_advance_map_gcode.value;
+                boost::replace_all(pa_gcode, "{value}", Slic3r::to_string_nozero(mapped_pa, 4));
+                std::string extruder_name;
+                if (pa_extruder_id < m_config.tool_name.size())
+                    extruder_name = m_config.tool_name.get_at(pa_extruder_id);
+                if (extruder_name.empty())
+                    extruder_name = pa_extruder_id == 0 ? "extruder" : "extruder" + std::to_string(pa_extruder_id);
+                boost::replace_all(pa_gcode, "{extruder}", extruder_name);
+                boost::trim(pa_gcode);
+                if (!pa_gcode.empty() && pa_gcode.back() != '\n')
+                    pa_gcode += '\n';
+            }
+            gcode += pa_gcode;
+            m_last_pressure_advance_map_value = mapped_pa;
+            m_last_pressure_advance_map_extruder = pa_extruder_id;
+        }
+    }
+
     // extrude arc or line
     GCodeExtrusionRole grole = extrusion_role_to_gcode_extrusion_role(path.role());
     if (grole != m_last_extrusion_role && !m_config.feature_gcode.value.empty()) {
@@ -8279,7 +8681,9 @@ std::string GCodeGenerator::set_extruder(uint16_t extruder_id, double print_z, b
             check_add_eol(gcode);
         }
 
-        if (m_config.filament_pressure_advance.is_enabled(extruder_id)) {
+        const bool has_pa_map = m_config.filament_pressure_advance_speed_map.is_enabled(extruder_id) ||
+                                m_config.pressure_advance_speed_map.is_enabled();
+        if (!has_pa_map && m_config.filament_pressure_advance.is_enabled(extruder_id)) {
             gcode += m_writer.set_pressure_advance(m_config.filament_pressure_advance.get_at(extruder_id));
         }
 
@@ -8369,7 +8773,9 @@ std::string GCodeGenerator::set_extruder(uint16_t extruder_id, double print_z, b
     if (m_ooze_prevention.enable)
         gcode += m_ooze_prevention.post_toolchange(*this);
 
-    if (m_config.filament_pressure_advance.is_enabled(extruder_id)) {
+    const bool has_pa_map = m_config.filament_pressure_advance_speed_map.is_enabled(extruder_id) ||
+                            m_config.pressure_advance_speed_map.is_enabled();
+    if (!has_pa_map && m_config.filament_pressure_advance.is_enabled(extruder_id)) {
         gcode += m_writer.set_pressure_advance(m_config.filament_pressure_advance.get_at(extruder_id));
     }
 

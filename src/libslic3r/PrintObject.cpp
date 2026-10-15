@@ -1524,6 +1524,9 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "bridge_overlap_min"
             || opt_key == "enforce_full_fill_volume"
             || opt_key == "fill_aligned_z"
+            || opt_key == "solid_infill_rotate_90_layers"
+            || opt_key == "sparse_infill_rotate_template"
+            || opt_key == "solid_infill_rotate_template"
             || opt_key == "fill_angle"
             || opt_key == "fill_angle_cross"
             || opt_key == "fill_angle_follow_model"
@@ -1573,6 +1576,7 @@ bool PrintObject::invalidate_state_by_config_options(
             steps.emplace_back(posPrepareInfill);
         } else if (
                 opt_key == "bridge_angle"
+                || opt_key == "bridge_wall_overlap"
                 || opt_key == "bridged_infill_margin"
                 || opt_key == "extra_perimeters"
                 || opt_key == "extra_perimeters_odd_layers"
@@ -1582,6 +1586,7 @@ bool PrintObject::invalidate_state_by_config_options(
                 || opt_key == "gap_fill_overlap"
                 || opt_key == "gap_fill_perimeter"
                 || opt_key == "infill_overlap"
+                || opt_key == "solid_infill_wall_overlap"
                 || opt_key == "no_perimeter_unsupported_algo"
                 || opt_key == "perimeters"
                 || opt_key == "perimeters_hole"
@@ -1590,7 +1595,8 @@ bool PrintObject::invalidate_state_by_config_options(
                 || opt_key == "solid_infill_extrusion_spacing"
                 || opt_key == "solid_infill_extrusion_width"
                 || opt_key == "solid_infill_overlap"
-                || opt_key == "top_solid_infill_overlap") {
+                || opt_key == "top_solid_infill_overlap"
+                || opt_key == "top_solid_infill_wall_overlap") {
             steps.emplace_back(posPerimeters);
             steps.emplace_back(posPrepareInfill);
         } else if (

@@ -8,6 +8,19 @@ group:filament_spool_weight_event:Filament
 	setting:id$0:filament_spool_weight
 group:Flow
 	setting:id$0:extrusion_multiplier
+	setting:id$0:filament_extrusion_multiplier_flow_map
+	setting:id$0:filament_extrusion_multiplier_flow_map_volumetric
+	line:Perimeter flow
+		setting:id$0:filament_external_perimeter_flow_trim
+		setting:id$0:filament_perimeter_flow_trim
+	end_line
+	line:Infill flow
+		setting:id$0:filament_sparse_infill_flow_trim
+		setting:id$0:filament_solid_infill_flow_trim
+	end_line
+	line:Other feature flow
+		setting:id$0:filament_gap_fill_flow_trim
+	end_line
 	setting:id$0:filament_fill_top_flow_ratio
 	setting:id$0:filament_first_layer_flow_ratio
 group:Temperature °C
@@ -27,6 +40,9 @@ group:Filament properties
 	setting:id$0:filament_shrink
 	setting:id$0:filament_max_overlap
 	setting:id$0:filament_pressure_advance
+group:Pressure advance speed map
+	setting:id$0:width$20:height$10:filament_pressure_advance_speed_map
+	setting:id$0:filament_pressure_advance_map_volumetric
 group:Print speed override
 	setting:id$0:filament_max_speed
 	setting:id$0:filament_max_volumetric_speed

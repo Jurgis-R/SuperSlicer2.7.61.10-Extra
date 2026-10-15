@@ -292,11 +292,12 @@ private:
     bool             visitor_in_use = false;
     std::string_view visitor_comment;
     double           visitor_speed;
-    virtual void use(const ExtrusionPath &path) override { visitor_gcode += extrude_path(path, visitor_comment, visitor_speed); };
+    bool skip_tiny_perimeter(const ExtrusionEntity &e) const;
+    virtual void use(const ExtrusionPath &path) override { if (skip_tiny_perimeter(path)) return; visitor_gcode += extrude_path(path, visitor_comment, visitor_speed); };
     virtual void use(const ExtrusionPath3D &path3D) override { visitor_gcode += extrude_path_3D(path3D, visitor_comment, visitor_speed); };
-    virtual void use(const ExtrusionMultiPath &multipath) override { visitor_gcode += extrude_multi_path(multipath, visitor_comment, visitor_speed); };
+    virtual void use(const ExtrusionMultiPath &multipath) override { if (skip_tiny_perimeter(multipath)) return; visitor_gcode += extrude_multi_path(multipath, visitor_comment, visitor_speed); };
     virtual void use(const ExtrusionMultiPath3D &multipath) override { visitor_gcode += extrude_multi_path3D(multipath, visitor_comment, visitor_speed); };
-    virtual void use(const ExtrusionLoop &loop) override { visitor_gcode += extrude_loop(loop, visitor_comment, visitor_speed); };
+    virtual void use(const ExtrusionLoop &loop) override { if (skip_tiny_perimeter(loop)) return; visitor_gcode += extrude_loop(loop, visitor_comment, visitor_speed); };
     virtual void use(const ExtrusionEntityCollection &collection) override;
     std::string     extrude_entity(const ExtrusionEntityReference &entity, const std::string_view description, double speed = -1.);
     std::string     extrude_loop(const ExtrusionLoop &loop, const std::string_view description, double speed = -1.);
@@ -518,6 +519,16 @@ private:
     double                              m_last_width{ 0.0 };
     // to pass between before_xtrude and after_extrude.
     double                              m_overhang_fan_override{ -1.0 };
+    double                              m_last_pressure_advance_map_value{ std::numeric_limits<double>::quiet_NaN() };
+    int                                 m_last_pressure_advance_map_extruder{ -1 };
+    // true while the paths of ONE multipath are printed: single paths must not be flipped on their own
+    bool                                m_in_multipath{ false };
+    // ZAA (Z contouring): object mesh + AABB tree for ray casting, built lazily at G-code time.
+    struct ZaaMeshData;
+    std::map<const PrintObject*, std::shared_ptr<ZaaMeshData>> m_zaa_meshes;
+    const ZaaMeshData*        zaa_mesh_for(const PrintObject *obj);
+    bool                      _zaa_contour(const ExtrusionPath &path, std::vector<std::pair<Point, coord_t>> &out);
+    std::vector<char>         m_zaa_active; // v3: per sample of the last _zaa_contour(): 1 = follows the surface, 0 = flat
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
     double                              m_last_mm3_per_mm;
 #endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
@@ -583,7 +594,7 @@ private:
 
     std::function<void()> m_throw_if_canceled = [](){};
 
-    double                    _compute_e_per_mm(const ExtrusionPath &path);
+    double                    _compute_e_per_mm(const ExtrusionPath &path, double speed_mm_s = -1);
     std::string               _extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1);
     void                      _extrude_line(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, ExtrusionRole role);
     void                      _extrude_line_cut_corner(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, Point& last_pos, const double path_width);
