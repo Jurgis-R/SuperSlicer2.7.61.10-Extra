@@ -5791,10 +5791,19 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
         for (size_t i = 0; i < simplifed_path.polyline.size()-1;i++) {
             assert(!simplifed_path.polyline.has_arc()); //FIXME extrude_to_arc_xyz ?
             Line line(simplifed_path.polyline.get_point(i), simplifed_path.polyline.get_point(i + 1));
-            const double line_length = line.length() * SCALING_FACTOR;
+            // z_offsets is indexed per polyline vertex. This move ends at vertex i + 1,
+            // so use that vertex's offset for the destination Z. Extrusion must follow
+            // the true 3D segment length, not only its XY projection.
+            const coord_t z_start = simplifed_path.z_offsets.size() > i
+                ? simplifed_path.z_offsets[i] : 0;
+            const coord_t z_end = simplifed_path.z_offsets.size() > i + 1
+                ? simplifed_path.z_offsets[i + 1] : 0;
+            const double dz = static_cast<double>(z_end) - static_cast<double>(z_start);
+            const double line_length = std::hypot(
+                static_cast<double>(line.length()), dz) * SCALING_FACTOR;
             path_length += line_length;
             gcode += m_writer.extrude_to_xyz(
-                this->point_to_gcode(line.b, simplifed_path.z_offsets.size()>i ? simplifed_path.z_offsets[i] : 0),
+                this->point_to_gcode(line.b, z_end),
                 e_per_mm * line_length,
                 comment);
         }
