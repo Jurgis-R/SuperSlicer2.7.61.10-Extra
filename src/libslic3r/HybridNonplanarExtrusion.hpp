@@ -6,6 +6,8 @@
 #include "ExtrusionEntity.hpp"
 #include "HybridNonplanarSurfacePlanner.hpp"
 
+#include <algorithm>
+
 #include <cmath>
 #include <functional>
 #include <limits>
