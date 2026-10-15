@@ -1,4 +1,5 @@
 #include "libslic3r/HybridNonplanarSurfacePlanner.hpp"
+#include "libslic3r/HybridNonplanarExtrusion.hpp"
 
 #include <catch2/catch.hpp>
 
@@ -165,5 +166,52 @@ TEST_CASE("Hybrid surface planner rejects grids too narrow to sample a path",
     std::vector<HybridSurfacePath> paths;
     const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
     REQUIRE_FALSE(plan_hybrid_surface_paths(mesh, options, clear, paths));
+    REQUIRE(paths.empty());
+}
+
+
+TEST_CASE("Hybrid surface paths convert to scaled 3D extrusion paths relative to writer Z",
+          "[HybridNonplanarSurfacePlanner][HybridNonplanarExtrusion]")
+{
+    HybridSurfacePath candidate;
+    candidate.points = { Vec3d(1.0, 2.0, 2.1), Vec3d(1.5, 2.5, 2.2) };
+    const std::vector<HybridSurfacePath> candidates{ candidate };
+    ExtrusionAttributes attributes(ExtrusionRole::ExternalPerimeter,
+                                   ExtrusionFlow(0.08, 0.4f, 0.2f));
+    std::vector<ExtrusionPath3D> paths;
+
+    REQUIRE(make_hybrid_surface_extrusion_paths(candidates, 2.0, attributes, paths));
+    REQUIRE(paths.size() == 1);
+    REQUIRE(paths.front().polyline.size() == 2);
+    REQUIRE(paths.front().z_offsets.size() == 2);
+    CHECK(unscale(paths.front().polyline.get_point(0).x()) == Approx(1.0));
+    CHECK(unscale(paths.front().polyline.get_point(0).y()) == Approx(2.0));
+    CHECK(unscale(paths.front().z_offsets[0]) == Approx(0.1));
+    CHECK(unscale(paths.front().z_offsets[1]) == Approx(0.2));
+    CHECK(paths.front().mm3_per_mm() == Approx(0.08));
+    CHECK_FALSE(paths.front().can_reverse());
+}
+
+TEST_CASE("Hybrid surface extrusion conversion rejects invalid input without partial output",
+          "[HybridNonplanarExtrusion]")
+{
+    ExtrusionAttributes attributes(ExtrusionRole::ExternalPerimeter,
+                                   ExtrusionFlow(0.08, 0.4f, 0.2f));
+    std::vector<ExtrusionPath3D> paths(1);
+    HybridSurfacePath too_short;
+    too_short.points = { Vec3d(0.0, 0.0, 2.0) };
+    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ too_short }, 2.0, attributes, paths));
+    REQUIRE(paths.empty());
+
+    HybridSurfacePath non_finite;
+    non_finite.points = { Vec3d(0.0, 0.0, 2.0),
+                          Vec3d(std::numeric_limits<double>::quiet_NaN(), 1.0, 2.0) };
+    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ non_finite }, 2.0, attributes, paths));
+    REQUIRE(paths.empty());
+
+    attributes.mm3_per_mm = 0.0;
+    HybridSurfacePath valid;
+    valid.points = { Vec3d(0.0, 0.0, 2.0), Vec3d(1.0, 0.0, 2.0) };
+    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ valid }, 2.0, attributes, paths));
     REQUIRE(paths.empty());
 }
