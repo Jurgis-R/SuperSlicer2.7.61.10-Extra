@@ -5,6 +5,7 @@
 
 #include "AABBMesh.hpp"
 #include "ExtrusionEntity.hpp"
+#include "FiveAxisEngine.hpp"
 #include "FiveAxisKinematics.hpp"
 
 #include <cmath>
@@ -32,8 +33,9 @@ public:
         double max_distance_mm = std::numeric_limits<double>::infinity()) const
     {
         normal_out = {};
-        if (!five_axis_finite(point_mm) || !std::isfinite(max_distance_mm) &&
-            max_distance_mm != std::numeric_limits<double>::infinity())
+        if (!five_axis_finite(point_mm) ||
+            (!std::isfinite(max_distance_mm) &&
+             max_distance_mm != std::numeric_limits<double>::infinity()))
             return { false, "Surface-normal query point or distance limit is invalid." };
         if (max_distance_mm < 0.0)
             return { false, "Surface-normal maximum distance must be non-negative." };
