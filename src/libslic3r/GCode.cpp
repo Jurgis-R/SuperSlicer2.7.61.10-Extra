@@ -6458,6 +6458,8 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     const Layer* saved_layer = m_layer;
     const FullPrintConfig saved_config = m_config;
     const Vec2d saved_origin = m_origin;
+    const double saved_perimeter_width = m_current_perimeter_extrusion_width;
+    const bool saved_object_layer_over_raft = m_object_layer_over_raft;
 
     for (HybridNonplanarQueuedPath& queued : queued_paths) {
         if (queued.layer == nullptr || m_writer.tool() == nullptr ||
@@ -6470,6 +6472,8 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
         m_layer = queued.layer;
         m_config = queued.config;
         m_origin = queued.origin;
+        m_current_perimeter_extrusion_width = queued.perimeter_extrusion_width;
+        m_object_layer_over_raft = queued.object_layer_over_raft;
 
         const double base_z = queued.layer->print_z;
         if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
@@ -6496,6 +6500,8 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     m_layer = saved_layer;
     m_config = saved_config;
     m_origin = saved_origin;
+    m_current_perimeter_extrusion_width = saved_perimeter_width;
+    m_object_layer_over_raft = saved_object_layer_over_raft;
     gcode += ";HYBRID_FINISHING_PASS_END\n";
 }
 
@@ -6729,7 +6735,8 @@ std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::strin
         const uint16_t extruder_id = m_writer.tool() != nullptr
             ? static_cast<uint16_t>(m_writer.tool()->id()) : uint16_t(0);
         m_hybrid_nonplanar_queue.emplace_back(
-            deferred, m_layer, m_config, m_origin, descr, speed, extruder_id);
+            deferred, m_layer, m_config, m_origin, descr, speed, extruder_id,
+            m_current_perimeter_extrusion_width, m_object_layer_over_raft);
         m_hybrid_path_deferred = true;
         return {};
     }
