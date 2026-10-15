@@ -7,7 +7,9 @@
 #include "HybridNonplanarSurfacePlanner.hpp"
 
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace Slic3r {
