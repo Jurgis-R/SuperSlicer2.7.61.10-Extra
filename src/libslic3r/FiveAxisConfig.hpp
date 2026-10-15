@@ -97,6 +97,26 @@ inline FiveAxisValidationResult load_five_axis_machine_profile(
     return { true, {} };
 }
 
+
+/*
+ * Export gate used by GCodeGenerator. A controller writer must explicitly
+ * register the exact postprocessor identifier. An enabled profile without a
+ * matching writer is rejected instead of silently producing XYZ-only G-code.
+ */
+inline FiveAxisValidationResult validate_five_axis_export_gate(
+    const FiveAxisMachineProfile &profile, const std::string &registered_postprocessor_id)
+{
+    if (!profile.enabled)
+        return { true, {} };
+    const FiveAxisValidationResult validation = validate_five_axis_machine_profile(profile);
+    if (!validation.valid)
+        return validation;
+    if (registered_postprocessor_id.empty() ||
+        registered_postprocessor_id != profile.postprocessor_id)
+        return { false, "Five-axis output is enabled, but no matching controller-specific G-code writer is registered." };
+    return { true, {} };
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_FiveAxisConfig_hpp_
