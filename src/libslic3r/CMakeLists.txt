@@ -35,6 +35,8 @@ set(SLIC3R_SOURCES
     pchheader.cpp
     pchheader.hpp
     AStar.hpp
+    HybridNonplanarScheduler.hpp
+    HybridNonplanarSectionPlanner.hpp
     AABBTreeIndirect.hpp
     AABBTreeLines.hpp
     AABBMesh.hpp
