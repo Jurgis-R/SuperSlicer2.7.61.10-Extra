@@ -3619,6 +3619,15 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    def = this->add("hybrid_nonplanar_enabled", coBool);
+    def->label = L("Hybrid non-planar printing (experimental)");
+    def->full_label = L("Hybrid non-planar printing");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Reserved switch for the hybrid non-planar workflow. When enabled, ZAA is automatically suppressed so the two Z-contouring systems cannot be used together."
+                     "\nWARNING: the H-interval scheduler and non-planar path generation are not implemented yet in this development build; enabling this option currently disables ZAA but does not generate non-planar passes.");
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("zaa_enabled", coBool);
     def->label = L("Z contouring (ZAA) on top surfaces");
     def->full_label = L("Z contouring (ZAA)");
@@ -10407,6 +10416,7 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "min_width_top_surface",
 "skip_tiny_fill_diagonal",
 "skip_tiny_perimeter_length",
+"hybrid_nonplanar_enabled",
 "zaa_enabled",
 "zaa_contour_perimeters",
 "zaa_min_z",
