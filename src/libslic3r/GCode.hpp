@@ -544,12 +544,16 @@ private:
         std::string description;
         double speed_mm_per_sec { -1.0 };
         uint16_t extruder_id { 0 };
+        double perimeter_extrusion_width { 0.4 };
+        bool object_layer_over_raft { false };
 
         HybridNonplanarQueuedPath(const ExtrusionPath3D& p, const Layer* l,
                                   const FullPrintConfig& c, const Vec2d& o,
-                                  std::string d, double speed, uint16_t extruder)
+                                  std::string d, double speed, uint16_t extruder,
+                                  double perimeter_width, bool over_raft)
             : path(p), layer(l), config(c), origin(o), description(std::move(d)),
-              speed_mm_per_sec(speed), extruder_id(extruder) {}
+              speed_mm_per_sec(speed), extruder_id(extruder),
+              perimeter_extrusion_width(perimeter_width), object_layer_over_raft(over_raft) {}
     };
     std::vector<HybridNonplanarQueuedPath> m_hybrid_nonplanar_queue;
     void flush_hybrid_nonplanar_queue(std::string& gcode);
