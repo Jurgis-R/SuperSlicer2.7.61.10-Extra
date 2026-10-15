@@ -305,3 +305,31 @@ TEST_CASE("Hybrid surface mesh transform rejects invalid topology and singular t
     REQUIRE(transformed.vertices.empty());
     REQUIRE(transformed.indices.empty());
 }
+
+
+TEST_CASE("Hybrid surface pipeline transforms the source mesh before planning",
+          "[HybridNonplanarExtrusion]")
+{
+    const indexed_triangle_set source = make_flat_surface();
+    Transform3d transform = Transform3d::Identity();
+    transform.translate(Vec3d(10.0, -3.0, 1.0));
+    ExtrusionAttributes attributes(ExtrusionRole::ExternalPerimeter,
+                                   ExtrusionFlow(0.08, 0.4f, 0.2f));
+    HybridSurfacePlannerOptions options;
+    options.sample_spacing_mm = 0.5;
+    options.section_start_z = 2.5;
+    options.section_top_z = 3.0;
+    options.max_z_offset_mm = 0.2;
+    std::vector<ExtrusionPath3D> paths;
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+
+    REQUIRE(plan_hybrid_surface_extrusion_paths(
+        source, transform, options, 3.0, attributes, clear, paths));
+    REQUIRE_FALSE(paths.empty());
+    for (const ExtrusionPath3D &path : paths) {
+        REQUIRE(path.polyline.size() >= 2);
+        CHECK(unscale(path.polyline.get_point(0).x()) >= 10.0);
+        CHECK(unscale(path.polyline.get_point(0).y()) >= -3.0);
+        CHECK(unscale(path.z_offsets.front()) == Approx(0.0));
+    }
+}

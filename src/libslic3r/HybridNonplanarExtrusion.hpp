@@ -97,6 +97,28 @@ inline bool plan_hybrid_surface_extrusion_paths(
     return make_hybrid_surface_extrusion_paths(candidates, base_z_mm, attributes, output);
 }
 
+
+ // Convenience entry point for the real object-mesh path: apply the
+ // PrintObject/model transform first, then run candidate generation, required
+ // swept-segment validation, and ExtrusionPath3D conversion. The caller still
+ // must validate the non-extruding approach/departure moves before emission.
+inline bool plan_hybrid_surface_extrusion_paths(
+    const indexed_triangle_set &source_mesh,
+    const Transform3d &mesh_to_print,
+    const HybridSurfacePlannerOptions &options,
+    double base_z_mm,
+    const ExtrusionAttributes &attributes,
+    const std::function<bool(const Vec3d &, const Vec3d &)> &swept_tool_segment_is_clear,
+    std::vector<ExtrusionPath3D> &output)
+{
+    output.clear();
+    indexed_triangle_set print_mesh;
+    if (!transform_hybrid_surface_mesh(source_mesh, mesh_to_print, print_mesh))
+        return false;
+    return plan_hybrid_surface_extrusion_paths(
+        print_mesh, options, base_z_mm, attributes, swept_tool_segment_is_clear, output);
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_HybridNonplanarExtrusion_hpp_
