@@ -62,7 +62,7 @@ Limitations for this project:
 
 ### AtomSlicer
 
-Source inspected: `iota97/AtomSlicer`, branch `main`, including `src/toolpath.cpp`, `src/curve.cpp`, and `src/machine.cpp`.
+Source inspected: `iota97/AtomSlicer`, branch `main`, including `src/bvhtriangle.h`, `src/hierarchy.h`, `src/isolines.cpp`, `src/curve.cpp`, and `src/slicer.cpp`. The current default-branch tree does not contain `src/toolpath.cpp` or `src/machine.cpp`; those names should not be treated as verified source locations.
 
 It produces field-aligned toolpaths and uses mesh/BVH structures, normals, a maximum top tilt angle, and a nozzle collision cone setting. It is a useful reference for local surface direction and collision-aware path planning, but it is a separate research slicer with its own pipeline and machine support. Its multi-axis examples are not directly reusable as a drop-in 3-axis SuperSlicer implementation.
 
@@ -74,7 +74,7 @@ It generates slightly curved layers across a part rather than only conforming th
 
 ### RotBot
 
-Source inspected: `RotBotSlicer/Nonplanar_Slicing`, branch `main`, including `transform_method_2.py`.
+Source inspected: `RotBotSlicer/Nonplanar_Slicing`, branch `main`, including `surface.py` and `prusa_slicer.py`. The current default-branch tree does not contain `transform_method_2.py`; transform-first approaches should be attributed to the separate RotBot Transform project only after its exact files are verified.
 
 It demonstrates two transform-first pipelines: transform the model, slice it, then map paths back; or invert/transform the part and project paths toward the bed. Its README exposes a maximum printing-angle precaution for fan/probe collisions. This is useful as a geometry experiment, but transforming complete G-code adds modal-state, extrusion, retraction, and coordinate-restoration risks. The production implementation should stay inside the slicer's typed geometry and G-code writer rather than blindly rewriting arbitrary G-code text.
 
@@ -278,3 +278,134 @@ This is a candidate inventory, not a claim that the entire internet has been exh
 The first four-repository comparison was too narrow. The next source review must prioritize (1) SelectiveNonPlanarSlicer for independent-pass generation/insertion, (2) the Slic3r fork for native slicer integration and collision filtering, (3) AtomSlicer for mesh queries and field/isolines methods, and (4) Real3DFFF for segment subdivision and extrusion correction. CurviSlicer and COMPAS Slicer are references for curved-layer geometry; RotBot and the post-processor are comparison baselines; Unlayered is a reference for collision feedback and external-engine integration.
 
 Before importing any code, inspect the exact source files, dependency graph, license, coordinate assumptions, mesh validity handling, and tests. Reuse SuperSlicer's native mesh and G-code infrastructure where possible. This inventory does not yet constitute a complete code audit of every listed project.
+
+
+## Comparative source audit: implementation details (2026-10-15)
+
+This pass traced actual functions rather than relying only on project descriptions. Findings below distinguish reusable engineering patterns from code that should not be transplanted.
+
+### 1. SuperSlicer-native mesh queries — first choice for geometry acceleration
+
+Verified target-branch files:
+- `src/libslic3r/AABBMesh.hpp`
+- `src/libslic3r/AABBMesh.cpp`
+- `src/libslic3r/AABBTreeIndirect.hpp`
+- `tests/libslic3r/test_aabbindirect.cpp`
+- `src/libslic3r/TriangleMesh.hpp/.cpp`
+
+The target already has an indexed-triangle AABB mesh wrapper with ray queries (first hit and all hits), squared-distance/closest-point queries, face normals, vertex-face indexing, and face-neighbor indexing. The indirect AABB implementation already has triangle closest-point logic; its existing tests cover ray casting, closest-point queries and line-distance queries.
+
+**Decision:** do not add AtomSlicer's BVH as a second acceleration structure yet. First instantiate/reuse the existing SuperSlicer mesh/query classes in the model's transformed coordinate frame. Verify lifetime/ownership, scaling, transforms, mesh validity, face IDs, and query semantics. Use all-hit ray queries when the surface is multi-valued along Z; a first-hit-only query can select the wrong shell or underside. Use squared distances where only a threshold comparison is needed. Add targeted tests for rays parallel to triangles, edge/vertex hits, duplicate intersections, open meshes, and empty meshes.
+
+### 2. SelectiveNonPlanarSlicer — best architectural match for a separate finishing pass, but not production-ready geometry
+
+Verified files:
+- `Monta3D/SelectiveNonPlanarSlicer/projectiondot.py`
+- `Monta3D/SelectiveNonPlanarSlicer/stlprocessor.py`
+- `Monta3D/SelectiveNonPlanarSlicer/trajectoryplanner.py`
+- `Monta3D/SelectiveNonPlanarSlicer/gcodeexport.py`
+- `Monta3D/SelectiveNonPlanarSlicer/gcode_merger.py`
+- `Monta3D/SelectiveNonPlanarSlicer/gcode_jump.py`
+
+Observed algorithm:
+1. Split candidate triangles/surfaces from an STL using angle/height/area-related filters.
+2. Generate a planar reference trajectory (the inspected example uses a 45-degree raster).
+3. Project each reference point along a configurable vector onto candidate triangles.
+4. Reorder projected points into scan runs, build path steps, and export separate G-code.
+5. Merge generated surface G-code into a planar G-code file at a marker.
+
+Important limitations in the inspected implementation:
+- `GetProjectionDot` tiles the query point against every triangle, so the projection scan is effectively point-count × triangle-count instead of using a spatial index.
+- The projection math divides by triangle-plane and projected-XY denominators without consistently rejecting near-zero denominators before division; vertical/degenerate projected triangles need explicit handling.
+- The implementation is prototype-oriented (plotting imports, hard-coded example files/coordinates and fixed layer offsets appear in the inspected export path).
+- `gcode_merger.py` inserts files at a hard-coded marker occurrence and assumes four surface files (using empty files for unused slots). It is not a robust pass scheduler or a modal-state-aware G-code integration layer.
+- `gcode_jump.py` parses coordinates from text heuristically and inserts Z lifts based on XY distance. That does not constitute collision checking against the actual printed volume or printer toolhead.
+
+**Decision:** reuse the workflow concept—generate a separate pass and insert it at an explicit scheduler boundary—but reimplement the path generation with SuperSlicer's native mesh queries and typed extrusion entities. Do not port the projection loop or merger script as-is. The repository license is GPL-3.0; any code reuse requires a deliberate compatibility and attribution review.
+
+### 3. Slic3r NonPlanar fork — useful integrated surface filtering and collision rejection
+
+Verified functions:
+- `NonplanarSurface::group_surfaces()`, `mark_neighbor_surfaces()`, `check_max_printing_height()`, `check_surface_area()`, and `horizontal_projection()` in `xs/src/libslic3r/NonplanarSurface.cpp`.
+- `PrintObject::check_nonplanar_collisions()` in `xs/src/libslic3r/PrintObject.cpp`, plus its call sites.
+
+Observed pattern:
+- Group connected eligible facets by neighbor links.
+- Reject patches exceeding a height span or falling below a minimum area.
+- Project the candidate patch into XY and test it against existing layer slices and a progressively offset 2D collider polygon.
+- Reject when the computed overlap area exceeds a threshold (the inspected code uses 1 mm²).
+
+Limitations:
+- The collision test is a 2D projected-region heuristic with a slope-derived offset; it is not a 3D swept-volume test of the nozzle, heater block, fan duct, probe, or carriage.
+- Several thresholds are fixed constants, and the angle eligibility method is not a complete collision model.
+- This is a legacy fork, so types, config plumbing and scheduling must be mapped to the exact SuperSlicer revision before any port.
+
+**Decision:** retain the sequence (connected patch extraction → angle/height/area filtering → collision rejection), but adapt it to the current indexed mesh and existing polygon/region types. Generalize thresholds into settings only where the setting has a clear physical meaning. Collision acceptance must include a conservative toolhead envelope, not only the projected nozzle path.
+
+### 4. Real3DFFF — strongest reference for segment subdivision, extrusion correction and travel planning
+
+Verified files:
+- `gcode/real_3d/generate_curved_layer.py`
+- `ZGetter.py`
+- `data_io/LDGCode.py` and the G-code movement representation.
+
+Observed pattern:
+- Start from a conventional slicer's G-code for a constant-XY preform.
+- Intersect planar extrusion segments with projected geometry edges and split them where the target surface changes.
+- Recompute Z using vertical surface intersections at each segment endpoint.
+- Scale extrusion for segment length changes; subdivide linear cross-section changes to bound extrusion error.
+- Treat travel moves separately, using direct, low-lift and high-lift classes; high lifts use the highest known geometry plus a clearance.
+- Optionally calculate surface normals, primarily for multi-axis use.
+
+Strengths:
+- Explicit split points, ordered segment subdivision, minimum segment length, extrusion-error control, and separate travel handling are more mature concepts than simply moving existing vertices vertically.
+- The implementation's own documentation clearly states its preform/XY-congruence assumptions and that undercuts/complex cross-sections require special treatment.
+
+Limitations for SuperSlicer:
+- It is a Python/OpenCascade pipeline with a different G-code representation, not a C++ library that can be dropped into `libslic3r`.
+- Its preform method assumes matching XY projections and a known layer mapping; that is not generally valid for every arbitrary model/path.
+- Its travel clearance heuristics are not a guarantee of toolhead collision freedom.
+- Extrusion corrections must be reconciled with SuperSlicer's own flow/volumetric calculations, extrusion modes, and typed path writer; do not stack two independent correction schemes.
+
+**Decision:** port the *engineering principles*, not the Python code: split at geometry events, resample to a bounded geometric error, conserve/derive extrusion from actual deposited 3D path and local bead cross-section, and classify travel routes against the actual clearance model. Add tests for zero-length segments, duplicated split points, tiny segments, and discontinuous surfaces.
+
+### 5. AtomSlicer — advanced field and isoline reference, not the hybrid scheduler
+
+Verified files:
+- `src/bvhtriangle.h`: BVH closest-point and ray/triangle intersection helpers.
+- `src/hierarchy.h`: adjacency graph, normals and multilevel mesh hierarchy for field-aligned optimization.
+- `src/isolines.cpp`: extraction of curves from a scalar field defined at mesh vertices.
+- `src/curve.cpp` and `src/slicer.cpp`: additional toolpath/slicing pipeline context.
+
+Strengths:
+- Separates mesh acceleration, field processing, and curve extraction rather than mixing all geometry into G-code emission.
+- The isoline approach can generate connected curves from a well-defined scalar field; this is a possible Mode A direction if the field represents the intended surface-following path family.
+- The hierarchy is useful for understanding mesh adjacency, orientation and field smoothing.
+
+Limitations:
+- Its custom mesh/BVH and raw-pointer hierarchy types are not SuperSlicer types; a direct transplant would create duplicate infrastructure.
+- The closest-point routine's initial triangle assumption makes empty input an explicit edge case to handle before any reuse.
+- Isoline extraction depends on consistent triangle topology and scalar values; open/non-manifold meshes and exact-zero vertices require explicit tests.
+- Field-aligned constant-thickness slicing is a different objective from inserting a finishing pass every H millimeters.
+
+**Decision:** first use SuperSlicer's existing AABB mesh. Study AtomSlicer for the field/isolines algorithm only if Mode A requires new connected surface curves beyond what native path/polygon tools can provide. Any copied MIT code must retain the relevant license/copyright notices.
+
+### 6. RotBot, CurviSlicer, Unlayered and COMPAS — role in the design
+
+- **RotBot:** `surface.py` builds/interpolates a surface grid from selected mesh facets; `prusa_slicer.py` invokes a conventional slicer via subprocess. Useful as a transform/interpolation experiment, but the inspected repository does not supply a native SuperSlicer C++ integration or a full toolhead collision model.
+- **CurviSlicer:** the source tree contains its own mesh/tetrahedral and G-code pipeline. It is aimed at curved layers across the part, so it is relevant to curved-layer constraints but not the most direct starting point for a discrete H-interval finishing pass. Its AGPL-3.0 license and external dependencies need to be respected.
+- **Unlayered Slicer:** `NONPLANAR_SLICE_SERVICE.md` specifies an external-service request/result protocol and preview integration. This is useful if an external research engine is eventually needed, but it does not itself supply the core surface projection algorithm for the native implementation.
+- **COMPAS Slicer:** useful algorithmic reference for scalar-field-based curved slicing and fabrication planning; its Python framework does not remove the need for native C++ mesh queries, scheduling and toolhead clearance.
+
+### 7. Resulting implementation choices
+
+1. **Geometry query:** reuse `AABBMesh` / `AABBTreeIndirect` and current `TriangleMesh` data; do not introduce another BVH unless profiling shows a missing capability or a measured bottleneck.
+2. **Separate pass architecture:** implement an explicit H-interval scheduler in the native print pipeline. Do not splice standalone G-code text at marker comments.
+3. **Mode B first:** split existing eligible extrusion paths at surface/query and geometric-error events, then build a separate pass with valid per-vertex Z offsets. Keep the ordinary planar paths intact as fallback.
+4. **Mode A second:** evaluate connected patch + field/isolines generation after query semantics and surface validity rules are tested.
+5. **Extrusion:** use SuperSlicer's typed writer and one clearly defined extrusion calculation. Account for actual 3D segment length and bead cross-section without double-applying Real3DFFF-style compensation.
+6. **Collision:** start with candidate patch rejection against existing printed geometry, then add a conservative configurable toolhead envelope and safe travel planning. The fork's 2D collision heuristic is a reference, not the final safety check.
+7. **Fail-closed behavior:** invalid mesh queries, ambiguous surface hits, degenerate triangles, unsupported travel or a collision-envelope violation must skip the candidate pass, not emit guessed Z values.
+8. **Testing:** build a native geometry unit-test suite first (projection hits, edge/vertex cases, holes, empty meshes, multi-hit vertical rays, surface-angle limits, segment splitting, E continuity and travel clearance), then test generated G-code and the actual build.
+
+This is a source-level comparative audit of the listed implementations, not an exhaustive review of every file in every repository. The current findings are enough to choose the integration direction, but not enough to claim that any external algorithm is already safely ported or that the feature is printer-ready.
