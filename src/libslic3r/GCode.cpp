@@ -3835,6 +3835,11 @@ LayerResult GCodeGenerator::process_layer(
             for (const ExtrusionPath3D &path : surface_paths) {
                 const Point &first_xy = path.polyline.get_point(0);
                 const double first_z = nominal_z + unscaled<double>(path.z_offsets.front());
+                const Vec3d safe_first_scaled(double(first_xy.x()), double(first_xy.y()),
+                                              double(scale_t(safe_z)));
+                gcode += m_writer.travel_to_xyz(
+                    this->point_to_gcode(safe_first_scaled), false, travel_speed,
+                    "Hybrid pass: validated high-Z transition");
                 const Vec3d first_scaled(double(first_xy.x()), double(first_xy.y()),
                                          double(scale_t(first_z)));
                 gcode += m_writer.travel_to_xyz(
@@ -3848,8 +3853,6 @@ LayerResult GCodeGenerator::process_layer(
 
                 const Point &last_xy = path.polyline.get_point(path.polyline.size() - 1);
                 const double last_z = nominal_z + unscaled<double>(path.z_offsets.back());
-                const Vec3d last_scaled(double(last_xy.x()), double(last_xy.y()),
-                                        double(scale_t(last_z)));
                 gcode += m_writer.get_travel_to_z_gcode(safe_z, "Hybrid pass: validated departure");
                 const Vec3d safe_last_scaled(double(last_xy.x()), double(last_xy.y()),
                                              double(scale_t(safe_z)));
