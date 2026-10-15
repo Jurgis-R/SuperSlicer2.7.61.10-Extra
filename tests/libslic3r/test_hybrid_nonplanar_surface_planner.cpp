@@ -91,6 +91,7 @@ TEST_CASE("Hybrid surface planner rejects invalid limits and pathological sample
     options.sample_spacing_mm = 1e-9;
     REQUIRE_FALSE(plan_hybrid_surface_paths(mesh, options, clear, paths));
     REQUIRE(paths.empty());
+}
 
 TEST_CASE("Hybrid surface planner rejects paths above the configured vertical-rate limit",
           "[HybridNonplanarSurfacePlanner]")
