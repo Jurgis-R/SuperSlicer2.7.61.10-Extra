@@ -6443,7 +6443,11 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 {
     out.clear();
     m_zaa_active.clear();
-    if (!m_config.zaa_enabled.value || m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
+    // Keep ZAA and hybrid non-planar printing mutually exclusive. The hybrid
+    // scheduler is still under development; selecting its option must never let
+    // ZAA contour the same paths at the same time.
+    if (m_config.hybrid_nonplanar_enabled.value || !m_config.zaa_enabled.value ||
+        m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
         return false;
     const ExtrusionRole role = path.role();
     const bool real_top = role == ExtrusionRole::TopSolidInfill;
