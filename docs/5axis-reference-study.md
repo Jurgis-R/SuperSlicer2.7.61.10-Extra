@@ -87,6 +87,12 @@ Catch2 tests were added in `tests/libslic3r/test_five_axis_motion_planner.cpp` a
 
 **This is not yet the complete slicer pipeline.** The planner currently consumes tool poses; it does not derive them from the actual model mesh or SuperSlicer's extrusion entities, does not model a full nozzle/head swept volume or mesh collision, and is not yet called by `GCodeGenerator`. Machine profile settings/UI, postprocessor selection, setup/mode commands, extrusion semantics, and end-to-end G-code parsing remain to be implemented. The added tests have not been compiled or executed because no build was run.
 
+### Toolpath data-contract increment
+
+`ExtrusionPath3D` now has an optional `tool_axis_normals` array with one desired tool-axis direction per polyline vertex. The array is copied and moved with the path and reversed together with its vertices. Legacy paths keep the array empty, so existing XYZ-only paths retain their prior behavior. `has_tool_axis_normals()` reports whether the metadata is populated and aligned with the path vertices.
+
+This is only the data contract for a future model-derived surface-path producer. Existing path producers do not populate the directions, and `GCodeGenerator::extrude_path_3D()` does not yet consume them. No five-axis output is enabled by this change. A Catch2 test covers alignment detection, copy, reverse, and stale metadata detection; it has been registered but has not been compiled or run.
+
 ## Safety and verification status
 
 The present helper-level kinematics and output code does not yet establish complete collision safety, slicer integration, or a validated machine postprocessor. Do not use its output for physical printing until those pieces and the end-to-end tests are complete. No successful Windows build is claimed by this document.
