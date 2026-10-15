@@ -1283,11 +1283,6 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     (MachineEnvelopeConfig, GCodeConfig),
 
     ((ConfigOptionBool,                 allow_empty_layers))
-    ((ConfigOptionBool,                 hybrid_nonplanar_enabled))
-    ((ConfigOptionFloat,                hybrid_nonplanar_interval))
-    ((ConfigOptionFloat,                hybrid_nonplanar_max_slope))
-    ((ConfigOptionFloat,                hybrid_nonplanar_max_offset))
-    ((ConfigOptionFloat,                hybrid_nonplanar_speed))
     ((ConfigOptionBool,                 avoid_crossing_curled_overhangs))
     ((ConfigOptionBool,                 avoid_crossing_perimeters))
     ((ConfigOptionBool,                 avoid_crossing_not_first_layer))
