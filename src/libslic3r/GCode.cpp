@@ -796,6 +796,8 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     // Reset export-local state. The selected object's full G-code config is
     // available in process_layer, where the configured H interval is applied.
     m_hybrid_nonplanar_scheduler.reset();
+    m_hybrid_nonplanar_section_planner.reset();
+    m_hybrid_completed_section.reset();
     m_hybrid_nonplanar_layer_due = false;
     m_hybrid_nonplanar_queue.clear();
     m_hybrid_path_deferred = false;
@@ -3303,6 +3305,9 @@ LayerResult GCodeGenerator::process_layer(
     // is a narrower type and does not expose GCodeConfig-only options.
     if (layer.id() == 0) {
         m_hybrid_nonplanar_scheduler.reset(m_config.hybrid_nonplanar_interval.value);
+        m_hybrid_nonplanar_section_planner.reset(
+            m_config.hybrid_nonplanar_interval.value, 1e-6, layer.bottom_z());
+        m_hybrid_completed_section.reset();
         m_hybrid_nonplanar_queue.clear();
 
         // The current finishing queue is not yet a whole-section planner. Fail
@@ -3671,9 +3676,22 @@ LayerResult GCodeGenerator::process_layer(
     status_monitor.stats().layer_area_stats.emplace_back(print_z, layer_area);
 
     // This is the outer print-Z layer-group boundary: all objects and tools
-    // participating at this height have completed their planar work. Keep the
-    // experimental finishing queue here, not inside per-object extrusion,
-    // so a pass can never split another object's/tool's work at the same Z.
+    // participating at this height have completed their planar work. Advance
+    // the H-section planner here (not per object or per extruder), so the
+    // completed-section metadata describes the entire planar group.
+    m_hybrid_completed_section.reset();
+    if (m_config.hybrid_nonplanar_enabled.value) {
+        m_hybrid_completed_section = m_hybrid_nonplanar_section_planner.after_planar_layer(
+            layer.bottom_z(), print_z);
+        if (!m_hybrid_nonplanar_section_planner.valid())
+            throw RuntimeError(
+                "Hybrid non-planar section planning encountered an invalid or ambiguous layer group; "
+                "export aborted rather than guessing a section boundary");
+    }
+
+    // Legacy Mode B still queues deformed existing paths. This is deliberately
+    // kept separate from the new section metadata; it must not be mistaken for
+    // the future mesh-derived surface-patch finishing pass.
     this->flush_hybrid_nonplanar_queue(gcode);
 
     BOOST_LOG_TRIVIAL(trace) << "Exported layer " << layer.id() << " print_z " << print_z <<
