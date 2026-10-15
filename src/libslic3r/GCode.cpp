@@ -6703,6 +6703,7 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 
 std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::string_view description, double speed) {
 
+    m_hybrid_path_deferred = false;
     std::string descr = description.empty() ? gcode_extrusion_role_to_string(extrusion_role_to_gcode_extrusion_role(path.role())) : std::string(description);
     // ZAA: decide before the speed is used
     std::vector<std::pair<Point, coord_t>> zaa_points;
