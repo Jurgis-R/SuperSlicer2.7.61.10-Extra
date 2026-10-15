@@ -56,3 +56,24 @@ TEST_CASE("Five-axis G-code bridge leaves no partial output when oriented geomet
     CHECK(result.final_e == Approx(3.0));
     CHECK(result.command_count == 0);
 }
+
+
+TEST_CASE("Five-axis G-code bridge rejects incomplete per-vertex Z offsets",
+          "[FiveAxisGCodeBridge]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = FIVE_AXIS_KLIPPER_POSTPROCESSOR_ID;
+    ExtrusionPath3D path = make_bridge_test_path();
+    path.z_offsets.pop_back();
+    std::string output = "stale";
+
+    const auto result = plan_and_emit_five_axis_extrusion(
+        profile, path, 10.0, 3.0, 0.1, 600.0, output);
+
+    CHECK_FALSE(result.validation.valid);
+    CHECK(result.validation.message.find("Z offset") != std::string::npos);
+    CHECK(output.empty());
+    CHECK(result.command_count == 0);
+    CHECK(result.final_e == Approx(3.0));
+}
