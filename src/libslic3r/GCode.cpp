@@ -3814,10 +3814,15 @@ LayerResult GCodeGenerator::process_layer(
                              nominal_z + unscaled<double>(path.z_offsets.back()));
             const Vec3d safe_first(first.x(), first.y(), clearance_z);
             const Vec3d safe_last(last.x(), last.y(), clearance_z);
-            if (!collision_validator.segment_is_clear(previous_quantized_safe, safe_first) ||
-                !collision_validator.segment_is_clear(safe_first, first) ||
+            HybridNonplanarApproach approach;
+            approach.expected_start = previous_quantized_safe;
+            approach.extrusion_start = first;
+            approach.clearance_z_mm = clearance_z;
+            approach.points = { previous_quantized_safe, safe_first, first };
+            if (!validate_hybrid_nonplanar_approach(
+                    approach, previous_quantized_safe, first, segment_is_clear) ||
                 !collision_validator.segment_is_clear(last, safe_last))
-                throw RuntimeError("Hybrid surface-pass preflight rejected a quantized approach, departure or high-Z transition");
+                throw RuntimeError("Hybrid surface-pass preflight rejected a quantized XYZ approach, departure or high-Z transition");
             for (size_t i = 1; i < path.polyline.size(); ++i) {
                 const Point &a = path.polyline.get_point(i - 1);
                 const Point &b = path.polyline.get_point(i);
