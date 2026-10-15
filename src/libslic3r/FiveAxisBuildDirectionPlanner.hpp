@@ -172,5 +172,19 @@ inline FiveAxisBuildDirectionCandidate choose_five_axis_build_direction(
     return best;
 }
 
+ 
+// End-to-end geometry-only convenience entry point: generate candidates,
+// score them, and return the best valid direction without requiring a
+// caller-provided direction list.
+inline FiveAxisBuildDirectionCandidate choose_five_axis_build_direction(
+    const indexed_triangle_set &mesh,
+    const FiveAxisBuildDirectionConfig &config = {},
+    std::size_t sample_count = 42)
+{
+    const std::vector<FiveAxisVec3> candidates =
+        generate_five_axis_build_direction_candidates(sample_count);
+    return choose_five_axis_build_direction(mesh, candidates, config);
+}
+
 } // namespace Slic3r
 #endif
