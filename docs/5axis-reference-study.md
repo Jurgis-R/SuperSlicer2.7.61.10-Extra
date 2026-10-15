@@ -104,6 +104,16 @@ Catch2 tests cover the adapter, cumulative extrusion, fail-closed behavior, and 
 
 These changes establish a path-data-to-planner API; they do not mean the regular slicer currently produces the normals or calls the adapter. The current `GCodeGenerator` still uses its ordinary `extrude_path_3D()` implementation. Do not enable physical five-axis printing based on these helpers alone.
 
+
+### Accelerated model-surface normal sampling
+
+- `FiveAxisSurfaceNormals.hpp` adds a sampler backed by SuperSlicer's existing `AABBMesh` nearest-triangle query, avoiding a brute-force scan of every triangle for every path vertex.
+- It returns the nearest triangle's normalized, mesh-winding normal and can reject samples farther than a caller-supplied distance threshold. It can also populate an `ExtrusionPath3D`'s per-vertex direction metadata; assignment is atomic, so a failed sample leaves existing normals untouched.
+- Coordinate-frame responsibility is explicit: the mesh and queried path vertices must already be in the same frame and in millimetres. The helper does not apply model-instance transforms, choose inward versus outward orientation, infer a tool tilt strategy, or guarantee that the nearest face is the intended surface on thin/overlapping geometry. The caller must choose an appropriate surface mesh and distance threshold.
+- Catch2 coverage was added for nearest-face normal lookup, distance rejection, path metadata assignment, and failure atomicity. These tests are registered but have **not** been compiled or run.
+
+This is the first concrete model-geometry-to-normal producer, but it is not yet connected to actual slicer-generated extrusion paths. Coordinate transforms, intended-surface selection, path generation, persistent machine settings, and the G-code export integration remain outstanding.
+
 ## Safety and verification status
 
 The present helper-level kinematics and output code does not yet establish complete collision safety, slicer integration, or a validated machine postprocessor. Do not use its output for physical printing until those pieces and the end-to-end tests are complete. No successful Windows build is claimed by this document.
