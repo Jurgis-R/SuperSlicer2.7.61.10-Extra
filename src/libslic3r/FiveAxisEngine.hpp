@@ -57,8 +57,10 @@ inline FiveAxisValidationResult validate_five_axis_output_config(
     const FiveAxisOutputConfig &config)
 {
     const auto valid_word = [](char c) {
-        return c >= 'A' && c <= 'Z' && c != 'X' && c != 'Y' && c != 'Z' &&
-               c != 'E' && c != 'F' && c != 'G';
+        // Keep the output words within common rotary-axis conventions and
+        // avoid G-code modal, arc-centre, tool, and line-number words.
+        return c == 'A' || c == 'B' || c == 'C' ||
+               c == 'U' || c == 'V' || c == 'W';
     };
     if (!valid_word(config.rotary_1_word) || !valid_word(config.rotary_2_word) ||
         config.rotary_1_word == config.rotary_2_word)
