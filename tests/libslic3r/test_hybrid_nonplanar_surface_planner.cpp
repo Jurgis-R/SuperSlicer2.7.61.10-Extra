@@ -484,6 +484,27 @@ TEST_CASE("Hybrid swept-tool validator rejects non-finite and excessively long s
                                            Vec3d(1.0e7, 0.5, 2.0)));
 }
 
+TEST_CASE("Hybrid route coordinates convert between print and writer frames",
+          "[HybridNonplanarEmission]")
+{
+    const Vec3d print_point(12.5, -4.0, 7.25);
+    const Vec2d origin(100.0, 50.0);
+    const Vec2d tool_offset(1.2, -0.8);
+    Vec3d writer_point = Vec3d::Zero();
+    REQUIRE(hybrid_print_to_writer_xyz(print_point, origin, tool_offset, writer_point));
+    CHECK(writer_point.x() == Approx(111.3));
+    CHECK(writer_point.y() == Approx(46.8));
+    CHECK(writer_point.z() == Approx(7.25));
+
+    Vec3d round_trip = Vec3d::Zero();
+    REQUIRE(hybrid_writer_to_print_xyz(writer_point, origin, tool_offset, round_trip));
+    CHECK((round_trip - print_point).norm() == Approx(0.0).margin(1e-12));
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    CHECK_FALSE(hybrid_print_to_writer_xyz(Vec3d(nan, 0.0, 0.0), origin, tool_offset, round_trip));
+    CHECK_FALSE(hybrid_writer_to_print_xyz(writer_point, Vec2d(nan, 0.0), tool_offset, round_trip));
+}
+
 TEST_CASE("Hybrid non-planar approach validates exact XYZ route from live writer position",
           "[HybridNonplanarEmission]")
 {
