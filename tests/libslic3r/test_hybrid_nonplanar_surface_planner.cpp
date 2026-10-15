@@ -505,6 +505,35 @@ TEST_CASE("Hybrid route coordinates convert between print and writer frames",
     CHECK_FALSE(hybrid_writer_to_print_xyz(writer_point, Vec2d(nan, 0.0), tool_offset, round_trip));
 }
 
+TEST_CASE("Hybrid complete route transforms every waypoint into writer coordinates",
+          "[HybridNonplanarEmission]")
+{
+    HybridNonplanarPassRoute print_route;
+    print_route.approach.expected_start = Vec3d(1.0, 2.0, 3.0);
+    print_route.approach.extrusion_start = Vec3d(4.0, 2.0, 3.5);
+    print_route.approach.clearance_z_mm = 8.0;
+    print_route.approach.points = { Vec3d(1.0, 2.0, 3.0), Vec3d(1.0, 2.0, 8.0),
+                                    Vec3d(4.0, 2.0, 8.0), Vec3d(4.0, 2.0, 3.5) };
+    print_route.extrusion_points = { Vec3d(4.0, 2.0, 3.5), Vec3d(5.0, 2.0, 3.7) };
+    print_route.departure_points = { Vec3d(5.0, 2.0, 3.7), Vec3d(5.0, 2.0, 8.0) };
+    print_route.return_points = { Vec3d(5.0, 2.0, 8.0), Vec3d(1.0, 2.0, 8.0),
+                                  Vec3d(1.0, 2.0, 3.0) };
+    HybridNonplanarPassRoute writer_route;
+    REQUIRE(hybrid_print_to_writer_route(print_route, Vec2d(100.0, 50.0),
+                                         Vec2d(1.0, -2.0), writer_route));
+    CHECK(writer_route.approach.expected_start == Vec3d(100.0, 54.0, 3.0));
+    CHECK(writer_route.approach.points.front() == writer_route.approach.expected_start);
+    CHECK(writer_route.extrusion_points.front() == writer_route.approach.extrusion_start);
+    CHECK(writer_route.departure_points.front() == writer_route.extrusion_points.back());
+    CHECK(writer_route.return_points.front() == writer_route.departure_points.back());
+    CHECK(writer_route.return_points.back() == writer_route.approach.expected_start);
+    CHECK(writer_route.approach.clearance_z_mm == Approx(8.0));
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    CHECK_FALSE(hybrid_print_to_writer_route(print_route, Vec2d(nan, 0.0),
+                                              Vec2d::Zero(), writer_route));
+}
+
 TEST_CASE("Hybrid non-planar approach validates exact XYZ route from live writer position",
           "[HybridNonplanarEmission]")
 {
