@@ -229,6 +229,38 @@ struct HybridNonplanarPassRoute
     std::vector<Vec3d> return_points;
 };
 
+// Transform every absolute XYZ vertex of a validated print-space route into
+// writer coordinates before passing it to GCodeWriter. Keep collision checks in
+// print space; this conversion must not be mistaken for a clearance validation.
+inline bool hybrid_print_to_writer_route(
+    const HybridNonplanarPassRoute &print_route,
+    const Vec2d &origin,
+    const Vec2d &tool_offset,
+    HybridNonplanarPassRoute &writer_route)
+{
+    HybridNonplanarPassRoute converted = print_route;
+    auto convert_points = [&](std::vector<Vec3d> &points) {
+        for (Vec3d &point : points) {
+            Vec3d writer_point = Vec3d::Zero();
+            if (!hybrid_print_to_writer_xyz(point, origin, tool_offset, writer_point))
+                return false;
+            point = writer_point;
+        }
+        return true;
+    };
+    if (!hybrid_print_to_writer_xyz(print_route.approach.expected_start, origin, tool_offset,
+                                    converted.approach.expected_start) ||
+        !hybrid_print_to_writer_xyz(print_route.approach.extrusion_start, origin, tool_offset,
+                                    converted.approach.extrusion_start) ||
+        !convert_points(converted.approach.points) ||
+        !convert_points(converted.extrusion_points) ||
+        !convert_points(converted.departure_points) ||
+        !convert_points(converted.return_points))
+        return false;
+    writer_route = std::move(converted);
+    return true;
+}
+
 inline bool validate_hybrid_nonplanar_pass_route(
     const HybridNonplanarPassRoute &route,
     const Vec3d &tracked_writer_position,
