@@ -41,8 +41,6 @@
 #include "GCode/WipeTowerIntegration.hpp"
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
-#include "HybridNonplanarScheduler.hpp"
-#include "HybridNonplanarSectionPlanner.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/Travels.hpp"
 #include "EdgeGrid.hpp"
