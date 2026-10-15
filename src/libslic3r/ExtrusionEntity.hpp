@@ -14,6 +14,7 @@
 #include "Polygon.hpp"
 #include "Polyline.hpp"
 
+#include <array>
 #include <cassert>
 #include <numeric>
 #include <optional>
@@ -297,13 +298,23 @@ protected:
 public:
     std::vector<coord_t> z_offsets;
 
-    //ExtrusionPath3D(ExtrusionRole role) : ExtrusionPath(role) { /*std::cout << "new path3D\n"; */};
+    // Optional per-vertex desired tool-axis directions in model coordinates.
+    // Empty means this path carries legacy XYZ-only geometry; a populated
+    // vector must have exactly one direction for each polyline vertex.
+    // These are directions, not rotary joint angles.
+    std::vector<std::array<double, 3>> tool_axis_normals;
+
+    bool has_tool_axis_normals() const
+    {
+        return !polyline.empty() && tool_axis_normals.size() == polyline.size();
+    }
+
+    //ExtrusionPath3D(ExtrusionRole role) : ExtrusionPath(role) { /*std::cout << "new path3D\\n"; */};
     ExtrusionPath3D(const ExtrusionAttributes &attributes, bool can_reverse) : ExtrusionPath(attributes, can_reverse) { init(); };
     ExtrusionPath3D(const ExtrusionPath &rhs) : ExtrusionPath(rhs) { init();  }
     ExtrusionPath3D(ExtrusionPath &&rhs) : ExtrusionPath(rhs) { init();  }
-    ExtrusionPath3D(const ExtrusionPath3D &rhs) : ExtrusionPath(rhs), z_offsets(rhs.z_offsets) { init();  }
-    ExtrusionPath3D(ExtrusionPath3D &&rhs) : ExtrusionPath(rhs), z_offsets(std::move(rhs.z_offsets)) { init();  }
-
+    ExtrusionPath3D(const ExtrusionPath3D &rhs) : ExtrusionPath(rhs), z_offsets(rhs.z_offsets), tool_axis_normals(rhs.tool_axis_normals) { init();  }
+    ExtrusionPath3D(ExtrusionPath3D &&rhs) : ExtrusionPath(rhs), z_offsets(std::move(rhs.z_offsets)), tool_axis_normals(std::move(rhs.tool_axis_normals)) { init();  }
 
     ExtrusionPath3D &operator=(const ExtrusionPath3D &rhs)
     {
@@ -311,6 +322,7 @@ public:
         this->m_attributes = rhs.m_attributes;
         this->polyline = rhs.polyline;
         z_offsets = rhs.z_offsets;
+        tool_axis_normals = rhs.tool_axis_normals;
         return *this;
     }
     ExtrusionPath3D &operator=(ExtrusionPath3D &&rhs)
@@ -319,6 +331,7 @@ public:
         this->m_attributes = rhs.m_attributes;
         this->polyline = std::move(rhs.polyline);
         z_offsets = std::move(rhs.z_offsets);
+        tool_axis_normals = std::move(rhs.tool_axis_normals);
         return *this;
     }
     virtual ExtrusionPath3D* clone() const override { return new ExtrusionPath3D(*this); }
@@ -335,6 +348,7 @@ public:
     void reverse() override {
         this->polyline.reverse();
         std::reverse(this->z_offsets.begin(), this->z_offsets.end());
+        std::reverse(this->tool_axis_normals.begin(), this->tool_axis_normals.end());
     }
 
     //TODO: simplify only for points that have the same z-offset
