@@ -1284,6 +1284,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
 
     ((ConfigOptionBool,                 allow_empty_layers))
     ((ConfigOptionBool,                 hybrid_nonplanar_enabled))
+    ((ConfigOptionBool,                 hybrid_surface_pass_preflight))
     ((ConfigOptionFloat,                hybrid_nonplanar_interval))
     ((ConfigOptionFloat,                hybrid_nonplanar_max_slope))
     ((ConfigOptionFloat,                hybrid_nonplanar_max_offset))

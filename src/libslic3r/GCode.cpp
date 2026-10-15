@@ -55,6 +55,7 @@
 #include "AABBTreeIndirect.hpp"
 #include "TriangleMesh.hpp"
 #include "HybridNonplanarSectionPlanner.hpp"
+#include "HybridNonplanarCollision.hpp"
 #include <cstdlib>
 #include <chrono>
 #include <map>
@@ -3687,6 +3688,84 @@ LayerResult GCodeGenerator::process_layer(
             throw RuntimeError(
                 "Hybrid non-planar section planning encountered an invalid or ambiguous layer group; "
                 "export aborted rather than guessing a section boundary");
+    }
+
+    // New mesh-derived surface pass is currently preflight-only. It is a
+    // separate opt-in from legacy path deformation and intentionally emits no
+    // extrusion G-code until native tests and live-writer approach/departure
+    // validation have been completed.
+    if (m_config.hybrid_surface_pass_preflight.value && m_hybrid_completed_section) {
+        if (print.objects().size() != 1 || print.objects().front()->instances().size() != 1 ||
+            print.config().nozzle_diameter.size() != 1 || print.config().complete_objects.value ||
+            print.config().parallel_objects_step.value > 0 || object_layer == nullptr) {
+            throw RuntimeError("Hybrid surface-pass preflight supports only one object, one instance, one extruder and layer-by-layer ordering");
+        }
+
+        const PrintObject &print_object = *object_layer->object();
+        const ModelObject *model_object = print_object.model_object();
+        if (model_object == nullptr || print_object.instances().empty() ||
+            print_object.instances().front().model_instance == nullptr)
+            throw RuntimeError("Hybrid surface-pass preflight could not resolve the active model instance");
+
+        indexed_triangle_set source_mesh = model_object->raw_indexed_triangle_set();
+        indexed_triangle_set print_mesh;
+        if (!transform_hybrid_surface_mesh(source_mesh, print_object.trafo_centered(), print_mesh))
+            throw RuntimeError("Hybrid surface-pass preflight rejected the transformed print mesh");
+
+        AABBMesh collision_index(print_mesh);
+        HybridSweptToolOptions tool_options;
+        // These defaults are provisional, not a printer profile. Do not emit
+        // G-code until actual machine-envelope dimensions are configurable.
+        HybridSweptToolCollisionValidator collision_validator(print_mesh, collision_index, tool_options);
+        if (!collision_validator.valid())
+            throw RuntimeError("Hybrid surface-pass preflight rejected open, inconsistent or degenerate mesh topology");
+
+        HybridSurfacePlannerOptions planner_options;
+        planner_options.section_start_z = m_hybrid_completed_section->start_z;
+        planner_options.section_top_z = m_hybrid_completed_section->boundary_z;
+        planner_options.max_z_offset_mm = m_config.hybrid_nonplanar_max_offset.value;
+        planner_options.max_slope_angle_degrees = m_config.hybrid_nonplanar_max_slope.value;
+        planner_options.travel_speed_mm_s = std::max(1.0, m_config.hybrid_nonplanar_speed.value);
+        std::vector<HybridSurfacePath> candidates;
+        const auto segment_is_clear = [&collision_validator](const Vec3d &from, const Vec3d &to) {
+            return collision_validator.segment_is_clear(from, to);
+        };
+        if (!plan_hybrid_surface_paths(print_mesh, planner_options, segment_is_clear, candidates))
+            throw RuntimeError("Hybrid surface-pass preflight found no fully validated candidate paths; export aborted");
+
+        // Validate each path's vertical approach/departure to a clearance plane
+        // above the mesh, plus high-Z transitions between paths. The live writer
+        // position is deliberately NOT used here: that final transition remains
+        // a release blocker, so this option cannot emit a pass.
+        double mesh_top_z = -std::numeric_limits<double>::infinity();
+        for (const Vec3f &vertex : print_mesh.vertices)
+            mesh_top_z = std::max(mesh_top_z, static_cast<double>(vertex.z()));
+        const double clearance_z = mesh_top_z + tool_options.toolhead_top_mm +
+                                   tool_options.required_clearance_mm + 1.0;
+        if (!std::isfinite(clearance_z))
+            throw RuntimeError("Hybrid surface-pass preflight produced an invalid clearance height");
+        Vec3d previous_safe_point = Vec3d::Zero();
+        bool have_previous_safe_point = false;
+        for (const HybridSurfacePath &path : candidates) {
+            if (path.points.size() < 2)
+                throw RuntimeError("Hybrid surface-pass preflight produced a degenerate path");
+            const Vec3d first = path.points.front();
+            const Vec3d last = path.points.back();
+            const Vec3d safe_first(first.x(), first.y(), clearance_z);
+            const Vec3d safe_last(last.x(), last.y(), clearance_z);
+            if (!collision_validator.segment_is_clear(first, safe_first) ||
+                !collision_validator.segment_is_clear(safe_last, last) ||
+                (have_previous_safe_point &&
+                 !collision_validator.segment_is_clear(previous_safe_point, safe_first)))
+                throw RuntimeError("Hybrid surface-pass preflight rejected an approach, departure or high-Z transition");
+            previous_safe_point = safe_last;
+            have_previous_safe_point = true;
+        }
+
+        BOOST_LOG_TRIVIAL(info) << "Hybrid surface-pass preflight accepted "
+                                << candidates.size() << " candidate paths at H-section boundary "
+                                << m_hybrid_completed_section->boundary_z
+                                << " mm; no finishing-pass G-code was emitted.";
     }
 
     // Legacy Mode B still queues deformed existing paths. This is deliberately

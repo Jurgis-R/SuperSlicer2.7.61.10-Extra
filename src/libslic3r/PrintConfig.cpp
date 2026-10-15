@@ -3629,6 +3629,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("hybrid_surface_pass_preflight", coBool);
+    def->label = L("Hybrid surface-pass collision preflight (no G-code output)");
+    def->full_label = L("Hybrid surface-pass collision preflight");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Experimental preflight only. At completed H-section boundaries, build candidate surface paths from the transformed model mesh and validate the configured approximate tool envelope and high-Z transitions. This option does NOT emit a finishing pass. Full approach/departure validation from the live writer position and extrusion integration are not yet available.");
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("hybrid_nonplanar_interval", coFloat);
     def->label = L("Hybrid non-planar interval H");
     def->full_label = L("Hybrid non-planar interval H");
