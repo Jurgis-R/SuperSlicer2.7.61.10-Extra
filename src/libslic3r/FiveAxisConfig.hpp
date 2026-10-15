@@ -15,7 +15,7 @@ namespace Slic3r {
 // Convert persisted printer-profile options into the validated engine schema.
 // Output is assigned only when every setting parses and validates.
 inline FiveAxisValidationResult load_five_axis_machine_profile(
-    const DynamicPrintConfig &config, FiveAxisMachineProfile &profile)
+    const ConfigBase &config, FiveAxisMachineProfile &profile)
 {
     FiveAxisMachineProfile candidate;
     candidate.enabled = config.opt_bool("five_axis_enabled");
