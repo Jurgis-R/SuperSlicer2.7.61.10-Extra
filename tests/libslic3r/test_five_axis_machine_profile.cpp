@@ -34,6 +34,29 @@ TEST_CASE("Five-axis machine profile rejects inconsistent axis limits and envelo
 }
 
 
+
+TEST_CASE("Persisted five-axis printer settings load into the validated profile", "[FiveAxisMachineProfile]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    FiveAxisMachineProfile profile;
+
+    const FiveAxisValidationResult default_result = load_five_axis_machine_profile(config, profile);
+    REQUIRE(default_result.valid);
+    CHECK_FALSE(profile.enabled);
+
+    config.option<ConfigOptionBool>("five_axis_enabled")->value = true;
+    config.opt_string("five_axis_postprocessor_id") = "test-controller";
+    config.opt_string("five_axis_mount") = "rotary_head";
+    config.opt_float("five_axis_machine_max_x") = 320.0;
+
+    const FiveAxisValidationResult enabled_result = load_five_axis_machine_profile(config, profile);
+    REQUIRE(enabled_result.valid);
+    CHECK(profile.enabled);
+    CHECK(profile.postprocessor_id == "test-controller");
+    CHECK(profile.kinematics.mount == FiveAxisRotaryMount::RotaryHead);
+    CHECK(profile.machine_max.x == Approx(320.0));
+}
+
 TEST_CASE("Five-axis export gate preserves disabled mode and rejects missing controller writer", "[FiveAxisMachineProfile]")
 {
     FiveAxisMachineProfile profile;
