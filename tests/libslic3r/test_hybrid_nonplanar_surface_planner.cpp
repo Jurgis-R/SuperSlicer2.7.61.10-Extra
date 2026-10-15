@@ -197,7 +197,9 @@ TEST_CASE("Hybrid surface extrusion conversion rejects invalid input without par
 {
     ExtrusionAttributes attributes(ExtrusionRole::ExternalPerimeter,
                                    ExtrusionFlow(0.08, 0.4f, 0.2f));
-    std::vector<ExtrusionPath3D> paths(1);
+    std::vector<ExtrusionPath3D> paths;
+    paths.emplace_back(attributes, false);
+    paths.back().push_back(Point::new_scale(0.0, 0.0), 0);
     HybridSurfacePath too_short;
     too_short.points = { Vec3d(0.0, 0.0, 2.0) };
     REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ too_short }, 2.0, attributes, paths));
@@ -228,8 +230,9 @@ TEST_CASE("Hybrid surface planning and extrusion conversion fail closed on a col
     options.max_z_offset_mm = 0.2;
     ExtrusionAttributes attributes(ExtrusionRole::ExternalPerimeter,
                                    ExtrusionFlow(0.08, 0.4f, 0.2f));
-    std::vector<ExtrusionPath3D> paths(1);
-    paths.front().push_back(Point::new_scale(0.0, 0.0), 0);
+    std::vector<ExtrusionPath3D> paths;
+    paths.emplace_back(attributes, false);
+    paths.back().push_back(Point::new_scale(0.0, 0.0), 0);
 
     const auto colliding = [](const Vec3d &, const Vec3d &) { return false; };
     REQUIRE_FALSE(plan_hybrid_surface_extrusion_paths(
