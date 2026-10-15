@@ -5791,7 +5791,7 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     return gcode;
 }
 
-std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed) {
+std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed, double max_speed_mm_s) {
     //path.simplify(SCALED_RESOLUTION);
     ExtrusionPath3D simplifed_path = path;
     if (this->visitor_flipped) {
@@ -5808,7 +5808,7 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
     }
 
     std::string gcode;
-    gcode += this->_before_extrude(simplifed_path, description, speed);
+    gcode += this->_before_extrude(simplifed_path, description, speed, max_speed_mm_s);
 
     // calculate extrusion length per distance unit
     double e_per_mm = _compute_e_per_mm(simplifed_path);
@@ -6479,17 +6479,13 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
         if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
             gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: return to layer Z");
 
-        // Use the normal travel planner/retraction logic before the deferred
-        // extrusion, then emit the typed 3D path with its original attributes.
-        this->travel_to(gcode, queued.path.first_point(), queued.path.role());
-
-        double speed = queued.speed_mm_per_sec;
+        // extrude_path_3D/_before_extrude owns the approach travel, retract and
+        // unretract sequence. Do not call travel_to here as well: that would
+        // mutate the travel plan without writing its returned polyline.
         const double speed_limit = m_config.hybrid_nonplanar_speed.value;
-        if (speed_limit > 0.) {
-            double fan_speed = 0.;
-            speed = std::min(this->_compute_speed_mm_per_sec(queued.path, speed, fan_speed, nullptr), speed_limit);
-        }
-        gcode += this->extrude_path_3D(queued.path, queued.description, speed);
+        gcode += this->extrude_path_3D(
+            queued.path, queued.description, queued.speed_mm_per_sec,
+            speed_limit > 0. ? speed_limit : -1.);
 
         // The contour sampler ramps both endpoints to nominal layer Z. Keep
         // the writer synchronized with that nominal Z before restoring context.
@@ -7559,7 +7555,7 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
     return gcode;
 }
 
-std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s) {
+std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s, double max_speed_mm_s) {
     std::string gcode;
     gcode.reserve(512);
     std::string description{ description_in };
@@ -7567,6 +7563,10 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     // compute speed here to be able to know it for travel_deceleration_use_target
     std::string speed_comment = "";
     speed_mm_s = _compute_speed_mm_per_sec(path, speed_mm_s, m_overhang_fan_override, m_config.gcode_comments ? &speed_comment : nullptr);
+    // Apply the hybrid cap after role/feature speed calculation so it is not
+    // multiplied again and so travel-deceleration planning sees the final cap.
+    if (max_speed_mm_s > 0.)
+        speed_mm_s = std::min(speed_mm_s, max_speed_mm_s);
 
     gcode += this->_travel_before_extrude(path, description_in, speed_mm_s);
 
