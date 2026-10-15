@@ -3752,9 +3752,9 @@ LayerResult GCodeGenerator::process_layer(
             mesh_top_z = std::max(mesh_top_z, static_cast<double>(vertex.z()));
         const Vec3d writer_position = m_writer.get_position();
         const Vec2d tool_offset = m_writer.current_tool_offset();
-        const Vec3d current_tip(writer_position.x() - m_origin.x() + tool_offset.x(),
-                                writer_position.y() - m_origin.y() + tool_offset.y(),
-                                writer_position.z());
+        Vec3d current_tip = Vec3d::Zero();
+        if (!hybrid_writer_to_print_xyz(writer_position, m_origin, tool_offset, current_tip))
+            throw RuntimeError("Hybrid surface-pass preflight could not convert the live writer position to print coordinates");
         const double clearance_z = std::max(
             writer_position.z(),
             mesh_top_z + tool_options.toolhead_top_mm +
