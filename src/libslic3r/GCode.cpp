@@ -7808,6 +7808,14 @@ std::string GCodeGenerator::_prepare_extrusion_after_travel(
     //should be already done by travel_to, but just in case
     _add_object_change_labels(gcode);
 
+    // Object-change labels may emit a Z-correction move. Re-check the hybrid
+    // contract after that shared hook, immediately before deciding whether
+    // ordinary unlift is permitted.
+    if (route_established_state &&
+        !validate_hybrid_pre_extrusion_state(*route_contract, m_writer.get_position(),
+                                             m_writer.get_lift(), true))
+        throw std::runtime_error("Hybrid non-planar writer state changed during object-label preparation.");
+
     // Compensate retraction. Ordinary planar extrusion keeps the historical
     // unlift path. A hybrid route skips it only after its declared end state has
     // been validated above; the route owns the Z/lift transition.
