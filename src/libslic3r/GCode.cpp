@@ -64,6 +64,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/find.hpp>
