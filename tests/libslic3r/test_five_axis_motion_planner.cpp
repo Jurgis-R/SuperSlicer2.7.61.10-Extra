@@ -99,3 +99,36 @@ TEST_CASE("Five-axis planner validates collision-box and sampling configuration"
     collision.obstacles.push_back({ { 2.0, 0.0, 0.0 }, { 1.0, 1.0, 1.0 } });
     REQUIRE_FALSE(validate_five_axis_collision_config(collision).valid);
 }
+
+TEST_CASE("Five-axis planner supports rotary-head tool-tip compensation", "[FiveAxisMotionPlanner]")
+{
+    FiveAxisKinematicsConfig kin;
+    kin.mount = FiveAxisRotaryMount::RotaryHead;
+    kin.rotary_1_pivot = { 10.0, 0.0, 0.0 };
+    kin.rotary_2_pivot = { 0.0, 0.0, 5.0 };
+    kin.tool_tip_offset = { 0.0, 0.0, 10.0 };
+    FiveAxisOutputConfig output;
+    FiveAxisCollisionConfig collision;
+    auto poses = simple_poses();
+    for (auto &pose : poses)
+        pose.point = { 100.0, 100.0, 100.0 };
+    std::vector<FiveAxisCommand> commands;
+
+    const auto result = plan_five_axis_path(kin, output, collision, poses, commands);
+    REQUIRE(result.valid);
+    REQUIRE(commands.front().x == Approx(90.0));
+    REQUIRE(commands.front().y == Approx(100.0));
+    REQUIRE(commands.front().z == Approx(90.0));
+}
+
+TEST_CASE("Five-axis collision sampling rejects excessive sampling work", "[FiveAxisMotionPlanner]")
+{
+    FiveAxisCollisionConfig collision;
+    collision.max_sample_spacing_mm = 1e-6;
+    collision.max_samples_per_segment = 10;
+    std::vector<FiveAxisCommand> path = {
+        { 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 600.0 },
+        { 1.0, 0.0, 1.0, 0.1, 0.0, 0.0, 600.0 }
+    };
+    REQUIRE_FALSE(validate_five_axis_path_clearance(collision, path).valid);
+}
