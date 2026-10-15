@@ -39,17 +39,22 @@ struct FiveAxisSourceProvenance {
     void mark_ambiguous() { state = FiveAxisProvenanceState::Ambiguous; }
 
     void merge(const FiveAxisSourceProvenance &rhs) {
-        if (state == FiveAxisProvenanceState::Ambiguous || rhs.state == FiveAxisProvenanceState::Ambiguous) {
+        const bool ambiguous = state == FiveAxisProvenanceState::Ambiguous ||
+                               rhs.state == FiveAxisProvenanceState::Ambiguous;
+        for (const ObjectID id : rhs.source_volume_ids)
+            if (std::find(source_volume_ids.begin(), source_volume_ids.end(), id) == source_volume_ids.end())
+                source_volume_ids.push_back(id);
+
+        if (ambiguous) {
             state = FiveAxisProvenanceState::Ambiguous;
-        } else if (state == FiveAxisProvenanceState::Unknown) {
-            *this = rhs;
-        } else if (rhs.state != FiveAxisProvenanceState::Unknown) {
-            for (const ObjectID id : rhs.source_volume_ids)
-                if (std::find(source_volume_ids.begin(), source_volume_ids.end(), id) == source_volume_ids.end())
-                    source_volume_ids.push_back(id);
-            state = source_volume_ids.size() == 1 ? FiveAxisProvenanceState::Unique : FiveAxisProvenanceState::Mixed;
-            if (rhs.state == FiveAxisProvenanceState::Mixed)
-                state = FiveAxisProvenanceState::Mixed;
+        } else if (source_volume_ids.empty()) {
+            state = FiveAxisProvenanceState::Unknown;
+        } else if (source_volume_ids.size() > 1 ||
+                   state == FiveAxisProvenanceState::Mixed ||
+                   rhs.state == FiveAxisProvenanceState::Mixed) {
+            state = FiveAxisProvenanceState::Mixed;
+        } else {
+            state = FiveAxisProvenanceState::Unique;
         }
     }
 };
