@@ -306,7 +306,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                     else if (idx_first_printable_region >= 0) {
                         const PrintObjectRegions::VolumeRegion &region = layer_range.volume_regions[idx_first_printable_region];
                         assert_valid(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);
-                        slices_by_region[region.region->print_object_region_id()][z_idx] = std::move(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);
+                        slices_by_region[region.region->print_object_region_id()][z_idx] = std::move(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);\n                        if (!slices_by_region[region.region->print_object_region_id()][z_idx].empty())\n                            provenance_by_region[region.region->print_object_region_id()][z_idx] = FiveAxisSourceProvenance::unique(region.model_volume->id());
                     }
                 }
             }
@@ -356,7 +356,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                         temp_slices.reserve(layer_range.volume_regions.size());
                         for (VolumeSlices* &slices : layer_range_regions_to_slices) {
                             const PrintObjectRegions::VolumeRegion &volume_region = layer_range.volume_regions[&slices - layer_range_regions_to_slices.data()];
-                            temp_slices.push_back({ std::move(slices->slices[z_idx]), volume_region.region ? volume_region.region->print_object_region_id() : -1, volume_region.model_volume->id() });
+                            temp_slices.push_back({ std::move(slices->slices[z_idx]), volume_region.region ? volume_region.region->print_object_region_id() : -1, volume_region.model_volume->id(), volume_region.model_volume->is_model_part() ? FiveAxisSourceProvenance::unique(volume_region.model_volume->id()) : FiveAxisSourceProvenance() });
                         }
                     }
 
@@ -395,7 +395,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                     }
                     //gap closing: also between volumes
                     // note: it needs to already have good clipped expolygons for each region, so nobody 'steal' area from another.
-                    if (layer_range.volume_regions.size() > 1 && max_slice_closing_radius > 0) {
+                    if (layer_range.volume_regions.size() > 1 && max_slice_closing_radius > 0) {\n                        // Gap closing can create/redistribute area across volume boundaries.\n                        // Fail closed: retain candidate IDs for diagnostics but do not claim unique attribution.\n                        for (RegionSlice &slice : temp_slices)\n                            if (!slice.expolygons.empty()) slice.provenance.mark_ambiguous();
                         // if slice gap closing raduis & multiple region, then we need a clipping master
                         ExPolygons clip_master;
                         for (size_t idx_region = 0; idx_region < layer_range.volume_regions.size(); ++idx_region) {
@@ -465,7 +465,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                         if (merged)
                             expolygons = closing_ex(expolygons, float(scale_(EPSILON)));
                         ensure_valid(expolygons);
-                        slices_by_region[temp_slices[i].region_id][z_idx] = std::move(expolygons);
+                        slices_by_region[temp_slices[i].region_id][z_idx] = std::move(expolygons);\n                        FiveAxisSourceProvenance &dst_provenance = provenance_by_region[temp_slices[i].region_id][z_idx];\n                        for (int k = i; k < j; ++k)\n                            if (!temp_slices[k].expolygons.empty() || k == i) dst_provenance.merge(temp_slices[k].provenance);\n                        if (merged && dst_provenance.state != FiveAxisProvenanceState::Ambiguous)\n                            dst_provenance.state = dst_provenance.source_volume_ids.size() > 1 ? FiveAxisProvenanceState::Mixed : dst_provenance.state;
                         i = j;
                     }
                     throw_on_cancel_callback();
@@ -1463,7 +1463,7 @@ void PrintObject::slice_volumes()
         std::vector<ExPolygons> &by_layer = region_slices[region_id];
         for (size_t layer_id = 0; layer_id < by_layer.size(); ++ layer_id) {
             ensure_valid(by_layer[layer_id]);
-            m_layers[layer_id]->regions()[region_id]->m_slices.append(std::move(by_layer[layer_id]), stPosInternal | stDensSparse);
+            m_layers[layer_id]->regions()[region_id]->m_slices.append(std::move(by_layer[layer_id]), stPosInternal | stDensSparse);\n            m_layers[layer_id]->regions()[region_id]->m_five_axis_source_provenance = five_axis_provenance[region_id][layer_id];
             for(auto &srf : m_layers[layer_id]->regions()[region_id]->m_slices) srf.expolygon.assert_valid();
         }
     }
