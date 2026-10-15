@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: hybrid-nonplanar-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   linux-native-tests:
