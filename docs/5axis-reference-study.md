@@ -114,6 +114,9 @@ These changes establish a path-data-to-planner API; they do not mean the regular
 
 This is the first concrete model-geometry-to-normal producer, but it is not yet connected to actual slicer-generated extrusion paths. Coordinate transforms, intended-surface selection, path generation, persistent machine settings, and the G-code export integration remain outstanding.
 
+
+The surface-normal helper now also provides `transform_five_axis_surface_mesh()`. It applies an explicitly supplied affine transform to mesh vertices before the accelerated sampler is built, rejects non-finite or singular transforms, and reverses face winding for mirrored transforms so sampled face normals retain their intended orientation. Tests cover translated geometry, mirrored winding, and rejection of singular transforms. The helper is intentionally explicit: it does not choose or compose SuperSlicer's volume, object, instance, and centering transforms on behalf of the caller. That transform chain still needs to be connected at the real slicing integration point.
+
 ## Safety and verification status
 
 The present helper-level kinematics and output code does not yet establish complete collision safety, slicer integration, or a validated machine postprocessor. Do not use its output for physical printing until those pieces and the end-to-end tests are complete. No successful Windows build is claimed by this document.
