@@ -11,7 +11,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <utility>
 #include <vector>
 
@@ -38,35 +37,58 @@ struct HybridSweptToolOptions {
 
 inline bool hybrid_mesh_is_closed_oriented(const indexed_triangle_set &mesh)
 {
-    if (mesh.vertices.empty() || mesh.indices.empty())
+    // Keep topology validation bounded: this first implementation intentionally
+    // rejects very large meshes rather than allocating unbounded edge storage.
+    if (mesh.vertices.empty() || mesh.indices.empty() || mesh.indices.size() > 2000000)
         return false;
 
-    // A closed, consistently oriented triangle manifold has every undirected
-    // edge exactly twice, once in each direction. Reject uncertain topology.
-    struct EdgeUse { unsigned count { 0 }; int orientation_sum { 0 }; };
-    std::map<std::pair<int, int>, EdgeUse> edges;
+    struct EdgeUse { int low; int high; int orientation; };
+    std::vector<EdgeUse> edges;
+    edges.reserve(mesh.indices.size() * 3);
+    double signed_volume_six = 0.0;
     for (const Vec3i32 &face : mesh.indices) {
+        Vec3d p[3];
+        for (int corner = 0; corner < 3; ++corner) {
+            const int index = face(corner);
+            if (index < 0 || static_cast<std::size_t>(index) >= mesh.vertices.size())
+                return false;
+            p[corner] = mesh.vertices[index].cast<double>();
+            if (!p[corner].allFinite())
+                return false;
+        }
+        const Vec3d area_vector = (p[1] - p[0]).cross(p[2] - p[0]);
+        if (!area_vector.allFinite() || area_vector.squaredNorm() <= 1e-20)
+            return false;
+        signed_volume_six += p[0].dot(p[1].cross(p[2]));
         for (int corner = 0; corner < 3; ++corner) {
             const int a = face(corner);
             const int b = face((corner + 1) % 3);
-            if (a < 0 || b < 0 ||
-                static_cast<std::size_t>(a) >= mesh.vertices.size() ||
-                static_cast<std::size_t>(b) >= mesh.vertices.size() || a == b)
+            if (a == b)
                 return false;
-            const auto key = std::minmax(a, b);
-            EdgeUse &use = edges[{key.first, key.second}];
-            ++use.count;
-            use.orientation_sum += (a < b) ? 1 : -1;
-            if (use.count > 2)
-                return false;
+            edges.push_back({ std::min(a, b), std::max(a, b), a < b ? 1 : -1 });
         }
     }
-    for (const auto &entry : edges)
-        if (entry.second.count != 2 || entry.second.orientation_sum != 0)
+
+    // AABBMesh::hit_result::is_inside() relies on outward-facing normals.
+    // Reject meshes whose global signed volume does not establish that winding.
+    if (!std::isfinite(signed_volume_six) || signed_volume_six <= 1e-12)
+        return false;
+
+    std::sort(edges.begin(), edges.end(), [](const EdgeUse &a, const EdgeUse &b) {
+        return a.low < b.low || (a.low == b.low && a.high < b.high);
+    });
+    for (std::size_t i = 0; i < edges.size();) {
+        std::size_t j = i + 1;
+        int orientation_sum = edges[i].orientation;
+        while (j < edges.size() && edges[j].low == edges[i].low &&
+               edges[j].high == edges[i].high) {
+            orientation_sum += edges[j].orientation;
+            ++j;
+        }
+        if (j - i != 2 || orientation_sum != 0)
             return false;
-    for (const Vec3f &v : mesh.vertices)
-        if (!v.allFinite())
-            return false;
+        i = j;
+    }
     return true;
 }
 
@@ -75,7 +97,7 @@ public:
     HybridSweptToolCollisionValidator(const indexed_triangle_set &mesh,
                                       const AABBMesh &aabb,
                                       const HybridSweptToolOptions &options)
-        : m_mesh(mesh), m_aabb(aabb), m_options(options),
+        : m_aabb(aabb), m_options(options),
           m_valid(hybrid_mesh_is_closed_oriented(mesh) && valid_options(options))
     {}
 
@@ -163,7 +185,6 @@ private:
         return true;
     }
 
-    const indexed_triangle_set &m_mesh;
     const AABBMesh &m_aabb;
     HybridSweptToolOptions m_options;
     bool m_valid { false };
