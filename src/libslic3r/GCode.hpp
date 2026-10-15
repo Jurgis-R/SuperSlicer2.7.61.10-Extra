@@ -42,6 +42,7 @@
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
 #include "HybridNonplanarScheduler.hpp"
+#include "HybridNonplanarSectionPlanner.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/Travels.hpp"
 #include "EdgeGrid.hpp"
@@ -530,7 +531,9 @@ private:
     const ZaaMeshData*        zaa_mesh_for(const PrintObject *obj);
     bool                      _zaa_contour(const ExtrusionPath &path, std::vector<std::pair<Point, coord_t>> &out);
     std::vector<char>         m_zaa_active; // v3: per sample of the last _zaa_contour(): 1 = follows the surface, 0 = flat
-    HybridNonplanarScheduler  m_hybrid_nonplanar_scheduler;
+    HybridNonplanarScheduler  m_hybrid_nonplanar_scheduler; // legacy Mode B gate; retained until the surface planner replaces it
+    HybridNonplanarSectionPlanner m_hybrid_nonplanar_section_planner;
+    std::optional<HybridNonplanarSection> m_hybrid_completed_section;
     bool                      m_hybrid_nonplanar_layer_due { false };
 
     // Paths selected for the hybrid finishing pass are deferred until the
