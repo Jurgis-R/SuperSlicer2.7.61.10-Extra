@@ -254,10 +254,12 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
     const PrintObjectRegions                                 &print_object_regions,
     const std::vector<float>                                 &zs,
     std::vector<VolumeSlices>                               &&volume_slices,
+    std::vector<std::vector<FiveAxisSourceProvenance>>       &provenance_by_region,
     const std::function<void()>                              &throw_on_cancel_callback)
 {
     model_volumes_sort_by_id(model_volumes);
 
+    provenance_by_region.assign(print_object_regions.all_regions.size(), std::vector<FiveAxisSourceProvenance>(zs.size()));
     std::vector<std::vector<ExPolygons>> slices_by_region(print_object_regions.all_regions.size(), std::vector<ExPolygons>(zs.size(), ExPolygons()));
 
     // First shuffle slices into regions if there is no overlap with another region possible, collect zs of the complex cases.
