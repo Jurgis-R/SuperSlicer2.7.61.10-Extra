@@ -6552,11 +6552,19 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
         const double max_slope = std::tan(max_angle * 3.14159265358979323846 / 180.0);
         sd.front() = 0.0;
         sd.back() = 0.0;
+        // First honour the endpoint ramp lengths, then constrain adjacent samples.
+        for (size_t i = 1; i + 1 < n; ++i) {
+            const double from_start = std::max(0.0, ss[i] - ss.front());
+            const double to_end = std::max(0.0, ss.back() - ss[i]);
+            const double endpoint_limit = max_slope * std::min(from_start, to_end);
+            sd[i] = std::max(-endpoint_limit, std::min(endpoint_limit, sd[i]));
+        }
         for (size_t i = 1; i < n; ++i) {
             const double max_dz = max_slope * std::max(0.0, ss[i] - ss[i - 1]);
             sd[i] = std::max(sd[i - 1] - max_dz, std::min(sd[i - 1] + max_dz, sd[i]));
         }
-        for (size_t i = n - 1; i-- > 0;) {
+        sd.back() = 0.0;
+        for (size_t i = n - 1; i-- > 1;) {
             const double max_dz = max_slope * std::max(0.0, ss[i + 1] - ss[i]);
             sd[i] = std::max(sd[i + 1] - max_dz, std::min(sd[i + 1] + max_dz, sd[i]));
         }
