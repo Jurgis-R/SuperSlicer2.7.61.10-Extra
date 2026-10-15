@@ -980,6 +980,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat,                hybrid_nonplanar_interval))
     ((ConfigOptionFloat,                hybrid_nonplanar_max_slope))
     ((ConfigOptionFloat,                hybrid_nonplanar_max_offset))
+    ((ConfigOptionFloat,                hybrid_nonplanar_speed))
     ((ConfigOptionBool,                 zaa_contour_perimeters))
     ((ConfigOptionFloat,                zaa_min_z))
     ((ConfigOptionFloat,                zaa_sample_distance))
