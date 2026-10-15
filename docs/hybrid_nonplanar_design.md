@@ -241,3 +241,14 @@ The Nonplanar_Slicing project is Python-based and transforms meshes/toolpaths ar
 3. Implement the explicit H-interval pass scheduler in the native print pipeline, with tests before connecting either path strategy.
 4. Implement Mode B as a separate pass first, then Mode A using a reviewed field/isolines strategy.
 5. Implement toolhead-envelope configuration and conservative collision checks, then GUI mutual exclusion and full build/regression verification.
+
+
+### SuperSlicer-native mesh infrastructure: reuse before porting
+
+Additional direct inspection of the target branch confirms that `src/libslic3r/TriangleMesh.hpp` and `TriangleMesh.cpp` are already substantial native mesh infrastructure, with the project's existing AGPL-family licensing and geometry types. Therefore, AtomSlicer's standalone `BVHTriangle` should not be transplanted merely because it has a BVH: first identify the existing triangle acceleration/query paths in SuperSlicer and benchmark whether they can answer the exact surface-sampling and clearance queries needed. Introducing a second BVH without that comparison would duplicate infrastructure and risk mismatched coordinate units, mesh transforms, and invalid/empty-mesh behavior.
+
+The Slic3r fork's `NonplanarSurface` uses its own `mesh_vertex`, `mesh_stats`, facet map, surface grouping, angle filtering, and projected-area representation. Porting that class unchanged would also duplicate geometry types and assumptions. The reusable target is the algorithmic sequence—candidate facet grouping, angle/height/area eligibility, then collision rejection—implemented against SuperSlicer's native mesh and polygon types after reviewing the fork's actual collision function and callers.
+
+### Review limits and evidence discipline
+
+The source review so far confirms the files and data structures listed above, but it is not yet a complete function-by-function audit of every repository. In particular, the exact Slic3r-fork collision implementation and AtomSlicer's full field-generation pipeline still need a traced review of callers, inputs, outputs, and edge cases. No external algorithm is considered port-ready until that review is complete. This is intentionally explicit so future implementation does not turn assumptions into undocumented facts.
