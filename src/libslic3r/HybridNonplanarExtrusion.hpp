@@ -218,6 +218,51 @@ inline bool validate_hybrid_nonplanar_approach(
 }
 
 
+// Explicit writer-state contract for the lifecycle surrounding an experimental
+// pre-extrusion route. Positions are absolute writer-frame XYZ in millimetres;
+// lift is the writer's tracked lift amount, not an inferred Z difference.
+// This describes and validates state only; it does not move the writer or emit G-code.
+struct HybridPreExtrusionTravelContract
+{
+    Vec3d expected_start_position { Vec3d::Zero() };
+    double expected_start_lift_mm { 0.0 };
+    Vec3d expected_end_position { Vec3d::Zero() };
+    double expected_end_lift_mm { 0.0 };
+    double position_tolerance_mm { 1e-4 };
+    double lift_tolerance_mm { 1e-4 };
+};
+
+// Check either side of the contract against live writer state. The end position
+// is explicit because a surface-following route is not required to end at the
+// nominal planar layer Z. Callers must abort the export on failure; writer state
+// cannot safely be reused after any partially emitted route.
+inline bool validate_hybrid_pre_extrusion_state(
+    const HybridPreExtrusionTravelContract &contract,
+    const Vec3d &live_writer_position,
+    double live_lift_mm,
+    bool validate_end_state)
+{
+    if (!contract.expected_start_position.allFinite() ||
+        !contract.expected_end_position.allFinite() ||
+        !live_writer_position.allFinite() ||
+        !std::isfinite(contract.expected_start_lift_mm) ||
+        !std::isfinite(contract.expected_end_lift_mm) ||
+        !std::isfinite(live_lift_mm) ||
+        !std::isfinite(contract.position_tolerance_mm) ||
+        contract.position_tolerance_mm < 0.0 ||
+        !std::isfinite(contract.lift_tolerance_mm) ||
+        contract.lift_tolerance_mm < 0.0)
+        return false;
+
+    const Vec3d &expected_position = validate_end_state ?
+        contract.expected_end_position : contract.expected_start_position;
+    const double expected_lift = validate_end_state ?
+        contract.expected_end_lift_mm : contract.expected_start_lift_mm;
+    return (live_writer_position - expected_position).norm() <=
+               contract.position_tolerance_mm &&
+           std::abs(live_lift_mm - expected_lift) <= contract.lift_tolerance_mm;
+}
+
 // Complete, pre-emission route contract. The extrusion points are the exact
 // absolute XYZ vertices that will be emitted; departure and return are explicit
 // travel polylines. This validates geometry only and never mutates GCodeWriter.
