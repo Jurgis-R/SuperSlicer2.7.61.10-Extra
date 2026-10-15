@@ -54,7 +54,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/deps/build/destdir/usr/local" \
             -DSLIC3R_STATIC=1 \
             -DSLIC3R_GTK=3 \
-            -DCMAKE_BUILD_TESTS=1
+            -DSLIC3R_BUILD_TESTS=ON
 
       - name: Build slicer and targeted test executables
         run: |
