@@ -1,6 +1,7 @@
 #include "libslic3r/FiveAxisEngine.hpp"
 
 #include <catch2/catch.hpp>
+#include <limits>
 
 using namespace Slic3r;
 
