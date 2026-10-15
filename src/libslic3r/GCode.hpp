@@ -553,6 +553,7 @@ private:
     };
     std::vector<HybridNonplanarQueuedPath> m_hybrid_nonplanar_queue;
     void flush_hybrid_nonplanar_queue(std::string& gcode);
+    bool m_hybrid_path_deferred { false };
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
     double                              m_last_mm3_per_mm;
 #endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
