@@ -72,6 +72,9 @@ void ExtrusionPath::simplify(coordf_t tolerance, ArcFittingType with_fitting_arc
 
 void ExtrusionPath3D::simplify(coordf_t tolerance, ArcFittingType with_fitting_arc, double fitting_arc_tolerance)
 {
+    // Any geometry-changing simplification invalidates attribution until a
+    // path-to-source surface correspondence stage can re-establish it.
+    source_provenance = FiveAxisSourceProvenance{};
     this->polyline.make_arc(ArcFittingType::Disabled, tolerance, fitting_arc_tolerance);
     // TODO: simplify but only for sub-path with same zheight.
     // if (with_fitting_arc) {
