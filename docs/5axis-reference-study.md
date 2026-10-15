@@ -72,6 +72,21 @@ Use reference projects to learn interfaces, algorithms, test cases, and failure 
 7. Add end-to-end model-to-G-code tests, golden output tests, and Windows 64-bit build verification.
 8. Test offline simulation and then staged machine tests only after the target machine profile is calibrated.
 
+## Current implementation status on dev_5x
+
+The first motion-planning increment now exists in `src/libslic3r/FiveAxisMotionPlanner.hpp`:
+
+- Accepts ordered work-coordinate tool poses (position, requested tool axis, extrusion, and feedrate).
+- Solves each pose using the existing rotary inverse-kinematics helper, seeding each solve from the previous joint solution to encourage continuity.
+- Applies rotary-bed point transforms or rotary-head tool-tip compensation.
+- Validates the resulting complete command list against configured rotary limits, angular change, rate, and simultaneous-axis rules before returning it.
+- Supports conservative sampled clearance checks against caller-supplied axis-aligned obstacle boxes.
+- Clears the caller's output on failure and only returns a candidate after all checks pass.
+
+Catch2 tests were added in `tests/libslic3r/test_five_axis_motion_planner.cpp` and registered in `tests/libslic3r/CMakeLists.txt`.
+
+**This is not yet the complete slicer pipeline.** The planner currently consumes tool poses; it does not derive them from the actual model mesh or SuperSlicer's extrusion entities, does not model a full nozzle/head swept volume or mesh collision, and is not yet called by `GCodeGenerator`. Machine profile settings/UI, postprocessor selection, setup/mode commands, extrusion semantics, and end-to-end G-code parsing remain to be implemented. The added tests have not been compiled or executed because no build was run.
+
 ## Safety and verification status
 
 The present helper-level kinematics and output code does not yet establish complete collision safety, slicer integration, or a validated machine postprocessor. Do not use its output for physical printing until those pieces and the end-to-end tests are complete. No successful Windows build is claimed by this document.
