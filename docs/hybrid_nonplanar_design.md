@@ -182,3 +182,62 @@ The current source does not yet have a printer-specific CAD envelope for these p
 - [ ] Add full toolhead-envelope collision checks and safe fallback to planar paths.
 - [ ] Compile the C++ application and add automated G-code regression tests.
 - [ ] Validate with a small test print on the target Cartesian printer.
+
+
+## Expanded external-source audit (2026-10-15)
+
+This section records verified source locations and integration decisions before importing code. It is deliberately not a claim that external algorithms have already been ported or validated.
+
+### AtomSlicer (MIT)
+
+Repository: https://github.com/iota97/AtomSlicer
+
+Verified source files:
+- `src/bvhtriangle.h`: triangle BVH and closest-point queries. This is a candidate reference for accelerating mesh queries, but must be compared with SuperSlicer's existing mesh acceleration utilities before introducing a duplicate structure.
+- `src/hierarchy.h`: mesh adjacency, vertex normals and field-aligned mesh hierarchy. This is relevant to Mode A surface direction / field estimation, not a drop-in replacement for SuperSlicer's mesh or path types.
+- `src/isolines.cpp`: extracts isolines from per-vertex scalar values over triangles. This is a candidate for generating surface curves only if the required scalar field and topology assumptions match.
+- `src/bvhpoint.h`, `src/bvhsegment.h`, `src/mathutils.h`, `src/curve.cpp`, and related files should be audited together before considering reuse because the geometry types and invariants are shared.
+- `LICENSE`: MIT, copyright Giovanni Cocco and Inria (2026). Preserve the copyright and license notice for copied or substantial adapted portions.
+
+Do not copy an isolated file until its dependencies, empty-mesh behavior, numerical tolerances, coordinate conventions, and tests have been reviewed. In particular, the observed `BVHTriangle::closestPoint` implementation initializes from triangle zero, so empty input handling must be checked before any reuse.
+
+### Slic3r NonPlanar Slicing fork
+
+Repository: https://github.com/DrEricEbert/Slic3r_NonPlanar_Slicing/tree/nonplanar
+
+Verified source locations:
+- `xs/src/libslic3r/NonplanarSurface.cpp`: surface-patch statistics and geometry.
+- `xs/src/libslic3r/PrintObject.cpp`: the fork's integration point for finding eligible non-planar surfaces and checking candidate surfaces against existing printed geometry.
+- Inspect the matching headers, facet representation, collision routine, and call sites as one unit before porting. The fork is structurally closer to SuperSlicer than a standalone pipeline, but branch ancestry and exact compatibility still need verification.
+
+### CurviSlicer
+
+Repository: https://github.com/mfx-inria/curvislicer
+
+The upstream README explicitly describes the project as a research prototype, lists substantial external dependencies, and warns that generated curved trajectories may collide with the carriage. Its license is AGPL-3.0. Treat it as an algorithm/research reference unless a deliberate license-compatible integration decision is made; do not copy its implementation into this repository without resolving the licensing implications.
+
+### RotBot Nonplanar Slicing and RotBot Transform
+
+Repositories:
+- https://github.com/RotBotSlicer/Nonplanar_Slicing
+- https://github.com/RotBotSlicer/Transform
+
+The Nonplanar_Slicing project is Python-based and transforms meshes/toolpaths around a conventional slicer. The separate Transform repository identifies GPL-3.0. These are useful for studying coordinate transforms, interpolation, resampling and extrusion correction, but are not direct C++ components for SuperSlicer's native path pipeline. Verify the exact license of each repository and file before copying.
+
+### Integration rules
+
+1. Prefer existing SuperSlicer geometry, mesh, polyline, extrusion, configuration, and G-code facilities when they already satisfy the need. Avoid parallel data structures without a measured reason.
+2. Reuse algorithmic ideas freely as a design reference, but copy/adapt source code only after checking the exact repository/file license, notices, dependencies, and compatibility with this project's license.
+3. Keep the H-interval scheduler separate from surface sampling and path generation. A scheduled pass must be represented explicitly in the print pipeline; an H boundary crossing on an ordinary layer is not a separate pass.
+4. Both Mode A and Mode B must produce native path objects with explicit per-vertex 3D positions/offsets and correct extrusion accounting. Do not rewrite arbitrary final G-code as the primary implementation.
+5. Collision validation must fail closed: if a candidate pass cannot be validated against the model/printed geometry and configured toolhead envelope, omit that candidate and preserve the safe planar path. A nozzle cone alone is not a full carriage/heater-block/fan/probe model.
+6. Use the existing planar output as a regression baseline. With hybrid mode disabled, output should remain unchanged. With hybrid mode enabled, tests must verify pass ordering, E continuity, retract/unretract state, travel safety, units, coordinate mode, and bounds.
+7. Do not mark the pull request ready or printer-safe until the actual SuperSlicer C++ target builds, automated tests pass, generated G-code is inspected, and controlled printer validation is performed.
+
+### Next code milestones (source-led, no guessed APIs)
+
+1. Map the current branch's mesh query and collision utilities against AtomSlicer's BVH and the Slic3r fork's surface/collision implementation; record which existing SuperSlicer utility wins and why.
+2. Port one small, independently testable geometry component only if there is a demonstrated gap in existing utilities.
+3. Implement the explicit H-interval pass scheduler in the native print pipeline, with tests before connecting either path strategy.
+4. Implement Mode B as a separate pass first, then Mode A using a reviewed field/isolines strategy.
+5. Implement toolhead-envelope configuration and conservative collision checks, then GUI mutual exclusion and full build/regression verification.
