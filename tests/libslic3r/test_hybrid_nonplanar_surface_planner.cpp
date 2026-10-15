@@ -147,3 +147,25 @@ TEST_CASE("Hybrid surface planner rejects paths above the configured slope-rate 
 }
 
 }
+
+TEST_CASE("Hybrid surface planner rejects grids too narrow to sample a path",
+          "[HybridNonplanarSurfacePlanner]")
+{
+    indexed_triangle_set mesh;
+    mesh.vertices = {
+        Vec3f(0.f, 0.f, 2.f), Vec3f(2.f, 0.f, 2.f),
+        Vec3f(2.f, 0.1f, 2.f), Vec3f(0.f, 0.1f, 2.f)
+    };
+    mesh.indices = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
+
+    HybridSurfacePlannerOptions options;
+    options.sample_spacing_mm = 0.4;
+    options.section_start_z = 1.5;
+    options.section_top_z = 2.0;
+    options.max_z_offset_mm = 0.2;
+
+    std::vector<HybridSurfacePath> paths;
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+    REQUIRE_FALSE(plan_hybrid_surface_paths(mesh, options, clear, paths));
+    REQUIRE(paths.empty());
+}
