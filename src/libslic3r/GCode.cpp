@@ -5765,10 +5765,12 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     for(int i=1;i<simplifed_path.polyline.size();++i)
         assert(!simplifed_path.polyline.get_point(i - 1).coincides_with_epsilon(simplifed_path.polyline.get_point(i)));
     // print the path
+    m_hybrid_path_deferred = false;
     gcode += this->_extrude(simplifed_path, description, speed_mm_per_sec);
 
-    //simplifed_path will be discarded i can reuse it to create the wipe
-    if (m_wipe.is_enabled()) {
+    // A deferred path has not been extruded yet, so do not advertise it as a
+    // completed wipe path. The actual finishing pass updates wipe state later.
+    if (!m_hybrid_path_deferred && m_wipe.is_enabled()) {
         simplifed_path.reverse();
         m_wipe.set_path(simplifed_path.polyline.get_arc(), false);
     }
@@ -6645,6 +6647,25 @@ std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::strin
     // ZAA: decide before the speed is used
     std::vector<std::pair<Point, coord_t>> zaa_points;
     const bool zaa_active = this->_zaa_contour(path, zaa_points);
+
+    // Hybrid Mode B replaces selected planar paths with deferred 3D paths.
+    // They are emitted after the planar layer's paths have completed.
+    if (zaa_active && m_config.hybrid_nonplanar_enabled.value) {
+        if (m_layer == nullptr || zaa_points.size() < 2 || zaa_points.size() != m_zaa_active.size())
+            return {};
+
+        ExtrusionPath3D deferred(path.attributes(), false);
+        for (size_t i = 0; i < zaa_points.size(); ++i)
+            deferred.push_back(zaa_points[i].first, zaa_points[i].second);
+
+        const uint16_t extruder_id = m_writer.tool() != nullptr
+            ? static_cast<uint16_t>(m_writer.tool()->id()) : uint16_t(0);
+        m_hybrid_nonplanar_queue.emplace_back(
+            deferred, m_layer, m_config, m_origin, descr, speed, extruder_id);
+        m_hybrid_path_deferred = true;
+        return {};
+    }
+
     // v3: the ZAA speed cap is applied later, only on the active runs of the path
     std::string gcode = this->_before_extrude(path, descr, speed);
     if (zaa_active) {
