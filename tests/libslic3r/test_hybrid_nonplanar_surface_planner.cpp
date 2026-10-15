@@ -551,3 +551,79 @@ TEST_CASE("Hybrid non-planar approach rejects missing clearance and malformed en
     CHECK_FALSE(validate_hybrid_nonplanar_approach(
         approach, Vec3d(0.0, 0.0, 1.0), Vec3d(2.0, 0.0, 1.5), clear));
 }
+
+
+TEST_CASE("Hybrid non-planar complete pass route is validated before emission",
+          "[HybridNonplanarEmission]")
+{
+    HybridNonplanarPassRoute route;
+    route.approach.expected_start = Vec3d(0.0, 0.0, 2.0);
+    route.approach.extrusion_start = Vec3d(4.0, 0.0, 2.5);
+    route.approach.clearance_z_mm = 8.0;
+    route.approach.points = {
+        Vec3d(0.0, 0.0, 2.0), Vec3d(0.0, 0.0, 8.0),
+        Vec3d(4.0, 0.0, 8.0), Vec3d(4.0, 0.0, 2.5)
+    };
+    route.extrusion_points = {
+        Vec3d(4.0, 0.0, 2.5), Vec3d(6.0, 0.0, 2.8),
+        Vec3d(8.0, 0.0, 2.5)
+    };
+    route.departure_points = {
+        Vec3d(8.0, 0.0, 2.5), Vec3d(8.0, 0.0, 8.0)
+    };
+    route.return_points = {
+        Vec3d(8.0, 0.0, 8.0), Vec3d(0.0, 0.0, 8.0),
+        Vec3d(0.0, 0.0, 2.0)
+    };
+
+    std::vector<std::pair<Vec3d, Vec3d>> checked;
+    const auto clear = [&checked](const Vec3d &a, const Vec3d &b) {
+        checked.emplace_back(a, b);
+        return true;
+    };
+    REQUIRE(validate_hybrid_nonplanar_pass_route(
+        route, Vec3d(0.0, 0.0, 2.0), clear));
+    CHECK(checked.size() == 4 + 2 + 1 + 2);
+    CHECK(checked.front().first == route.approach.points.front());
+    CHECK(checked.back().second == route.return_points.back());
+}
+
+TEST_CASE("Hybrid non-planar complete pass route rejects unsafe departure and return",
+          "[HybridNonplanarEmission]")
+{
+    HybridNonplanarPassRoute route;
+    route.approach.expected_start = Vec3d(0.0, 0.0, 2.0);
+    route.approach.extrusion_start = Vec3d(4.0, 0.0, 2.5);
+    route.approach.clearance_z_mm = 8.0;
+    route.approach.points = {
+        Vec3d(0.0, 0.0, 2.0), Vec3d(0.0, 0.0, 8.0),
+        Vec3d(4.0, 0.0, 8.0), Vec3d(4.0, 0.0, 2.5)
+    };
+    route.extrusion_points = {
+        Vec3d(4.0, 0.0, 2.5), Vec3d(6.0, 0.0, 2.8)
+    };
+    route.departure_points = {
+        Vec3d(6.0, 0.0, 2.8), Vec3d(6.0, 0.0, 8.0)
+    };
+    route.return_points = {
+        Vec3d(6.0, 0.0, 8.0), Vec3d(0.0, 0.0, 8.0),
+        Vec3d(0.0, 0.0, 2.0)
+    };
+
+    const auto colliding_departure = [](const Vec3d &a, const Vec3d &b) {
+        return !(a.z() < 8.0 && b.z() == 8.0 && a.x() == 6.0);
+    };
+    CHECK_FALSE(validate_hybrid_nonplanar_pass_route(
+        route, Vec3d(0.0, 0.0, 2.0), colliding_departure));
+
+    const auto colliding_return = [](const Vec3d &a, const Vec3d &b) {
+        return !(a.x() == 0.0 && b.x() == 0.0 && a.z() == 8.0 && b.z() == 2.0);
+    };
+    CHECK_FALSE(validate_hybrid_nonplanar_pass_route(
+        route, Vec3d(0.0, 0.0, 2.0), colliding_return));
+
+    route.return_points.front().x() = 7.0;
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+    CHECK_FALSE(validate_hybrid_nonplanar_pass_route(
+        route, Vec3d(0.0, 0.0, 2.0), clear));
+}
