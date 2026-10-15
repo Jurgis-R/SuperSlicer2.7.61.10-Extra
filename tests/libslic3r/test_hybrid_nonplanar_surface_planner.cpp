@@ -91,4 +91,58 @@ TEST_CASE("Hybrid surface planner rejects invalid limits and pathological sample
     options.sample_spacing_mm = 1e-9;
     REQUIRE_FALSE(plan_hybrid_surface_paths(mesh, options, clear, paths));
     REQUIRE(paths.empty());
+
+TEST_CASE("Hybrid surface planner rejects paths above the configured vertical-rate limit",
+          "[HybridNonplanarSurfacePlanner]")
+{
+    indexed_triangle_set mesh;
+    mesh.vertices = {
+        Vec3f(0.f, 0.f, 1.9f), Vec3f(2.f, 0.f, 2.1f),
+        Vec3f(2.f, 2.f, 2.1f), Vec3f(0.f, 2.f, 1.9f)
+    };
+    mesh.indices = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
+
+    HybridSurfacePlannerOptions options;
+    options.sample_spacing_mm = 0.5;
+    options.section_start_z = 1.5;
+    options.section_top_z = 2.0;
+    options.max_z_offset_mm = 0.2;
+    options.travel_speed_mm_s = 10.0;
+    options.max_vertical_rate_mm_s = 0.1;
+
+    std::vector<HybridSurfacePath> paths;
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+    REQUIRE_FALSE(plan_hybrid_surface_paths(mesh, options, clear, paths));
+    REQUIRE(paths.empty());
+}
+
+TEST_CASE("Hybrid surface planner rejects paths above the configured slope-rate limit",
+          "[HybridNonplanarSurfacePlanner]")
+{
+    indexed_triangle_set mesh;
+    // Two connected planar facets with a slope change along X.
+    mesh.vertices = {
+        Vec3f(0.f, 0.f, 2.f), Vec3f(1.f, 0.f, 2.f),
+        Vec3f(1.f, 2.f, 2.f), Vec3f(2.f, 0.f, 2.2f),
+        Vec3f(2.f, 2.f, 2.2f)
+    };
+    mesh.indices = {
+        Vec3i32(0, 1, 2), Vec3i32(1, 3, 4), Vec3i32(1, 4, 2)
+    };
+
+    HybridSurfacePlannerOptions options;
+    options.sample_spacing_mm = 0.25;
+    options.section_start_z = 1.5;
+    options.section_top_z = 2.0;
+    options.max_z_offset_mm = 0.25;
+    options.travel_speed_mm_s = 1.0;
+    options.max_vertical_rate_mm_s = 10.0;
+    options.max_slope_rate_degrees_per_mm = 0.01;
+
+    std::vector<HybridSurfacePath> paths;
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+    REQUIRE_FALSE(plan_hybrid_surface_paths(mesh, options, clear, paths));
+    REQUIRE(paths.empty());
+}
+
 }
