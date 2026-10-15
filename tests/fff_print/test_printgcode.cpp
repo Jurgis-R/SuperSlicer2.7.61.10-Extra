@@ -269,3 +269,40 @@ SCENARIO( "PrintGCode basic functionality", "[PrintGCode]") {
         }
     }
 }
+
+
+TEST_CASE("Hybrid non-planar finishing paths are emitted after the planar section", "[GCode][HybridNonplanar]") {
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        { "hybrid_nonplanar_enabled", true },
+        { "hybrid_nonplanar_interval", 2.0 },
+        { "hybrid_nonplanar_max_slope", 30.0 },
+        { "hybrid_nonplanar_max_offset", 0.4 },
+        { "hybrid_nonplanar_speed", 20.0 },
+        { "zaa_enabled", false },
+        { "layer_height", 0.2 },
+        { "first_layer_height", 0.2 },
+        { "gcode_comments", true },
+        { "start_gcode", "" },
+        { "retract_length", 0 }
+    });
+
+    Print print;
+    Model model;
+    Test::init_print({ TestMesh::pyramid }, print, model, config);
+    const std::string gcode = Test::gcode(print);
+
+    const size_t planar_end = gcode.find(";HYBRID_PLANAR_SECTION_END");
+    REQUIRE(planar_end != std::string::npos);
+    const size_t pass_begin = gcode.find(";HYBRID_FINISHING_PASS_BEGIN", planar_end);
+    REQUIRE(pass_begin != std::string::npos);
+    const size_t pass_end = gcode.find(";HYBRID_FINISHING_PASS_END", pass_begin);
+    REQUIRE(pass_end != std::string::npos);
+    REQUIRE(planar_end < pass_begin);
+    REQUIRE(pass_begin < pass_end);
+
+    // The deferred pass must contain actual extrusion moves, not only markers.
+    const std::string pass_gcode = gcode.substr(pass_begin, pass_end - pass_begin);
+    REQUIRE(pass_gcode.find(" E") != std::string::npos);
+    REQUIRE(pass_gcode.find("G1") != std::string::npos);
+}
