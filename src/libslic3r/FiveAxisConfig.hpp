@@ -78,9 +78,10 @@ inline FiveAxisValidationResult load_five_axis_machine_profile(
         while (std::getline(values, token, ',')) {
             std::stringstream number(token);
             double value = 0.0;
-            number >> value;
+            if (!(number >> value) || !std::isfinite(value))
+                return { false, "Malformed value in five-axis obstacle box list." };
             number >> std::ws;
-            if (!number || !number.eof() || !std::isfinite(value))
+            if (!number.eof())
                 return { false, "Malformed value in five-axis obstacle box list." };
             v.push_back(value);
         }
