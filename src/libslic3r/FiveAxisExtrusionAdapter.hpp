@@ -102,8 +102,17 @@ inline FiveAxisValidationResult plan_five_axis_extrusion_path(
     if (!conversion.valid)
         return conversion;
 
-    return plan_five_axis_path(profile.kinematics, profile.output, profile.collision,
-        poses, commands, initial_rotary_1_deg, initial_rotary_2_deg);
+    const auto planned = plan_five_axis_path(profile.kinematics, profile.output,
+        profile.collision, poses, commands, initial_rotary_1_deg, initial_rotary_2_deg);
+    if (!planned.valid)
+        return planned;
+
+    const auto envelope = validate_five_axis_machine_envelope(profile, commands);
+    if (!envelope.valid) {
+        commands.clear();
+        return envelope;
+    }
+    return { true, {} };
 }
 
 } // namespace Slic3r
