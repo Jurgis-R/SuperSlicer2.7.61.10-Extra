@@ -3802,42 +3802,62 @@ LayerResult GCodeGenerator::process_layer(
         // Re-check the quantized path geometry, not just the floating-point
         // planner candidates. The configured swept-tool validator must approve
         // every segment after conversion to SuperSlicer coordinates.
-        Vec3d previous_quantized_safe = safe_current;
+        // Build and validate the exact complete XYZ route for every quantized
+        // path before any finishing-pass G-code can be emitted. The same typed
+        // route contract is intended for the writer executor once emission is
+        // enabled; preflight alone does not enable that emitter.
+        std::vector<std::vector<Vec3d>> quantized_paths;
+        std::vector<Vec3d> safe_first_points;
+        std::vector<Vec3d> safe_last_points;
+        quantized_paths.reserve(surface_paths.size());
+        safe_first_points.reserve(surface_paths.size());
+        safe_last_points.reserve(surface_paths.size());
         for (const ExtrusionPath3D &path : surface_paths) {
             if (path.polyline.size() < 2 ||
                 path.z_offsets.size() != size_t(path.polyline.size()))
                 throw RuntimeError("Hybrid surface-pass preflight rejected malformed typed extrusion geometry");
-            const Point &first_xy = path.polyline.get_point(0);
-            const Point &last_xy = path.polyline.get_point(path.polyline.size() - 1);
-            const Vec3d first(unscaled<double>(first_xy.x()), unscaled<double>(first_xy.y()),
-                              nominal_z + unscaled<double>(path.z_offsets.front()));
-            const Vec3d last(unscaled<double>(last_xy.x()), unscaled<double>(last_xy.y()),
-                             nominal_z + unscaled<double>(path.z_offsets.back()));
-            const Vec3d safe_first(first.x(), first.y(), clearance_z);
-            const Vec3d safe_last(last.x(), last.y(), clearance_z);
-            HybridNonplanarApproach approach;
-            approach.expected_start = previous_quantized_safe;
-            approach.extrusion_start = first;
-            approach.clearance_z_mm = clearance_z;
-            approach.points = { previous_quantized_safe, safe_first, first };
-            if (!validate_hybrid_nonplanar_approach(
-                    approach, previous_quantized_safe, first, segment_is_clear) ||
-                !collision_validator.segment_is_clear(last, safe_last))
-                throw RuntimeError("Hybrid surface-pass preflight rejected a quantized XYZ approach, departure or high-Z transition");
-            for (size_t i = 1; i < path.polyline.size(); ++i) {
-                const Point &a = path.polyline.get_point(i - 1);
-                const Point &b = path.polyline.get_point(i);
-                const Vec3d from(unscaled<double>(a.x()), unscaled<double>(a.y()),
-                                 nominal_z + unscaled<double>(path.z_offsets[i - 1]));
-                const Vec3d to(unscaled<double>(b.x()), unscaled<double>(b.y()),
-                               nominal_z + unscaled<double>(path.z_offsets[i]));
-                if (!collision_validator.segment_is_clear(from, to))
-                    throw RuntimeError("Hybrid surface-pass preflight rejected a quantized extrusion segment");
+            std::vector<Vec3d> points;
+            points.reserve(path.polyline.size());
+            for (size_t i = 0; i < path.polyline.size(); ++i) {
+                const Point &xy = path.polyline.get_point(i);
+                const Vec3d point(unscaled<double>(xy.x()), unscaled<double>(xy.y()),
+                                  nominal_z + unscaled<double>(path.z_offsets[i]));
+                if (!point.allFinite())
+                    throw RuntimeError("Hybrid surface-pass preflight rejected non-finite quantized extrusion geometry");
+                if (i > 0 && (point - points.back()).squaredNorm() <= 0.0)
+                    throw RuntimeError("Hybrid surface-pass preflight rejected a zero-length quantized extrusion segment");
+                points.push_back(point);
             }
-            previous_quantized_safe = safe_last;
+            const Vec3d first = points.front();
+            const Vec3d last = points.back();
+            quantized_paths.emplace_back(std::move(points));
+            safe_first_points.emplace_back(first.x(), first.y(), clearance_z);
+            safe_last_points.emplace_back(last.x(), last.y(), clearance_z);
         }
-        if (!collision_validator.segment_is_clear(previous_quantized_safe, safe_current))
-            throw RuntimeError("Hybrid surface-pass preflight rejected the quantized final return transition");
+
+        Vec3d expected_start = safe_current;
+        for (size_t path_idx = 0; path_idx < quantized_paths.size(); ++path_idx) {
+            const std::vector<Vec3d> &points = quantized_paths[path_idx];
+            const Vec3d &first = points.front();
+            const Vec3d &last = points.back();
+            const Vec3d &safe_first = safe_first_points[path_idx];
+            const Vec3d &safe_last = safe_last_points[path_idx];
+            const Vec3d next_safe = path_idx + 1 < safe_first_points.size()
+                ? safe_first_points[path_idx + 1] : safe_current;
+
+            HybridNonplanarPassRoute route;
+            route.approach.expected_start = expected_start;
+            route.approach.extrusion_start = first;
+            route.approach.clearance_z_mm = clearance_z;
+            route.approach.points = { expected_start, safe_first, first };
+            route.extrusion_points = points;
+            route.departure_points = { last, safe_last };
+            route.return_points = { safe_last, next_safe };
+            if (!validate_hybrid_nonplanar_pass_route(
+                    route, expected_start, segment_is_clear))
+                throw RuntimeError("Hybrid surface-pass preflight rejected a complete quantized XYZ pass route");
+            expected_start = next_safe;
+        }
 
 
         BOOST_LOG_TRIVIAL(info) << "Hybrid surface-pass preflight accepted "
