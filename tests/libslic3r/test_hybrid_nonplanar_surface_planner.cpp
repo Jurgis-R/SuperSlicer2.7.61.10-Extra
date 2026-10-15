@@ -483,3 +483,71 @@ TEST_CASE("Hybrid swept-tool validator rejects non-finite and excessively long s
     CHECK_FALSE(validator.segment_is_clear(Vec3d(-1.0e7, 0.5, 2.0),
                                            Vec3d(1.0e7, 0.5, 2.0)));
 }
+\n
+TEST_CASE("Hybrid non-planar approach validates exact XYZ route from live writer position",
+          "[HybridNonplanarEmission]")
+{
+    HybridNonplanarApproach approach;
+    approach.expected_start = Vec3d(10.0, 10.0, 2.0);
+    approach.extrusion_start = Vec3d(20.0, 10.0, 2.4);
+    approach.clearance_z_mm = 8.0;
+    approach.points = {
+        Vec3d(10.0, 10.0, 2.0),
+        Vec3d(10.0, 10.0, 8.0),
+        Vec3d(20.0, 10.0, 8.0),
+        Vec3d(20.0, 10.0, 2.4)
+    };
+    std::vector<std::pair<Vec3d, Vec3d>> checked;
+    const auto clear = [&checked](const Vec3d &a, const Vec3d &b) {
+        checked.emplace_back(a, b);
+        return true;
+    };
+
+    REQUIRE(validate_hybrid_nonplanar_approach(
+        approach, Vec3d(10.0, 10.0, 2.0), Vec3d(20.0, 10.0, 2.4), clear));
+    REQUIRE(checked.size() == approach.points.size() - 1);
+    CHECK(checked.front().first == approach.points.front());
+    CHECK(checked.back().second == approach.points.back());
+}
+
+TEST_CASE("Hybrid non-planar approach rejects writer-position drift and unsafe segments",
+          "[HybridNonplanarEmission]")
+{
+    HybridNonplanarApproach approach;
+    approach.expected_start = Vec3d(1.0, 2.0, 3.0);
+    approach.extrusion_start = Vec3d(5.0, 2.0, 3.5);
+    approach.clearance_z_mm = 7.0;
+    approach.points = {
+        Vec3d(1.0, 2.0, 3.0), Vec3d(1.0, 2.0, 7.0),
+        Vec3d(5.0, 2.0, 7.0), Vec3d(5.0, 2.0, 3.5)
+    };
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+    CHECK_FALSE(validate_hybrid_nonplanar_approach(
+        approach, Vec3d(1.0, 2.0, 3.2), Vec3d(5.0, 2.0, 3.5), clear));
+
+    const auto colliding = [](const Vec3d &a, const Vec3d &b) {
+        return !(a.z() == 7.0 && b.z() == 7.0);
+    };
+    CHECK_FALSE(validate_hybrid_nonplanar_approach(
+        approach, Vec3d(1.0, 2.0, 3.0), Vec3d(5.0, 2.0, 3.5), colliding));
+}
+
+TEST_CASE("Hybrid non-planar approach rejects missing clearance and malformed endpoints",
+          "[HybridNonplanarEmission]")
+{
+    HybridNonplanarApproach approach;
+    approach.expected_start = Vec3d(0.0, 0.0, 1.0);
+    approach.extrusion_start = Vec3d(2.0, 0.0, 1.5);
+    approach.clearance_z_mm = 5.0;
+    approach.points = {
+        Vec3d(0.0, 0.0, 1.0), Vec3d(1.0, 0.0, 2.0),
+        Vec3d(2.0, 0.0, 1.5)
+    };
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+    CHECK_FALSE(validate_hybrid_nonplanar_approach(
+        approach, Vec3d(0.0, 0.0, 1.0), Vec3d(2.0, 0.0, 1.5), clear));
+    approach.points.back().x() = 3.0;
+    approach.points[1].z() = 5.0;
+    CHECK_FALSE(validate_hybrid_nonplanar_approach(
+        approach, Vec3d(0.0, 0.0, 1.0), Vec3d(2.0, 0.0, 1.5), clear));
+}
