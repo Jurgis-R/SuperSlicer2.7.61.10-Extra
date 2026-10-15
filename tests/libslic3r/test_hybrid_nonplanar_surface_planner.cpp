@@ -405,7 +405,7 @@ TEST_CASE("Hybrid swept-tool validator accepts a closed outward-oriented mesh",
     REQUIRE(validator.valid());
 }
 
-TEST_CASE("Hybrid swept-tool validator rejects open meshes and invalid envelopes",
+TEST_CASE("Hybrid swept-tool validator rejects open meshes and invalid sampling step",
           "[HybridNonplanarCollision]")
 {
     const indexed_triangle_set open_mesh = make_flat_surface();
@@ -453,4 +453,33 @@ TEST_CASE("Hybrid swept-tool validator rejects overlapping envelope height defin
     options.path_sample_step_mm = 2.1;
     HybridSweptToolCollisionValidator excessive_step_validator(mesh, aabb, options);
     REQUIRE_FALSE(excessive_step_validator.valid());
+}
+
+
+TEST_CASE("Hybrid swept-tool validator rejects inward-oriented closed meshes",
+          "[HybridNonplanarCollision]")
+{
+    indexed_triangle_set mesh = make_closed_cube();
+    for (Vec3i32 &face : mesh.indices)
+        std::swap(face(1), face(2));
+    AABBMesh aabb(mesh);
+    HybridSweptToolOptions options;
+    HybridSweptToolCollisionValidator validator(mesh, aabb, options);
+    REQUIRE_FALSE(validator.valid());
+}
+
+TEST_CASE("Hybrid swept-tool validator rejects non-finite and excessively long segments",
+          "[HybridNonplanarCollision]")
+{
+    const indexed_triangle_set mesh = make_closed_cube();
+    AABBMesh aabb(mesh);
+    HybridSweptToolOptions options;
+    HybridSweptToolCollisionValidator validator(mesh, aabb, options);
+    REQUIRE(validator.valid());
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    CHECK_FALSE(validator.segment_is_clear(Vec3d(nan, 0.5, 2.0),
+                                           Vec3d(0.5, 0.5, 2.0)));
+    CHECK_FALSE(validator.segment_is_clear(Vec3d(-1.0e7, 0.5, 2.0),
+                                           Vec3d(1.0e7, 0.5, 2.0)));
 }
