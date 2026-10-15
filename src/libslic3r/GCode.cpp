@@ -790,10 +790,12 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
             return;
     }
     
-    // Five-axis output is opt-in. Until a controller-specific writer is
-    // registered, fail closed rather than silently exporting an enabled
-    // five-axis profile as ordinary XYZ-only G-code.
-    {
+    // Keep the ordinary three-axis export path independent of experimental
+    // five-axis settings. Disabled means the profile is not parsed or validated
+    // at all, so stale/incomplete experimental values cannot break XYZ export.
+    // Until a controller-specific writer is registered, fail closed for an
+    // explicitly enabled five-axis profile rather than silently emitting XYZ.
+    if (print->config().opt_bool("five_axis_enabled")) {
         FiveAxisMachineProfile five_axis_profile;
         const FiveAxisValidationResult profile_result =
             load_five_axis_machine_profile(print->config(), five_axis_profile);
