@@ -79,3 +79,14 @@ TEST_CASE("Automatic build-direction candidates can be scored without a manually
     REQUIRE(result.valid);
     CHECK(std::isfinite(result.score));
 }
+
+TEST_CASE("Five-axis build-direction planner generates and scores candidates in one call", "[FiveAxisBuildDirection]")
+{
+    const indexed_triangle_set mesh = make_direction_test_mesh();
+    FiveAxisBuildDirectionConfig config;
+    config.height_penalty_weight = 0.0;
+    const auto result = choose_five_axis_build_direction(mesh, config, 24);
+    REQUIRE(result.valid);
+    CHECK(std::isfinite(result.score));
+    CHECK(result.projected_height_mm > 0.0);
+}
