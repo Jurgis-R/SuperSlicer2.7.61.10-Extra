@@ -308,6 +308,31 @@ TEST_CASE("Hybrid non-planar finishing paths are emitted after the planar sectio
 }
 
 
+TEST_CASE("Hybrid non-planar rejects multi-object layouts until group ordering is implemented", "[GCode][HybridNonplanar]") {
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        { "hybrid_nonplanar_enabled", true },
+        { "hybrid_nonplanar_interval", 2.0 },
+        { "hybrid_nonplanar_max_slope", 30.0 },
+        { "hybrid_nonplanar_max_offset", 0.4 },
+        { "hybrid_nonplanar_speed", 20.0 },
+        { "zaa_enabled", false },
+        { "layer_height", 0.2 },
+        { "first_layer_height", 0.2 },
+        { "start_gcode", "" }
+    });
+
+    Print print;
+    Model model;
+    Test::init_print({ TestMesh::pyramid, TestMesh::cube_20x20x20 }, print, model, config);
+
+    // The current prototype flushes within per-object processing. Until the
+    // finishing pass is scheduled at the outer layer-group boundary, exporting
+    // this layout must fail rather than produce misleading pass ordering.
+    REQUIRE_THROWS(Test::gcode(print));
+}
+
+
 TEST_CASE("Hybrid non-planar disabled does not emit finishing-pass markers", "[GCode][HybridNonplanar]") {
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     config.set_deserialize_strict({
