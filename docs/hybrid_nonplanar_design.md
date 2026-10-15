@@ -27,6 +27,8 @@ This document tracks the implementation in the SuperSlicer EXTRA development bra
 - The tracker is designed to be called once after each complete print-Z layer group, after all objects and tools at that height have finished. It records section start Z, nominal H boundary, actual boundary-layer top Z, and the number of planar layers in the section.
 - It fails closed for non-monotonic layer groups, invalid dimensions, or a single indivisible layer spanning multiple H boundaries. That multi-boundary case needs explicit subdivision/planning rather than guessed grouping.
 - Added Catch2 tests for normal boundaries, variable-height boundary layers, reset, and invalid/ambiguous input.
+- Added a shared path-constraint helper that clamps sampled Z offsets, ramps both endpoints to nominal Z, enforces adjacent-sample slope limits, validates the result, and rejects malformed samples without mutating the caller's path. The existing mesh-following contour sampler now uses it; on validation failure, hybrid contouring falls back to the untouched planar path. Unit tests cover slope/offset limits and malformed input.
+- Moved the experimental queue flush out of per-object extrusion and to the outer print-Z layer-group boundary, after the group's ordinary object/tool work. This is an ordering improvement only; it does not yet generate paths for the complete H section.
 - This is a testable scheduling primitive, not yet the section-level surface-path generator. It is not yet connected to `GCodeGenerator::process_layer`; the existing per-object deferred queue and its limitations remain. Do not treat this commit as completing the finishing pass.
 
 ### Deferred Mode B finishing-pass implementation (not yet built)
