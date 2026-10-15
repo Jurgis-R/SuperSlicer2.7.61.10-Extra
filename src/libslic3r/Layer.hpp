@@ -15,7 +15,7 @@
 #include "libslic3r.h"
 #include "BoundingBox.hpp"
 #include "Flow.hpp"
-#include "SurfaceCollection.hpp"
+#include "SurfaceCollection.hpp"\n#include "FiveAxisSourceProvenance.hpp"
 #include "ExtrusionEntityCollection.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -218,7 +218,7 @@ private:
     Layer                      *m_layer;
     const PrintRegion          *m_region;
 
-    // Backed up slices before they are split into top/bottom/internal.
+    // Five-axis metadata for the source volumes contributing to this layer-region.\n    // It is advisory only; five-axis planning must reject non-unique attribution.\n    FiveAxisSourceProvenance m_five_axis_source_provenance;\n\n    // Backed up slices before they are split into top/bottom/internal.
     // Only backed up for multi-region layers or layers with elephant foot compensation.
     //FIXME Review whether not to simplify the code by keeping the raw_slices all the time.
     // superslicer -> layer_needs_raw_backup is now true, so evryone has their cache here.
