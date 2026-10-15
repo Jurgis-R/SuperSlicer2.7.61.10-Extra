@@ -32,6 +32,8 @@ inline FiveAxisValidationResult make_five_axis_poses_from_extrusion_path(
     const std::size_t count = path.polyline.size();
     if (count < 2)
         return { false, "A five-axis extrusion path requires at least two vertices." };
+    if (path.z_offsets.size() != count)
+        return { false, "Five-axis extrusion path must provide exactly one Z offset for each vertex." };
     if (path.polyline.has_arc())
         return { false, "Five-axis extrusion adapter requires linearized path segments." };
     if (!path.has_tool_axis_normals())
