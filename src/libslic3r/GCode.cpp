@@ -7770,8 +7770,6 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     // shared post-travel extrusion preparation.
     std::string gcode;
     gcode.reserve(512);
-    std::string description{ description_in };
-
     // compute speed here to be able to know it for travel_deceleration_use_target
     std::string speed_comment = "";
     speed_mm_s = _compute_speed_mm_per_sec(path, speed_mm_s, m_overhang_fan_override, m_config.gcode_comments ? &speed_comment : nullptr);
@@ -7792,8 +7790,6 @@ std::string GCodeGenerator::_prepare_extrusion_after_travel(
 {
     std::string gcode;
     gcode.reserve(512);
-    std::string description{ description_in };
-
     // The experimental route must prove its exact writer state before shared
     // preparation mutates retraction, pending G-code, PA, or role tracking.
     if (route_established_state) {
