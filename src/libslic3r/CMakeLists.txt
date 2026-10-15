@@ -37,8 +37,6 @@ set(SLIC3R_SOURCES
     AStar.hpp
     FiveAxisEngine.hpp
     FiveAxisKinematics.hpp
-    HybridNonplanarScheduler.hpp
-    HybridNonplanarSectionPlanner.hpp
     AABBTreeIndirect.hpp
     AABBTreeLines.hpp
     AABBMesh.hpp
