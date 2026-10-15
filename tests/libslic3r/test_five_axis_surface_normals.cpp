@@ -166,3 +166,35 @@ TEST_CASE("Five-axis correspondence rejects equally plausible overlapping source
     CHECK_FALSE(correspondence.assign_path_normals(path, 0.0, 1.0).valid);
     CHECK(path.tool_axis_normals == previous);
 }
+
+TEST_CASE("Five-axis surface sampler rejects nearby opposing faces on a thin wall", "[FiveAxisSurfaceNormals]")
+{
+    indexed_triangle_set thin_wall = make_test_surface();
+    const int offset = int(thin_wall.vertices.size());
+    for (const Vec3f &v : make_test_surface().vertices)
+        thin_wall.vertices.emplace_back(v.x(), v.y(), v.z() + 0.1f);
+    // Reverse winding on the opposite side of the 0.1 mm wall.
+    thin_wall.indices.emplace_back(offset + 0, offset + 2, offset + 1);
+
+    const FiveAxisSurfaceNormalSampler sampler(thin_wall);
+    FiveAxisVec3 normal;
+    const auto result = sampler.sample({0.0, 0.0, 0.01}, normal, nullptr, 1.0);
+    CHECK_FALSE(result.valid);
+    CHECK(result.error.find("opposing face") != std::string::npos);
+}
+
+TEST_CASE("Five-axis surface sampler can disable thin-wall ambiguity probing explicitly", "[FiveAxisSurfaceNormals]")
+{
+    indexed_triangle_set thin_wall = make_test_surface();
+    const int offset = int(thin_wall.vertices.size());
+    const indexed_triangle_set opposite = make_test_surface();
+    for (const Vec3f &v : opposite.vertices)
+        thin_wall.vertices.emplace_back(v.x(), v.y(), v.z() + 0.1f);
+    thin_wall.indices.emplace_back(offset + 0, offset + 2, offset + 1);
+
+    const FiveAxisSurfaceNormalSampler sampler(thin_wall);
+    FiveAxisVec3 normal;
+    const auto result = sampler.sample({0.0, 0.0, 0.01}, normal, nullptr, 1.0, 0.0);
+    CHECK(result.valid);
+    CHECK(normal.z == Approx(1.0).margin(1e-6));
+}
