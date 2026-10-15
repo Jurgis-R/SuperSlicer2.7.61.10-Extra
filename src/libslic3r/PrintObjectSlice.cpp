@@ -383,6 +383,8 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                                     this_slice  .expolygons.clear();
                                 } else {
                                     this_slice  .expolygons = intersection_ex(parent_slice.expolygons, source);
+                                    // A modifier changes region assignment, not the underlying source mesh.
+                                    this_slice.provenance = parent_slice.provenance;
                                     parent_slice.expolygons = diff_ex        (parent_slice.expolygons, source);
                                 }
                                 if (next_region_same_modifier)
