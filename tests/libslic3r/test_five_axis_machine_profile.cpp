@@ -1,4 +1,5 @@
 #include "libslic3r/FiveAxisMachineProfile.hpp"
+#include "libslic3r/FiveAxisConfig.hpp"
 
 #include <catch2/catch.hpp>
 
@@ -30,4 +31,17 @@ TEST_CASE("Five-axis machine profile rejects inconsistent axis limits and envelo
     profile.output.rotary_1_max_deg = profile.kinematics.rotary_1_max_deg;
     profile.machine_max.x = profile.machine_min.x;
     CHECK_FALSE(validate_five_axis_machine_profile(profile).valid);
+}
+
+
+TEST_CASE("Five-axis export gate preserves disabled mode and rejects missing controller writer", "[FiveAxisMachineProfile]")
+{
+    FiveAxisMachineProfile profile;
+    CHECK(validate_five_axis_export_gate(profile, "").valid);
+
+    profile.enabled = true;
+    profile.postprocessor_id = "example-controller";
+    CHECK_FALSE(validate_five_axis_export_gate(profile, "").valid);
+    CHECK_FALSE(validate_five_axis_export_gate(profile, "different-controller").valid);
+    CHECK(validate_five_axis_export_gate(profile, "example-controller").valid);
 }
