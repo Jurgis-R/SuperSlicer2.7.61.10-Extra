@@ -3690,9 +3690,10 @@ LayerResult GCodeGenerator::process_layer(
                 "export aborted rather than guessing a section boundary");
     }
 
-    // The preflight switch remains strictly no-output. Actual surface-pass
-    // emission has its own default-off opt-in and always runs the same complete
-    // collision checks first; it never reuses or mutates ordinary planar paths.
+    // The mesh-derived surface pass remains preflight-only. It constructs
+    // typed candidate extrusion paths and validates quantized geometry, but
+    // does not emit them until a dedicated writer-state-safe emitter is ready.
+    // The ordinary planar extrusion entities remain untouched.
     if (m_config.hybrid_surface_pass_preflight.value &&
         m_hybrid_completed_section) {
         if (print.objects().size() != 1 || print.objects().front()->instances().size() != 1 ||
