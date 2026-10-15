@@ -6449,6 +6449,21 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     if (m_hybrid_nonplanar_queue.empty())
         return;
 
+    // Preflight the whole queue before writing even the pass markers. A bad
+    // deferred record must not leave a partially emitted finishing pass.
+    for (const HybridNonplanarQueuedPath& queued : m_hybrid_nonplanar_queue) {
+        if (queued.layer == nullptr || !std::isfinite(queued.layer->print_z) ||
+            queued.path.polyline.size() < 2 ||
+            queued.path.z_offsets.size() != size_t(queued.path.polyline.size()) ||
+            !std::isfinite(queued.speed_mm_per_sec) ||
+            !std::isfinite(queued.perimeter_extrusion_width) ||
+            queued.perimeter_extrusion_width <= 0. ||
+            m_writer.tool() == nullptr ||
+            m_writer.tool()->id() != queued.extruder_id) {
+            throw RuntimeError("Hybrid non-planar finishing queue failed metadata validation; export aborted");
+        }
+    }
+
     std::vector<HybridNonplanarQueuedPath> queued_paths;
     queued_paths.swap(m_hybrid_nonplanar_queue);
 
@@ -6462,13 +6477,6 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     const bool saved_object_layer_over_raft = m_object_layer_over_raft;
 
     for (HybridNonplanarQueuedPath& queued : queued_paths) {
-        if (queued.layer == nullptr || m_writer.tool() == nullptr ||
-            m_writer.tool()->id() != queued.extruder_id) {
-            // A context mismatch must abort export rather than silently omit
-            // deferred extrusion or print it with the wrong filament.
-            throw RuntimeError("Hybrid non-planar finishing path has invalid layer/extruder context");
-        }
-
         m_layer = queued.layer;
         m_config = queued.config;
         m_origin = queued.origin;
