@@ -35,6 +35,7 @@ struct FiveAxisCollisionConfig {
     std::vector<FiveAxisAabb> obstacles;
     double tool_clearance_radius_mm { 0.0 };
     double max_sample_spacing_mm { 1.0 };
+    std::size_t max_samples_per_segment { 100000 };
 };
 
 inline bool five_axis_point_inside_expanded_aabb(
@@ -51,7 +52,8 @@ inline FiveAxisValidationResult validate_five_axis_collision_config(
     if (!std::isfinite(config.tool_clearance_radius_mm) ||
         config.tool_clearance_radius_mm < 0.0 ||
         !std::isfinite(config.max_sample_spacing_mm) ||
-        config.max_sample_spacing_mm <= 0.0)
+        config.max_sample_spacing_mm <= 0.0 ||
+        config.max_samples_per_segment == 0)
         return { false, "Collision clearance must be non-negative and sample spacing positive." };
     for (const FiveAxisAabb &box : config.obstacles) {
         if (!five_axis_finite(box.min) || !five_axis_finite(box.max) ||
@@ -90,8 +92,12 @@ inline FiveAxisValidationResult validate_five_axis_path_clearance(
         const FiveAxisVec3 start { b.x, b.y, b.z };
         const FiveAxisVec3 delta { a.x - b.x, a.y - b.y, a.z - b.z };
         const double distance = five_axis_norm(delta);
+        const double requested_steps = std::ceil(distance / config.max_sample_spacing_mm);
+        if (!std::isfinite(requested_steps) ||
+            requested_steps > static_cast<double>(config.max_samples_per_segment))
+            return { false, "Collision segment exceeds the configured sampling budget." };
         const std::size_t steps = std::max<std::size_t>(
-            1, static_cast<std::size_t>(std::ceil(distance / config.max_sample_spacing_mm)));
+            1, static_cast<std::size_t>(requested_steps));
         for (std::size_t sample = 1; sample <= steps; ++sample) {
             const FiveAxisVec3 p = start + delta * (static_cast<double>(sample) / steps);
             for (const FiveAxisAabb &box : config.obstacles)
