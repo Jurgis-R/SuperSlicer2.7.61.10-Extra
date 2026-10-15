@@ -117,3 +117,26 @@ TEST_CASE("Five-axis extrusion pipeline fails closed when profile is disabled", 
     CHECK_FALSE(result.valid);
     CHECK(commands.empty());
 }
+
+TEST_CASE("Five-axis extrusion pipeline rejects points outside the configured machine envelope", "[FiveAxisExtrusionAdapter]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = "test-controller";
+    profile.machine_min = { 0.0, 0.0, 0.0 };
+    profile.machine_max = { 10.0, 10.0, 10.0 };
+
+    ExtrusionPath3D path(ExtrusionAttributes{}, true);
+    path.push_back(Point(0, 0), 0);
+    path.push_back(Point(20000, 0), 0); // 20 mm, beyond configured X maximum.
+    path.tool_axis_normals = {
+        { { 0.0, 0.0, 1.0 } },
+        { { 0.0, 0.0, 1.0 } }
+    };
+    std::vector<FiveAxisCommand> commands;
+    const auto result = plan_five_axis_extrusion_path(
+        profile, path, 5.0, 0.0, 0.1, 600.0, commands);
+    CHECK_FALSE(result.valid);
+    CHECK(result.error.find("machine XYZ envelope") != std::string::npos);
+    CHECK(commands.empty());
+}
