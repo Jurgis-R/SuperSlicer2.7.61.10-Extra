@@ -3637,14 +3637,6 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = this->add("hybrid_surface_pass_enabled", coBool);
-    def->label = L("Emit experimental hybrid surface finishing pass");
-    def->full_label = L("Hybrid surface finishing-pass output");
-    def->category = OptionCategory::infill;
-    def->tooltip = L("Experimental and default-off. Generates a separate mesh-derived finishing pass after a completed H-section, using configured top-solid flow and a simplified swept-tool collision envelope. Enabling this option emits additional G-code; validate machine dimensions, coordinate offsets, extrusion calibration and motion on a non-printing dry run before any real print. The preflight-only option never enables output.");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
-
     // Explicit machine-envelope inputs for experimental hybrid surface-pass
     // preflight. Defaults are placeholders only: users must measure the actual
     // mounted nozzle and toolhead before treating a successful preflight as useful.
@@ -10565,7 +10557,6 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "hybrid_nonplanar_max_slope",
 "hybrid_nonplanar_max_offset",
 "hybrid_nonplanar_speed",
-"hybrid_surface_pass_enabled",
 "zaa_enabled",
 "zaa_contour_perimeters",
 "zaa_min_z",
