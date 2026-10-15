@@ -11,6 +11,7 @@
 #include "libslic3r.h"
 #include "ExtrusionRole.hpp"
 #include "Flow.hpp"
+#include "FiveAxisSourceProvenance.hpp"
 #include "Polygon.hpp"
 #include "Polyline.hpp"
 
@@ -304,6 +305,12 @@ public:
     // These are directions, not rotary joint angles.
     std::vector<std::array<double, 3>> tool_axis_normals;
 
+    // Path-level attribution starts unknown. A slice-region volume set is not
+    // triangle-level proof, so attribution must only be attached by a future
+    // exact surface-correspondence stage. Geometry-changing operations below
+    // conservatively invalidate it.
+    FiveAxisSourceProvenance source_provenance;
+
     bool has_tool_axis_normals() const
     {
         return !polyline.empty() && tool_axis_normals.size() == polyline.size();
@@ -313,8 +320,8 @@ public:
     ExtrusionPath3D(const ExtrusionAttributes &attributes, bool can_reverse) : ExtrusionPath(attributes, can_reverse) { init(); };
     ExtrusionPath3D(const ExtrusionPath &rhs) : ExtrusionPath(rhs) { init();  }
     ExtrusionPath3D(ExtrusionPath &&rhs) : ExtrusionPath(rhs) { init();  }
-    ExtrusionPath3D(const ExtrusionPath3D &rhs) : ExtrusionPath(rhs), z_offsets(rhs.z_offsets), tool_axis_normals(rhs.tool_axis_normals) { init();  }
-    ExtrusionPath3D(ExtrusionPath3D &&rhs) : ExtrusionPath(rhs), z_offsets(std::move(rhs.z_offsets)), tool_axis_normals(std::move(rhs.tool_axis_normals)) { init();  }
+    ExtrusionPath3D(const ExtrusionPath3D &rhs) : ExtrusionPath(rhs), z_offsets(rhs.z_offsets), tool_axis_normals(rhs.tool_axis_normals), source_provenance(rhs.source_provenance) { init();  }
+    ExtrusionPath3D(ExtrusionPath3D &&rhs) : ExtrusionPath(rhs), z_offsets(std::move(rhs.z_offsets)), tool_axis_normals(std::move(rhs.tool_axis_normals)), source_provenance(std::move(rhs.source_provenance)) { init();  }
 
     ExtrusionPath3D &operator=(const ExtrusionPath3D &rhs)
     {
@@ -323,6 +330,7 @@ public:
         this->polyline = rhs.polyline;
         z_offsets = rhs.z_offsets;
         tool_axis_normals = rhs.tool_axis_normals;
+        source_provenance = rhs.source_provenance;
         return *this;
     }
     ExtrusionPath3D &operator=(ExtrusionPath3D &&rhs)
@@ -332,6 +340,7 @@ public:
         this->polyline = std::move(rhs.polyline);
         z_offsets = std::move(rhs.z_offsets);
         tool_axis_normals = std::move(rhs.tool_axis_normals);
+        source_provenance = std::move(rhs.source_provenance);
         return *this;
     }
     virtual ExtrusionPath3D* clone() const override { return new ExtrusionPath3D(*this); }
@@ -344,6 +353,7 @@ public:
         assert(!polyline.has_arc());
         polyline.append(p);
         z_offsets.push_back(z_offset);
+        source_provenance = FiveAxisSourceProvenance{};
     }
     void reverse() override {
         this->polyline.reverse();
