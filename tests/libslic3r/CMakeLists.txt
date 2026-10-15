@@ -10,6 +10,7 @@ add_executable(${_TEST_NAME}_tests
 	test_five_axis_engine.cpp
 	test_five_axis_kinematics.cpp
 	test_five_axis_motion_planner.cpp
+	test_extrusion_path_3d_normals.cpp
 	test_kdtreeindirect.cpp
 	test_arachne.cpp
 	test_arc_welder.cpp
