@@ -4,6 +4,8 @@
 #define slic3r_HybridNonplanarCollision_hpp_
 
 #include "AABBMesh.hpp"
+#include "HybridNonplanarExtrusion.hpp"
+#include "Model.hpp"
 #include "TriangleMesh.hpp"
 
 #include <algorithm>
@@ -189,6 +191,39 @@ private:
     HybridSweptToolOptions m_options;
     bool m_valid { false };
 };
+
+
+ // Build the planner input and collision index from the actual model object and
+ // one selected instance. ModelObject::raw_indexed_triangle_set() already
+ // applies each model-volume transform; the instance matrix then places it in
+ // print coordinates. The AABB index and validator remain alive for the entire
+ // planning call, so the callback cannot outlive its referenced geometry.
+inline bool plan_hybrid_surface_extrusion_paths_for_instance(
+    const ModelObject &object,
+    const ModelInstance &instance,
+    const HybridSurfacePlannerOptions &planner_options,
+    const HybridSweptToolOptions &tool_options,
+    double base_z_mm,
+    const ExtrusionAttributes &attributes,
+    std::vector<ExtrusionPath3D> &output)
+{
+    output.clear();
+    indexed_triangle_set source = object.raw_indexed_triangle_set();
+    indexed_triangle_set print_mesh;
+    if (!transform_hybrid_surface_mesh(source, instance.get_matrix(), print_mesh))
+        return false;
+
+    AABBMesh collision_index(print_mesh);
+    HybridSweptToolCollisionValidator validator(print_mesh, collision_index, tool_options);
+    if (!validator.valid())
+        return false;
+
+    const auto segment_is_clear = [&validator](const Vec3d &from, const Vec3d &to) {
+        return validator.segment_is_clear(from, to);
+    };
+    return plan_hybrid_surface_extrusion_paths(
+        print_mesh, planner_options, base_z_mm, attributes, segment_is_clear, output);
+}
 
 } // namespace Slic3r
 
