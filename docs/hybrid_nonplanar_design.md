@@ -21,6 +21,14 @@ This document tracks the implementation in the SuperSlicer EXTRA development bra
 - The scheduler is now called by `GCodeGenerator` and controls Mode B eligibility, but it does not yet insert a separate finishing pass. Mode B still emits its contoured segments inline while the planar layer is generated; typed deferred-path queuing and safe separate-pass emission remain outstanding.
 - The C++ test target has not been compiled or run in this environment. Treat these tests as authored, not passed.
 
+### Section-boundary planner foundation (not yet wired into G-code)
+
+- Added `HybridNonplanarSectionPlanner.hpp`, a layer-group boundary tracker that describes a completed planar H section without retaining/replaying old extrusion paths.
+- The tracker is designed to be called once after each complete print-Z layer group, after all objects and tools at that height have finished. It records section start Z, nominal H boundary, actual boundary-layer top Z, and the number of planar layers in the section.
+- It fails closed for non-monotonic layer groups, invalid dimensions, or a single indivisible layer spanning multiple H boundaries. That multi-boundary case needs explicit subdivision/planning rather than guessed grouping.
+- Added Catch2 tests for normal boundaries, variable-height boundary layers, reset, and invalid/ambiguous input.
+- This is a testable scheduling primitive, not yet the section-level surface-path generator. It is not yet connected to `GCodeGenerator::process_layer`; the existing per-object deferred queue and its limitations remain. Do not treat this commit as completing the finishing pass.
+
 ### Deferred Mode B finishing-pass implementation (not yet built)
 
 - Mode B now converts an eligible contour into a typed `ExtrusionPath3D` and queues it with its layer pointer, active `FullPrintConfig`, object origin, description, requested speed, and extruder ID.
