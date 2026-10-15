@@ -27,6 +27,7 @@
 #include "GCode/ExtrusionProcessor.hpp"
 #include "I18N.hpp"
 #include "GCode.hpp"
+#include "FiveAxisConfig.hpp"
 #include "Exception.hpp"
 #include "ExtrusionEntity.hpp"
 #include "Geometry/ConvexHull.hpp"
@@ -789,6 +790,21 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
             return;
     }
     
+    // Five-axis output is opt-in. Until a controller-specific writer is
+    // registered, fail closed rather than silently exporting an enabled
+    // five-axis profile as ordinary XYZ-only G-code.
+    {
+        FiveAxisMachineProfile five_axis_profile;
+        const FiveAxisValidationResult profile_result =
+            load_five_axis_machine_profile(print->config(), five_axis_profile);
+        if (!profile_result.valid)
+            throw Slic3r::RuntimeError(std::string("Invalid five-axis machine profile: ") + profile_result.error);
+        const FiveAxisValidationResult export_gate =
+            validate_five_axis_export_gate(five_axis_profile, std::string{});
+        if (!export_gate.valid)
+            throw Slic3r::RuntimeError(export_gate.error);
+    }
+
     // Enabled and either not done, or marked as done while the output file is missing.
     monitor.set_started(psGCodeExport);
 
