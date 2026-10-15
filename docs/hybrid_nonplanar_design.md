@@ -413,6 +413,19 @@ Limitations:
 - **Unlayered Slicer:** `NONPLANAR_SLICE_SERVICE.md` specifies an external-service request/result protocol and preview integration. This is useful if an external research engine is eventually needed, but it does not itself supply the core surface projection algorithm for the native implementation.
 - **COMPAS Slicer:** useful algorithmic reference for scalar-field-based curved slicing and fabrication planning; its Python framework does not remove the need for native C++ mesh queries, scheduling and toolhead clearance.
 
+### 6.1 Why the current deferred-path queue cannot simply span a whole H section
+
+The current Mode B contour path is sampled against a mesh ray and stores Z offsets relative to the *source layer's* nominal `print_z`. That makes it a layer-local replacement path, not a section-level finishing path. Naively keeping these paths until the H boundary and then emitting them together would revisit lower nominal Z values after higher layers have already been printed; this can collide with the part and does not implement a true section finishing pass.
+
+A correct H-section implementation therefore needs a different data product:
+- Keep the normal planar section's extrusion untouched.
+- At the section boundary, build a finishing-pass path set from the section's exposed surface/eligible mesh patches, not by replaying per-layer replacement contours.
+- Project/plan those paths against the final section surface, split at mesh/query and geometric-error events, and assign one explicit pass Z reference.
+- Order all objects and regions in the layer group before emitting that pass; do not flush from the per-object/per-extruder helper.
+- Reject the candidate pass if any path crosses an invalid surface, violates slope/offset limits, or fails the configured toolhead clearance model.
+
+Until that planner exists, the current queue is only a limited boundary-layer experiment. It must not be described as accumulating or finishing a full H section.
+
 ### 7. Resulting implementation choices
 
 1. **Geometry query:** reuse `AABBMesh` / `AABBTreeIndirect` and current `TriangleMesh` data; do not introduce another BVH unless profiling shows a missing capability or a measured bottleneck.
