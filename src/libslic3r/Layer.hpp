@@ -15,7 +15,8 @@
 #include "libslic3r.h"
 #include "BoundingBox.hpp"
 #include "Flow.hpp"
-#include "SurfaceCollection.hpp"\n#include "FiveAxisSourceProvenance.hpp"
+#include "SurfaceCollection.hpp"
+#include "FiveAxisSourceProvenance.hpp"
 #include "ExtrusionEntityCollection.hpp"
 
 #include <boost/container/small_vector.hpp>
