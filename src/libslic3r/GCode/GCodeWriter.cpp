@@ -704,6 +704,24 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, const bool is_lift, c
         w.m_gcode_precision_xyz = 6;
     }
     bool has_z = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    // Validate optional rotary axes before adding them to the coordinated extrusion move.
+    // Existing callers pass no rotary words, so their generated G-code is unchanged.
+    auto valid_rotary_word = [](char word) {
+        return word == '\0' || (word >= 'A' && word <= 'Z' &&
+            word != 'X' && word != 'Y' && word != 'Z' &&
+            word != 'E' && word != 'F' && word != 'G' && word != 'M');
+    };
+    if (!valid_rotary_word(rotary_1_word) || !valid_rotary_word(rotary_2_word) ||
+        (rotary_1_word != '\0' && rotary_1_word == rotary_2_word) ||
+        !std::isfinite(rotary_1_deg) || !std::isfinite(rotary_2_deg)) {
+        // This method cannot return a validation result. Refuse to emit a partial move.
+        this->m_tool->cancel_extrude(dE + this->m_de_left);
+        return "";
+    }
+    if (rotary_1_word != '\0')
+        w.emit_axis(rotary_1_word, rotary_1_deg, this->config.gcode_precision_xyz.value);
+    if (rotary_2_word != '\0')
+        w.emit_axis(rotary_2_word, rotary_2_deg, this->config.gcode_precision_xyz.value);
     if (!has_x_y && !has_z) {
         //if point too close to the other, no move are needed.
         return "";
@@ -838,7 +856,9 @@ std::string GCodeWriter::extrude_arc_to_xy(const Vec2d& point, const Vec2d& cent
     return write_acceleration() + w.string();
 }
 
-std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, const std::string_view comment)
+std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, const std::string_view comment,
+                                           char rotary_1_word, double rotary_1_deg,
+                                           char rotary_2_word, double rotary_2_deg)
 {
     assert(std::abs(point.x()) < 120000.);
     assert(std::abs(point.y()) < 120000.);
