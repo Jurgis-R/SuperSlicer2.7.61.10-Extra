@@ -181,6 +181,56 @@ inline bool plan_hybrid_surface_paths(
     return true;
 }
 
+
+ // Transform a raw object mesh into the same coordinate system used by path
+ // planning. Reflections invert triangle winding, so restore face orientation
+ // after a negative-determinant transform. Invalid topology or a singular /
+ // non-finite transform fails closed and leaves output empty.
+inline bool transform_hybrid_surface_mesh(
+    const indexed_triangle_set &source,
+    const Transform3d &transform,
+    indexed_triangle_set &output)
+{
+    output.vertices.clear();
+    output.indices.clear();
+    if (source.vertices.empty() || source.indices.empty() ||
+        !transform.matrix().allFinite())
+        return false;
+
+    const double determinant = transform.linear().determinant();
+    if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-12)
+        return false;
+
+    for (const Vec3i32 &face : source.indices) {
+        for (int corner = 0; corner < 3; ++corner) {
+            if (face(corner) < 0 ||
+                static_cast<std::size_t>(face(corner)) >= source.vertices.size())
+                return false;
+        }
+    }
+
+    indexed_triangle_set transformed;
+    transformed.vertices.reserve(source.vertices.size());
+    transformed.indices = source.indices;
+    const double float_limit = static_cast<double>(std::numeric_limits<float>::max());
+    for (const Vec3f &vertex : source.vertices) {
+        if (!vertex.allFinite())
+            return false;
+        const Vec3d point = transform * vertex.cast<double>();
+        if (!point.allFinite() || point.cwiseAbs().maxCoeff() > float_limit)
+            return false;
+        transformed.vertices.emplace_back(point.cast<float>());
+    }
+
+    if (determinant < 0.0) {
+        for (Vec3i32 &face : transformed.indices)
+            std::swap(face(1), face(2));
+    }
+
+    output = std::move(transformed);
+    return true;
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_HybridNonplanarSurfacePlanner_hpp_

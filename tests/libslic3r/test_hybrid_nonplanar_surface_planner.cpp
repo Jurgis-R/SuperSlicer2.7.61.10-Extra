@@ -263,3 +263,45 @@ TEST_CASE("Hybrid surface planning can produce converted paths only after segmen
         REQUIRE(path.mm3_per_mm() == Approx(0.08));
     }
 }
+
+
+TEST_CASE("Hybrid surface mesh transform handles translation and mirrored winding",
+          "[HybridNonplanarSurfacePlanner]")
+{
+    const indexed_triangle_set source = make_flat_surface();
+    Transform3d transform = Transform3d::Identity();
+    transform.translate(Vec3d(10.0, -3.0, 1.0));
+    transform.scale(Vec3d(-1.0, 1.0, 1.0));
+
+    indexed_triangle_set transformed;
+    REQUIRE(transform_hybrid_surface_mesh(source, transform, transformed));
+    REQUIRE(transformed.vertices.size() == source.vertices.size());
+    REQUIRE(transformed.indices.size() == source.indices.size());
+    CHECK(transformed.vertices[0].x() == Approx(-10.0f));
+    CHECK(transformed.vertices[0].y() == Approx(-3.0f));
+    CHECK(transformed.vertices[0].z() == Approx(3.0f));
+
+    const Vec3i32 &face = transformed.indices.front();
+    const Vec3d a = transformed.vertices[face(0)].cast<double>();
+    const Vec3d b = transformed.vertices[face(1)].cast<double>();
+    const Vec3d c = transformed.vertices[face(2)].cast<double>();
+    CHECK((b - a).cross(c - a).z() > 0.0);
+}
+
+TEST_CASE("Hybrid surface mesh transform rejects invalid topology and singular transforms",
+          "[HybridNonplanarSurfacePlanner]")
+{
+    indexed_triangle_set source = make_flat_surface();
+    indexed_triangle_set transformed = make_flat_surface();
+    source.indices.front()(1) = 123456;
+    REQUIRE_FALSE(transform_hybrid_surface_mesh(source, Transform3d::Identity(), transformed));
+    REQUIRE(transformed.vertices.empty());
+    REQUIRE(transformed.indices.empty());
+
+    source = make_flat_surface();
+    Transform3d singular = Transform3d::Identity();
+    singular.scale(Vec3d(1.0, 0.0, 1.0));
+    REQUIRE_FALSE(transform_hybrid_surface_mesh(source, singular, transformed));
+    REQUIRE(transformed.vertices.empty());
+    REQUIRE(transformed.indices.empty());
+}
