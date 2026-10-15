@@ -8,6 +8,7 @@
 #include "FiveAxisKinematics.hpp"
 
 #include <cmath>
+#include <array>
 #include <limits>
 #include <string>
 #include <vector>
@@ -34,7 +35,7 @@ public:
         if (!five_axis_finite(point_mm) || !std::isfinite(max_distance_mm) &&
             max_distance_mm != std::numeric_limits<double>::infinity())
             return { false, "Surface-normal query point or distance limit is invalid." };
-        if (max_distance_mm < 0..0)
+        if (max_distance_mm < 0.0)
             return { false, "Surface-normal maximum distance must be non-negative." };
         if (m_mesh->indices.empty())
             return { false, "Cannot sample tool directions from an empty triangle mesh." };
