@@ -876,16 +876,19 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
         w.emit_axis(rotary_2_word, rotary_2_deg, this->config.gcode_precision_xyz.value);
     if (!has_z) {
         if (!has_x_y && rotary_1_word == '\0' && rotary_2_word == '\0') {
-            // m_pos has already been updated to the new (but indistinguishable from current one) posiiton
-            // we return nothing, as it's not worth it.
-            // just update the missing de.
+            // No XYZ or rotary coordinate changed, so preserve the legacy tiny-move behavior.
             this->m_tool->cancel_extrude(dE + this->m_de_left);
             this->m_de_left += dE;
             return "";
-        } else {
+        } else if (has_x_y) {
+            // Re-write X/Y after suppressing an unchanged Z word. Keep any rotary words
+            // out of the formatter only in the unchanged-XYZ case above.
             w.clear();
-            // re-write x & y. the m_pos_str_x & m_pos_str_y must stay the same, the return boolan must be 'false'
             w.emit_xy(Vec2d(point.x(), point.y()), m_pos_str_x, m_pos_str_y);
+            if (rotary_1_word != '\0')
+                w.emit_axis(rotary_1_word, rotary_1_deg, this->config.gcode_precision_xyz.value);
+            if (rotary_2_word != '\0')
+                w.emit_axis(rotary_2_word, rotary_2_deg, this->config.gcode_precision_xyz.value);
         }
     }
     this->m_de_left += dE - delta_e;
