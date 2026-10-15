@@ -68,3 +68,31 @@ TEST_CASE("Hybrid section planner reset starts a fresh section sequence", "[Hybr
     REQUIRE(section.has_value());
     REQUIRE(section->boundary_z == Approx(0.75));
 }
+
+TEST_CASE("Hybrid path constraints enforce endpoint ramps, offset and slope limits", "[HybridNonplanarSectionPlanner]")
+{
+    std::vector<double> distance { 0.0, 0.5, 1.0, 1.5, 2.0 };
+    std::vector<double> offset { 0.0, 0.8, 0.8, 0.8, 0.0 };
+
+    REQUIRE(Slic3r::constrain_hybrid_nonplanar_offsets(distance, offset, 0.4, 30.0));
+    REQUIRE(offset.front() == Approx(0.0));
+    REQUIRE(offset.back() == Approx(0.0));
+    for (std::size_t i = 0; i < offset.size(); ++i) {
+        REQUIRE(std::abs(offset[i]) <= 0.4 + 1e-8);
+        if (i > 0)
+            REQUIRE(std::abs(offset[i] - offset[i - 1]) <= std::tan(30.0 * 3.14159265358979323846 / 180.0) * (distance[i] - distance[i - 1]) + 1e-7);
+    }
+}
+
+TEST_CASE("Hybrid path constraints reject malformed samples without mutating them", "[HybridNonplanarSectionPlanner]")
+{
+    std::vector<double> distance { 0.0, 1.0, 1.0 };
+    std::vector<double> offset { 0.0, 0.2, 0.0 };
+    const auto original = offset;
+    REQUIRE_FALSE(Slic3r::constrain_hybrid_nonplanar_offsets(distance, offset, 0.4, 30.0));
+    REQUIRE(offset == original);
+
+    distance = { 0.0, std::numeric_limits<double>::quiet_NaN(), 2.0 };
+    REQUIRE_FALSE(Slic3r::constrain_hybrid_nonplanar_offsets(distance, offset, 0.4, 30.0));
+    REQUIRE(offset == original);
+}
