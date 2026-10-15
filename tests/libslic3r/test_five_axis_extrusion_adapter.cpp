@@ -70,3 +70,50 @@ TEST_CASE("Five-axis adapter rejects zero normals and invalid motion settings", 
     CHECK_FALSE(result.valid);
     CHECK(poses.empty());
 }
+
+TEST_CASE("Five-axis extrusion pipeline plans an oriented sliced path through its machine profile", "[FiveAxisExtrusionAdapter]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = "test-controller";
+    ExtrusionPath3D path(ExtrusionAttributes{}, true);
+    path.push_back(Point(0, 0), 0);
+    path.push_back(Point(1000, 0), 0);
+    path.push_back(Point(2000, 0), 0);
+    path.tool_axis_normals = {
+        { { 0.0, 0.0, 1.0 } },
+        { { 0.0, 0.0, 1.0 } },
+        { { 0.0, 0.0, 1.0 } }
+    };
+    std::vector<FiveAxisCommand> commands;
+    const auto result = plan_five_axis_extrusion_path(
+        profile, path, 10.0, 0.0, 0.1, 600.0, commands);
+
+    REQUIRE(result.valid);
+    REQUIRE(commands.size() == 3);
+    CHECK(commands[0].x == Approx(0.0));
+    CHECK(commands[1].x == Approx(1.0));
+    CHECK(commands[2].x == Approx(2.0));
+    CHECK(commands[2].e == Approx(0.2));
+    CHECK(commands[2].rotary_1_deg == Approx(0.0));
+    CHECK(commands[2].rotary_2_deg == Approx(0.0));
+}
+
+TEST_CASE("Five-axis extrusion pipeline fails closed when profile is disabled", "[FiveAxisExtrusionAdapter]")
+{
+    FiveAxisMachineProfile profile;
+    ExtrusionPath3D path(ExtrusionAttributes{}, true);
+    path.push_back(Point(0, 0), 0);
+    path.push_back(Point(1000, 0), 0);
+    path.tool_axis_normals = {
+        { { 0.0, 0.0, 1.0 } },
+        { { 0.0, 0.0, 1.0 } }
+    };
+    std::vector<FiveAxisCommand> commands = {
+        { 1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 600.0 }
+    };
+    const auto result = plan_five_axis_extrusion_path(
+        profile, path, 0.0, 0.0, 0.1, 600.0, commands);
+    CHECK_FALSE(result.valid);
+    CHECK(commands.empty());
+}
