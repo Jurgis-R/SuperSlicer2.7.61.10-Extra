@@ -977,6 +977,8 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat,                skip_tiny_perimeter_length))
     ((ConfigOptionBool,                 zaa_enabled))
     ((ConfigOptionBool,                 hybrid_nonplanar_enabled))
+    ((ConfigOptionFloat,                hybrid_nonplanar_interval))
+    ((ConfigOptionFloat,                hybrid_nonplanar_max_slope))
     ((ConfigOptionBool,                 zaa_contour_perimeters))
     ((ConfigOptionFloat,                zaa_min_z))
     ((ConfigOptionFloat,                zaa_sample_distance))
