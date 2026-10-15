@@ -18,6 +18,12 @@ The settings are mainly for advanced users who understand what they want to chan
 - Hotend/nozzle: 0.8 mm Volcano
 - Main test material: PETG
 
+My printing profiles if someone is interested are in SS-2.7.61.10-Extra/
+├── profiles/
+│   ├── printer.ini
+│   ├── filament.ini
+│   └── print.ini
+
 My prints have been coming out well on this setup, but I have not tested every feature on different printers, materials or firmware.
 
 ## What's added?
