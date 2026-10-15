@@ -1,0 +1,65 @@
+name: Hybrid non-planar native build and tests
+
+on:
+  push:
+    branches:
+      - hybrid-nonplanar-dev
+  pull_request:
+    branches:
+      - SS-2.7.61.10+extra
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hybrid-nonplanar-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-native-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.31.x'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo ./BuildLinux.sh -u
+
+      - name: Cache SuperSlicer build dependencies
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: deps/build/destdir
+          key: hybrid-nonplanar-linux-deps-${{ runner.os }}-${{ hashFiles('deps/CMakeLists.txt', 'deps/**/CMakeLists.txt') }}
+
+      - name: Build SuperSlicer dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: ./BuildLinux.sh -d
+
+      - name: Configure native project and tests
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_PREFIX_PATH="$PWD/deps/build/destdir/usr/local" \
+            -DSLIC3R_STATIC=1 \
+            -DSLIC3R_GTK=3 \
+            -DCMAKE_BUILD_TESTS=1
+
+      - name: Build slicer and targeted test executables
+        run: |
+          cmake --build build --target Slic3r fff_print_tests libslic3r_tests --parallel 2
+
+      - name: Run G-code integration and geometry/scheduler tests
+        run: |
+          ctest --test-dir build --output-on-failure -R '^(fff_print_tests|libslic3r_tests)$'
