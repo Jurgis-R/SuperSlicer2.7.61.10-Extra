@@ -9,6 +9,7 @@ add_executable(${_TEST_NAME}_tests
 	test_aabbindirect.cpp
 	test_five_axis_engine.cpp
 	test_five_axis_kinematics.cpp
+	test_five_axis_build_direction.cpp
 	test_five_axis_motion_planner.cpp
 	test_five_axis_extrusion_adapter.cpp
 	test_five_axis_machine_profile.cpp
