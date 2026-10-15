@@ -157,3 +157,37 @@ TEST_CASE("Machine-aware orientation filter fails closed for mismatched candidat
     CHECK_FALSE(filtered[0].valid);
     CHECK(filtered[0].error.find("corresponding candidate-specific") != std::string::npos);
 }
+
+TEST_CASE("Machine-aware orientation filter applies configured obstacle clearance", "[FiveAxisBuildDirection]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = "test-post";
+    profile.collision.obstacles.push_back({ {10.0, 9.0, 9.0}, {12.0, 11.0, 11.0} });
+    std::vector<FiveAxisBuildDirectionCandidate> candidates(1);
+    candidates[0].valid = true;
+    candidates[0].build_up = {0.0, 0.0, 1.0};
+    const std::vector<std::vector<FiveAxisToolPose>> poses = {
+        { {{9.0, 10.0, 10.0}, {0.0, 0.0, 1.0}, 0.0, 600.0},
+          {{13.0, 10.0, 10.0}, {0.0, 0.0, 1.0}, 0.1, 600.0} }
+    };
+    const auto filtered = filter_five_axis_build_direction_candidates(candidates, poses, profile);
+    REQUIRE(filtered.size() == 1);
+    CHECK_FALSE(filtered[0].valid);
+    CHECK(filtered[0].error.find("Machine feasibility rejected") != std::string::npos);
+}
+
+TEST_CASE("Machine-aware orientation filter refuses a disabled profile", "[FiveAxisBuildDirection]")
+{
+    FiveAxisMachineProfile profile;
+    std::vector<FiveAxisBuildDirectionCandidate> candidates(1);
+    candidates[0].valid = true;
+    const std::vector<std::vector<FiveAxisToolPose>> poses = {
+        { {{1.0, 1.0, 10.0}, {0.0, 0.0, 1.0}, 0.0, 600.0},
+          {{2.0, 1.0, 10.0}, {0.0, 0.0, 1.0}, 0.1, 600.0} }
+    };
+    const auto filtered = filter_five_axis_build_direction_candidates(candidates, poses, profile);
+    REQUIRE(filtered.size() == 1);
+    CHECK_FALSE(filtered[0].valid);
+    CHECK(filtered[0].error.find("enabled five-axis profile") != std::string::npos);
+}
