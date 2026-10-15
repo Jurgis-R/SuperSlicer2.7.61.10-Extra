@@ -6443,17 +6443,30 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 {
     out.clear();
     m_zaa_active.clear();
-    // Keep ZAA and hybrid non-planar printing mutually exclusive. The hybrid
-    // scheduler is still under development; selecting its option must never let
-    // ZAA contour the same paths at the same time.
-    if (m_config.hybrid_nonplanar_enabled.value || !m_config.zaa_enabled.value ||
+    // Hybrid mode reuses the existing mesh-following path sampler, but only on
+    // layers that cross an H interval. It is mutually exclusive with standalone ZAA.
+    const bool hybrid = m_config.hybrid_nonplanar_enabled.value;
+    if ((!hybrid && !m_config.zaa_enabled.value) ||
         m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
         return false;
+    if (hybrid) {
+        const double interval = std::max(0.2, m_config.hybrid_nonplanar_interval.value);
+        const double bottom_z = m_layer->bottom_z();
+        const double top_z = m_layer->print_z;
+        // Select the layer whose vertical span crosses an H boundary. This works
+        // with variable layer heights and avoids relying on an exact floating-point modulo.
+        const auto interval_band = [interval](double z) -> long long {
+            return static_cast<long long>(std::floor((z + 1e-6) / interval));
+        };
+        if (interval_band(top_z) <= interval_band(bottom_z))
+            return false;
+    }
     const ExtrusionRole role = path.role();
     const bool real_top = role == ExtrusionRole::TopSolidInfill;
+    const bool contour_solid_infill = !hybrid && m_config.zaa_contour_perimeters.value;
     const bool is_top   = real_top ||
-                          (m_config.zaa_contour_perimeters.value && role == ExtrusionRole::SolidInfill);
-    const bool is_peri  = m_config.zaa_contour_perimeters.value &&
+                          ((hybrid || contour_solid_infill) && role == ExtrusionRole::SolidInfill);
+    const bool is_peri  = (hybrid || m_config.zaa_contour_perimeters.value) &&
                           (role == ExtrusionRole::Perimeter || role == ExtrusionRole::ExternalPerimeter);
     if (!is_top && !is_peri)
         return false;
@@ -6467,10 +6480,14 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const double h         = m_layer->height;
     const double print_z   = m_layer->print_z;
     const double ray_z     = m_layer->slice_z;                              // inside the solid under a top surface
-    const double min_line  = std::max(0., m_config.zaa_min_z.value);        // thinnest line
-    const double max_line  = std::max(h, m_config.zaa_max_height.value);    // thickest line
-    const double max_down  = std::max(0., h - min_line);                    // lowest offset  = -max_down
-    const double max_up    = std::max(0., max_line - h);                    // highest offset = +max_up
+    const double min_line  = std::max(0., m_config.zaa_min_z.value);        // ZAA minimum line height
+    const double max_line  = std::max(h, m_config.zaa_max_height.value);    // ZAA maximum line height
+    const double hybrid_offset = std::max(0.05, m_config.hybrid_nonplanar_max_offset.value);
+    // In hybrid mode keep the deposited line from collapsing and limit upward
+    // displacement conservatively on top-solid paths.
+    const double max_down  = hybrid ? std::min(h - std::min(h, 0.05), hybrid_offset)
+                                    : std::max(0., h - min_line);
+    const double max_up    = hybrid ? hybrid_offset : std::max(0., max_line - h);
     const double tol       = 0.03;
     // a real top surface of this layer is at most half a layer above the layer top (the layer is sliced in its middle)
     const double valid_up  = (real_top ? std::min(max_up, 0.5 * h) : max_up) + tol;
@@ -6527,6 +6544,23 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const size_t n = spts.size();
     if (n < 2)
         return false;
+
+    if (hybrid) {
+        // Bound the local Z slope and blend each path back to its nominal layer
+        // height at both ends. This is a kinematic limit, not a toolhead collision test.
+        const double max_angle = std::max(1.0, std::min(60.0, m_config.hybrid_nonplanar_max_slope.value));
+        const double max_slope = std::tan(max_angle * 3.14159265358979323846 / 180.0);
+        sd.front() = 0.0;
+        sd.back() = 0.0;
+        for (size_t i = 1; i < n; ++i) {
+            const double max_dz = max_slope * std::max(0.0, ss[i] - ss[i - 1]);
+            sd[i] = std::max(sd[i - 1] - max_dz, std::min(sd[i - 1] + max_dz, sd[i]));
+        }
+        for (size_t i = n - 1; i-- > 0;) {
+            const double max_dz = max_slope * std::max(0.0, ss[i + 1] - ss[i]);
+            sd[i] = std::max(sd[i + 1] - max_dz, std::min(sd[i + 1] + max_dz, sd[i]));
+        }
+    }
 
     // --- x-ray: which samples follow the surface ---
     std::vector<char> act(n, 0);
