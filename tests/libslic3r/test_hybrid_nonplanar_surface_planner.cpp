@@ -484,6 +484,34 @@ TEST_CASE("Hybrid swept-tool validator rejects non-finite and excessively long s
                                            Vec3d(1.0e7, 0.5, 2.0)));
 }
 
+TEST_CASE("Hybrid pre-extrusion contract requires explicit start and end Z/lift states",
+          "[HybridNonplanarEmission]")
+{
+    HybridPreExtrusionTravelContract contract;
+    contract.expected_start_position = Vec3d(10.0, 20.0, 3.0);
+    contract.expected_start_lift_mm = 0.8;
+    contract.expected_end_position = Vec3d(15.0, 22.0, 3.4);
+    contract.expected_end_lift_mm = 0.0;
+
+    CHECK(validate_hybrid_pre_extrusion_state(
+        contract, Vec3d(10.0, 20.0, 3.0), 0.8, false));
+    CHECK(validate_hybrid_pre_extrusion_state(
+        contract, Vec3d(15.0, 22.0, 3.4), 0.0, true));
+
+    // Surface-following routes may finish away from nominal planar layer Z;
+    // the declared end state, not a nominal-layer assumption, is authoritative.
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(
+        contract, Vec3d(15.0, 22.0, 3.0), 0.0, true));
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(
+        contract, Vec3d(15.0, 22.0, 3.4), 0.8, true));
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(
+        contract, Vec3d(15.0, 22.0, 3.4), 0.0, false));
+
+    contract.position_tolerance_mm = -1.0;
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(
+        contract, Vec3d(10.0, 20.0, 3.0), 0.8, false));
+}
+
 TEST_CASE("Hybrid route coordinates convert between print and writer frames",
           "[HybridNonplanarEmission]")
 {
