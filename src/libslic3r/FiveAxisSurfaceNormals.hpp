@@ -42,6 +42,14 @@ inline FiveAxisValidationResult transform_five_axis_surface_mesh(
     if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-12)
         return { false, "Surface mesh transform must have a non-singular linear part." };
 
+    for (const Vec3i32 &face : source.indices) {
+        for (int corner = 0; corner < 3; ++corner) {
+            if (face[corner] < 0 ||
+                static_cast<std::size_t>(face[corner]) >= source.vertices.size())
+                return { false, "Surface mesh contains a face with an invalid vertex index." };
+        }
+    }
+
     indexed_triangle_set transformed;
     transformed.vertices.reserve(source.vertices.size());
     transformed.indices = source.indices;
@@ -50,8 +58,13 @@ inline FiveAxisValidationResult transform_five_axis_surface_mesh(
             double(vertex.x()), double(vertex.y()), double(vertex.z()));
         if (!point.allFinite())
             return { false, "Surface mesh transform produced a non-finite vertex." };
-        transformed.vertices.emplace_back(
+        const Vec3f transformed_vertex(
             float(point.x()), float(point.y()), float(point.z()));
+        if (!std::isfinite(transformed_vertex.x()) ||
+            !std::isfinite(transformed_vertex.y()) ||
+            !std::isfinite(transformed_vertex.z()))
+            return { false, "Surface mesh transform exceeds the supported vertex coordinate range." };
+        transformed.vertices.emplace_back(transformed_vertex);
     }
 
     if (determinant < 0.0) {
