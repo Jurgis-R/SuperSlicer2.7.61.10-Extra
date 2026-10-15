@@ -64,6 +64,19 @@ TEST_CASE("Hybrid surface planner rejects a candidate when any tool sweep collid
     REQUIRE(paths.empty());
 }
 
+TEST_CASE("Hybrid surface planner rejects malformed mesh indices",
+          "[HybridNonplanarSurfacePlanner]")
+{
+    indexed_triangle_set mesh = make_flat_surface();
+    mesh.indices.front()(2) = 999999;
+    HybridSurfacePlannerOptions options;
+    std::vector<HybridSurfacePath> paths;
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+
+    REQUIRE_FALSE(plan_hybrid_surface_paths(mesh, options, clear, paths));
+    REQUIRE(paths.empty());
+}
+
 TEST_CASE("Hybrid surface planner rejects invalid limits and pathological sample grids",
           "[HybridNonplanarSurfacePlanner]")
 {
