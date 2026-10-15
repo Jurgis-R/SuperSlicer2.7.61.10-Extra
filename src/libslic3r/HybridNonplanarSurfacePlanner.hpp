@@ -57,6 +57,16 @@ inline bool plan_hybrid_surface_paths(
         options.max_grid_samples < 4)
         return false;
 
+    // Validate every face index before any indexed vertex access. Meshes may
+    // come from imported files, so malformed topology must fail closed.
+    for (const Vec3i32 &face : mesh.indices) {
+        for (int corner = 0; corner < 3; ++corner) {
+            if (face(corner) < 0 ||
+                static_cast<std::size_t>(face(corner)) >= mesh.vertices.size())
+                return false;
+        }
+    }
+
     Vec3d lo = mesh.vertices.front().cast<double>();
     Vec3d hi = lo;
     for (const Vec3f &v : mesh.vertices) {
