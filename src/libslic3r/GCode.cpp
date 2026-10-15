@@ -3297,6 +3297,13 @@ LayerResult GCodeGenerator::process_layer(
     m_config.apply(print.default_region_config(), true);
     m_config.apply(layer.object()->config(), true);
 
+    // Complete-object mode restarts Z for each object, so its interval
+    // schedule must restart too rather than inheriting the previous object's Z.
+    if (single_object_instance_idx != size_t(-1) && layer.id() == 0) {
+        m_hybrid_nonplanar_scheduler.reset(m_config.hybrid_nonplanar_interval.value);
+        m_hybrid_nonplanar_queue.clear();
+    }
+
     // The scheduler advances once per exported planar layer. Mode B consults
     // this result instead of independently guessing a boundary with floor().
     m_hybrid_nonplanar_layer_due = false;
