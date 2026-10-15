@@ -22,7 +22,23 @@ My printing profiles if someone is interested are in SS-2.7.61.10-Extra/profiles
 
 My prints have been coming out well on this setup, but I have not tested every feature on different printers, materials or firmware.
 
-## What's added?
+## What's added? Custom feature list
+
+- Solid-Infill-Only Rotation
+- Solid Infill vs Perimeter Overlap
+- Sparse Infill vs Perimeter Overlap
+- Bridge Infill vs Perimeter Overlap
+- Top Solid Infill vs Perimeter Overlap
+- Sparse-Infill-Only Overlap Flow
+- Sparse-Infill-Only Overlap Speed
+- Skip Tiny Perimeter Paths
+- Skip Tiny Diagonal Paths
+- Pressure-Advance Map
+- Extrusion-Multiplier Map
+- Feature-Specific Flow Tuning
+- Pressure-Equalizer Ramps
+- Sparse-Infill Angle Increment
+- Z Anti-Aliasing (ZAA / Z contouring)
 
 ### 1. Solid-infill-only rotation
 
@@ -51,7 +67,7 @@ I also experiment with infill connection lengths above 1 mm; my setting is 3 mm.
 
 ### 4. Skip tiny paths
 
-Adds controls to skip very short perimeter and infill paths.
+Adds controls to skip very short perimeter and diagonal infill paths.
 
 My profile uses a 2 mm threshold for tiny perimeters and diagonal infill paths. The aim is to reduce unwanted short movements and small extrusion fragments. Skipping paths can also remove useful detail, so inspect the sliced preview.
 
@@ -87,7 +103,24 @@ Adds configurable ramp behaviour, including controls for ramp time, distance, se
 
 The effect depends on the printer, firmware and calibration. These settings are experimental.
 
-### 9. Windows build changes
+### 9. Z Anti-Aliasing (ZAA / Z contouring)
+
+**Location:** Infill → Advanced Infill Options.
+
+Adds an on/off checkbox for ZAA, ported from the BambuStudio-ZAA branch.
+
+ZAA varies extrusion height within a layer to follow sloped surface contours more closely, reducing visible stair-stepping on suitable surfaces. Unlike ordinary variable layer height, it can adjust Z height along extrusion paths within a layer.
+
+**Additional functions in my fork:**
+
+- **Top surfaces + perimeters mode:** Restricts ZAA to top surfaces and perimeters.
+- **Minimum and maximum height limits:** Lets you constrain the Z-height variation to a specified range.
+
+These additional controls provide more control over where ZAA operates and how much the extrusion height can vary. Use the height limits carefully and verify the resulting toolpaths.
+
+This is experimental non-planar slicing. Nozzle collisions with previously printed material are a known limitation. Inspect the sliced toolpaths and test carefully before printing.
+
+### 10. Windows build changes
 
 The source has been built on my Windows setup, and I made some build-related changes while getting it working. This does not guarantee that every compiler or Windows configuration will build successfully.
 
