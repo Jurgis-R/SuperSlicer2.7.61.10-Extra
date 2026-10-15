@@ -65,3 +65,10 @@ The current helpers do not prove that the nozzle, tool body, part, fixture, or m
 ## External references
 
 External slicers and research projects may inform architecture, but no external implementation should be copied without checking its exact license, file notices, and dependencies. Machine conventions from one project must not be assumed to match another machine.
+
+
+## Source-volume provenance status
+
+The slice-to-region path now carries five-axis provenance alongside each layer-region's sliced polygons. A source volume is recorded when a non-empty slice remains directly attributable to one printable model volume. When multiple volume contributions are merged into the same output region, the metadata records a mixed source set rather than choosing one ID. If cross-volume gap closing is active, affected slices are marked ambiguous because offset/intersection operations can create or redistribute boundary area.
+
+The metadata is exposed through `LayerRegion::five_axis_source_provenance()` for future orientation/path generation. Five-axis code must accept only the `Unique` state; `Mixed`, `Ambiguous`, and `Unknown` are not permission to guess a source mesh. The source IDs describe volume-level provenance, not a triangle-level proof for every point. Later operations such as multi-material reassignment, curve smoothing, overhang expansion, and path generation still need explicit provenance propagation or conservative invalidation before this metadata can be used to select surface normals. These changes have not been compiled or tested in a full SuperSlicer build.
