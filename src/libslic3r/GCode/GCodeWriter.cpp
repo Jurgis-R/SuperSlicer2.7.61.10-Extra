@@ -24,6 +24,7 @@
 #include <iostream>
 #include <map>
 #include <string_view>
+#include <stdexcept>
 #include <boost/math/special_functions/pow.hpp>
 #ifdef __APPLE__
     #include <boost/spirit/include/karma.hpp>
@@ -712,6 +713,48 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, const bool is_lift, c
     w.emit_f(travel_speed * 60);
     w.emit_comment(this->config.gcode_comments, comment);
     return write_acceleration() + w.string();
+}
+
+
+std::string GCodeWriter::travel_to_xyz_route(
+    const std::vector<Vec3d> &points,
+    double position_tolerance_mm,
+    const std::string_view comment)
+{
+    // Validate the entire route before generating any move. This is structural
+    // validation only: the caller must already have checked swept-tool clearance.
+    if (points.size() < 2 || !std::isfinite(position_tolerance_mm) ||
+        position_tolerance_mm < 0.0)
+        throw std::invalid_argument("Invalid XYZ route or position tolerance");
+
+    const double tolerance_sq = position_tolerance_mm * position_tolerance_mm;
+    auto coincides = [tolerance_sq](const Vec3d &a, const Vec3d &b) {
+        return a.allFinite() && b.allFinite() &&
+               (a - b).squaredNorm() <= tolerance_sq;
+    };
+
+    if (std::abs(m_lifted) > position_tolerance_mm)
+        throw std::logic_error("XYZ route requires the normal lift to be cleared first");
+    if (!coincides(points.front(), m_pos))
+        throw std::logic_error("XYZ route start does not match the live G-code writer position");
+
+    for (const Vec3d &point : points) {
+        if (!point.allFinite() || std::abs(point.x()) >= 120000. ||
+            std::abs(point.y()) >= 120000.)
+            throw std::invalid_argument("XYZ route contains an invalid or out-of-range waypoint");
+    }
+
+    // From here on, a failure cannot physically roll back emitted motion. The
+    // caller must abort the export if an invariant fails after any waypoint.
+    std::string gcode;
+    for (size_t i = 1; i < points.size(); ++i) {
+        if (coincides(points[i - 1], points[i]))
+            continue;
+        gcode += this->travel_to_xyz(points[i], false, 0.0, comment);
+        if (!coincides(this->get_position(), points[i]))
+            throw std::runtime_error("G-code writer position diverged while executing XYZ route");
+    }
+    return gcode;
 }
 
 std::string GCodeWriter::travel_to_z(const double z, const std::string_view comment)
