@@ -88,7 +88,11 @@ public:
     std::string extrude_to_xy(const Vec2d &point, const double dE, const std::string_view comment = {});
     std::string extrude_arc_to_xy(const Vec2d& point, const Vec2d& center_offset, const double dE, const bool is_ccw, const std::string_view comment = {}); //BBS: generate G2 or G3 extrude which moves by arc
     std::string extrude_arc_to_xyz(const Vec3d& point, const Vec2d& center_offset, const double dE, const bool is_ccw, const std::string_view comment = {}); //BBS: generate G2 or G3 extrude which moves by arc
-    std::string extrude_to_xyz(const Vec3d &point, const double dE, const std::string_view comment = {});
+    // Optional rotary words are emitted in the same coordinated G1 as XYZ/E. A zero word
+    // preserves the ordinary XYZ-only output and does not alter existing callers.
+    std::string extrude_to_xyz(const Vec3d &point, const double dE, const std::string_view comment = {},
+                               char rotary_1_word = '\0', double rotary_1_deg = 0.0,
+                               char rotary_2_word = '\0', double rotary_2_deg = 0.0);
     std::string retract(bool before_wipe = false);
     std::string retract_for_toolchange(bool before_wipe = false);
     std::string unretract();
