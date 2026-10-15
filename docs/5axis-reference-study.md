@@ -115,6 +115,9 @@ These changes establish a path-data-to-planner API; they do not mean the regular
 This is the first concrete model-geometry-to-normal producer, but it is not yet connected to actual slicer-generated extrusion paths. Coordinate transforms, intended-surface selection, path generation, persistent machine settings, and the G-code export integration remain outstanding.
 
 
+
+The helper layer now also includes `transform_five_axis_volume_mesh()`, which composes the same matrix order used in SuperSlicer's volume slicing call: `PrintObject::trafo_centered() * ModelVolume::get_matrix()`. It accepts those matrices explicitly and transforms the volume's untransformed indexed mesh into print-object slicing space. A focused test checks the composition order. This is a grounded bridge to the real transform chain, but the caller still must select the correct `PrintObject` instance and `ModelVolume`, and confirm the resulting coordinates match the particular extrusion paths being oriented; no production call site has been added yet.
+
 The surface-normal helper now also provides `transform_five_axis_surface_mesh()`. It applies an explicitly supplied affine transform to mesh vertices before the accelerated sampler is built, rejects non-finite or singular transforms, and reverses face winding for mirrored transforms so sampled face normals retain their intended orientation. Tests cover translated geometry, mirrored winding, and rejection of singular transforms. The helper is intentionally explicit: it does not choose or compose SuperSlicer's volume, object, instance, and centering transforms on behalf of the caller. That transform chain still needs to be connected at the real slicing integration point.
 
 ## Safety and verification status
