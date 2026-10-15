@@ -20,6 +20,17 @@
 
 namespace Slic3r {
 
+class PrintObject;
+class ModelVolume;
+
+// Build the surface mesh in the same coordinate frame used by SuperSlicer's
+// volume slicing: PrintObject::trafo_centered() * ModelVolume::get_matrix().
+FiveAxisValidationResult transform_five_axis_print_volume_mesh(
+    const PrintObject &print_object,
+    const ModelVolume &volume,
+    indexed_triangle_set &output);
+
+
 
  
 // Transform a source mesh into the same millimetre coordinate frame used by
