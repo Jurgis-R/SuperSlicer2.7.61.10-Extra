@@ -56,6 +56,7 @@
 #include "TriangleMesh.hpp"
 #include "HybridNonplanarSectionPlanner.hpp"
 #include "HybridNonplanarCollision.hpp"
+#include "HybridNonplanarExtrusion.hpp"
 #include <cstdlib>
 #include <chrono>
 #include <map>
