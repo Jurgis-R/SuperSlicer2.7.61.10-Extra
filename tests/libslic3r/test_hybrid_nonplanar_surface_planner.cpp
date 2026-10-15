@@ -1,9 +1,31 @@
 #include "libslic3r/HybridNonplanarSurfacePlanner.hpp"
 #include "libslic3r/HybridNonplanarExtrusion.hpp"
+#include "libslic3r/HybridNonplanarCollision.hpp"
 
 #include <catch2/catch.hpp>
 
 using namespace Slic3r;
+
+
+static indexed_triangle_set make_closed_cube()
+{
+    indexed_triangle_set mesh;
+    mesh.vertices = {
+        Vec3f(0.f, 0.f, 0.f), Vec3f(1.f, 0.f, 0.f),
+        Vec3f(1.f, 1.f, 0.f), Vec3f(0.f, 1.f, 0.f),
+        Vec3f(0.f, 0.f, 1.f), Vec3f(1.f, 0.f, 1.f),
+        Vec3f(1.f, 1.f, 1.f), Vec3f(0.f, 1.f, 1.f)
+    };
+    mesh.indices = {
+        Vec3i32(0, 2, 1), Vec3i32(0, 3, 2),
+        Vec3i32(4, 5, 6), Vec3i32(4, 6, 7),
+        Vec3i32(0, 1, 5), Vec3i32(0, 5, 4),
+        Vec3i32(1, 2, 6), Vec3i32(1, 6, 5),
+        Vec3i32(2, 3, 7), Vec3i32(2, 7, 6),
+        Vec3i32(3, 0, 4), Vec3i32(3, 4, 7)
+    };
+    return mesh;
+}
 
 static indexed_triangle_set make_flat_surface()
 {
@@ -332,4 +354,41 @@ TEST_CASE("Hybrid surface pipeline transforms the source mesh before planning",
         CHECK(unscale(path.polyline.get_point(0).y()) >= -3.0);
         CHECK(unscale(path.z_offsets.front()) == Approx(0.0));
     }
+}
+
+
+TEST_CASE("Hybrid swept-tool validator rejects open meshes and invalid envelopes",
+          "[HybridNonplanarCollision]")
+{
+    indexed_triangle_set open_mesh = make_flat_surface();
+    AABBMesh open_aabb(open_mesh);
+    HybridSweptToolOptions options;
+    HybridSweptToolCollisionValidator open_validator(open_mesh, open_aabb, options);
+    REQUIRE_FALSE(open_validator.valid());
+
+    const indexed_triangle_set closed_mesh = make_closed_cube();
+    AABBMesh closed_aabb(closed_mesh);
+    options.toolhead_start_mm = options.nozzle_shaft_top_mm - 1.0;
+    HybridSweptToolCollisionValidator invalid_validator(closed_mesh, closed_aabb, options);
+    REQUIRE_FALSE(invalid_validator.valid());
+}
+
+TEST_CASE("Hybrid swept-tool validator rejects a path whose tool envelope approaches a closed model",
+          "[HybridNonplanarCollision]")
+{
+    const indexed_triangle_set closed_mesh = make_closed_cube();
+    AABBMesh aabb(closed_mesh);
+    HybridSweptToolOptions options;
+    options.path_sample_step_mm = 0.1;
+    options.nozzle_tip_exclusion_mm = 0.2;
+    options.nozzle_shaft_top_mm = 2.0;
+    options.toolhead_start_mm = 2.0;
+    options.toolhead_top_mm = 4.0;
+    options.nozzle_shaft_radius_mm = 0.4;
+    options.toolhead_radius_mm = 1.0;
+    options.required_clearance_mm = 0.1;
+    HybridSweptToolCollisionValidator validator(closed_mesh, aabb, options);
+    REQUIRE(validator.valid());
+    REQUIRE_FALSE(validator.segment_is_clear(Vec3d(0.5, 0.5, 1.0),
+                                             Vec3d(0.6, 0.5, 1.0)));
 }
