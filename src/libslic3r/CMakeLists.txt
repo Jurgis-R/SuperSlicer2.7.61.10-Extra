@@ -36,6 +36,7 @@ set(SLIC3R_SOURCES
     pchheader.hpp
     AStar.hpp
     FiveAxisEngine.hpp
+    FiveAxisConfig.hpp
     FiveAxisSourceProvenance.hpp
     FiveAxisKinematics.hpp
     FiveAxisBuildDirectionPlanner.hpp
