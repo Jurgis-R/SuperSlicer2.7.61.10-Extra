@@ -6726,7 +6726,7 @@ std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::strin
     // They are emitted after the planar layer's paths have completed.
     if (zaa_active && m_config.hybrid_nonplanar_enabled.value) {
         if (m_layer == nullptr || zaa_points.size() < 2 || zaa_points.size() != m_zaa_active.size())
-            return {};
+            throw RuntimeError("Hybrid non-planar contour has invalid layer/sample context");
 
         ExtrusionPath3D deferred(path.attributes(), false);
         for (size_t i = 0; i < zaa_points.size(); ++i)
