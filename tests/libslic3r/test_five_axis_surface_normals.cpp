@@ -59,3 +59,51 @@ TEST_CASE("Five-axis surface sampler assigns per-vertex normals atomically", "[F
     CHECK_FALSE(result.valid);
     CHECK(path.tool_axis_normals == previous);
 }
+
+
+TEST_CASE("Five-axis surface mesh transform maps geometry into print coordinates", "[FiveAxisSurfaceNormals]")
+{
+    const indexed_triangle_set source = make_test_surface();
+    indexed_triangle_set print_mesh;
+    Transform3d transform = Transform3d::Identity();
+    transform.translate(Vec3d(5.0, 0.0, 3.0));
+
+    const auto transformed = transform_five_axis_surface_mesh(source, transform, print_mesh);
+    REQUIRE(transformed.valid);
+    REQUIRE(print_mesh.vertices.size() == source.vertices.size());
+    REQUIRE(print_mesh.indices.size() == source.indices.size());
+
+    const FiveAxisSurfaceNormalSampler sampler(print_mesh);
+    FiveAxisVec3 normal;
+    double distance = -1.0;
+    const auto sampled = sampler.sample({5.0, 0.0, 5.0}, normal, &distance, 3.0);
+    REQUIRE(sampled.valid);
+    CHECK(normal.z == Approx(1.0).margin(1e-6));
+    CHECK(distance == Approx(2.0).margin(1e-5));
+}
+
+TEST_CASE("Five-axis surface mesh transform preserves normal orientation for mirrored transforms", "[FiveAxisSurfaceNormals]")
+{
+    const indexed_triangle_set source = make_test_surface();
+    indexed_triangle_set print_mesh;
+    Transform3d transform = Transform3d::Identity();
+    transform.linear()(0, 0) = -1.0;
+
+    REQUIRE(transform_five_axis_surface_mesh(source, transform, print_mesh).valid);
+    const FiveAxisSurfaceNormalSampler sampler(print_mesh);
+    FiveAxisVec3 normal;
+    REQUIRE(sampler.sample({0.0, 0.0, 2.0}, normal, nullptr, 3.0).valid);
+    CHECK(normal.z == Approx(1.0).margin(1e-6));
+}
+
+TEST_CASE("Five-axis surface mesh transform rejects singular transforms without changing output", "[FiveAxisSurfaceNormals]")
+{
+    const indexed_triangle_set source = make_test_surface();
+    indexed_triangle_set output = source;
+    Transform3d transform = Transform3d::Identity();
+    transform.linear()(2, 2) = 0.0;
+
+    CHECK_FALSE(transform_five_axis_surface_mesh(source, transform, output).valid);
+    CHECK(output.vertices.size() == source.vertices.size());
+    CHECK(output.indices.size() == source.indices.size());
+}
