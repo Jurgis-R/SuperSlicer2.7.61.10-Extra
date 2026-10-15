@@ -146,8 +146,6 @@ TEST_CASE("Hybrid surface planner rejects paths above the configured slope-rate 
     REQUIRE(paths.empty());
 }
 
-}
-
 TEST_CASE("Hybrid surface planner rejects grids too narrow to sample a path",
           "[HybridNonplanarSurfacePlanner]")
 {
