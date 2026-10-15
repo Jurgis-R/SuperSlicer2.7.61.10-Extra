@@ -25,7 +25,8 @@ struct FiveAxisMachineProfile {
     FiveAxisCollisionConfig collision;
 
     // Conservative bounds for the XYZ carriage/tool reference in machine
-    // coordinates. The current planner does not yet enforce these bounds.
+    // coordinates. The explicit extrusion adapter checks planned command points
+    // against these bounds; this is not a swept-volume collision proof.
     FiveAxisVec3 machine_min { 0.0, 0.0, 0.0 };
     FiveAxisVec3 machine_max { 250.0, 250.0, 250.0 };
 };
