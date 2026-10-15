@@ -306,3 +306,19 @@ TEST_CASE("Hybrid non-planar finishing paths are emitted after the planar sectio
     REQUIRE(pass_gcode.find(" E") != std::string::npos);
     REQUIRE(pass_gcode.find("G1") != std::string::npos);
 }
+
+
+TEST_CASE("Hybrid non-planar disabled does not emit finishing-pass markers", "[GCode][HybridNonplanar]") {
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        { "hybrid_nonplanar_enabled", false },
+        { "layer_height", 0.2 },
+        { "first_layer_height", 0.2 },
+        { "start_gcode", "" }
+    });
+
+    const std::string gcode = Test::slice({ TestMesh::cube_20x20x20 }, config);
+    REQUIRE(gcode.find(";HYBRID_PLANAR_SECTION_END") == std::string::npos);
+    REQUIRE(gcode.find(";HYBRID_FINISHING_PASS_BEGIN") == std::string::npos);
+    REQUIRE(gcode.find(";HYBRID_FINISHING_PASS_END") == std::string::npos);
+}
