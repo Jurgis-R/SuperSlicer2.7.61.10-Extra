@@ -63,6 +63,35 @@ inline FiveAxisValidationResult validate_five_axis_machine_profile(
     return { true, {} };
 }
 
+ 
+// Validate every transformed XYZ reference against the configured machine
+// envelope. This is a bounds check only; it does not prove tool/fixture
+// clearance or account for the full swept volume of the toolhead.
+inline FiveAxisValidationResult validate_five_axis_machine_envelope(
+    const FiveAxisMachineProfile &profile,
+    const std::vector<FiveAxisCommand> &commands)
+{
+    if (!five_axis_finite(profile.machine_min) || !five_axis_finite(profile.machine_max) ||
+        profile.machine_min.x >= profile.machine_max.x ||
+        profile.machine_min.y >= profile.machine_max.y ||
+        profile.machine_min.z >= profile.machine_max.z)
+        return { false, "Machine XYZ envelope must contain finite increasing bounds." };
+    if (commands.empty())
+        return { false, "Cannot validate an empty path against the machine envelope." };
+
+    for (std::size_t i = 0; i < commands.size(); ++i) {
+        const FiveAxisCommand &command = commands[i];
+        if (!five_axis_finite_command(command))
+            return { false, "Machine-envelope check received an invalid motion command." };
+        if (command.x < profile.machine_min.x || command.x > profile.machine_max.x ||
+            command.y < profile.machine_min.y || command.y > profile.machine_max.y ||
+            command.z < profile.machine_min.z || command.z > profile.machine_max.z)
+            return { false, "Five-axis path exceeds the configured machine XYZ envelope at command " +
+                std::to_string(i) + "." };
+    }
+    return { true, {} };
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_FiveAxisMachineProfile_hpp_
