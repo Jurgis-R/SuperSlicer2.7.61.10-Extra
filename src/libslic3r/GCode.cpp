@@ -796,6 +796,8 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     // in print-Z order, not independently by each extrusion path.
     m_hybrid_nonplanar_scheduler.reset(print->config().hybrid_nonplanar_interval.value);
     m_hybrid_nonplanar_layer_due = false;
+    m_hybrid_nonplanar_queue.clear();
+    m_hybrid_path_deferred = false;
 
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
