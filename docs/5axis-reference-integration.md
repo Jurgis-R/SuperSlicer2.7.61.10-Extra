@@ -28,9 +28,11 @@ This document records how external projects inform the SuperSlicer `dev_5x` desi
 
 ## Current implementation boundary
 
-`src/libslic3r/FiveAxisEngine.hpp` adds an isolated, testable output-stage primitive: configurable rotary axis letters and limits, whole-path validation, rotary angle-change/rate checks, and all-or-nothing XYZ/rotary/E/F formatting. It deliberately accepts already-solved rotary angles. It does **not** yet solve inverse kinematics, transform part coordinates around rotary pivots, perform swept-nozzle collision checking, expose UI settings, or connect the output to `GCodeGenerator`. Therefore it is not yet a complete or print-ready five-axis engine.
+`src/libslic3r/FiveAxisKinematics.hpp` adds a configurable two-rotary-joint orientation solver, serial-axis rotation math, rotary-bed point transforms, and rotary-head tool-tip pivot compensation. The solver enforces configured angle ranges and fails closed when its numerical inverse-kinematics iteration does not converge.
 
-The hybrid non-planar helpers already present on `dev_5x` remain separate. In particular, the candidate surface planner's collision callback must be backed by a real mesh/tool sweep implementation before its paths can be approved for G-code.
+`src/libslic3r/FiveAxisEngine.hpp` adds the output stage: configurable rotary axis words and limits, whole-path validation, rotary angle-change/rate checks, and all-or-nothing XYZ/rotary/E/F formatting. The kinematics and output primitives are registered in the existing libslic3r and unit-test CMake lists.
+
+This is still **not a complete or print-ready five-axis engine**. The kinematics core is not yet called by `GCodeGenerator`; UI/profile configuration, full XYZ frame/calibration handling, machine-envelope checks, and firmware-specific output setup remain unintegrated. The output validator is a motion-limit guard, not a geometric collision test. The hybrid non-planar surface planner's collision callback must be backed by a real mesh/tool sweep implementation before its paths can be approved for G-code.
 
 ## Licensing and reuse
 
