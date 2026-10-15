@@ -62,6 +62,13 @@ TEST_CASE("Five-axis export gate preserves disabled mode and rejects missing con
     FiveAxisMachineProfile profile;
     CHECK(validate_five_axis_export_gate(profile, "").valid);
 
+    // Disabled experimental settings must not gate ordinary three-axis export,
+    // even if stale five-axis values would be invalid when the feature is enabled.
+    profile.kinematics.rotary_1_min_deg = 180.0;
+    profile.kinematics.rotary_1_max_deg = -180.0;
+    CHECK(validate_five_axis_export_gate(profile, "").valid);
+
+    profile = FiveAxisMachineProfile{};
     profile.enabled = true;
     profile.postprocessor_id = "example-controller";
     CHECK_FALSE(validate_five_axis_export_gate(profile, "").valid);
