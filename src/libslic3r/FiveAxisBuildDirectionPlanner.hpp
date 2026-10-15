@@ -4,6 +4,7 @@
 #define slic3r_FiveAxisBuildDirectionPlanner_hpp_
 
 #include "FiveAxisKinematics.hpp"
+#include "FiveAxisMachineProfile.hpp"
 #include "TriangleMesh.hpp"
 
 #include <algorithm>
@@ -184,6 +185,68 @@ inline FiveAxisBuildDirectionCandidate choose_five_axis_build_direction(
     const std::vector<FiveAxisVec3> candidates =
         generate_five_axis_build_direction_candidates(sample_count);
     return choose_five_axis_build_direction(mesh, candidates, config);
+}
+
+ 
+// Apply machine-aware feasibility checks after geometric scoring. Each pose
+// sequence must already be transformed for its corresponding candidate
+// orientation, and its normals must be expressed in the work frame expected by
+// the configured kinematics. This does not generate toolpaths from a mesh; it
+// filters caller-generated representative/sample paths and fails closed.
+inline std::vector<FiveAxisBuildDirectionCandidate> filter_five_axis_build_direction_candidates(
+    const std::vector<FiveAxisBuildDirectionCandidate> &candidates,
+    const std::vector<std::vector<FiveAxisToolPose>> &candidate_poses,
+    const FiveAxisMachineProfile &profile,
+    double initial_rotary_1_deg = 0.0,
+    double initial_rotary_2_deg = 0.0)
+{
+    std::vector<FiveAxisBuildDirectionCandidate> filtered = candidates;
+    if (!profile.enabled) {
+        for (auto &candidate : filtered) {
+            candidate.valid = false;
+            candidate.error = "Machine-aware orientation filtering requires an enabled five-axis profile.";
+        }
+        return filtered;
+    }
+    const FiveAxisValidationResult profile_validation = validate_five_axis_machine_profile(profile);
+    if (!profile_validation.valid) {
+        for (auto &candidate : filtered) {
+            candidate.valid = false;
+            candidate.error = "Invalid five-axis machine profile: " + profile_validation.error;
+        }
+        return filtered;
+    }
+    if (candidate_poses.size() != candidates.size()) {
+        for (auto &candidate : filtered) {
+            candidate.valid = false;
+            candidate.error = "Each orientation candidate must have one corresponding candidate-specific pose sequence.";
+        }
+        return filtered;
+    }
+
+    for (std::size_t i = 0; i < filtered.size(); ++i) {
+        if (!candidates[i].valid) {
+            filtered[i].valid = false;
+            if (filtered[i].error.empty())
+                filtered[i].error = "Geometric scoring rejected this orientation.";
+            continue;
+        }
+        std::vector<FiveAxisCommand> commands;
+        const FiveAxisValidationResult planned = plan_five_axis_path(
+            profile.kinematics, profile.output, profile.collision, candidate_poses[i],
+            commands, initial_rotary_1_deg, initial_rotary_2_deg);
+        if (!planned.valid) {
+            filtered[i].valid = false;
+            filtered[i].error = "Machine feasibility rejected orientation: " + planned.error;
+            continue;
+        }
+        const FiveAxisValidationResult envelope = validate_five_axis_machine_envelope(profile, commands);
+        if (!envelope.valid) {
+            filtered[i].valid = false;
+            filtered[i].error = "Machine XYZ envelope rejected orientation: " + envelope.error;
+        }
+    }
+    return filtered;
 }
 
 } // namespace Slic3r
