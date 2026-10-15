@@ -799,6 +799,26 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     m_hybrid_nonplanar_queue.clear();
     m_hybrid_path_deferred = false;
 
+    // The current hybrid prototype flushes inside per-object/per-extruder layer
+    // processing. Until the section planner owns the complete layer-group
+    // boundary, fail closed for layouts where this can split or reorder a pass.
+    // This is intentionally conservative; support belongs in the future outer
+    // layer-group scheduler, not in a larger per-object path queue.
+    if (print->config().hybrid_nonplanar_enabled.value) {
+        const bool multiple_objects = print->objects().size() != 1;
+        const bool multiple_instances = !multiple_objects &&
+            print->objects().front()->instances().size() != 1;
+        const bool multiple_extruders = print->config().nozzle_diameter.size() != 1;
+        const bool sequential_ordering = print->config().complete_objects.value ||
+            print->config().parallel_objects_step.value > 0;
+        if (multiple_objects || multiple_instances || multiple_extruders || sequential_ordering) {
+            throw RuntimeError(
+                "Hybrid non-planar printing currently requires one object, one instance, "
+                "one extruder, and layer-by-layer ordering; export aborted because safe "
+                "finishing-pass ordering is not implemented for this print layout");
+        }
+    }
+
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
     std::vector<std::pair<std::string, std::string>> validation_res = DoExport::validate_custom_gcode(*print);
