@@ -107,3 +107,23 @@ TEST_CASE("Five-axis surface mesh transform rejects singular transforms without 
     CHECK(output.vertices.size() == source.vertices.size());
     CHECK(output.indices.size() == source.indices.size());
 }
+
+
+TEST_CASE("Five-axis volume mesh transform composes centered object and volume transforms", "[FiveAxisSurfaceNormals]")
+{
+    const indexed_triangle_set source = make_test_surface();
+    indexed_triangle_set print_mesh;
+    Transform3d object_transform = Transform3d::Identity();
+    object_transform.translate(Vec3d(5.0, 0.0, 3.0));
+    Transform3d volume_transform = Transform3d::Identity();
+    volume_transform.translate(Vec3d(2.0, 0.0, 0.0));
+
+    REQUIRE(transform_five_axis_volume_mesh(
+        source, object_transform, volume_transform, print_mesh).valid);
+    const FiveAxisSurfaceNormalSampler sampler(print_mesh);
+    FiveAxisVec3 normal;
+    double distance = -1.0;
+    REQUIRE(sampler.sample({7.0, 0.0, 5.0}, normal, &distance, 3.0).valid);
+    CHECK(normal.z == Approx(1.0).margin(1e-6));
+    CHECK(distance == Approx(2.0).margin(1e-5));
+}
