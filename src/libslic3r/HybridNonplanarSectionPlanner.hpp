@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <vector>
 #include <string>
 
 namespace Slic3r {
@@ -51,15 +52,22 @@ inline bool constrain_hybrid_nonplanar_offsets(
         constrained[i] = std::max(-endpoint_limit,
                                   std::min(endpoint_limit, constrained[i]));
     }
-    for (std::size_t i = 1; i < n; ++i) {
-        const double limit = slope * (distances_mm[i] - distances_mm[i - 1]);
-        constrained[i] = std::max(constrained[i - 1] - limit,
-                                  std::min(constrained[i - 1] + limit, constrained[i]));
-    }
-    for (std::size_t i = n - 1; i-- > 0;) {
-        const double limit = slope * (distances_mm[i + 1] - distances_mm[i]);
-        constrained[i] = std::max(constrained[i + 1] - limit,
-                                  std::min(constrained[i + 1] + limit, constrained[i]));
+    // Repeated forward/backward projection enforces the segment limit while
+    // keeping both nominal-Z endpoints fixed. The final explicit check below
+    // fails closed if the finite iteration budget is insufficient.
+    for (std::size_t pass = 0; pass < 4 * n; ++pass) {
+        for (std::size_t i = 1; i + 1 < n; ++i) {
+            const double limit = slope * (distances_mm[i] - distances_mm[i - 1]);
+            constrained[i] = std::max(constrained[i - 1] - limit,
+                                      std::min(constrained[i - 1] + limit, constrained[i]));
+        }
+        for (std::size_t i = n - 1; i-- > 1;) {
+            const double limit = slope * (distances_mm[i + 1] - distances_mm[i]);
+            constrained[i] = std::max(constrained[i + 1] - limit,
+                                      std::min(constrained[i + 1] + limit, constrained[i]));
+        }
+        constrained.front() = 0.0;
+        constrained.back() = 0.0;
     }
 
     // Verify the invariant explicitly. Never pass a path to G-code emission if
