@@ -3619,60 +3619,6 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
 
-    def = this->add("hybrid_nonplanar_enabled", coBool);
-    def->label = L("Hybrid non-planar printing (experimental)");
-    def->full_label = L("Hybrid non-planar printing");
-    def->category = OptionCategory::infill;
-    def->tooltip = L("Experimental interval-triggered non-planar deformation of existing perimeter and top-solid paths. ZAA is automatically suppressed while this option is enabled."
-                     "\nThis first implementation deforms eligible existing paths on the layer that crosses each H interval; it does not yet create a separate additional pass or generate new surface paths."
-                     "\nUse a small test model first. No complete toolhead-envelope collision check is available yet.");
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionBool(false));
-
-    def = this->add("hybrid_nonplanar_interval", coFloat);
-    def->label = L("Hybrid non-planar interval H");
-    def->full_label = L("Hybrid non-planar interval H");
-    def->category = OptionCategory::infill;
-    def->tooltip = L("Vertical distance in millimetres between layers selected for experimental non-planar path deformation.");
-    def->sidetext = L("mm");
-    def->min = 0.2;
-    def->max = 20;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloat(2.0));
-
-    def = this->add("hybrid_nonplanar_max_slope", coFloat);
-    def->label = L("Hybrid non-planar maximum slope");
-    def->full_label = L("Hybrid non-planar maximum slope");
-    def->category = OptionCategory::infill;
-    def->tooltip = L("Limits the angle of Z change along a deformed extrusion path. Lower values are gentler; this does not replace collision checks.");
-    def->sidetext = L("deg");
-    def->min = 1;
-    def->max = 60;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloat(30.0));
-
-    def = this->add("hybrid_nonplanar_max_offset", coFloat);
-    def->label = L("Hybrid non-planar maximum Z offset");
-    def->full_label = L("Hybrid non-planar maximum Z offset");
-    def->category = OptionCategory::infill;
-    def->tooltip = L("Maximum upward or downward Z displacement from the nominal layer surface, in millimetres.");
-    def->sidetext = L("mm");
-    def->min = 0.05;
-    def->max = 2;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloat(0.4));
-
-    def = this->add("hybrid_nonplanar_speed", coFloat);
-    def->label = L("Hybrid non-planar speed limit");
-    def->full_label = L("Hybrid non-planar speed limit");
-    def->category = OptionCategory::infill;
-    def->tooltip = L("Maximum speed used on active non-planar path sections. Start conservatively and increase only after validation.");
-    def->sidetext = L("mm/s");
-    def->min = 1;
-    def->max = 100;
-    def->mode = comExpert | comSuSi;
-    def->set_default_value(new ConfigOptionFloat(20.0));
-
     def = this->add("zaa_enabled", coBool);
     def->label = L("Z contouring (ZAA) on top surfaces");
     def->full_label = L("Z contouring (ZAA)");
@@ -10461,11 +10407,6 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "min_width_top_surface",
 "skip_tiny_fill_diagonal",
 "skip_tiny_perimeter_length",
-"hybrid_nonplanar_enabled",
-"hybrid_nonplanar_interval",
-"hybrid_nonplanar_max_slope",
-"hybrid_nonplanar_max_offset",
-"hybrid_nonplanar_speed",
 "zaa_enabled",
 "zaa_contour_perimeters",
 "zaa_min_z",
