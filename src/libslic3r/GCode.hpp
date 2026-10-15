@@ -41,6 +41,7 @@
 #include "GCode/WipeTowerIntegration.hpp"
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
+#include "HybridNonplanarScheduler.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/Travels.hpp"
 #include "EdgeGrid.hpp"
@@ -529,6 +530,8 @@ private:
     const ZaaMeshData*        zaa_mesh_for(const PrintObject *obj);
     bool                      _zaa_contour(const ExtrusionPath &path, std::vector<std::pair<Point, coord_t>> &out);
     std::vector<char>         m_zaa_active; // v3: per sample of the last _zaa_contour(): 1 = follows the surface, 0 = flat
+    HybridNonplanarScheduler  m_hybrid_nonplanar_scheduler;
+    bool                      m_hybrid_nonplanar_layer_due { false };
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
     double                              m_last_mm3_per_mm;
 #endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
