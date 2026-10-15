@@ -3681,7 +3681,7 @@ LayerResult GCodeGenerator::process_layer(
     // the H-section planner here (not per object or per extruder), so the
     // completed-section metadata describes the entire planar group.
     m_hybrid_completed_section.reset();
-    if (m_config.hybrid_nonplanar_enabled.value) {
+    if (m_config.hybrid_nonplanar_enabled.value || m_config.hybrid_surface_pass_preflight.value) {
         m_hybrid_completed_section = m_hybrid_nonplanar_section_planner.after_planar_layer(
             layer.bottom_z(), print_z);
         if (!m_hybrid_nonplanar_section_planner.valid())
