@@ -43,6 +43,7 @@
 #include "GCode/GCodeProcessor.hpp"
 #include "HybridNonplanarScheduler.hpp"
 #include "HybridNonplanarSectionPlanner.hpp"
+#include "HybridNonplanarExtrusion.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/Travels.hpp"
 #include "EdgeGrid.hpp"
@@ -632,6 +633,9 @@ private:
     void                      _extrude_line_cut_corner(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, Point& last_pos, const double path_width);
     std::string               _before_extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1, double max_speed_mm_s = -1);
     std::string               _travel_before_extrude(const ExtrusionPath &path, const std::string_view description, double speed_mm_s = -1);
+    // Shared setup after a travel has already established the extrusion start state.
+    // The hybrid path may skip unlift only with a validated explicit writer-state contract.
+    std::string               _prepare_extrusion_after_travel(const ExtrusionPath &path, const std::string_view description, double speed_mm_s, const std::string &speed_comment, bool route_established_state, const HybridPreExtrusionTravelContract *route_contract);
     double_t                  _compute_speed_mm_per_sec(const ExtrusionPath &path_attrs, const double speed, double &fan_speed, std::string *comment) const;
     std::pair<double, double> _compute_acceleration(const ExtrusionPath &path);
     std::string               _after_extrude(const ExtrusionPath &path);
