@@ -435,3 +435,22 @@ TEST_CASE("Hybrid swept-tool validator rejects a sampled shaft sweep through the
     CHECK(validator.segment_is_clear(Vec3d(0.25, 0.5, 2.0),
                                      Vec3d(0.75, 0.5, 2.0)));
 }
+
+
+TEST_CASE("Hybrid swept-tool validator rejects overlapping envelope height definitions",
+          "[HybridNonplanarCollision]")
+{
+    const indexed_triangle_set mesh = make_closed_cube();
+    AABBMesh aabb(mesh);
+    HybridSweptToolOptions options;
+    options.nozzle_shaft_top_mm = 10.0;
+    options.toolhead_start_mm = 9.0;
+    HybridSweptToolCollisionValidator validator(mesh, aabb, options);
+    REQUIRE_FALSE(validator.valid());
+
+    options.nozzle_shaft_top_mm = 8.0;
+    options.toolhead_start_mm = 8.0;
+    options.path_sample_step_mm = 2.1;
+    HybridSweptToolCollisionValidator excessive_step_validator(mesh, aabb, options);
+    REQUIRE_FALSE(excessive_step_validator.valid());
+}
