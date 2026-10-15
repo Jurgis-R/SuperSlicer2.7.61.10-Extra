@@ -1448,6 +1448,7 @@ void PrintObject::slice_volumes()
         slice_zs,
         throw_on_cancel_callback);
 
+    std::vector<std::vector<FiveAxisSourceProvenance>> five_axis_provenance;
     std::vector<std::vector<ExPolygons>> region_slices = slices_to_regions(
         print->config(),
         *this,
@@ -1455,6 +1456,7 @@ void PrintObject::slice_volumes()
         *m_shared_regions, 
         slice_zs,
         std::move(volume_slices),
+        five_axis_provenance,
         throw_on_cancel_callback);
 
 
