@@ -3740,12 +3740,23 @@ LayerResult GCodeGenerator::process_layer(
         double mesh_top_z = -std::numeric_limits<double>::infinity();
         for (const Vec3f &vertex : print_mesh.vertices)
             mesh_top_z = std::max(mesh_top_z, static_cast<double>(vertex.z()));
-        const double clearance_z = mesh_top_z + tool_options.toolhead_top_mm +
-                                   tool_options.required_clearance_mm + 1.0;
-        if (!std::isfinite(clearance_z))
-            throw RuntimeError("Hybrid surface-pass preflight produced an invalid clearance height");
-        Vec3d previous_safe_point = Vec3d::Zero();
-        bool have_previous_safe_point = false;
+        const Vec3d writer_position = m_writer.get_position();
+        const Vec2d tool_offset = m_writer.current_tool_offset();
+        const Vec3d current_tip(writer_position.x() - m_origin.x() + tool_offset.x(),
+                                writer_position.y() - m_origin.y() + tool_offset.y(),
+                                writer_position.z());
+        const double clearance_z = std::max(
+            writer_position.z(),
+            mesh_top_z + tool_options.toolhead_top_mm +
+                tool_options.required_clearance_mm + 1.0);
+        if (!current_tip.allFinite() || !std::isfinite(clearance_z))
+            throw RuntimeError("Hybrid surface-pass preflight produced an invalid live-writer position or clearance height");
+
+        const Vec3d safe_current(current_tip.x(), current_tip.y(), clearance_z);
+        if (!collision_validator.segment_is_clear(current_tip, safe_current))
+            throw RuntimeError("Hybrid surface-pass preflight rejected the live-writer departure move");
+
+        Vec3d previous_safe_point = safe_current;
         for (const HybridSurfacePath &path : candidates) {
             if (path.points.size() < 2)
                 throw RuntimeError("Hybrid surface-pass preflight produced a degenerate path");
@@ -3753,13 +3764,12 @@ LayerResult GCodeGenerator::process_layer(
             const Vec3d last = path.points.back();
             const Vec3d safe_first(first.x(), first.y(), clearance_z);
             const Vec3d safe_last(last.x(), last.y(), clearance_z);
-            if (!collision_validator.segment_is_clear(first, safe_first) ||
-                !collision_validator.segment_is_clear(safe_last, last) ||
-                (have_previous_safe_point &&
-                 !collision_validator.segment_is_clear(previous_safe_point, safe_first)))
-                throw RuntimeError("Hybrid surface-pass preflight rejected an approach, departure or high-Z transition");
+            if (!collision_validator.segment_is_clear(previous_safe_point, safe_first) ||
+                !collision_validator.segment_is_clear(safe_first, first) ||
+                !collision_validator.segment_is_clear(first, last) ||
+                !collision_validator.segment_is_clear(last, safe_last))
+                throw RuntimeError("Hybrid surface-pass preflight rejected the live approach, finishing path, departure or high-Z transition");
             previous_safe_point = safe_last;
-            have_previous_safe_point = true;
         }
 
         BOOST_LOG_TRIVIAL(info) << "Hybrid surface-pass preflight accepted "
