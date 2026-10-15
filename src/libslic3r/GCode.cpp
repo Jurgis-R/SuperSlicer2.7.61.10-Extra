@@ -3671,6 +3671,12 @@ LayerResult GCodeGenerator::process_layer(
     layer_area = unscaled(unscaled(layer_area));
     status_monitor.stats().layer_area_stats.emplace_back(print_z, layer_area);
 
+    // This is the outer print-Z layer-group boundary: all objects and tools
+    // participating at this height have completed their planar work. Keep the
+    // experimental finishing queue here, not inside per-object extrusion,
+    // so a pass can never split another object's/tool's work at the same Z.
+    this->flush_hybrid_nonplanar_queue(gcode);
+
     BOOST_LOG_TRIVIAL(trace) << "Exported layer " << layer.id() << " print_z " << print_z <<
     log_memory_info();
 
@@ -3842,9 +3848,6 @@ void GCodeGenerator::process_layer_single_object(
             }
         }
     }
-    // Finish the current planar section before emitting the deferred non-planar paths.
-    this->flush_hybrid_nonplanar_queue(gcode);
-
     // Don't set m_gcode_label_objects_end if you don't had to write the m_gcode_label_objects_start.
     // m_gcode_label_objects_start != "" => start_object has been called, but not written on gcode.
     // first == true => start_object has NOT been called
