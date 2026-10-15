@@ -1463,7 +1463,8 @@ void PrintObject::slice_volumes()
         std::vector<ExPolygons> &by_layer = region_slices[region_id];
         for (size_t layer_id = 0; layer_id < by_layer.size(); ++ layer_id) {
             ensure_valid(by_layer[layer_id]);
-            m_layers[layer_id]->regions()[region_id]->m_slices.append(std::move(by_layer[layer_id]), stPosInternal | stDensSparse);\n            m_layers[layer_id]->regions()[region_id]->m_five_axis_source_provenance = five_axis_provenance[region_id][layer_id];
+            m_layers[layer_id]->regions()[region_id]->m_slices.append(std::move(by_layer[layer_id]), stPosInternal | stDensSparse);
+            m_layers[layer_id]->regions()[region_id]->m_five_axis_source_provenance = five_axis_provenance[region_id][layer_id];\n            m_layers[layer_id]->regions()[region_id]->m_five_axis_source_provenance = five_axis_provenance[region_id][layer_id];
             for(auto &srf : m_layers[layer_id]->regions()[region_id]->m_slices) srf.expolygon.assert_valid();
         }
     }
