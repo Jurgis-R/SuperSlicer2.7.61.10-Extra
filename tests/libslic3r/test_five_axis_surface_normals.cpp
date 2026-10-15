@@ -127,3 +127,42 @@ TEST_CASE("Five-axis volume mesh transform composes centered object and volume t
     CHECK(normal.z == Approx(1.0).margin(1e-6));
     CHECK(distance == Approx(2.0).margin(1e-5));
 }
+
+TEST_CASE("Five-axis correspondence selects one source volume for a whole path", "[FiveAxisSurfaceNormals]")
+{
+    const indexed_triangle_set lower = make_test_surface();
+    indexed_triangle_set upper = make_test_surface();
+    for (Vec3f &v : upper.vertices)
+        v.z() += 5.f;
+
+    FiveAxisSurfaceCorrespondence correspondence;
+    REQUIRE(correspondence.add_source(17, lower).valid);
+    REQUIRE(correspondence.add_source(23, upper).valid);
+
+    ExtrusionPath3D path(ExtrusionAttributes{}, true);
+    path.push_back(Point(0, 0), 0);
+    path.push_back(Point(1000, 0), 0);
+    int matched_id = -1;
+    const auto result = correspondence.assign_path_normals(path, 0.0, 1.0, 0.05, &matched_id);
+    REQUIRE(result.valid);
+    CHECK(matched_id == 17);
+    REQUIRE(path.has_tool_axis_normals());
+    CHECK(path.tool_axis_normals[0][2] == Approx(1.0).margin(1e-6));
+}
+
+TEST_CASE("Five-axis correspondence rejects equally plausible overlapping source volumes", "[FiveAxisSurfaceNormals]")
+{
+    const indexed_triangle_set first = make_test_surface();
+    const indexed_triangle_set second = make_test_surface();
+    FiveAxisSurfaceCorrespondence correspondence;
+    REQUIRE(correspondence.add_source(1, first).valid);
+    REQUIRE(correspondence.add_source(2, second).valid);
+
+    ExtrusionPath3D path(ExtrusionAttributes{}, true);
+    path.push_back(Point(0, 0), 0);
+    path.push_back(Point(1000, 0), 0);
+    path.tool_axis_normals = { { { 0.0, 1.0, 0.0 } }, { { 0.0, 1.0, 0.0 } } };
+    const auto previous = path.tool_axis_normals;
+    CHECK_FALSE(correspondence.assign_path_normals(path, 0.0, 1.0).valid);
+    CHECK(path.tool_axis_normals == previous);
+}
