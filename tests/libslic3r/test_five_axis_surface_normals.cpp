@@ -187,8 +187,7 @@ TEST_CASE("Five-axis surface sampler can disable thin-wall ambiguity probing exp
 {
     indexed_triangle_set thin_wall = make_test_surface();
     const int offset = int(thin_wall.vertices.size());
-    const indexed_triangle_set opposite = make_test_surface();
-    for (const Vec3f &v : opposite.vertices)
+    for (const Vec3f &v : make_test_surface().vertices)
         thin_wall.vertices.emplace_back(v.x(), v.y(), v.z() + 0.1f);
     thin_wall.indices.emplace_back(offset + 0, offset + 2, offset + 1);
 
