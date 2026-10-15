@@ -3723,7 +3723,7 @@ LayerResult GCodeGenerator::process_layer(
         tool_options.required_clearance_mm = m_config.hybrid_tool_required_clearance.value;
         tool_options.path_sample_step_mm = m_config.hybrid_tool_path_sample_step.value;
         // These are user-supplied simplified envelopes, not a full CAD model
-        // of the printer. Actual finishing-pass G-code remains disabled.
+        // of the printer; output remains separately gated by the default-off option.
         HybridSweptToolCollisionValidator collision_validator(print_mesh, collision_index, tool_options);
         if (!collision_validator.valid())
             throw RuntimeError("Hybrid surface-pass preflight rejected open, inconsistent or degenerate mesh topology");
@@ -3779,6 +3779,8 @@ LayerResult GCodeGenerator::process_layer(
                 throw RuntimeError("Hybrid surface-pass preflight rejected the live approach, finishing path, departure or high-Z transition");
             previous_safe_point = safe_last;
         }
+        if (!collision_validator.segment_is_clear(previous_safe_point, safe_current))
+            throw RuntimeError("Hybrid surface-pass preflight rejected the final high-Z return transition");
 
         // Build a distinct typed path set using the configured top-solid
         // flow. Keep this independent of the ordinary planar extrusion entities.
@@ -3798,10 +3800,23 @@ LayerResult GCodeGenerator::process_layer(
         // Re-check the quantized path geometry, not just the floating-point
         // planner candidates. The configured swept-tool validator must approve
         // every segment after conversion to SuperSlicer coordinates.
+        Vec3d previous_quantized_safe = safe_current;
         for (const ExtrusionPath3D &path : surface_paths) {
             if (path.polyline.size() < 2 ||
                 path.z_offsets.size() != size_t(path.polyline.size()))
                 throw RuntimeError("Hybrid surface-pass preflight rejected malformed typed extrusion geometry");
+            const Point &first_xy = path.polyline.get_point(0);
+            const Point &last_xy = path.polyline.get_point(path.polyline.size() - 1);
+            const Vec3d first(unscaled<double>(first_xy.x()), unscaled<double>(first_xy.y()),
+                              nominal_z + unscaled<double>(path.z_offsets.front()));
+            const Vec3d last(unscaled<double>(last_xy.x()), unscaled<double>(last_xy.y()),
+                             nominal_z + unscaled<double>(path.z_offsets.back()));
+            const Vec3d safe_first(first.x(), first.y(), clearance_z);
+            const Vec3d safe_last(last.x(), last.y(), clearance_z);
+            if (!collision_validator.segment_is_clear(previous_quantized_safe, safe_first) ||
+                !collision_validator.segment_is_clear(safe_first, first) ||
+                !collision_validator.segment_is_clear(last, safe_last))
+                throw RuntimeError("Hybrid surface-pass preflight rejected a quantized approach, departure or high-Z transition");
             for (size_t i = 1; i < path.polyline.size(); ++i) {
                 const Point &a = path.polyline.get_point(i - 1);
                 const Point &b = path.polyline.get_point(i);
@@ -3812,7 +3827,10 @@ LayerResult GCodeGenerator::process_layer(
                 if (!collision_validator.segment_is_clear(from, to))
                     throw RuntimeError("Hybrid surface-pass preflight rejected a quantized extrusion segment");
             }
+            previous_quantized_safe = safe_last;
         }
+        if (!collision_validator.segment_is_clear(previous_quantized_safe, safe_current))
+            throw RuntimeError("Hybrid surface-pass preflight rejected the quantized final return transition");
 
         if (m_config.hybrid_surface_pass_enabled.value) {
             // Save the live writer state. Return to this same point after the
@@ -3826,7 +3844,7 @@ LayerResult GCodeGenerator::process_layer(
             const std::string pass_comment = "Hybrid surface finishing pass";
             const double travel_speed = std::max(1.0, planner_options.travel_speed_mm_s);
 
-            gcode += ";HYBRID_SURFACE_PASS_BEGIN\\n";
+            gcode += ";HYBRID_SURFACE_PASS_BEGIN\n";
             gcode += m_writer.get_travel_to_z_gcode(safe_z, "Hybrid pass: raise to validated clearance");
             gcode += m_writer.travel_to_xyz(
                 this->point_to_gcode(safe_start_scaled), false, travel_speed,
@@ -3852,7 +3870,6 @@ LayerResult GCodeGenerator::process_layer(
                         ? m_config.hybrid_nonplanar_speed.value : -1.0);
 
                 const Point &last_xy = path.polyline.get_point(path.polyline.size() - 1);
-                const double last_z = nominal_z + unscaled<double>(path.z_offsets.back());
                 gcode += m_writer.get_travel_to_z_gcode(safe_z, "Hybrid pass: validated departure");
                 const Vec3d safe_last_scaled(double(last_xy.x()), double(last_xy.y()),
                                              double(scale_t(safe_z)));
@@ -3860,7 +3877,6 @@ LayerResult GCodeGenerator::process_layer(
                     this->point_to_gcode(safe_last_scaled), false, travel_speed,
                     "Hybrid pass: validated high-Z transition");
                 set_last_pos(last_xy);
-                (void)last_scaled;
             }
 
             // The original departure segment was validated above; reverse it
@@ -3876,7 +3892,7 @@ LayerResult GCodeGenerator::process_layer(
                 set_last_pos(saved_last_pos);
             else
                 unset_last_pos();
-            gcode += ";HYBRID_SURFACE_PASS_END\\n";
+            gcode += ";HYBRID_SURFACE_PASS_END\n";
         }
 
         BOOST_LOG_TRIVIAL(info) << "Hybrid surface-pass preflight accepted "
