@@ -9,7 +9,7 @@ The five-axis implementation must remain opt-in until the complete toolpath, mac
 ## Current code
 
 - `src/libslic3r/FiveAxisKinematics.hpp`: configurable two-joint orientation solving, rotary-bed point transforms, and rotary-head tool-tip compensation.
-- `src/libslic3r/FiveAxisEngine.hpp`: candidate-path checks for finite coordinates, rotary limits, simultaneous-axis policy, rotary change per linear distance, and estimated rotary rate; emits XYZ, two configured rotary words, E, and F only after whole-path validation.
+- `src/libslic3r/FiveAxisEngine.hpp`: candidate-path checks for finite coordinates, rotary limits, simultaneous-axis policy, rotary change per linear distance, and estimated rotary rate; emits XYZ, two configured rotary words, E, and F only after whole-path validation. `FiveAxisMachineProfile.hpp` now validates transformed XYZ commands against its configured machine envelope, and the extrusion adapter rejects out-of-envelope paths before returning commands.
 - `src/libslic3r/FiveAxisSurfaceNormals.hpp`: transforms a source volume mesh into print-object space, samples surface normals, and provides `FiveAxisSurfaceCorrespondence` to choose one candidate source volume for an entire path. It rejects equally plausible volume matches instead of silently mixing normals across overlapping volumes. The sampler now also probes along the nearest face normal and rejects a nearby, opposing face within a configurable thin-wall ambiguity distance (0.25 mm by default). This conservative ray-based check is not a general closest-face enumeration and must still be validated against real meshes.
 - `src/libslic3r/FiveAxisBuildDirectionPlanner.hpp`: generates a deterministic full-sphere set of build-up candidates (including six cardinal axes), scores directions using a mesh face-area-weighted overhang proxy and projected build height, and chooses the lowest-scoring valid candidate. Candidate generation and scoring are now automated as a geometry-only first heuristic, not a complete slicer planner.
 - `tests/libslic3r/test_five_axis_kinematics.cpp` and `tests/libslic3r/test_five_axis_engine.cpp`: unit coverage for the isolated math and output helpers.
@@ -44,7 +44,7 @@ These are helper-level primitives. They are not yet a complete slicer-to-machine
 
 5. **Machine-aware motion planning**
    - Transform path points into machine coordinates and compensate the tool-center point.
-   - Check XYZ travel, rotary travel, rotary rate, linear speed, acceleration and extrusion flow.
+   - Check XYZ travel against the configured machine envelope, rotary travel, rotary rate, linear speed, acceleration and extrusion flow.
    - Add conservative swept-tool and machine-envelope collision validation. A path must be rejected if required collision geometry is unavailable.
 
 6. **G-code integration**
