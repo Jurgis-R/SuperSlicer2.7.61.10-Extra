@@ -3714,8 +3714,16 @@ LayerResult GCodeGenerator::process_layer(
 
         AABBMesh collision_index(print_mesh);
         HybridSweptToolOptions tool_options;
-        // These defaults are provisional, not a printer profile. Do not emit
-        // G-code until actual machine-envelope dimensions are configurable.
+        tool_options.nozzle_tip_exclusion_mm = m_config.hybrid_tool_nozzle_tip_exclusion.value;
+        tool_options.nozzle_shaft_radius_mm = m_config.hybrid_tool_nozzle_shaft_radius.value;
+        tool_options.nozzle_shaft_top_mm = m_config.hybrid_tool_nozzle_shaft_top.value;
+        tool_options.toolhead_radius_mm = m_config.hybrid_toolhead_radius.value;
+        tool_options.toolhead_start_mm = m_config.hybrid_toolhead_start.value;
+        tool_options.toolhead_top_mm = m_config.hybrid_toolhead_top.value;
+        tool_options.required_clearance_mm = m_config.hybrid_tool_required_clearance.value;
+        tool_options.path_sample_step_mm = m_config.hybrid_tool_path_sample_step.value;
+        // These are user-supplied simplified envelopes, not a full CAD model
+        // of the printer. Actual finishing-pass G-code remains disabled.
         HybridSweptToolCollisionValidator collision_validator(print_mesh, collision_index, tool_options);
         if (!collision_validator.valid())
             throw RuntimeError("Hybrid surface-pass preflight rejected open, inconsistent or degenerate mesh topology");
@@ -3733,10 +3741,10 @@ LayerResult GCodeGenerator::process_layer(
         if (!plan_hybrid_surface_paths(print_mesh, planner_options, segment_is_clear, candidates))
             throw RuntimeError("Hybrid surface-pass preflight found no fully validated candidate paths; export aborted");
 
-        // Validate each path's vertical approach/departure to a clearance plane
-        // above the mesh, plus high-Z transitions between paths. The live writer
-        // position is deliberately NOT used here: that final transition remains
-        // a release blocker, so this option cannot emit a pass.
+        // Validate the live-writer departure lift, high-Z travel, vertical
+        // approaches/departures, candidate paths and high-Z transitions. These
+        // checks use the simplified user-supplied envelope and remain preflight
+        // only; they do not authorize actual finishing-pass G-code emission.
         double mesh_top_z = -std::numeric_limits<double>::infinity();
         for (const Vec3f &vertex : print_mesh.vertices)
             mesh_top_z = std::max(mesh_top_z, static_cast<double>(vertex.z()));

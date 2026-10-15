@@ -3633,9 +3633,92 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Hybrid surface-pass collision preflight (no G-code output)");
     def->full_label = L("Hybrid surface-pass collision preflight");
     def->category = OptionCategory::infill;
-    def->tooltip = L("Experimental preflight only. At completed H-section boundaries, build candidate surface paths from the transformed model mesh and validate the configured approximate tool envelope and high-Z transitions. This option does NOT emit a finishing pass. Full approach/departure validation from the live writer position and extrusion integration are not yet available.");
+    def->tooltip = L("Experimental preflight only. At completed H-section boundaries, build candidate surface paths from the transformed model mesh and validate the user-configured simplified tool envelope, live-writer approach/departure and high-Z transitions. This option does NOT emit a finishing pass. Envelope values must be measured for the actual mounted tool; this approximation is not a proof of collision freedom.");
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
+
+    // Explicit machine-envelope inputs for experimental hybrid surface-pass
+    // preflight. Defaults are placeholders only: users must measure the actual
+    // mounted nozzle and toolhead before treating a successful preflight as useful.
+    def = this->add("hybrid_tool_nozzle_tip_exclusion", coFloat);
+    def->label = L("Hybrid nozzle tip exclusion height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip excluded from mesh-clearance checks. Measure the actual nozzle tip/contact region; this is not a collision guarantee.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 10;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.6));
+
+    def = this->add("hybrid_tool_nozzle_shaft_radius", coFloat);
+    def->label = L("Hybrid nozzle shaft radius");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Radius of the nozzle/shaft envelope measured from the nozzle tip axis. Use the largest actual radius over this height.");
+    def->sidetext = L("mm");
+    def->min = 0.1;
+    def->max = 30;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.4));
+
+    def = this->add("hybrid_tool_nozzle_shaft_top", coFloat);
+    def->label = L("Hybrid nozzle shaft envelope top");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip where the upper toolhead envelope begins.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 100;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_radius", coFloat);
+    def->label = L("Hybrid upper toolhead radius");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Conservative radial envelope of the mounted toolhead above its start height. Measure the actual assembly.");
+    def->sidetext = L("mm");
+    def->min = 0.1;
+    def->max = 100;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_start", coFloat);
+    def->label = L("Hybrid upper toolhead start height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip where the upper toolhead radius applies; must be at or above the nozzle shaft envelope top.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 100;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_top", coFloat);
+    def->label = L("Hybrid toolhead envelope top height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Top height above the nozzle tip included in the simplified toolhead collision envelope.");
+    def->sidetext = L("mm");
+    def->min = 0.3;
+    def->max = 200;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(25.0));
+
+    def = this->add("hybrid_tool_required_clearance", coFloat);
+    def->label = L("Hybrid toolhead required clearance");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Additional clearance around the simplified tool envelope and model surface.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 20;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
+    def = this->add("hybrid_tool_path_sample_step", coFloat);
+    def->label = L("Hybrid tool collision sample step");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum sampling step in millimetres for the approximate swept-tool check. Smaller steps are slower; this does not model every toolhead feature.");
+    def->sidetext = L("mm");
+    def->min = 0.05;
+    def->max = 2;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.2));
 
     def = this->add("hybrid_nonplanar_interval", coFloat);
     def->label = L("Hybrid non-planar interval H");
