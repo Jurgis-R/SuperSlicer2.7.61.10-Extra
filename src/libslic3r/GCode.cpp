@@ -6090,6 +6090,23 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
         route.departure_points.size() < 2 || route.return_points.size() < 2)
         throw std::runtime_error("Hybrid surface route has invalid path or waypoint structure.");
 
+    auto validate_waypoints = [](const std::vector<Vec3d> &points) {
+        if (points.size() < 2)
+            return false;
+        for (size_t i = 0; i < points.size(); ++i) {
+            if (!points[i].allFinite())
+                return false;
+            if (i > 0 && (points[i] - points[i - 1]).norm() <= 0.0)
+                return false;
+        }
+        return true;
+    };
+    if (!validate_waypoints(route.approach.points) ||
+        !validate_waypoints(route.extrusion_points) ||
+        !validate_waypoints(route.departure_points) ||
+        !validate_waypoints(route.return_points))
+        throw std::runtime_error("Hybrid surface route contains non-finite or zero-length waypoints.");
+
     // The current writer route primitive deliberately requires zero active lift.
     // Refuse unsupported states before emitting any G-code; do not silently
     // normalize an existing lift because that would invalidate collision checks.
@@ -6117,14 +6134,11 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
             throw std::runtime_error("Hybrid surface route vertices do not match the extrusion path; aborting export.");
     }
 
-    ExtrusionPath3D oriented_path = path;
+    // This executor does not reverse paths: the collision-checked route and the
+    // extrusion direction must remain identical. A caller with a flipped visitor
+    // must orient and validate the route before entering this function.
     if (this->visitor_flipped)
-        oriented_path.reverse();
-    // This executor does not perform nearest-end reversal: the collision-checked
-    // route and the extrusion direction must remain identical.
-    if (!coincides(this->point_to_gcode(oriented_path.polyline.get_point(0), oriented_path.z_offsets[0]),
-                   route.extrusion_points.front()))
-        throw std::runtime_error("Hybrid surface route extrusion direction is inconsistent.");
+        throw std::runtime_error("Hybrid surface route cannot execute a visitor-flipped path.");
 
     std::string gcode;
     gcode.reserve(1024);
