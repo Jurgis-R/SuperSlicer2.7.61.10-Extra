@@ -810,6 +810,13 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     m_five_axis_rotary_state_initialized = false;
     m_five_axis_surface_source_caches.clear();
     if (print->config().opt_bool("five_axis_enabled")) {
+        // The only registered five-axis controller contract currently targets
+        // Klipper's GCODE_AXIS support. Do not silently emit rotary words into
+        // another firmware's otherwise-valid XYZ G-code stream.
+        if (print->config().gcode_flavor.value != gcfKlipper)
+            throw Slic3r::RuntimeError(
+                "Five-axis output currently requires the Klipper G-code flavor and configured GCODE_AXIS rotary axes.");
+
         FiveAxisMachineProfile five_axis_profile;
         const FiveAxisValidationResult profile_result =
             load_five_axis_machine_profile(print->config(), five_axis_profile);
