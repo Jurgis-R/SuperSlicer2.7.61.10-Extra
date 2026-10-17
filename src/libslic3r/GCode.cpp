@@ -3887,6 +3887,23 @@ LayerResult GCodeGenerator::process_layer(
         // converted to writer coordinates. A writer-state mismatch throws and
         // aborts export; it never falls back to ordinary planar travel.
         if (m_config.hybrid_surface_pass_emit.value) {
+            // Apply the hybrid volumetric target to this mesh-derived route as
+            // well as to legacy queued paths. A zero requested speed lets the
+            // normal autospeed hierarchy derive mm/s from the selected mm^3/s
+            // target; the separate hybrid speed limit is still applied after
+            // that calculation.
+            const double saved_volumetric_speed = m_volumetric_speed;
+            const double saved_max_volumetric_speed = m_config.max_volumetric_speed.value;
+            const double hybrid_volumetric_auto_speed = m_config.hybrid_nonplanar_volumetric_auto_speed.value;
+            if (hybrid_volumetric_auto_speed > 0.) {
+                m_volumetric_speed = hybrid_volumetric_auto_speed;
+                m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
+            }
+            const bool use_volumetric_autospeed = m_volumetric_speed > 0.;
+            const double route_speed = use_volumetric_autospeed
+                ? 0.0 : m_config.hybrid_nonplanar_speed.value;
+            const double route_speed_limit = m_config.hybrid_nonplanar_speed.value;
+
             for (size_t path_idx = 0; path_idx < surface_paths.size(); ++path_idx) {
                 HybridPreExtrusionTravelContract contract;
                 contract.expected_start_position = writer_routes[path_idx].approach.expected_start;
@@ -3897,8 +3914,10 @@ LayerResult GCodeGenerator::process_layer(
                 contract.lift_tolerance_mm = 1e-4;
                 gcode += extrude_hybrid_surface_route(
                     surface_paths[path_idx], writer_routes[path_idx], contract,
-                    "hybrid surface finishing pass", m_config.hybrid_nonplanar_speed.value, -1.0);
+                    "hybrid surface finishing pass", route_speed, route_speed_limit);
             }
+            m_volumetric_speed = saved_volumetric_speed;
+            m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
         }
     }
 
