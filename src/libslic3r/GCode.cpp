@@ -3828,6 +3828,14 @@ LayerResult GCodeGenerator::process_layer(
                                   nominal_z + unscaled<double>(path.z_offsets[i]));
                 if (!point.allFinite())
                     throw RuntimeError("Hybrid surface-pass preflight rejected non-finite quantized extrusion geometry");
+                // The planner is referenced to the ideal H boundary, while the
+                // emitted path offsets are relative to the actual planar layer Z.
+                // A thick layer can overshoot that boundary, so validate the final
+                // quantized offsets against the user-facing limit before emission.
+                const double max_offset_mm = m_config.hybrid_nonplanar_max_offset.value;
+                if (!std::isfinite(max_offset_mm) || max_offset_mm <= 0.0 ||
+                    std::abs(point.z() - nominal_z) > max_offset_mm + 1e-6)
+                    throw RuntimeError("Hybrid surface-pass preflight rejected a quantized path exceeding the configured maximum Z offset");
                 if (i > 0 && (point - points.back()).squaredNorm() <= 0.0)
                     throw RuntimeError("Hybrid surface-pass preflight rejected a zero-length quantized extrusion segment");
                 points.push_back(point);
