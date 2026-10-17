@@ -1298,6 +1298,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionFloat,                hybrid_nonplanar_max_slope))
     ((ConfigOptionFloat,                hybrid_nonplanar_max_offset))
     ((ConfigOptionFloat,                hybrid_nonplanar_speed))
+    ((ConfigOptionFloat,                hybrid_nonplanar_volumetric_auto_speed))
     ((ConfigOptionBool,                 avoid_crossing_curled_overhangs))
     ((ConfigOptionBool,                 avoid_crossing_perimeters))
     ((ConfigOptionBool,                 avoid_crossing_not_first_layer))
