@@ -141,6 +141,49 @@ inline FiveAxisValidationResult plan_five_axis_extrusion_path(
     return { true, {} };
 }
 
+// Coordinate-aware planning entry point. Callers must provide both transforms;
+// no implicit model-origin, tool-offset, or direction-frame assumptions are made.
+template <typename PointTransform, typename NormalTransform>
+inline FiveAxisValidationResult plan_five_axis_extrusion_path_transformed(
+    const FiveAxisMachineProfile &profile,
+    const ExtrusionPath3D &path,
+    double base_z_mm,
+    double initial_e,
+    double e_per_mm,
+    double feed_mm_min,
+    PointTransform transform_point,
+    NormalTransform transform_normal,
+    std::vector<FiveAxisCommand> &commands,
+    double initial_rotary_1_deg = 0.0,
+    double initial_rotary_2_deg = 0.0)
+{
+    commands.clear();
+    if (!profile.enabled)
+        return { false, "Five-axis mode is disabled in the selected machine profile." };
+    const auto profile_validation = validate_five_axis_machine_profile(profile);
+    if (!profile_validation.valid)
+        return profile_validation;
+
+    std::vector<FiveAxisToolPose> poses;
+    const auto conversion = make_five_axis_poses_from_extrusion_path_transformed(
+        path, base_z_mm, initial_e, e_per_mm, feed_mm_min,
+        transform_point, transform_normal, poses);
+    if (!conversion.valid)
+        return conversion;
+
+    const auto planned = plan_five_axis_path(profile.kinematics, profile.output,
+        profile.collision, poses, commands, initial_rotary_1_deg, initial_rotary_2_deg);
+    if (!planned.valid)
+        return planned;
+
+    const auto envelope = validate_five_axis_machine_envelope(profile, commands);
+    if (!envelope.valid) {
+        commands.clear();
+        return envelope;
+    }
+    return { true, {} };
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_FiveAxisExtrusionAdapter_hpp_
