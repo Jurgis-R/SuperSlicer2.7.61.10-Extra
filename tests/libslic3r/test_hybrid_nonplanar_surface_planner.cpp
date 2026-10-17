@@ -705,3 +705,58 @@ TEST_CASE("Hybrid non-planar complete pass route rejects unsafe departure and re
     CHECK_FALSE(validate_hybrid_nonplanar_pass_route(
         route, Vec3d(0.0, 0.0, 2.0), clear));
 }
+
+
+TEST_CASE("Hybrid surface writer-state contract rejects start, end and lift mismatches",
+          "[HybridNonplanarEmission]")
+{
+    HybridPreExtrusionTravelContract contract;
+    contract.expected_start_position = Vec3d(1.0, 2.0, 8.0);
+    contract.expected_start_lift_mm = 0.0;
+    contract.expected_end_position = Vec3d(3.0, 2.0, 2.4);
+    contract.expected_end_lift_mm = 0.0;
+    const Vec3d start(1.0, 2.0, 8.0);
+    const Vec3d end(3.0, 2.0, 2.4);
+
+    CHECK(validate_hybrid_pre_extrusion_state(contract, start, 0.0, false));
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(
+        contract, start + Vec3d(0.01, 0.0, 0.0), 0.0, false));
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(contract, start, 0.2, false));
+
+    CHECK(validate_hybrid_pre_extrusion_state(contract, end, 0.0, true));
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(
+        contract, end + Vec3d(0.0, 0.0, 0.01), 0.0, true));
+    CHECK_FALSE(validate_hybrid_pre_extrusion_state(contract, end, 0.2, true));
+}
+
+TEST_CASE("Hybrid surface route conversion preserves all waypoints in writer frame",
+          "[HybridNonplanarEmission]")
+{
+    HybridNonplanarPassRoute print_route;
+    print_route.approach.expected_start = Vec3d(1.0, 2.0, 8.0);
+    print_route.approach.extrusion_start = Vec3d(3.0, 2.0, 2.4);
+    print_route.approach.points = {
+        Vec3d(1.0, 2.0, 8.0), Vec3d(1.0, 2.0, 10.0),
+        Vec3d(3.0, 2.0, 10.0), Vec3d(3.0, 2.0, 2.4)
+    };
+    print_route.extrusion_points = {
+        Vec3d(3.0, 2.0, 2.4), Vec3d(4.0, 2.5, 2.6)
+    };
+    print_route.departure_points = {
+        Vec3d(4.0, 2.5, 2.6), Vec3d(4.0, 2.5, 10.0)
+    };
+    print_route.return_points = {
+        Vec3d(4.0, 2.5, 10.0), Vec3d(1.0, 2.0, 8.0)
+    };
+
+    HybridNonplanarPassRoute writer_route;
+    REQUIRE(hybrid_print_to_writer_route(
+        print_route, Vec2d(10.0, 20.0), Vec2d(1.0, 2.0), writer_route));
+    CHECK(writer_route.approach.expected_start == Vec3d(10.0, 20.0, 8.0));
+    CHECK(writer_route.approach.extrusion_start == Vec3d(12.0, 20.0, 2.4));
+    CHECK(writer_route.approach.points.front() == writer_route.approach.expected_start);
+    CHECK(writer_route.extrusion_points.front() == writer_route.approach.extrusion_start);
+    CHECK(writer_route.departure_points.front() == writer_route.extrusion_points.back());
+    CHECK(writer_route.return_points.front() == writer_route.departure_points.back());
+    CHECK(writer_route.return_points.back() == Vec3d(10.0, 20.0, 8.0));
+}
