@@ -406,6 +406,19 @@ private:
     FullPrintConfig                     m_config;
     GCodeWriter                         m_writer;
 
+    // Live five-axis extrusion state. The pending entry pose is consumed by
+    // _travel_before_extrude() so approach and extrusion share one kinematic frame.
+    bool                                m_five_axis_entry_pending = false;
+    Vec3d                               m_five_axis_entry_point = Vec3d::Zero();
+    double                              m_five_axis_entry_rotary_1_deg = 0.0;
+    double                              m_five_axis_entry_rotary_2_deg = 0.0;
+    char                                m_five_axis_rotary_1_word = 0;
+    char                                m_five_axis_rotary_2_word = 0;
+    int                                 m_five_axis_rotary_precision = 3;
+    bool                                m_five_axis_rotary_state_initialized = false;
+    double                              m_five_axis_rotary_state_1_deg = 0.0;
+    double                              m_five_axis_rotary_state_2_deg = 0.0;
+
     struct PlaceholderParserIntegration {
         void reset();
         void init(const PrintConfig &print_config, const GCodeWriter &config);

@@ -81,6 +81,13 @@ public:
     std::string travel_to_xy(const Vec2d &point, const double speed = 0.0, const std::string_view comment = {});
     std::string travel_arc_to_xy(const Vec2d& point, const Vec2d& center_offset, const bool is_ccw, const double speed, const std::string_view comment);
     std::string travel_to_xyz(const Vec3d &point, const bool is_lift, const double speed = 0.0, const std::string_view comment = {});
+    // Emit a coordinated XYZ + rotary travel without extrusion. Point is in the
+    // writer's internal coordinates; the configured Z offset is applied on output.
+    std::string travel_to_xyz_rotary(const Vec3d &point, const double speed,
+                                     const std::string_view comment,
+                                     char rotary_1_word, double rotary_1_deg,
+                                     char rotary_2_word, double rotary_2_deg,
+                                     int rotary_precision = -1);
     std::string travel_to_z(const double z, const std::string_view comment = {});
     // low-level method to force a z travel, disregarding the lift and other thigns. Prefer using "travel_to_z" "lift" and "unlift".
     std::string get_travel_to_z_gcode(const double z, const std::string_view comment = {});
@@ -92,7 +99,8 @@ public:
     // preserves the ordinary XYZ-only output and does not alter existing callers.
     std::string extrude_to_xyz(const Vec3d &point, const double dE, const std::string_view comment = {},
                                char rotary_1_word = '\0', double rotary_1_deg = 0.0,
-                               char rotary_2_word = '\0', double rotary_2_deg = 0.0);
+                               char rotary_2_word = '\0', double rotary_2_deg = 0.0,
+                               int rotary_precision = -1);
     std::string retract(bool before_wipe = false);
     std::string retract_for_toolchange(bool before_wipe = false);
     std::string unretract();

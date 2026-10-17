@@ -28,6 +28,7 @@
 #include "I18N.hpp"
 #include "GCode.hpp"
 #include "FiveAxisConfig.hpp"
+#include "FiveAxisGCodeBridge.hpp"
 #include "Exception.hpp"
 #include "ExtrusionEntity.hpp"
 #include "Geometry/ConvexHull.hpp"
@@ -790,11 +791,10 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
             return;
     }
     
-    // Keep the ordinary three-axis export path independent of experimental
-    // five-axis settings. Disabled means the profile is not parsed or validated
-    // at all, so stale/incomplete experimental values cannot break XYZ export.
-    // Until a controller-specific writer is registered, fail closed for an
-    // explicitly enabled five-axis profile rather than silently emitting XYZ.
+    // Rotary state belongs to one export only; the live GCodeGenerator path
+    // below owns five-axis routing and controller-specific word emission.
+    m_five_axis_entry_pending = false;
+    m_five_axis_rotary_state_initialized = false;
     if (print->config().opt_bool("five_axis_enabled")) {
         FiveAxisMachineProfile five_axis_profile;
         const FiveAxisValidationResult profile_result =
@@ -802,9 +802,11 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
         if (!profile_result.valid)
             throw Slic3r::RuntimeError(std::string("Invalid five-axis machine profile: ") + profile_result.error);
         const FiveAxisValidationResult export_gate =
-            validate_five_axis_export_gate(five_axis_profile, std::string{});
+            validate_five_axis_export_gate(five_axis_profile, five_axis_profile.postprocessor_id);
         if (!export_gate.valid)
             throw Slic3r::RuntimeError(export_gate.error);
+        if (!is_five_axis_postprocessor_registered(five_axis_profile.postprocessor_id))
+            throw Slic3r::RuntimeError("The selected five-axis postprocessor has no live GCodeGenerator writer.");
     }
 
     // Enabled and either not done, or marked as done while the output file is missing.
@@ -5639,6 +5641,18 @@ void GCodeGenerator::use(const ExtrusionEntityCollection &collection) {
 }
 
 std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::string_view description, double speed_mm_per_sec) {
+    if (m_config.opt_bool("five_axis_enabled")) {
+        if (path.polyline.size() < 2)
+            return {};
+        if (path.polyline.has_arc())
+            throw Slic3r::RuntimeError("Five-axis output requires linearized extrusion paths; an arc reached the live path emitter.");
+        ExtrusionPath3D five_axis_path(path);
+        five_axis_path.z_offsets.assign(five_axis_path.polyline.size(), 0);
+        five_axis_path.tool_axis_normals.assign(
+            five_axis_path.polyline.size(), std::array<double, 3>{{0.0, 0.0, 1.0}});
+        return extrude_path_3D(five_axis_path, description, speed_mm_per_sec);
+    }
+
     std::string gcode;
     ExtrusionPath simplifed_path = path;
         assert(simplifed_path.polyline.empty() || simplifed_path.polyline.is_valid());
@@ -5795,6 +5809,151 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
     if (last_pos_defined() && path.can_reverse()
         && simplifed_path.first_point().distance_to_square(last_pos()) > simplifed_path.last_point().distance_to_square(last_pos())) {
         simplifed_path.reverse();
+    }
+
+    if (m_config.opt_bool("five_axis_enabled")) {
+        FiveAxisMachineProfile five_axis_profile;
+        const FiveAxisValidationResult profile_result =
+            load_five_axis_machine_profile(m_config, five_axis_profile);
+        if (!profile_result.valid)
+            throw Slic3r::RuntimeError(std::string("Invalid five-axis machine profile: ") + profile_result.error);
+        if (!is_five_axis_postprocessor_registered(five_axis_profile.postprocessor_id))
+            throw Slic3r::RuntimeError("The selected five-axis postprocessor has no live GCodeGenerator writer.");
+        if (m_layer == nullptr)
+            throw Slic3r::RuntimeError("Five-axis extrusion requires an active print layer.");
+        if (simplifed_path.polyline.size() < 2)
+            return {};
+        if (simplifed_path.polyline.has_arc())
+            throw Slic3r::RuntimeError("Five-axis output requires linearized ExtrusionPath3D segments.");
+
+        const std::size_t point_count = simplifed_path.polyline.size();
+        if (simplifed_path.z_offsets.empty())
+            simplifed_path.z_offsets.assign(point_count, 0);
+        else if (simplifed_path.z_offsets.size() != point_count)
+            throw Slic3r::RuntimeError("Five-axis path has an incomplete per-vertex Z-offset array.");
+
+        if (!simplifed_path.has_tool_axis_normals()) {
+            const bool planar_path = std::all_of(
+                simplifed_path.z_offsets.begin(), simplifed_path.z_offsets.end(),
+                [](coord_t offset) { return offset == 0; });
+            if (!planar_path)
+                throw Slic3r::RuntimeError("Five-axis non-planar path is missing per-vertex tool-axis normals.");
+            simplifed_path.tool_axis_normals.assign(
+                point_count, std::array<double, 3>{{0.0, 0.0, 1.0}});
+        }
+
+        const double e_per_mm = _compute_e_per_mm(simplifed_path);
+        double planned_fan_override = m_overhang_fan_override;
+        const double extrusion_speed_mm_s = _compute_speed_mm_per_sec(
+            simplifed_path, speed, planned_fan_override, nullptr);
+        if (!std::isfinite(extrusion_speed_mm_s) || extrusion_speed_mm_s <= 0.0)
+            throw Slic3r::RuntimeError("Five-axis path has an invalid calculated extrusion speed.");
+
+        const double initial_rotary_1 = m_five_axis_rotary_state_initialized
+            ? m_five_axis_rotary_state_1_deg : 0.0;
+        const double initial_rotary_2 = m_five_axis_rotary_state_initialized
+            ? m_five_axis_rotary_state_2_deg : 0.0;
+        const double z_offset = m_writer.gcode_config().z_offset.value;
+        const auto transform_point = [this, z_offset](const FiveAxisVec3 &point) {
+            const Vec2d tool_offset = m_writer.current_tool_offset();
+            return FiveAxisVec3{
+                point.x + m_origin.x() - tool_offset.x(),
+                point.y + m_origin.y() - tool_offset.y(),
+                point.z + z_offset
+            };
+        };
+        // Geometry-stage normals are directions in the already transformed
+        // print frame. Translation/tool offsets therefore do not affect them.
+        const auto transform_normal = [](const FiveAxisVec3 &normal) { return normal; };
+
+        std::vector<FiveAxisCommand> commands;
+        const FiveAxisValidationResult planned = plan_five_axis_extrusion_path_transformed(
+            five_axis_profile, simplifed_path, m_layer->print_z, 0.0, e_per_mm,
+            extrusion_speed_mm_s * 60.0, transform_point, transform_normal,
+            commands, initial_rotary_1, initial_rotary_2);
+        if (!planned.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis path planning failed: ") + planned.error);
+
+        std::vector<double> extrusion_deltas;
+        const FiveAxisValidationResult extrusion_result =
+            five_axis_command_e_deltas(commands, 0.0, extrusion_deltas);
+        if (!extrusion_result.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis extrusion accounting failed: ") + extrusion_result.error);
+
+        // Preflight the approach from the current writer position as part of
+        // the same limit, envelope, and configured obstacle checks as printing.
+        double travel_speed_mm_s = m_config.get_computed_value("travel_speed");
+        if (!std::isfinite(travel_speed_mm_s) || travel_speed_mm_s <= 0.0)
+            travel_speed_mm_s = m_writer.gcode_config().travel_speed.value;
+        if (!std::isfinite(travel_speed_mm_s) || travel_speed_mm_s <= 0.0)
+            throw Slic3r::RuntimeError("Five-axis approach has an invalid travel speed.");
+        const Vec3d writer_position = m_writer.get_position();
+        FiveAxisCommand current_pose;
+        current_pose.x = writer_position.x();
+        current_pose.y = writer_position.y();
+        current_pose.z = writer_position.z() + z_offset;
+        current_pose.e = 0.0;
+        current_pose.rotary_1_deg = initial_rotary_1;
+        current_pose.rotary_2_deg = initial_rotary_2;
+        current_pose.feed_mm_min = travel_speed_mm_s * 60.0;
+
+        std::vector<FiveAxisCommand> transition;
+        transition.reserve(commands.size() + 1);
+        transition.push_back(current_pose);
+        transition.insert(transition.end(), commands.begin(), commands.end());
+        const FiveAxisValidationResult transition_limits =
+            validate_five_axis_path(five_axis_profile.output, transition);
+        if (!transition_limits.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis approach violates motion limits: ") + transition_limits.error);
+        const FiveAxisValidationResult transition_envelope =
+            validate_five_axis_machine_envelope(five_axis_profile, transition);
+        if (!transition_envelope.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis approach violates the machine envelope: ") + transition_envelope.error);
+        const FiveAxisValidationResult transition_clearance =
+            validate_five_axis_path_clearance(five_axis_profile.collision, transition);
+        if (!transition_clearance.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis approach fails configured clearance checks: ") + transition_clearance.error);
+
+        m_five_axis_rotary_1_word = five_axis_profile.output.rotary_1_word;
+        m_five_axis_rotary_2_word = five_axis_profile.output.rotary_2_word;
+        m_five_axis_rotary_precision = five_axis_profile.output.precision;
+        m_five_axis_entry_point = Vec3d(
+            commands.front().x, commands.front().y, commands.front().z - z_offset);
+        m_five_axis_entry_rotary_1_deg = commands.front().rotary_1_deg;
+        m_five_axis_entry_rotary_2_deg = commands.front().rotary_2_deg;
+        m_five_axis_entry_pending = true;
+
+        std::string gcode;
+        const std::string_view comment = m_config.gcode_comments ? description : ""sv;
+        gcode += this->_before_extrude(simplifed_path, description, speed);
+        if (m_five_axis_entry_pending) {
+            m_five_axis_entry_pending = false;
+            throw Slic3r::RuntimeError("Five-axis entry travel was not consumed by the GCodeGenerator lifecycle.");
+        }
+
+        for (std::size_t i = 1; i < commands.size(); ++i) {
+            const FiveAxisCommand &command = commands[i];
+            const Vec3d writer_point(
+                command.x, command.y, command.z - z_offset);
+            gcode += m_writer.extrude_to_xyz(
+                writer_point, extrusion_deltas[i], comment,
+                m_five_axis_rotary_1_word, command.rotary_1_deg,
+                m_five_axis_rotary_2_word, command.rotary_2_deg,
+                m_five_axis_rotary_precision);
+        }
+
+        m_five_axis_rotary_state_1_deg = commands.back().rotary_1_deg;
+        m_five_axis_rotary_state_2_deg = commands.back().rotary_2_deg;
+        m_five_axis_rotary_state_initialized = true;
+        gcode += this->_after_extrude(simplifed_path);
+
+        if (m_wipe.is_enabled()) {
+            ArcPolyline temp = simplifed_path.as_polyline();
+            temp.reverse();
+            m_wipe.set_path(std::move(temp.get_arc()), false);
+        }
+        m_writer.set_acceleration((uint16_t)floor(get_default_acceleration(m_config) + 0.5));
+        return gcode;
     }
 
     std::string gcode;
@@ -7265,6 +7424,21 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
 
     auto [/*double*/acceleration, /*double*/travel_acceleration] = _compute_acceleration(path);
 
+    if (m_five_axis_entry_pending) {
+        m_writer.set_travel_acceleration((uint32_t)floor(travel_acceleration + 0.5));
+        m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
+        const double travel_speed = m_config.get_computed_value("travel_speed");
+        gcode += m_writer.travel_to_xyz_rotary(
+            m_five_axis_entry_point, travel_speed,
+            "move to first " + description + " point",
+            m_five_axis_rotary_1_word, m_five_axis_entry_rotary_1_deg,
+            m_five_axis_rotary_2_word, m_five_axis_entry_rotary_2_deg,
+            m_five_axis_rotary_precision);
+        this->set_last_pos(path.first_point());
+        m_five_axis_entry_pending = false;
+        return gcode;
+    }
+
     bool moved_to_point = last_pos_defined() && last_pos().coincides_with_epsilon(path.first_point());
     if (m_config.travel_deceleration_use_target) {
         if (travel_acceleration <= acceleration || travel_acceleration == 0 || acceleration == 0) {
@@ -7438,11 +7612,11 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     // compensate retraction
     if (m_delayed_layer_change.empty()) {
         gcode += m_writer.unlift();//this->unretract();
-        assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) || m_loop_vase_mode);
+        assert(m_config.opt_bool("five_axis_enabled") || is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) || m_loop_vase_mode);
     } else {
         //check if an unlift happens
         std::string unlift = m_writer.unlift();
-        assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON));
+        assert(m_config.opt_bool("five_axis_enabled") || is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON));
         if (unlift.empty()) {
             unlift = m_delayed_layer_change;
         }

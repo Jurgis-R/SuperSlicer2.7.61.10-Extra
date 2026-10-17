@@ -104,7 +104,7 @@ TEST_CASE("Five-axis G-code bridge rejects incomplete per-vertex Z offsets",
         profile, path, 10.0, 3.0, 0.1, 600.0, output);
 
     CHECK_FALSE(result.validation.valid);
-    CHECK(result.validation.message.find("Z offset") != std::string::npos);
+    CHECK(result.validation.error.find("Z offset") != std::string::npos);
     CHECK(output.empty());
     CHECK(result.command_count == 0);
     CHECK(result.final_e == Approx(3.0));

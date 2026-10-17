@@ -6,6 +6,22 @@
 
 using namespace Slic3r;
 
+TEST_CASE("GCodeWriter emits coordinated XYZ and rotary travel for five-axis output", "[GCodeWriter][FiveAxis]")
+{
+    GCodeWriter writer;
+    writer.config.gcode_comments.value = false;
+    const std::string gcode = writer.travel_to_xyz_rotary(
+        Vec3d(10.0, 20.0, 30.0), 40.0, {}, 'A', 12.5, 'B', -6.25, 3);
+
+    CHECK(gcode.find("X10") != std::string::npos);
+    CHECK(gcode.find("Y20") != std::string::npos);
+    CHECK(gcode.find("Z30") != std::string::npos);
+    CHECK(gcode.find("A12.5") != std::string::npos);
+    CHECK(gcode.find("B-6.25") != std::string::npos);
+    CHECK(gcode.find("F2400") != std::string::npos);
+    CHECK((writer.get_position() - Vec3d(10.0, 20.0, 30.0)).norm() == Approx(0.0));
+}
+
 //note: erased by prusa, maybe it's wrong now?
 SCENARIO("lift() is not ignored after unlift() at normal values of Z", "[GCodeWriter]") {
     GIVEN("A config from a file and a single extruder.") {

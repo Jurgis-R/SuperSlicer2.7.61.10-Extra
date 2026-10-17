@@ -714,6 +714,58 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, const bool is_lift, c
     return write_acceleration() + w.string();
 }
 
+std::string GCodeWriter::travel_to_xyz_rotary(const Vec3d &point, const double speed,
+                                               const std::string_view comment,
+                                               char rotary_1_word, double rotary_1_deg,
+                                               char rotary_2_word, double rotary_2_deg,
+                                               int rotary_precision)
+{
+    const auto valid_rotary_word = [](char word) {
+        return word == 'A' || word == 'B' || word == 'C' ||
+               word == 'U' || word == 'V' || word == 'W';
+    };
+    if (!valid_rotary_word(rotary_1_word) || !valid_rotary_word(rotary_2_word) ||
+        rotary_1_word == rotary_2_word ||
+        !std::isfinite(rotary_1_deg) || !std::isfinite(rotary_2_deg) ||
+        rotary_precision < -1 || rotary_precision > 8)
+        return "";
+
+    assert(std::abs(point.x()) < 120000.);
+    assert(std::abs(point.y()) < 120000.);
+    assert(std::abs(point.z()) < 120000.);
+
+    double travel_speed = this->config.travel_speed.value;
+    if (!(travel_speed > 0.0) || !std::isfinite(travel_speed))
+        travel_speed = speed;
+    if (speed > 0.0 && speed < travel_speed)
+        travel_speed = speed;
+    if (!(travel_speed > 0.0) || !std::isfinite(travel_speed))
+        return "";
+
+    // Respect the configured Z travel cap as travel_to_xyz() does.
+    if (this->config.travel_speed_z.value > 0.0) {
+        const double distance_xyz = (m_pos - point).norm();
+        const double duration_xyz = distance_xyz / travel_speed;
+        const double min_duration_z =
+            std::abs(m_pos.z() - point.z()) / this->config.travel_speed_z.value;
+        if (min_duration_z > duration_xyz && min_duration_z > 0.0)
+            travel_speed = travel_speed * duration_xyz / min_duration_z;
+    }
+
+    m_pos = point;
+    m_lifted = 0.0;
+
+    GCodeG1Formatter w(this->get_default_gcode_formatter());
+    w.emit_xy(point.head<2>(), m_pos_str_x, m_pos_str_y);
+    w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    const int precision = rotary_precision >= 0 ? rotary_precision : this->config.gcode_precision_xyz.value;
+    w.emit_axis(rotary_1_word, rotary_1_deg, precision);
+    w.emit_axis(rotary_2_word, rotary_2_deg, precision);
+    w.emit_f(travel_speed * 60.0);
+    w.emit_comment(this->config.gcode_comments, comment);
+    return write_acceleration() + w.string();
+}
+
 std::string GCodeWriter::travel_to_z(const double z, const std::string_view comment)
 {
     /*  If target Z is lower than current Z but higher than nominal Z
@@ -840,7 +892,8 @@ std::string GCodeWriter::extrude_arc_to_xy(const Vec2d& point, const Vec2d& cent
 
 std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, const std::string_view comment,
                                            char rotary_1_word, double rotary_1_deg,
-                                           char rotary_2_word, double rotary_2_deg)
+                                           char rotary_2_word, double rotary_2_deg,
+                                           int rotary_precision)
 {
     // Validate before changing writer/tool state. The zero-word defaults preserve
     // the legacy XYZ-only path exactly.
@@ -871,9 +924,9 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     }
     bool has_z = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
     if (rotary_1_word != '\0')
-        w.emit_axis(rotary_1_word, rotary_1_deg, this->config.gcode_precision_xyz.value);
+        w.emit_axis(rotary_1_word, rotary_1_deg, (rotary_precision >= 0 ? rotary_precision : this->config.gcode_precision_xyz.value));
     if (rotary_2_word != '\0')
-        w.emit_axis(rotary_2_word, rotary_2_deg, this->config.gcode_precision_xyz.value);
+        w.emit_axis(rotary_2_word, rotary_2_deg, (rotary_precision >= 0 ? rotary_precision : this->config.gcode_precision_xyz.value));
     if (!has_z) {
         if (!has_x_y && rotary_1_word == '\0' && rotary_2_word == '\0') {
             // No XYZ or rotary coordinate changed, so preserve the legacy tiny-move behavior.
@@ -886,9 +939,9 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
             w.clear();
             w.emit_xy(Vec2d(point.x(), point.y()), m_pos_str_x, m_pos_str_y);
             if (rotary_1_word != '\0')
-                w.emit_axis(rotary_1_word, rotary_1_deg, this->config.gcode_precision_xyz.value);
+                w.emit_axis(rotary_1_word, rotary_1_deg, (rotary_precision >= 0 ? rotary_precision : this->config.gcode_precision_xyz.value));
             if (rotary_2_word != '\0')
-                w.emit_axis(rotary_2_word, rotary_2_deg, this->config.gcode_precision_xyz.value);
+                w.emit_axis(rotary_2_word, rotary_2_deg, (rotary_precision >= 0 ? rotary_precision : this->config.gcode_precision_xyz.value));
         }
     }
     this->m_de_left += dE - delta_e;
