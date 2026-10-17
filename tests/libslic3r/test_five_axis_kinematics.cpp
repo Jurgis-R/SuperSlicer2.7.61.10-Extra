@@ -52,11 +52,20 @@ TEST_CASE("Five-axis kinematics transforms bed points and compensates rotary-hea
 {
     FiveAxisKinematicsConfig bed;
     bed.rotary_1_pivot = FiveAxisVec3{10.0, 20.0, 30.0};
+    const FiveAxisVec3 point{1.0, 2.0, 3.0};
+    const FiveAxisVec3 unchanged = five_axis_transform_bed_point(
+        bed, point, 0.0, 0.0);
+    REQUIRE(unchanged.x == Approx(point.x));
+    REQUIRE(unchanged.y == Approx(point.y));
+    REQUIRE(unchanged.z == Approx(point.z));
+
+    // A quarter turn about the machine X axis rotates the point around the
+    // configured pivot, rather than adding the pivot as a translation.
     const FiveAxisVec3 transformed = five_axis_transform_bed_point(
-        bed, FiveAxisVec3{1.0, 2.0, 3.0}, 0.0, 0.0);
-    REQUIRE(transformed.x == Approx(11.0));
-    REQUIRE(transformed.y == Approx(22.0));
-    REQUIRE(transformed.z == Approx(33.0));
+        bed, FiveAxisVec3{10.0, 21.0, 30.0}, 90.0, 0.0);
+    REQUIRE(transformed.x == Approx(10.0).margin(1e-6));
+    REQUIRE(transformed.y == Approx(20.0).margin(1e-6));
+    REQUIRE(transformed.z == Approx(31.0).margin(1e-6));
 
     FiveAxisKinematicsConfig head;
     head.mount = FiveAxisRotaryMount::RotaryHead;
