@@ -38,6 +38,14 @@ TEST_CASE("Five-axis IK can recover from a rotary joint upper-limit seed",
         FiveAxisVec3{0.0, 1.0, 0.0});
     REQUIRE(five_axis_norm(predicted - FiveAxisVec3{0.0, 0.0, 1.0})
         <= config.orientation_tolerance);
+
+    // This seed is singular for a vertical normal. The solver must retry
+    // from a neutral pose instead of rejecting a reachable orientation.
+    const FiveAxisJointSolution singular_seed_solution =
+        solve_five_axis_orientation(config, FiveAxisVec3{0.0, 0.0, 1.0},
+            config.rotary_1_max_deg, config.rotary_2_max_deg);
+    REQUIRE(singular_seed_solution.valid);
+    REQUIRE(singular_seed_solution.orientation_error <= config.orientation_tolerance);
 }
 
 TEST_CASE("Five-axis kinematics rejects unreachable normals and invalid axes",
