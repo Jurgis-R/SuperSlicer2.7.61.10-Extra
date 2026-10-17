@@ -3720,23 +3720,8 @@ LayerResult GCodeGenerator::process_layer(
                 part_transform.pretranslate(Vec3d(
                     unscale<double>(instance.shift.x()),
                     unscale<double>(instance.shift.y()), 0.0));
-                indexed_triangle_set part_mesh;
-                if (!transform_hybrid_surface_mesh(source_mesh, part_transform, part_mesh))
-                    throw RuntimeError("Hybrid surface-pass preflight rejected a transformed part mesh");
-
-                const size_t max_vertex_count =
-                    static_cast<size_t>(std::numeric_limits<int>::max());
-                if (part_mesh.vertices.size() > max_vertex_count ||
-                    print_mesh.vertices.size() > max_vertex_count - part_mesh.vertices.size())
-                    throw RuntimeError("Hybrid surface-pass preflight rejected an oversized combined print mesh");
-                const int vertex_offset = static_cast<int>(print_mesh.vertices.size());
-                print_mesh.vertices.insert(print_mesh.vertices.end(),
-                                           part_mesh.vertices.begin(), part_mesh.vertices.end());
-                print_mesh.indices.reserve(print_mesh.indices.size() + part_mesh.indices.size());
-                for (const Vec3i32 &face : part_mesh.indices)
-                    print_mesh.indices.emplace_back(face(0) + vertex_offset,
-                                                     face(1) + vertex_offset,
-                                                     face(2) + vertex_offset);
+                if (!append_hybrid_transformed_mesh(source_mesh, part_transform, print_mesh))
+                    throw RuntimeError("Hybrid surface-pass preflight rejected a transformed or oversized part mesh");
             }
         }
         if (print_mesh.vertices.empty() || print_mesh.indices.empty())
