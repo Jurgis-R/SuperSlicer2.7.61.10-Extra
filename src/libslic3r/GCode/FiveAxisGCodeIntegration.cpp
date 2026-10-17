@@ -1,8 +1,8 @@
 /// Five-axis G-code travel integration for SuperSlicer.
-#include "GCode.hpp"
+#include "../GCode.hpp"
 
-#include "FiveAxisConfig.hpp"
-#include "FiveAxisKinematics.hpp"
+#include "../FiveAxisConfig.hpp"
+#include "../FiveAxisKinematics.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -58,6 +58,10 @@ FiveAxisMachineProfile load_profile_or_throw(
         throw Slic3r::RuntimeError("The configured five-axis controller has no registered writer.");
     const Vec2d offset = writer.current_tool_offset();
     profile.kinematics.machine_frame_tool_offset = {-offset.x(), -offset.y(), 0.0};
+    std::string kinematics_error;
+    if (!validate_five_axis_kinematics_config(profile.kinematics, &kinematics_error))
+        throw Slic3r::RuntimeError(
+            std::string("Five-axis kinematics with the active tool offset is invalid: ") + kinematics_error);
     return profile;
 }
 

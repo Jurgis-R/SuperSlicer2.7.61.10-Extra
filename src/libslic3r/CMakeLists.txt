@@ -222,7 +222,7 @@ set(SLIC3R_SOURCES
     GCode/Travels.hpp
     GCode.cpp
     GCode.hpp
-    FiveAxisGCodeIntegration.cpp
+    GCode/FiveAxisGCodeIntegration.cpp
     GCodeReader.cpp
     GCodeReader.hpp
     # GCodeSender.cpp
