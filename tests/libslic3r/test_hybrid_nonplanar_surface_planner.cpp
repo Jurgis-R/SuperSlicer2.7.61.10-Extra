@@ -405,6 +405,41 @@ TEST_CASE("Hybrid swept-tool validator accepts a closed outward-oriented mesh",
     REQUIRE(validator.valid());
 }
 
+TEST_CASE("Hybrid combined collision mesh includes multiple placed parts",
+          "[HybridNonplanarCollision]")
+{
+    const indexed_triangle_set cube = make_closed_cube();
+    indexed_triangle_set combined;
+    Transform3d first = Transform3d::Identity();
+    Transform3d second = Transform3d::Identity();
+    second.translate(Vec3d(3.0, 0.0, 0.0));
+
+    REQUIRE(append_hybrid_transformed_mesh(cube, first, combined));
+    REQUIRE(append_hybrid_transformed_mesh(cube, second, combined));
+    REQUIRE(combined.vertices.size() == cube.vertices.size() * 2);
+    REQUIRE(combined.indices.size() == cube.indices.size() * 2);
+    REQUIRE(hybrid_mesh_is_closed_oriented(combined));
+
+    AABBMesh aabb(combined);
+    HybridSweptToolOptions options;
+    options.path_sample_step_mm = 0.1;
+    options.nozzle_tip_exclusion_mm = 0.2;
+    options.nozzle_shaft_top_mm = 2.0;
+    options.toolhead_start_mm = 2.0;
+    options.toolhead_top_mm = 4.0;
+    options.nozzle_shaft_radius_mm = 0.4;
+    options.toolhead_radius_mm = 1.0;
+    options.required_clearance_mm = 0.1;
+    HybridSweptToolCollisionValidator validator(combined, aabb, options);
+    REQUIRE(validator.valid());
+
+    // A path next to the second model must be rejected just as one next to the first.
+    CHECK_FALSE(validator.segment_is_clear(Vec3d(4.5, 0.5, 1.0),
+                                           Vec3d(4.5, 0.5, 1.0)));
+    CHECK(validator.segment_is_clear(Vec3d(6.0, 0.5, 2.0),
+                                     Vec3d(6.0, 0.5, 2.0)));
+}
+
 TEST_CASE("Hybrid swept-tool validator rejects open meshes and invalid sampling step",
           "[HybridNonplanarCollision]")
 {
