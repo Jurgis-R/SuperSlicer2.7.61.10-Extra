@@ -107,3 +107,42 @@ TEST_CASE("Five-axis G-code bridge rejects incomplete per-vertex Z offsets",
     CHECK(result.command_count == 0);
     CHECK(result.final_e == Approx(3.0));
 }
+
+
+TEST_CASE("Five-axis bridge converts cumulative E to writer segment deltas",
+          "[FiveAxisGCodeBridge]")
+{
+    std::vector<FiveAxisCommand> commands(4);
+    commands[0].e = 5.0;
+    commands[1].e = 5.0;
+    commands[2].e = 5.2;
+    commands[3].e = 5.5;
+    std::vector<double> deltas = { 99.0 };
+
+    const auto result = five_axis_command_e_deltas(commands, 5.0, deltas);
+    REQUIRE(result.valid);
+    REQUIRE(deltas.size() == 4);
+    CHECK(deltas[0] == Approx(0.0));
+    CHECK(deltas[1] == Approx(0.0));
+    CHECK(deltas[2] == Approx(0.2));
+    CHECK(deltas[3] == Approx(0.3));
+}
+
+TEST_CASE("Five-axis bridge rejects invalid cumulative E without partial deltas",
+          "[FiveAxisGCodeBridge]")
+{
+    std::vector<FiveAxisCommand> commands(3);
+    commands[0].e = 2.0;
+    commands[1].e = 2.2;
+    commands[2].e = 2.1;
+    std::vector<double> deltas = { 99.0 };
+
+    const auto result = five_axis_command_e_deltas(commands, 2.0, deltas);
+    CHECK_FALSE(result.valid);
+    CHECK(deltas.empty());
+
+    commands[2].e = std::numeric_limits<double>::quiet_NaN();
+    const auto non_finite = five_axis_command_e_deltas(commands, 2.0, deltas);
+    CHECK_FALSE(non_finite.valid);
+    CHECK(deltas.empty());
+}
