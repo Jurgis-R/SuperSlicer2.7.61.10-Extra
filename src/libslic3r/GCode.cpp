@@ -825,6 +825,8 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
             throw Slic3r::RuntimeError("Spiral-vase export still uses a dedicated XYZ-only writer and is not supported in five-axis mode.");
         if (print->config().opt_bool("zaa_enabled"))
             throw Slic3r::RuntimeError("ZAA contouring is not yet routed through five-axis kinematics; disable ZAA or use a planned surface-following path.");
+        if (print->has_wipe_tower())
+            throw Slic3r::RuntimeError("The multi-extruder wipe tower still emits dedicated XYZ-only moves and is not supported in five-axis mode; disable the wipe tower or use a single-tool print.");
         if (print->config().opt_bool("external_perimeters_vase"))
             throw Slic3r::RuntimeError("External-perimeter vase/scarf-seam mode still emits explicit XYZ layer-transition moves and is not supported in five-axis mode.");
         const double transition_clearance = print->config().opt_float("five_axis_transition_clearance");
