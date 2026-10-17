@@ -168,6 +168,7 @@ inline FiveAxisJointSolution solve_five_axis_orientation(
                         std::min(config.rotary_2_max_deg, initial_rotary_2_deg));
     const double epsilon = 1e-3;
     const double damping = 1e-6;
+    bool restarted_from_neutral_seed = false;
 
     auto predicted = [&](double aa, double bb) {
         if (config.mount == FiveAxisRotaryMount::RotaryBed)
@@ -224,6 +225,19 @@ inline FiveAxisJointSolution solve_five_axis_orientation(
         const double g2 = five_axis_dot(jb, residual);
         const double determinant = h11 * h22 - h12 * h12;
         if (!std::isfinite(determinant) || determinant <= 1e-14) {
+            if (!restarted_from_neutral_seed) {
+                // A previous path can leave the joints at a singular
+                // configuration (for example A=180, B=90 on an XYZ rotary
+                // bed). Retry once from neutral before declaring the normal
+                // unreachable.
+                a = std::max(config.rotary_1_min_deg,
+                    std::min(config.rotary_1_max_deg, 0.0));
+                b = std::max(config.rotary_2_min_deg,
+                    std::min(config.rotary_2_max_deg, 0.0));
+                restarted_from_neutral_seed = true;
+                iteration = 0;
+                continue;
+            }
             result.error = "Inverse kinematics is singular at the current pose.";
             return result;
         }
@@ -233,8 +247,18 @@ inline FiveAxisJointSolution solve_five_axis_orientation(
                                        std::min(config.rotary_1_max_deg, a + da));
         const double next_b = std::max(config.rotary_2_min_deg,
                                        std::min(config.rotary_2_max_deg, b + db));
-        if (std::abs(next_a - a) + std::abs(next_b - b) <= 1e-10)
+        if (std::abs(next_a - a) + std::abs(next_b - b) <= 1e-10) {
+            if (!restarted_from_neutral_seed) {
+                a = std::max(config.rotary_1_min_deg,
+                    std::min(config.rotary_1_max_deg, 0.0));
+                b = std::max(config.rotary_2_min_deg,
+                    std::min(config.rotary_2_max_deg, 0.0));
+                restarted_from_neutral_seed = true;
+                iteration = 0;
+                continue;
+            }
             break;
+        }
         a = next_a;
         b = next_b;
     }
