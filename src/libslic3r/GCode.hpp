@@ -309,6 +309,9 @@ private:
     std::string     extrude_multi_path3D(const ExtrusionMultiPath3D &multipath, const std::string_view description, double speed = -1.);
     std::string     extrude_path(const ExtrusionPath &path, const std::string_view description, double speed = -1.);
     std::string     extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed = -1., double max_speed_mm_s = -1.);
+    // Experimental executor for a fully prevalidated, writer-frame surface route.
+    // Deliberately separate from the standard 3D path so planar travel behavior is unchanged.
+    std::string     extrude_hybrid_surface_route(const ExtrusionPath3D &path, const HybridNonplanarPassRoute &route, const HybridPreExtrusionTravelContract &contract, const std::string_view description, double speed = -1., double max_speed_mm_s = -1.);
 
     void            split_at_seam_pos(ExtrusionLoop &loop, bool was_clockwise);
     template <typename THING = ExtrusionEntity> // can be templated safely because private
