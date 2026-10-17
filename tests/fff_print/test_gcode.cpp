@@ -323,3 +323,24 @@ TEST_CASE("M201 for acceleation reset", "[GCode]") {
     INFO("M204 is not generated for repetier firmware");
     CHECK(!has_m204);
 }
+
+
+TEST_CASE("Hybrid surface finishing emission is disabled by default and leaves planar G-code unchanged",
+          "[GCode][HybridNonplanarEmission]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        { "start_gcode", "" },
+        { "end_gcode", "" },
+        { "gcode_comments", 1 }
+    });
+
+    // The separate emission gate must remain opt-in. With both experimental
+    // surface options at their defaults, the standard planar slicer still emits
+    // ordinary extrusion moves and never emits the experimental pass marker.
+    CHECK_FALSE(config.opt_bool("hybrid_surface_pass_emit"));
+    CHECK_FALSE(config.opt_bool("hybrid_surface_pass_preflight"));
+    const std::string gcode = Test::slice({TestMesh::cube_20x20x20}, config);
+    CHECK(gcode.find("hybrid surface finishing pass") == std::string::npos);
+    CHECK(gcode.find("G1") != std::string::npos);
+}
