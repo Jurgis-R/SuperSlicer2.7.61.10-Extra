@@ -823,6 +823,8 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
             throw Slic3r::RuntimeError("The selected five-axis postprocessor has no live GCodeGenerator writer.");
         if (print->config().opt_bool("spiral_vase"))
             throw Slic3r::RuntimeError("Spiral-vase export still uses a dedicated XYZ-only writer and is not supported in five-axis mode.");
+        if (print->config().opt_bool("external_perimeters_vase"))
+            throw Slic3r::RuntimeError("External-perimeter vase/scarf-seam mode still emits explicit XYZ layer-transition moves and is not supported in five-axis mode.");
         const double transition_clearance = print->config().opt_float("five_axis_transition_clearance");
         if (!std::isfinite(transition_clearance) || transition_clearance <= 0.0)
             throw Slic3r::RuntimeError("Five-axis transition clearance must be finite and greater than zero.");
@@ -9006,9 +9008,11 @@ std::string GCodeGenerator::retract_and_wipe(bool toolchange, bool inhibit_lift)
                 need_lift = true;
         }
         if (need_lift) {
-            if (BOOL_EXTRUDER_CONFIG(travel_ramping_lift) && m_spiral_vase_layer <= 0) {
-                // travel_ramping_lift: store the lift into extra_lift, it will be used in next write_travel.
-                // note: will_lift already take into account current extra_lift.
+            if (m_config.opt_bool("five_axis_enabled") ||
+                (BOOL_EXTRUDER_CONFIG(travel_ramping_lift) && m_spiral_vase_layer <= 0)) {
+                // In five-axis mode, keep the requested lift as planned state.
+                // A direct writer.lift() would emit an unchecked Z-only move
+                // before the transition planner has tested clearance.
                 m_writer.set_extra_lift(m_writer.will_lift(this->m_layer_index));
             } else {
                 gcode += m_writer.lift(this->m_layer_index);
