@@ -77,6 +77,14 @@ TEST_CASE("Five-axis kinematics transforms bed points and compensates rotary-hea
     REQUIRE(carriage.x == Approx(90.0));
     REQUIRE(carriage.y == Approx(100.0));
     REQUIRE(carriage.z == Approx(90.0));
+
+    // With joint 2 rotated, the tool-tip offset must be rotated around its
+    // own pivot before the outer joint transform is applied.
+    const FiveAxisVec3 rotated_carriage = five_axis_compensate_head_position(
+        head, FiveAxisVec3{100.0, 100.0, 100.0}, 0.0, 90.0);
+    REQUIRE(rotated_carriage.x == Approx(85.0).margin(1e-6));
+    REQUIRE(rotated_carriage.y == Approx(100.0).margin(1e-6));
+    REQUIRE(rotated_carriage.z == Approx(95.0).margin(1e-6));
 }
 
 TEST_CASE("Five-axis kinematics normalizes non-unit rotary axes",
