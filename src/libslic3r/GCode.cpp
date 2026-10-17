@@ -6123,8 +6123,7 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
         !coincides(route.approach.points.front(), route.approach.expected_start) ||
         !coincides(route.approach.points.back(), route.extrusion_points.front()) ||
         !coincides(route.departure_points.front(), route.extrusion_points.back()) ||
-        !coincides(route.return_points.front(), route.departure_points.back()) ||
-        !coincides(route.return_points.back(), route.approach.expected_start))
+        !coincides(route.return_points.front(), route.departure_points.back()))
         throw std::runtime_error("Hybrid surface route does not match its explicit writer-state contract.");
 
     // Prove the live starting position and lift before any writer mutation.
@@ -6180,9 +6179,11 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     gcode += m_writer.retract();
     gcode += m_writer.travel_to_xyz_route(route.departure_points, tolerance, "hybrid surface departure");
     gcode += m_writer.travel_to_xyz_route(route.return_points, tolerance, "hybrid surface return");
-    if (!coincides(m_writer.get_position(), route.approach.expected_start) ||
+    // A route may return to the next route's declared start rather than its
+    // own start. The next route's contract will validate that hand-off.
+    if (!coincides(m_writer.get_position(), route.return_points.back()) ||
         std::abs(m_writer.get_lift()) > contract.lift_tolerance_mm)
-        throw std::runtime_error("Hybrid surface return did not restore the declared writer state; aborting export.");
+        throw std::runtime_error("Hybrid surface return did not reach its declared endpoint; aborting export.");
 
     if (m_wipe.is_enabled()) {
         ArcPolyline wipe_path = oriented_path.as_polyline();
