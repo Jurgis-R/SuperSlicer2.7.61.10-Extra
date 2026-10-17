@@ -3761,7 +3761,8 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0.4));
 
-    def = this->add("hybrid_nonplanar_speed", coFloat);
+    def = this->add("hybrid_nonplanar_speed",
+"hybrid_nonplanar_volumetric_auto_speed", coFloat);
     def->label = L("Hybrid non-planar speed limit");
     def->full_label = L("Hybrid non-planar speed limit");
     def->category = OptionCategory::infill;
@@ -3771,6 +3772,17 @@ void PrintConfigDef::init_fff_params()
     def->max = 100;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(20.0));
+
+    def = this->add("hybrid_nonplanar_volumetric_auto_speed", coFloat);
+    def->label = L("Hybrid volumetric auto-speed");
+    def->full_label = L("Hybrid non-planar volumetric auto-speed");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Overrides the Speed tab's Volumetric auto-speed only for hybrid non-planar paths. This volumetric flow target is converted to path speed using the path's extrusion cross-section; the hybrid speed limit and filament limits still apply. Set to 0 to use the Speed tab's Volumetric auto-speed.");
+    def->sidetext = L("mm³/s");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(0.0));
 
     def = this->add("zaa_enabled", coBool);
     def->label = L("Z contouring (ZAA) on top surfaces");
