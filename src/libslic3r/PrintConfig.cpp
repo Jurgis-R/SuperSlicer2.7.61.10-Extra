@@ -3637,6 +3637,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("hybrid_surface_pass_emit", coBool);
+    def->label = L("Emit experimental hybrid surface finishing pass");
+    def->full_label = L("Experimental hybrid surface-pass emission");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("DANGEROUS EXPERIMENTAL OUTPUT, disabled by default. Runs full candidate generation and the configured simplified-envelope preflight, then emits a separate mesh-derived finishing pass at completed H-section boundaries. Enable only after measuring the actual mounted tool envelope and reviewing the generated G-code; this approximation is not a guarantee of collision freedom. Use a small test model and supervise the first print.");
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionBool(false));
+
     // Explicit machine-envelope inputs for experimental hybrid surface-pass
     // preflight. Defaults are placeholders only: users must measure the actual
     // mounted nozzle and toolhead before treating a successful preflight as useful.
