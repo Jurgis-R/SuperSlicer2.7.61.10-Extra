@@ -38,6 +38,12 @@ TEST_CASE("Five-axis output validates non-extruding rotary-only moves", "[FiveAx
     path[1].rotary_1_deg = 10.0;
     path[1].rotary_2_deg = 10.0;
     CHECK_FALSE(validate_five_axis_path(config, path).valid);
+    std::vector<FiveAxisCommand> sequential = {
+        { 10.0, 10.0, 10.0, 0.0, 0.0, 0.0, 600.0 },
+        { 10.0, 10.0, 10.0, 0.0, 10.0, 0.0, 600.0 },
+        { 10.0, 10.0, 10.0, 0.0, 10.0, 10.0, 600.0 }
+    };
+    CHECK(validate_five_axis_path(config, sequential).valid);
 }
 
 TEST_CASE("Five-axis output limits feed to respect rotary speed", "[FiveAxisMotionPlanner]")

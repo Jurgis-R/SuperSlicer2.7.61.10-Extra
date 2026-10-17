@@ -7627,12 +7627,34 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         FiveAxisCommand reoriented_clearance = current_clearance;
         reoriented_clearance.rotary_1_deg = entry_pose.rotary_1_deg;
         reoriented_clearance.rotary_2_deg = entry_pose.rotary_2_deg;
+        reoriented_clearance.feed_mm_min = std::min(
+            travel_speed * 60.0,
+            five_axis_profile.output.max_rotary_rate_deg_s * 60.0);
         FiveAxisCommand entry_clearance = entry_pose;
         entry_clearance.z = clearance_z;
 
-        const std::vector<FiveAxisCommand> transition = {
-            current_pose, current_clearance, reoriented_clearance, entry_clearance, entry_pose
-        };
+        std::vector<FiveAxisCommand> transition = { current_pose, current_clearance };
+        if (five_axis_profile.output.supports_simultaneous_rotary) {
+            if (std::abs(entry_pose.rotary_1_deg - current_pose.rotary_1_deg) > 1e-9 ||
+                std::abs(entry_pose.rotary_2_deg - current_pose.rotary_2_deg) > 1e-9)
+                transition.push_back(reoriented_clearance);
+        } else {
+            // Some controllers permit both rotary axes but cannot interpolate
+            // them simultaneously. Reorient one joint at a time at clearance.
+            FiveAxisCommand intermediate = current_clearance;
+            if (std::abs(entry_pose.rotary_1_deg - current_pose.rotary_1_deg) > 1e-9) {
+                intermediate.rotary_1_deg = entry_pose.rotary_1_deg;
+                intermediate.feed_mm_min = reoriented_clearance.feed_mm_min;
+                transition.push_back(intermediate);
+            }
+            if (std::abs(entry_pose.rotary_2_deg - intermediate.rotary_2_deg) > 1e-9) {
+                intermediate.rotary_2_deg = entry_pose.rotary_2_deg;
+                intermediate.feed_mm_min = reoriented_clearance.feed_mm_min;
+                transition.push_back(intermediate);
+            }
+        }
+        transition.push_back(entry_clearance);
+        transition.push_back(entry_pose);
         const FiveAxisValidationResult transition_limits =
             validate_five_axis_path(five_axis_profile.output, transition);
         if (!transition_limits.valid)
@@ -7660,14 +7682,31 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
                 m_five_axis_rotary_2_word, pose.rotary_2_deg,
                 m_five_axis_rotary_precision);
         };
-        const std::string lift_move = emit_travel(current_clearance, "five-axis transition clearance lift");
-        const std::string orient_move = emit_travel(reoriented_clearance, "five-axis reorientation at clearance");
-        const std::string traverse_move = emit_travel(entry_clearance, "five-axis traverse at clearance");
-        const std::string descent_move = emit_travel(entry_pose, "five-axis descent to extrusion start");
-        if (lift_move.empty() || orient_move.empty() || traverse_move.empty() || descent_move.empty())
-            throw Slic3r::RuntimeError("Five-axis writer rejected a preflighted transition segment.");
-
-        gcode += lift_move + orient_move + traverse_move + descent_move;
+        for (std::size_t i = 1; i < transition.size(); ++i) {
+            const FiveAxisCommand &previous = transition[i - 1];
+            const FiveAxisCommand &pose = transition[i];
+            const double linear_delta = std::hypot(
+                std::hypot(pose.x - previous.x, pose.y - previous.y),
+                pose.z - previous.z);
+            const bool rotary_changed =
+                std::abs(pose.rotary_1_deg - previous.rotary_1_deg) > 1e-9 ||
+                std::abs(pose.rotary_2_deg - previous.rotary_2_deg) > 1e-9;
+            if (linear_delta <= 1e-9 && !rotary_changed)
+                continue;
+            std::string_view label = "five-axis transition";
+            if (i == 1)
+                label = "five-axis transition clearance lift";
+            else if (i + 1 == transition.size())
+                label = "five-axis descent to extrusion start";
+            else if (linear_delta <= 1e-9)
+                label = "five-axis reorientation at clearance";
+            else
+                label = "five-axis traverse at clearance";
+            const std::string move = emit_travel(pose, label);
+            if (move.empty())
+                throw Slic3r::RuntimeError("Five-axis writer rejected a preflighted transition segment.");
+            gcode += move;
+        }
         m_writer.set_extra_lift(0.0);
         m_writer.set_lift(0.0);
         m_next_lift_min = 0.0;
