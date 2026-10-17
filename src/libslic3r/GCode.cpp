@@ -6092,7 +6092,7 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
         gcode += this->_after_extrude(simplifed_path);
 
         m_wipe.reset_path();
-        m_writer.set_acceleration((uint16_t)floor(get_default_acceleration(m_config) + 0.5));
+        m_writer.set_acceleration((uint32_t)floor(get_default_acceleration(m_config) + 0.5));
         return gcode;
     }
 
