@@ -41,6 +41,9 @@
 #include "GCode/WipeTowerIntegration.hpp"
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
+#include "HybridNonplanarScheduler.hpp"
+#include "HybridNonplanarSectionPlanner.hpp"
+#include "HybridNonplanarExtrusion.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/Travels.hpp"
 #include "EdgeGrid.hpp"
@@ -305,7 +308,10 @@ private:
     std::string     extrude_multi_path(const ExtrusionMultiPath &multipath, const std::string_view description, double speed = -1.);
     std::string     extrude_multi_path3D(const ExtrusionMultiPath3D &multipath, const std::string_view description, double speed = -1.);
     std::string     extrude_path(const ExtrusionPath &path, const std::string_view description, double speed = -1.);
-    std::string     extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed = -1.);
+    std::string     extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed = -1., double max_speed_mm_s = -1.);
+    // Experimental executor for a fully prevalidated, writer-frame surface route.
+    // Deliberately separate from the standard 3D path so planar travel behavior is unchanged.
+    std::string     extrude_hybrid_surface_route(const ExtrusionPath3D &path, const HybridNonplanarPassRoute &route, const HybridPreExtrusionTravelContract &contract, const std::string_view description, double speed = -1., double max_speed_mm_s = -1.);
 
     void            split_at_seam_pos(ExtrusionLoop &loop, bool was_clockwise);
     template <typename THING = ExtrusionEntity> // can be templated safely because private
@@ -529,6 +535,36 @@ private:
     const ZaaMeshData*        zaa_mesh_for(const PrintObject *obj);
     bool                      _zaa_contour(const ExtrusionPath &path, std::vector<std::pair<Point, coord_t>> &out);
     std::vector<char>         m_zaa_active; // v3: per sample of the last _zaa_contour(): 1 = follows the surface, 0 = flat
+    HybridNonplanarScheduler  m_hybrid_nonplanar_scheduler; // legacy Mode B gate; retained until the surface planner replaces it
+    HybridNonplanarSectionPlanner m_hybrid_nonplanar_section_planner;
+    std::optional<HybridNonplanarSection> m_hybrid_completed_section;
+    bool                      m_hybrid_nonplanar_layer_due { false };
+
+    // Paths selected for the hybrid finishing pass are deferred until the
+    // planar layer section has completed. Keep the layer/config/origin with
+    // each typed path so extrusion uses the same geometry and feature settings.
+    struct HybridNonplanarQueuedPath {
+        ExtrusionPath3D path;
+        const Layer* layer { nullptr };
+        FullPrintConfig config;
+        Vec2d origin { Vec2d::Zero() };
+        std::string description;
+        double speed_mm_per_sec { -1.0 };
+        uint16_t extruder_id { 0 };
+        double perimeter_extrusion_width { 0.4 };
+        bool object_layer_over_raft { false };
+
+        HybridNonplanarQueuedPath(const ExtrusionPath3D& p, const Layer* l,
+                                  const FullPrintConfig& c, const Vec2d& o,
+                                  std::string d, double speed, uint16_t extruder,
+                                  double perimeter_width, bool over_raft)
+            : path(p), layer(l), config(c), origin(o), description(std::move(d)),
+              speed_mm_per_sec(speed), extruder_id(extruder),
+              perimeter_extrusion_width(perimeter_width), object_layer_over_raft(over_raft) {}
+    };
+    std::vector<HybridNonplanarQueuedPath> m_hybrid_nonplanar_queue;
+    void flush_hybrid_nonplanar_queue(std::string& gcode);
+    bool m_hybrid_path_deferred { false };
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
     double                              m_last_mm3_per_mm;
 #endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
@@ -598,8 +634,11 @@ private:
     std::string               _extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1);
     void                      _extrude_line(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, ExtrusionRole role);
     void                      _extrude_line_cut_corner(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, Point& last_pos, const double path_width);
-    std::string               _before_extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1);
+    std::string               _before_extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1, double max_speed_mm_s = -1);
     std::string               _travel_before_extrude(const ExtrusionPath &path, const std::string_view description, double speed_mm_s = -1);
+    // Shared setup after a travel has already established the extrusion start state.
+    // The hybrid path may skip unlift only with a validated explicit writer-state contract.
+    std::string               _prepare_extrusion_after_travel(const ExtrusionPath &path, const std::string_view description, double speed_mm_s, const std::string &speed_comment, bool route_established_state, const HybridPreExtrusionTravelContract *route_contract);
     double_t                  _compute_speed_mm_per_sec(const ExtrusionPath &path_attrs, const double speed, double &fan_speed, std::string *comment) const;
     std::pair<double, double> _compute_acceleration(const ExtrusionPath &path);
     std::string               _after_extrude(const ExtrusionPath &path);

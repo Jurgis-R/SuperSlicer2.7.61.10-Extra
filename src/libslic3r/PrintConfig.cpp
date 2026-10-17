@@ -3619,6 +3619,170 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    def = this->add("hybrid_nonplanar_enabled", coBool);
+    def->label = L("Hybrid non-planar printing (experimental)");
+    def->full_label = L("Hybrid non-planar printing");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Experimental interval-triggered non-planar deformation of existing perimeter and top-solid paths. ZAA is automatically suppressed while this option is enabled."
+                     "\nThis first implementation deforms eligible existing paths on the layer that crosses each H interval; it does not yet create a separate additional pass or generate new surface paths."
+                     "\nUse a small test model first. No complete toolhead-envelope collision check is available yet.");
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("hybrid_surface_pass_preflight", coBool);
+    def->label = L("Hybrid surface-pass collision preflight (no G-code output)");
+    def->full_label = L("Hybrid surface-pass collision preflight");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Experimental preflight only. At completed H-section boundaries, build candidate surface paths from the transformed model mesh and validate the user-configured simplified tool envelope, live-writer approach/departure and high-Z transitions. This option does NOT emit a finishing pass. Envelope values must be measured for the actual mounted tool; this approximation is not a proof of collision freedom.");
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("hybrid_surface_pass_emit", coBool);
+    def->label = L("Emit experimental hybrid surface finishing pass");
+    def->full_label = L("Experimental hybrid surface-pass emission");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("DANGEROUS EXPERIMENTAL OUTPUT, disabled by default. Runs full candidate generation and the configured simplified-envelope preflight, then emits a separate mesh-derived finishing pass at completed H-section boundaries. Enable only after measuring the actual mounted tool envelope and reviewing the generated G-code; this approximation is not a guarantee of collision freedom. Use a small test model and supervise the first print.");
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionBool(false));
+
+    // Explicit machine-envelope inputs for experimental hybrid surface-pass
+    // preflight. Defaults are placeholders only: users must measure the actual
+    // mounted nozzle and toolhead before treating a successful preflight as useful.
+    def = this->add("hybrid_tool_nozzle_tip_exclusion", coFloat);
+    def->label = L("Hybrid nozzle tip exclusion height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip excluded from mesh-clearance checks. Measure the actual nozzle tip/contact region; this is not a collision guarantee.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 10;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(0.6));
+
+    def = this->add("hybrid_tool_nozzle_shaft_radius", coFloat);
+    def->label = L("Hybrid nozzle shaft radius");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Radius of the nozzle/shaft envelope measured from the nozzle tip axis. Use the largest actual radius over this height.");
+    def->sidetext = L("mm");
+    def->min = 0.1;
+    def->max = 30;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(0.4));
+
+    def = this->add("hybrid_tool_nozzle_shaft_top", coFloat);
+    def->label = L("Hybrid nozzle shaft envelope top");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip where the upper toolhead envelope begins.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 100;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_radius", coFloat);
+    def->label = L("Hybrid upper toolhead radius");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Conservative radial envelope of the mounted toolhead above its start height. Measure the actual assembly.");
+    def->sidetext = L("mm");
+    def->min = 0.1;
+    def->max = 100;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_start", coFloat);
+    def->label = L("Hybrid upper toolhead start height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip where the upper toolhead radius applies; must be at or above the nozzle shaft envelope top.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 100;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_top", coFloat);
+    def->label = L("Hybrid toolhead envelope top height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Top height above the nozzle tip included in the simplified toolhead collision envelope.");
+    def->sidetext = L("mm");
+    def->min = 0.3;
+    def->max = 200;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(25.0));
+
+    def = this->add("hybrid_tool_required_clearance", coFloat);
+    def->label = L("Hybrid toolhead required clearance");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Additional clearance around the simplified tool envelope and model surface.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 20;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
+    def = this->add("hybrid_tool_path_sample_step", coFloat);
+    def->label = L("Hybrid tool collision sample step");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum sampling step in millimetres for the approximate swept-tool check. Smaller steps are slower; this does not model every toolhead feature.");
+    def->sidetext = L("mm");
+    def->min = 0.05;
+    def->max = 2;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
+    def = this->add("hybrid_nonplanar_interval", coFloat);
+    def->label = L("Hybrid non-planar interval H");
+    def->full_label = L("Hybrid non-planar interval H");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Vertical distance in millimetres between layers selected for experimental non-planar path deformation.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 20;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
+    def = this->add("hybrid_nonplanar_max_slope", coFloat);
+    def->label = L("Hybrid non-planar maximum slope");
+    def->full_label = L("Hybrid non-planar maximum slope");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Limits the angle of Z change along a deformed extrusion path. Lower values are gentler; this does not replace collision checks.");
+    def->sidetext = L("deg");
+    def->min = 1;
+    def->max = 60;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(30.0));
+
+    def = this->add("hybrid_nonplanar_max_offset", coFloat);
+    def->label = L("Hybrid non-planar maximum Z offset");
+    def->full_label = L("Hybrid non-planar maximum Z offset");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum upward or downward Z displacement from the nominal layer surface, in millimetres.");
+    def->sidetext = L("mm");
+    def->min = 0.05;
+    def->max = 2;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(0.4));
+
+    def = this->add("hybrid_nonplanar_speed", coFloat);
+    def->label = L("Hybrid non-planar speed limit");
+    def->full_label = L("Hybrid non-planar speed limit");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum speed used on active non-planar path sections. Start conservatively and increase only after validation.");
+    def->sidetext = L("mm/s");
+    def->min = 1;
+    def->max = 100;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(20.0));
+
+    def = this->add("hybrid_nonplanar_volumetric_auto_speed", coFloat);
+    def->label = L("Hybrid volumetric auto-speed");
+    def->full_label = L("Hybrid non-planar volumetric auto-speed");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Overrides the Speed tab's Volumetric auto-speed only for hybrid non-planar paths. This volumetric flow target is converted to path speed using the path's extrusion cross-section; the hybrid speed limit and filament limits still apply. Set to 0 to use the Speed tab's Volumetric auto-speed.");
+    def->sidetext = L("mm³/s");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
     def = this->add("zaa_enabled", coBool);
     def->label = L("Z contouring (ZAA) on top surfaces");
     def->full_label = L("Z contouring (ZAA)");
@@ -10407,6 +10571,22 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "min_width_top_surface",
 "skip_tiny_fill_diagonal",
 "skip_tiny_perimeter_length",
+"hybrid_nonplanar_enabled",
+"hybrid_surface_pass_preflight",
+"hybrid_surface_pass_emit",
+"hybrid_tool_nozzle_tip_exclusion",
+"hybrid_tool_nozzle_shaft_radius",
+"hybrid_tool_nozzle_shaft_top",
+"hybrid_toolhead_radius",
+"hybrid_toolhead_start",
+"hybrid_toolhead_top",
+"hybrid_tool_required_clearance",
+"hybrid_tool_path_sample_step",
+"hybrid_nonplanar_interval",
+"hybrid_nonplanar_max_slope",
+"hybrid_nonplanar_max_offset",
+"hybrid_nonplanar_speed",
+"hybrid_nonplanar_volumetric_auto_speed",
 "zaa_enabled",
 "zaa_contour_perimeters",
 "zaa_min_z",

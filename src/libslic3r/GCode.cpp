@@ -54,6 +54,9 @@
 #include <cmath>
 #include "AABBTreeIndirect.hpp"
 #include "TriangleMesh.hpp"
+#include "HybridNonplanarSectionPlanner.hpp"
+#include "HybridNonplanarCollision.hpp"
+#include "HybridNonplanarExtrusion.hpp"
 #include <cstdlib>
 #include <chrono>
 #include <map>
@@ -61,6 +64,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/find.hpp>
@@ -791,6 +795,15 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     
     // Enabled and either not done, or marked as done while the output file is missing.
     monitor.set_started(psGCodeExport);
+
+    // Reset export-local state. The selected object's full G-code config is
+    // available in process_layer, where the configured H interval is applied.
+    m_hybrid_nonplanar_scheduler.reset();
+    m_hybrid_nonplanar_section_planner.reset();
+    m_hybrid_completed_section.reset();
+    m_hybrid_nonplanar_layer_due = false;
+    m_hybrid_nonplanar_queue.clear();
+    m_hybrid_path_deferred = false;
 
     // check if any custom gcode contains keywords used by the gcode processor to
     // produce time estimation and gcode toolpaths
@@ -3290,6 +3303,40 @@ LayerResult GCodeGenerator::process_layer(
     m_config.apply(print.default_region_config(), true);
     m_config.apply(layer.object()->config(), true);
 
+    // Start a fresh interval sequence at the first layer of each print order.
+    // This also gives the scheduler the active full G-code config; Print::config()
+    // is a narrower type and does not expose GCodeConfig-only options.
+    if (layer.id() == 0) {
+        m_hybrid_nonplanar_scheduler.reset(m_config.hybrid_nonplanar_interval.value);
+        m_hybrid_nonplanar_section_planner.reset(
+            m_config.hybrid_nonplanar_interval.value, 1e-6, layer.bottom_z());
+        m_hybrid_completed_section.reset();
+        m_hybrid_nonplanar_queue.clear();
+
+        // The current finishing queue is not yet a whole-section planner. Fail
+        // closed on layouts whose object/tool ordering it cannot safely handle.
+        if (m_config.hybrid_nonplanar_enabled.value) {
+            const bool multiple_extruders = print.config().nozzle_diameter.size() != 1;
+            const bool sequential_ordering = print.config().complete_objects.value ||
+                print.config().parallel_objects_step.value > 0;
+            if (multiple_extruders || sequential_ordering) {
+                throw RuntimeError(
+                    "Hybrid non-planar finishing currently requires one extruder and "
+                    "layer-by-layer ordering; multi-extruder and sequential finishing-pass "
+                    "ordering are not implemented");
+            }
+        }
+    }
+
+    // The scheduler advances once per exported planar layer. Mode B consults
+    // this result instead of independently guessing a boundary with floor().
+    m_hybrid_nonplanar_layer_due = false;
+    if (m_config.hybrid_nonplanar_enabled.value) {
+        const std::vector<double> due = m_hybrid_nonplanar_scheduler.after_planar_layer(
+            layer.bottom_z(), layer.print_z);
+        m_hybrid_nonplanar_layer_due = !due.empty();
+    }
+
     // Check whether it is possible to apply the spiral vase logic for this layer.
     // Just a reminder: A spiral vase mode is allowed for a single object, single material print only.
     m_enable_loop_clipping = true;
@@ -3627,6 +3674,284 @@ LayerResult GCodeGenerator::process_layer(
     }
     layer_area = unscaled(unscaled(layer_area));
     status_monitor.stats().layer_area_stats.emplace_back(print_z, layer_area);
+
+    // This is the outer print-Z layer-group boundary: all objects and tools
+    // participating at this height have completed their planar work. Advance
+    // the H-section planner here (not per object or per extruder), so the
+    // completed-section metadata describes the entire planar group.
+    m_hybrid_completed_section.reset();
+    if (m_config.hybrid_nonplanar_enabled.value || m_config.hybrid_surface_pass_preflight.value || m_config.hybrid_surface_pass_emit.value) {
+        m_hybrid_completed_section = m_hybrid_nonplanar_section_planner.after_planar_layer(
+            layer.bottom_z(), print_z);
+        if (!m_hybrid_nonplanar_section_planner.valid())
+            throw RuntimeError(
+                "Hybrid non-planar section planning encountered an invalid or ambiguous layer group; "
+                "export aborted rather than guessing a section boundary");
+    }
+
+    // Emission has its own default-off gate. If enabled, always run the same
+    // complete preflight first, even when the preflight-only UI option is off.
+    // Ordinary planar extrusion entities remain untouched.
+    if ((m_config.hybrid_surface_pass_preflight.value || m_config.hybrid_surface_pass_emit.value) &&
+        m_hybrid_completed_section) {
+        if (print.config().nozzle_diameter.size() != 1 || print.config().complete_objects.value ||
+            print.config().parallel_objects_step.value > 0 || object_layer == nullptr) {
+            throw RuntimeError("Hybrid surface-pass preflight currently requires one extruder and layer-by-layer ordering");
+        }
+
+        // Build one collision/planning mesh for every placed part on the plate.
+        // Planning against only object_layer->object() would ignore nearby models
+        // when checking the nozzle and toolhead sweep.
+        indexed_triangle_set print_mesh;
+        for (const PrintObject *part_object_ptr : print.objects()) {
+            if (part_object_ptr == nullptr)
+                throw RuntimeError("Hybrid surface-pass preflight could not resolve a print object");
+            const PrintObject &part_object = *part_object_ptr;
+            const ModelObject *model_object = part_object.model_object();
+            if (model_object == nullptr || part_object.instances().empty())
+                throw RuntimeError("Hybrid surface-pass preflight could not resolve a placed model instance");
+
+            const indexed_triangle_set source_mesh = model_object->raw_indexed_triangle_set();
+            for (const PrintInstance &instance : part_object.instances()) {
+                if (instance.model_instance == nullptr)
+                    throw RuntimeError("Hybrid surface-pass preflight could not resolve a source model instance");
+
+                Transform3d part_transform = part_object.trafo_centered();
+                part_transform.pretranslate(Vec3d(
+                    unscale<double>(instance.shift.x()),
+                    unscale<double>(instance.shift.y()), 0.0));
+                if (!append_hybrid_transformed_mesh(source_mesh, part_transform, print_mesh))
+                    throw RuntimeError("Hybrid surface-pass preflight rejected a transformed or oversized part mesh");
+            }
+        }
+        if (print_mesh.vertices.empty() || print_mesh.indices.empty())
+            throw RuntimeError("Hybrid surface-pass preflight found no placed model geometry");
+
+        AABBMesh collision_index(print_mesh);
+        HybridSweptToolOptions tool_options;
+        tool_options.nozzle_tip_exclusion_mm = m_config.hybrid_tool_nozzle_tip_exclusion.value;
+        tool_options.nozzle_shaft_radius_mm = m_config.hybrid_tool_nozzle_shaft_radius.value;
+        tool_options.nozzle_shaft_top_mm = m_config.hybrid_tool_nozzle_shaft_top.value;
+        tool_options.toolhead_radius_mm = m_config.hybrid_toolhead_radius.value;
+        tool_options.toolhead_start_mm = m_config.hybrid_toolhead_start.value;
+        tool_options.toolhead_top_mm = m_config.hybrid_toolhead_top.value;
+        tool_options.required_clearance_mm = m_config.hybrid_tool_required_clearance.value;
+        tool_options.path_sample_step_mm = m_config.hybrid_tool_path_sample_step.value;
+        // These are user-supplied simplified envelopes, not a full CAD model
+        // of the printer; output remains separately gated by the default-off option.
+        HybridSweptToolCollisionValidator collision_validator(print_mesh, collision_index, tool_options);
+        if (!collision_validator.valid())
+            throw RuntimeError("Hybrid surface-pass preflight rejected open, inconsistent or degenerate mesh topology");
+
+        HybridSurfacePlannerOptions planner_options;
+        planner_options.section_start_z = m_hybrid_completed_section->start_z;
+        planner_options.section_top_z = m_hybrid_completed_section->boundary_z;
+        planner_options.max_z_offset_mm = m_config.hybrid_nonplanar_max_offset.value;
+        planner_options.max_slope_angle_degrees = m_config.hybrid_nonplanar_max_slope.value;
+        planner_options.travel_speed_mm_s = std::max(1.0, m_config.hybrid_nonplanar_speed.value);
+        std::vector<HybridSurfacePath> candidates;
+        const auto segment_is_clear = [&collision_validator](const Vec3d &from, const Vec3d &to) {
+            return collision_validator.segment_is_clear(from, to);
+        };
+        if (!plan_hybrid_surface_paths(print_mesh, planner_options, segment_is_clear, candidates))
+            throw RuntimeError("Hybrid surface-pass preflight found no fully validated candidate paths; export aborted");
+
+        // Validate the live-writer departure lift, high-Z travel, vertical
+        // approaches/departures, candidate paths and high-Z transitions. These
+        // checks use the simplified user-supplied envelope and remain preflight
+        // only; they do not authorize actual finishing-pass G-code emission.
+        double mesh_top_z = -std::numeric_limits<double>::infinity();
+        for (const Vec3f &vertex : print_mesh.vertices)
+            mesh_top_z = std::max(mesh_top_z, static_cast<double>(vertex.z()));
+        const Vec3d writer_position = m_writer.get_position();
+        const Vec2d tool_offset = m_writer.current_tool_offset();
+        Vec3d current_tip = Vec3d::Zero();
+        if (!hybrid_writer_to_print_xyz(writer_position, m_origin, tool_offset, current_tip))
+            throw RuntimeError("Hybrid surface-pass preflight could not convert the live writer position to print coordinates");
+        const double clearance_z = std::max(
+            writer_position.z(),
+            mesh_top_z + tool_options.toolhead_top_mm +
+                tool_options.required_clearance_mm + 1.0);
+        if (!current_tip.allFinite() || !std::isfinite(clearance_z))
+            throw RuntimeError("Hybrid surface-pass preflight produced an invalid live-writer position or clearance height");
+
+        const Vec3d safe_current(current_tip.x(), current_tip.y(), clearance_z);
+        if (!collision_validator.segment_is_clear(current_tip, safe_current))
+            throw RuntimeError("Hybrid surface-pass preflight rejected the live-writer departure move");
+
+        Vec3d previous_safe_point = safe_current;
+        for (const HybridSurfacePath &path : candidates) {
+            if (path.points.size() < 2)
+                throw RuntimeError("Hybrid surface-pass preflight produced a degenerate path");
+            const Vec3d first = path.points.front();
+            const Vec3d last = path.points.back();
+            const Vec3d safe_first(first.x(), first.y(), clearance_z);
+            const Vec3d safe_last(last.x(), last.y(), clearance_z);
+            if (!collision_validator.segment_is_clear(previous_safe_point, safe_first) ||
+                !collision_validator.segment_is_clear(safe_first, first) ||
+                !collision_validator.segment_is_clear(first, last) ||
+                !collision_validator.segment_is_clear(last, safe_last))
+                throw RuntimeError("Hybrid surface-pass preflight rejected the live approach, finishing path, departure or high-Z transition");
+            previous_safe_point = safe_last;
+        }
+        if (!collision_validator.segment_is_clear(previous_safe_point, safe_current))
+            throw RuntimeError("Hybrid surface-pass preflight rejected the final high-Z return transition");
+
+        // Build a distinct typed path set using the configured top-solid
+        // flow. Keep this independent of the ordinary planar extrusion entities.
+        const double nominal_z = print_z;
+        const double nozzle_diameter = m_config.nozzle_diameter.get_at(0);
+        const double max_overlap = m_config.filament_max_overlap.get_at(0);
+        // Flow::new_from_config accepts DynamicConfig, while m_config is FullPrintConfig.
+        // Copy the active settings so region/object overrides already applied to m_config are preserved.
+        DynamicPrintConfig surface_flow_config;
+        surface_flow_config.apply(m_config, true);
+        const Flow surface_flow = Flow::new_from_config(
+            frTopSolidInfill, surface_flow_config, float(nozzle_diameter),
+            float(object_layer->height), float(max_overlap), object_layer->id() == 0);
+        const ExtrusionAttributes surface_attributes(
+            ExtrusionRole::TopSolidInfill, surface_flow);
+        std::vector<ExtrusionPath3D> surface_paths;
+        if (!make_hybrid_surface_extrusion_paths(
+                candidates, nominal_z, surface_attributes, surface_paths))
+            throw RuntimeError("Hybrid surface-pass preflight could not convert candidates to typed extrusion paths");
+
+        // Re-check the quantized path geometry, not just the floating-point
+        // planner candidates. The configured swept-tool validator must approve
+        // every segment after conversion to SuperSlicer coordinates.
+        // Build and validate the exact complete XYZ route for every quantized
+        // path before any finishing-pass G-code can be emitted. The same typed
+        // route contract is intended for the writer executor once emission is
+        // enabled; preflight alone does not enable that emitter.
+        std::vector<std::vector<Vec3d>> quantized_paths;
+        std::vector<Vec3d> safe_first_points;
+        std::vector<Vec3d> safe_last_points;
+        quantized_paths.reserve(surface_paths.size());
+        safe_first_points.reserve(surface_paths.size());
+        safe_last_points.reserve(surface_paths.size());
+        for (const ExtrusionPath3D &path : surface_paths) {
+            if (path.polyline.size() < 2 ||
+                path.z_offsets.size() != size_t(path.polyline.size()))
+                throw RuntimeError("Hybrid surface-pass preflight rejected malformed typed extrusion geometry");
+            std::vector<Vec3d> points;
+            points.reserve(path.polyline.size());
+            for (size_t i = 0; i < path.polyline.size(); ++i) {
+                const Point &xy = path.polyline.get_point(i);
+                const Vec3d point(unscaled<double>(xy.x()), unscaled<double>(xy.y()),
+                                  nominal_z + unscaled<double>(path.z_offsets[i]));
+                if (!point.allFinite())
+                    throw RuntimeError("Hybrid surface-pass preflight rejected non-finite quantized extrusion geometry");
+                // The planner is referenced to the ideal H boundary, while the
+                // emitted path offsets are relative to the actual planar layer Z.
+                // A thick layer can overshoot that boundary, so validate the final
+                // quantized offsets against the user-facing limit before emission.
+                const double max_offset_mm = m_config.hybrid_nonplanar_max_offset.value;
+                if (!std::isfinite(max_offset_mm) || max_offset_mm <= 0.0 ||
+                    std::abs(point.z() - nominal_z) > max_offset_mm + 1e-6)
+                    throw RuntimeError("Hybrid surface-pass preflight rejected a quantized path exceeding the configured maximum Z offset");
+                if (i > 0 && (point - points.back()).squaredNorm() <= 0.0)
+                    throw RuntimeError("Hybrid surface-pass preflight rejected a zero-length quantized extrusion segment");
+                points.push_back(point);
+            }
+            const Vec3d first = points.front();
+            const Vec3d last = points.back();
+            quantized_paths.emplace_back(std::move(points));
+            safe_first_points.emplace_back(first.x(), first.y(), clearance_z);
+            safe_last_points.emplace_back(last.x(), last.y(), clearance_z);
+        }
+
+        Vec3d expected_start = current_tip;
+        std::vector<HybridNonplanarPassRoute> writer_routes;
+        writer_routes.reserve(quantized_paths.size());
+        for (size_t path_idx = 0; path_idx < quantized_paths.size(); ++path_idx) {
+            const std::vector<Vec3d> &points = quantized_paths[path_idx];
+            const Vec3d &first = points.front();
+            const Vec3d &last = points.back();
+            const Vec3d &safe_first = safe_first_points[path_idx];
+            const Vec3d &safe_last = safe_last_points[path_idx];
+            const bool is_last = path_idx + 1 == quantized_paths.size();
+            const Vec3d next_safe = !is_last
+                ? safe_first_points[path_idx + 1] : safe_current;
+
+            HybridNonplanarPassRoute route;
+            route.approach.expected_start = expected_start;
+            route.approach.extrusion_start = first;
+            route.approach.clearance_z_mm = clearance_z;
+            // The first approach includes the live writer tip -> high-clearance
+            // move. Later routes start at the preceding route's validated handoff.
+            if (path_idx == 0)
+                route.approach.points = { current_tip, safe_current, safe_first, first };
+            else
+                route.approach.points = { expected_start, safe_first, first };
+            route.extrusion_points = points;
+            route.departure_points = { last, safe_last };
+            route.return_points = is_last
+                ? std::vector<Vec3d>{ safe_last, safe_current, current_tip }
+                : std::vector<Vec3d>{ safe_last, next_safe };
+            if (!validate_hybrid_nonplanar_pass_route(
+                    route, expected_start, segment_is_clear))
+                throw RuntimeError("Hybrid surface-pass preflight rejected a complete quantized XYZ pass route");
+
+            HybridNonplanarPassRoute writer_route;
+            if (!hybrid_print_to_writer_route(route, m_origin, tool_offset, writer_route))
+                throw RuntimeError("Hybrid surface-pass preflight could not convert a validated route to writer coordinates");
+            writer_routes.emplace_back(std::move(writer_route));
+            expected_start = next_safe;
+        }
+
+        BOOST_LOG_TRIVIAL(info) << "Hybrid surface-pass preflight accepted "
+                                << candidates.size() << " candidate paths at H-section boundary "
+                                << m_hybrid_completed_section->boundary_z
+                                << " mm.";
+
+        // Execute only after every route has passed geometry checks and has been
+        // converted to writer coordinates. A writer-state mismatch throws and
+        // aborts export; it never falls back to ordinary planar travel.
+        if (m_config.hybrid_surface_pass_emit.value) {
+            // Apply the hybrid volumetric target to this mesh-derived route as
+            // well as to legacy queued paths. A zero requested speed lets the
+            // normal autospeed hierarchy derive mm/s from the selected mm^3/s
+            // target; the separate hybrid speed limit is still applied after
+            // that calculation.
+            const double saved_volumetric_speed = m_volumetric_speed;
+            const double saved_max_volumetric_speed = m_config.max_volumetric_speed.value;
+            const double hybrid_volumetric_auto_speed = m_config.hybrid_nonplanar_volumetric_auto_speed.value;
+            try {
+                if (hybrid_volumetric_auto_speed > 0.) {
+                    m_volumetric_speed = hybrid_volumetric_auto_speed;
+                    m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
+                }
+                const bool use_volumetric_autospeed = m_volumetric_speed > 0.;
+                const double route_speed = use_volumetric_autospeed
+                    ? 0.0 : m_config.hybrid_nonplanar_speed.value;
+                const double route_speed_limit = m_config.hybrid_nonplanar_speed.value;
+
+                for (size_t path_idx = 0; path_idx < surface_paths.size(); ++path_idx) {
+                    HybridPreExtrusionTravelContract contract;
+                    contract.expected_start_position = writer_routes[path_idx].approach.expected_start;
+                    contract.expected_start_lift_mm = 0.0;
+                    contract.expected_end_position = writer_routes[path_idx].approach.extrusion_start;
+                    contract.expected_end_lift_mm = 0.0;
+                    contract.position_tolerance_mm = 1e-4;
+                    contract.lift_tolerance_mm = 1e-4;
+                    gcode += extrude_hybrid_surface_route(
+                        surface_paths[path_idx], writer_routes[path_idx], contract,
+                        "hybrid surface finishing pass", route_speed, route_speed_limit);
+                }
+            } catch (...) {
+                m_volumetric_speed = saved_volumetric_speed;
+                m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
+                throw;
+            }
+            m_volumetric_speed = saved_volumetric_speed;
+            m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
+        }
+    }
+
+    // Legacy Mode B still queues deformed existing paths. This is deliberately
+    // kept separate from the new section metadata; it must not be mistaken for
+    // the future mesh-derived surface-patch finishing pass.
+    this->flush_hybrid_nonplanar_queue(gcode);
 
     BOOST_LOG_TRIVIAL(trace) << "Exported layer " << layer.id() << " print_z " << print_z <<
     log_memory_info();
@@ -5751,10 +6076,12 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     for(int i=1;i<simplifed_path.polyline.size();++i)
         assert(!simplifed_path.polyline.get_point(i - 1).coincides_with_epsilon(simplifed_path.polyline.get_point(i)));
     // print the path
+    m_hybrid_path_deferred = false;
     gcode += this->_extrude(simplifed_path, description, speed_mm_per_sec);
 
-    //simplifed_path will be discarded i can reuse it to create the wipe
-    if (m_wipe.is_enabled()) {
+    // A deferred path has not been extruded yet, so do not advertise it as a
+    // completed wipe path. The actual finishing pass updates wipe state later.
+    if (!m_hybrid_path_deferred && m_wipe.is_enabled()) {
         simplifed_path.reverse();
         m_wipe.set_path(simplifed_path.polyline.get_arc(), false);
     }
@@ -5763,7 +6090,7 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     return gcode;
 }
 
-std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed) {
+std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed, double max_speed_mm_s) {
     //path.simplify(SCALED_RESOLUTION);
     ExtrusionPath3D simplifed_path = path;
     if (this->visitor_flipped) {
@@ -5780,7 +6107,7 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
     }
 
     std::string gcode;
-    gcode += this->_before_extrude(simplifed_path, description, speed);
+    gcode += this->_before_extrude(simplifed_path, description, speed, max_speed_mm_s);
 
     // calculate extrusion length per distance unit
     double e_per_mm = _compute_e_per_mm(simplifed_path);
@@ -5791,10 +6118,19 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
         for (size_t i = 0; i < simplifed_path.polyline.size()-1;i++) {
             assert(!simplifed_path.polyline.has_arc()); //FIXME extrude_to_arc_xyz ?
             Line line(simplifed_path.polyline.get_point(i), simplifed_path.polyline.get_point(i + 1));
-            const double line_length = line.length() * SCALING_FACTOR;
+            // z_offsets is indexed per polyline vertex. This move ends at vertex i + 1,
+            // so use that vertex's offset for the destination Z. Extrusion must follow
+            // the true 3D segment length, not only its XY projection.
+            const coord_t z_start = simplifed_path.z_offsets.size() > i
+                ? simplifed_path.z_offsets[i] : 0;
+            const coord_t z_end = simplifed_path.z_offsets.size() > i + 1
+                ? simplifed_path.z_offsets[i + 1] : 0;
+            const double dz = static_cast<double>(z_end) - static_cast<double>(z_start);
+            const double line_length = std::hypot(
+                static_cast<double>(line.length()), dz) * SCALING_FACTOR;
             path_length += line_length;
             gcode += m_writer.extrude_to_xyz(
-                this->point_to_gcode(line.b, simplifed_path.z_offsets.size()>i ? simplifed_path.z_offsets[i] : 0),
+                this->point_to_gcode(line.b, z_end),
                 e_per_mm * line_length,
                 comment);
         }
@@ -5813,6 +6149,133 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
     }
     // reset acceleration
     m_writer.set_acceleration((uint16_t)floor(get_default_acceleration(m_config) + 0.5));
+    return gcode;
+}
+
+std::string GCodeGenerator::extrude_hybrid_surface_route(
+    const ExtrusionPath3D &path, const HybridNonplanarPassRoute &route,
+    const HybridPreExtrusionTravelContract &contract, const std::string_view description,
+    double speed, double max_speed_mm_s)
+{
+    // This executor accepts only absolute writer-frame route coordinates. It is
+    // intentionally not called by ordinary extrude_path_3D(), preserving planar
+    // and legacy 3D path behavior until a dedicated configuration gate is wired.
+    const double tolerance = contract.position_tolerance_mm;
+    auto coincides = [tolerance](const Vec3d &a, const Vec3d &b) {
+        return a.allFinite() && b.allFinite() && (a - b).norm() <= tolerance;
+    };
+    if (!std::isfinite(tolerance) || tolerance < 0.0 ||
+        path.polyline.size() < 2 || path.polyline.has_arc() ||
+        path.z_offsets.size() != path.polyline.size() ||
+        route.approach.points.size() < 2 || route.extrusion_points.size() != path.polyline.size() ||
+        route.departure_points.size() < 2 || route.return_points.size() < 2)
+        throw std::runtime_error("Hybrid surface route has invalid path or waypoint structure.");
+
+    auto validate_waypoints = [](const std::vector<Vec3d> &points) {
+        if (points.size() < 2)
+            return false;
+        bool has_motion = false;
+        for (size_t i = 0; i < points.size(); ++i) {
+            if (!points[i].allFinite())
+                return false;
+            if (i > 0 && (points[i] - points[i - 1]).norm() > 0.0)
+                has_motion = true;
+        }
+        return has_motion;
+    };
+    if (!validate_waypoints(route.approach.points) ||
+        !validate_waypoints(route.extrusion_points) ||
+        !validate_waypoints(route.departure_points) ||
+        !validate_waypoints(route.return_points))
+        throw std::runtime_error("Hybrid surface route contains non-finite or motionless waypoints.");
+    // Extrusion segments must all have positive length because each one carries
+    // an E delta. Check this before retracting or moving the writer.
+    for (size_t i = 1; i < route.extrusion_points.size(); ++i)
+        if ((route.extrusion_points[i] - route.extrusion_points[i - 1]).norm() <= 0.0)
+            throw std::runtime_error("Hybrid surface extrusion contains a zero-length segment.");
+
+    // The current writer route primitive deliberately requires zero active lift.
+    // Refuse unsupported states before emitting any G-code; do not silently
+    // normalize an existing lift because that would invalidate collision checks.
+    if (std::abs(contract.expected_start_lift_mm) > contract.lift_tolerance_mm ||
+        std::abs(contract.expected_end_lift_mm) > contract.lift_tolerance_mm ||
+        !coincides(route.approach.expected_start, contract.expected_start_position) ||
+        !coincides(route.approach.extrusion_start, contract.expected_end_position) ||
+        !coincides(route.approach.points.front(), route.approach.expected_start) ||
+        !coincides(route.approach.points.back(), route.extrusion_points.front()) ||
+        !coincides(route.departure_points.front(), route.extrusion_points.back()) ||
+        !coincides(route.return_points.front(), route.departure_points.back()))
+        throw std::runtime_error("Hybrid surface route does not match its explicit writer-state contract.");
+
+    // Prove the live starting position and lift before any writer mutation.
+    if (!validate_hybrid_pre_extrusion_state(
+            contract, m_writer.get_position(), m_writer.get_lift(), false))
+        throw std::runtime_error("Hybrid surface route start position/lift mismatch; aborting export.");
+
+    // Ensure the supplied path XY/Z vertices describe the exact route vertices.
+    // This prevents an E profile from one path being paired with unrelated XYZ.
+    for (size_t i = 0; i < path.polyline.size(); ++i) {
+        const Vec3d expected = this->point_to_gcode(path.polyline.get_point(i), path.z_offsets[i]);
+        if (!coincides(expected, route.extrusion_points[i]))
+            throw std::runtime_error("Hybrid surface route vertices do not match the extrusion path; aborting export.");
+    }
+
+    // This executor does not reverse paths: the collision-checked route and the
+    // extrusion direction must remain identical. A caller with a flipped visitor
+    // must orient and validate the route before entering this function.
+    if (this->visitor_flipped)
+        throw std::runtime_error("Hybrid surface route cannot execute a visitor-flipped path.");
+
+    // Preserve the validated point order; unlike ordinary path extrusion this
+    // route must not be auto-reversed based on the previous XY position.
+    ExtrusionPath3D oriented_path = path;
+    std::string gcode;
+    gcode.reserve(1024);
+    std::string speed_comment;
+    speed = _compute_speed_mm_per_sec(oriented_path, speed, m_overhang_fan_override,
+                                      m_config.gcode_comments ? &speed_comment : nullptr);
+    if (max_speed_mm_s > 0.0)
+        speed = std::min(speed, max_speed_mm_s);
+
+    // Retraction is E-only here: no wipe and no lift can invalidate the already
+    // collision-checked approach. The shared preparation helper unretracts only
+    // after the approach has reached its exact declared extrusion start.
+    gcode += m_writer.retract();
+    gcode += m_writer.travel_to_xyz_route(route.approach.points, tolerance, description);
+    if (!validate_hybrid_pre_extrusion_state(
+            contract, m_writer.get_position(), m_writer.get_lift(), true))
+        throw std::runtime_error("Hybrid surface approach did not reach its declared extrusion start; aborting export.");
+
+    gcode += this->_prepare_extrusion_after_travel(
+        oriented_path, description, speed, speed_comment, true, &contract);
+
+    const double e_per_mm = _compute_e_per_mm(oriented_path);
+    const std::string_view comment = m_config.gcode_comments ? description : ""sv;
+    for (size_t i = 1; i < route.extrusion_points.size(); ++i) {
+        const double segment_length = (route.extrusion_points[i] - route.extrusion_points[i - 1]).norm();
+        gcode += m_writer.extrude_to_xyz(route.extrusion_points[i], e_per_mm * segment_length, comment);
+    }
+    gcode += this->_after_extrude(oriented_path);
+
+    // Leave the surface only through the prevalidated departure and return
+    // polylines. E-only retraction preserves the zero-lift invariant required
+    // by the writer route primitive.
+    gcode += m_writer.retract();
+    gcode += m_writer.travel_to_xyz_route(route.departure_points, tolerance, "hybrid surface departure");
+    gcode += m_writer.travel_to_xyz_route(route.return_points, tolerance, "hybrid surface return");
+    // A route may return to the next route's declared start rather than its
+    // own start. The next route's contract will validate that hand-off.
+    if (!coincides(m_writer.get_position(), route.return_points.back()) ||
+        std::abs(m_writer.get_lift()) > contract.lift_tolerance_mm)
+        throw std::runtime_error("Hybrid surface return did not reach its declared endpoint; aborting export.");
+
+    if (m_wipe.is_enabled()) {
+        ArcPolyline wipe_path = oriented_path.as_polyline();
+        wipe_path.reverse();
+        m_wipe.set_path(std::move(wipe_path.get_arc()), false);
+    }
+    unset_last_pos();
+    m_writer.set_acceleration(static_cast<uint16_t>(std::floor(get_default_acceleration(m_config) + 0.5)));
     return gcode;
 }
 
@@ -6407,6 +6870,97 @@ double GCodeGenerator::_compute_e_per_mm(const ExtrusionPath &path, double speed
     return e_per_mm;
 }
 
+void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
+{
+    if (m_hybrid_nonplanar_queue.empty())
+        return;
+
+    // Preflight the whole queue before writing even the pass markers. A bad
+    // deferred record must not leave a partially emitted finishing pass.
+    for (const HybridNonplanarQueuedPath& queued : m_hybrid_nonplanar_queue) {
+        if (queued.layer == nullptr || !std::isfinite(queued.layer->print_z) ||
+            queued.path.polyline.size() < 2 ||
+            queued.path.z_offsets.size() != size_t(queued.path.polyline.size()) ||
+            !std::isfinite(queued.speed_mm_per_sec) ||
+            !std::isfinite(queued.perimeter_extrusion_width) ||
+            queued.perimeter_extrusion_width <= 0. ||
+            m_writer.tool() == nullptr ||
+            m_writer.tool()->id() != queued.extruder_id) {
+            throw RuntimeError("Hybrid non-planar finishing queue failed metadata validation; export aborted");
+        }
+    }
+
+    std::vector<HybridNonplanarQueuedPath> queued_paths;
+    queued_paths.swap(m_hybrid_nonplanar_queue);
+
+    gcode += ";HYBRID_PLANAR_SECTION_END\n";
+    gcode += ";HYBRID_FINISHING_PASS_BEGIN\n";
+
+    const Layer* saved_layer = m_layer;
+    const FullPrintConfig saved_config = m_config;
+    const Vec2d saved_origin = m_origin;
+    const double saved_perimeter_width = m_current_perimeter_extrusion_width;
+    const bool saved_object_layer_over_raft = m_object_layer_over_raft;
+    const double saved_volumetric_speed = m_volumetric_speed;
+
+    try {
+        for (HybridNonplanarQueuedPath& queued : queued_paths) {
+            m_layer = queued.layer;
+            m_config = queued.config;
+            // Each queued path starts from the original autospeed baseline; a
+            // previous path may have used a hybrid-specific override.
+            m_volumetric_speed = saved_volumetric_speed;
+            m_origin = queued.origin;
+            m_current_perimeter_extrusion_width = queued.perimeter_extrusion_width;
+            m_object_layer_over_raft = queued.object_layer_over_raft;
+    
+            const double base_z = queued.layer->print_z;
+            if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
+                gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: return to layer Z");
+    
+            // A positive hybrid-specific flow target replaces the Speed tab's
+            // autospeed target only while this queued non-planar path is emitted.
+            // Ordinary feature speeds, the hybrid mm/s cap, and filament caps remain.
+            const double hybrid_volumetric_auto_speed = m_config.hybrid_nonplanar_volumetric_auto_speed.value;
+            if (hybrid_volumetric_auto_speed > 0.) {
+                m_volumetric_speed = hybrid_volumetric_auto_speed;
+                m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
+            }
+    
+            // extrude_path_3D/_before_extrude owns the approach travel, retract and
+            // unretract sequence. Do not call travel_to here as well: that would
+            // mutate the travel plan without writing its returned polyline.
+            const double speed_limit = m_config.hybrid_nonplanar_speed.value;
+            gcode += this->extrude_path_3D(
+                queued.path, queued.description, queued.speed_mm_per_sec,
+                speed_limit > 0. ? speed_limit : -1.);
+    
+            // The contour sampler ramps both endpoints to nominal layer Z. Keep
+            // the writer synchronized with that nominal Z before restoring context.
+            if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
+                gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: restore layer Z");
+        }
+    
+    } catch (...) {
+        m_layer = saved_layer;
+        m_config = saved_config;
+        m_origin = saved_origin;
+        m_current_perimeter_extrusion_width = saved_perimeter_width;
+        m_object_layer_over_raft = saved_object_layer_over_raft;
+        m_volumetric_speed = saved_volumetric_speed;
+        throw;
+    }
+
+
+    m_layer = saved_layer;
+    m_config = saved_config;
+    m_origin = saved_origin;
+    m_current_perimeter_extrusion_width = saved_perimeter_width;
+    m_object_layer_over_raft = saved_object_layer_over_raft;
+    m_volumetric_speed = saved_volumetric_speed;
+    gcode += ";HYBRID_FINISHING_PASS_END\n";
+}
+
 // ======== ZAA (Z contouring) ========
 struct GCodeGenerator::ZaaMeshData {
     indexed_triangle_set     its;
@@ -6434,13 +6988,20 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 {
     out.clear();
     m_zaa_active.clear();
-    if (!m_config.zaa_enabled.value || m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
+    // Hybrid mode reuses the existing mesh-following path sampler, but only on
+    // layers that cross an H interval. It is mutually exclusive with standalone ZAA.
+    const bool hybrid = m_config.hybrid_nonplanar_enabled.value;
+    if ((!hybrid && !m_config.zaa_enabled.value) ||
+        m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
+        return false;
+    if (hybrid && !m_hybrid_nonplanar_layer_due)
         return false;
     const ExtrusionRole role = path.role();
     const bool real_top = role == ExtrusionRole::TopSolidInfill;
+    const bool contour_solid_infill = !hybrid && m_config.zaa_contour_perimeters.value;
     const bool is_top   = real_top ||
-                          (m_config.zaa_contour_perimeters.value && role == ExtrusionRole::SolidInfill);
-    const bool is_peri  = m_config.zaa_contour_perimeters.value &&
+                          ((hybrid || contour_solid_infill) && role == ExtrusionRole::SolidInfill);
+    const bool is_peri  = (hybrid || m_config.zaa_contour_perimeters.value) &&
                           (role == ExtrusionRole::Perimeter || role == ExtrusionRole::ExternalPerimeter);
     if (!is_top && !is_peri)
         return false;
@@ -6454,10 +7015,14 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const double h         = m_layer->height;
     const double print_z   = m_layer->print_z;
     const double ray_z     = m_layer->slice_z;                              // inside the solid under a top surface
-    const double min_line  = std::max(0., m_config.zaa_min_z.value);        // thinnest line
-    const double max_line  = std::max(h, m_config.zaa_max_height.value);    // thickest line
-    const double max_down  = std::max(0., h - min_line);                    // lowest offset  = -max_down
-    const double max_up    = std::max(0., max_line - h);                    // highest offset = +max_up
+    const double min_line  = std::max(0., m_config.zaa_min_z.value);        // ZAA minimum line height
+    const double max_line  = std::max(h, m_config.zaa_max_height.value);    // ZAA maximum line height
+    const double hybrid_offset = std::max(0.05, m_config.hybrid_nonplanar_max_offset.value);
+    // In hybrid mode keep the deposited line from collapsing and limit upward
+    // displacement conservatively on top-solid paths.
+    const double max_down  = hybrid ? std::min(h - std::min(h, 0.05), hybrid_offset)
+                                    : std::max(0., h - min_line);
+    const double max_up    = hybrid ? hybrid_offset : std::max(0., max_line - h);
     const double tol       = 0.03;
     // a real top surface of this layer is at most half a layer above the layer top (the layer is sliced in its middle)
     const double valid_up  = (real_top ? std::min(max_up, 0.5 * h) : max_up) + tol;
@@ -6514,6 +7079,14 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const size_t n = spts.size();
     if (n < 2)
         return false;
+
+    if (hybrid) {
+        // Use the shared fail-closed constraint planner so offsets and the
+        // endpoint ramps are tested independently of G-code emission.
+        const double max_angle = std::max(1.0, std::min(60.0, m_config.hybrid_nonplanar_max_slope.value));
+        if (!constrain_hybrid_nonplanar_offsets(ss, sd, hybrid_offset, max_angle))
+            return false; // malformed samples: preserve the original planar path
+    }
 
     // --- x-ray: which samples follow the surface ---
     std::vector<char> act(n, 0);
@@ -6582,10 +7155,31 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 
 std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::string_view description, double speed) {
 
+    m_hybrid_path_deferred = false;
     std::string descr = description.empty() ? gcode_extrusion_role_to_string(extrusion_role_to_gcode_extrusion_role(path.role())) : std::string(description);
     // ZAA: decide before the speed is used
     std::vector<std::pair<Point, coord_t>> zaa_points;
     const bool zaa_active = this->_zaa_contour(path, zaa_points);
+
+    // Hybrid Mode B replaces selected planar paths with deferred 3D paths.
+    // They are emitted after the planar layer's paths have completed.
+    if (zaa_active && m_config.hybrid_nonplanar_enabled.value) {
+        if (m_layer == nullptr || zaa_points.size() < 2 || zaa_points.size() != m_zaa_active.size())
+            throw RuntimeError("Hybrid non-planar contour has invalid layer/sample context");
+
+        ExtrusionPath3D deferred(path.attributes(), false);
+        for (size_t i = 0; i < zaa_points.size(); ++i)
+            deferred.push_back(zaa_points[i].first, zaa_points[i].second);
+
+        const uint16_t extruder_id = m_writer.tool() != nullptr
+            ? static_cast<uint16_t>(m_writer.tool()->id()) : uint16_t(0);
+        m_hybrid_nonplanar_queue.emplace_back(
+            deferred, m_layer, m_config, m_origin, descr, speed, extruder_id,
+            m_current_perimeter_extrusion_width, m_object_layer_over_raft);
+        m_hybrid_path_deferred = true;
+        return {};
+    }
+
     // v3: the ZAA speed cap is applied later, only on the active runs of the path
     std::string gcode = this->_before_extrude(path, descr, speed);
     if (zaa_active) {
@@ -6597,8 +7191,10 @@ std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::strin
         const std::string comment_zaa = m_config.gcode_comments ? descr : "";
         double zaa_fan = 0.;
         const double zaa_base_speed = this->_compute_speed_mm_per_sec(path, speed, zaa_fan, nullptr);
-        const bool   zaa_cap        = m_config.zaa_speed.value > 0.;
-        const double zaa_speed_mm_s = zaa_cap ? std::min(zaa_base_speed, m_config.zaa_speed.value) : zaa_base_speed;
+        const double nonplanar_speed_limit = m_config.hybrid_nonplanar_enabled.value
+            ? m_config.hybrid_nonplanar_speed.value : m_config.zaa_speed.value;
+        const bool   zaa_cap        = nonplanar_speed_limit > 0.;
+        const double zaa_speed_mm_s = zaa_cap ? std::min(zaa_base_speed, nonplanar_speed_limit) : zaa_base_speed;
         const std::string zaa_marker = m_enable_cooling_markers
             ? std::string(GCodeGenerator::_cooldown_marker_speed[uint8_t(extrusion_role_to_gcode_extrusion_role(path.role()))])
             : std::string();
@@ -7402,38 +7998,81 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
     return gcode;
 }
 
-std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s) {
+std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s, double max_speed_mm_s) {
+    // Keep the planar lifecycle in its original order: compute speed, perform the
+    // normal travel (including travel acceleration/deceleration), then run the
+    // shared post-travel extrusion preparation.
     std::string gcode;
     gcode.reserve(512);
-    std::string description{ description_in };
-
     // compute speed here to be able to know it for travel_deceleration_use_target
     std::string speed_comment = "";
     speed_mm_s = _compute_speed_mm_per_sec(path, speed_mm_s, m_overhang_fan_override, m_config.gcode_comments ? &speed_comment : nullptr);
+    // Apply the hybrid cap after role/feature speed calculation so it is not
+    // multiplied again and so travel-deceleration planning sees the final cap.
+    if (max_speed_mm_s > 0.)
+        speed_mm_s = std::min(speed_mm_s, max_speed_mm_s);
 
     gcode += this->_travel_before_extrude(path, description_in, speed_mm_s);
+    gcode += this->_prepare_extrusion_after_travel(path, description_in, speed_mm_s, speed_comment, false, nullptr);
+    return gcode;
+}
+
+std::string GCodeGenerator::_prepare_extrusion_after_travel(
+    const ExtrusionPath &path, const std::string_view description_in, double speed_mm_s,
+    const std::string &speed_comment, bool route_established_state,
+    const HybridPreExtrusionTravelContract *route_contract)
+{
+    std::string gcode;
+    gcode.reserve(512);
+    // The experimental route must prove its exact writer state before shared
+    // preparation mutates retraction, pending G-code, PA, or role tracking.
+    if (route_established_state) {
+        if (route_contract == nullptr ||
+            !validate_hybrid_pre_extrusion_state(*route_contract, m_writer.get_position(),
+                                                 m_writer.get_lift(), true))
+            throw std::runtime_error("Hybrid non-planar pre-extrusion writer state does not match its declared contract.");
+        if (!m_delayed_layer_change.empty())
+            throw std::runtime_error("Hybrid non-planar route cannot consume a delayed layer change.");
+    } else if (route_contract != nullptr) {
+        throw std::runtime_error("A hybrid pre-extrusion route contract was supplied without an established route state.");
+    }
+
 
     //if needed, write the gcode_label_objects_end then gcode_label_objects_start
     //should be already done by travel_to, but just in case
     _add_object_change_labels(gcode);
 
-    // compensate retraction
-    if (m_delayed_layer_change.empty()) {
-        gcode += m_writer.unlift();//this->unretract();
-        assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) || m_loop_vase_mode);
-    } else {
-        //check if an unlift happens
-        std::string unlift = m_writer.unlift();
-        assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON));
-        if (unlift.empty()) {
-            unlift = m_delayed_layer_change;
+    // Object-change labels may emit a Z-correction move. Re-check the hybrid
+    // contract after that shared hook, immediately before deciding whether
+    // ordinary unlift is permitted.
+    if (route_established_state &&
+        !validate_hybrid_pre_extrusion_state(*route_contract, m_writer.get_position(),
+                                             m_writer.get_lift(), true))
+        throw std::runtime_error("Hybrid non-planar writer state changed during object-label preparation.");
+
+    // Compensate retraction. Ordinary planar extrusion keeps the historical
+    // unlift path. A hybrid route skips it only after its declared end state has
+    // been validated above; the route owns the Z/lift transition.
+    if (!route_established_state) {
+        if (m_delayed_layer_change.empty()) {
+            gcode += m_writer.unlift();//this->unretract();
+            assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) || m_loop_vase_mode);
+        } else {
+            //check if an unlift happens
+            std::string unlift = m_writer.unlift();
+            assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON));
+            if (unlift.empty()) {
+                unlift = m_delayed_layer_change;
+            }
+            m_delayed_layer_change.clear();
+            gcode += unlift;
+            //now that we move to the new layer, forget previous layer wipe (if any).
+            //gcode += "; m_wipe.reset_path(); after m_delayed_layer_change\n";
         }
-        m_delayed_layer_change.clear();
-        gcode += unlift;
-        //now that we move to the new layer, forget previous layer wipe (if any).
-        //gcode += "; m_wipe.reset_path(); after m_delayed_layer_change\n";
+        gcode += m_writer.unretract();
+    } else {
+        gcode += m_writer.unretract();
     }
-    gcode += m_writer.unretract();
 
     if (!m_pending_pre_extrusion_gcode.empty()) {
         // There is G-Code that is due to be inserted before an extrusion starts. Insert it.
@@ -7575,6 +8214,7 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     // F     is mm per minute.
     // speed is mm per second
     gcode += m_writer.set_speed_mm_s(speed_mm_s, speed_comment, cooling_marker_setspeed_comments);
+
 
     return gcode;
 }

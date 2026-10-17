@@ -7,6 +7,9 @@ add_executable(${_TEST_NAME}_tests
     test_point.cpp
 	test_3mf.cpp
 	test_aabbindirect.cpp
+	test_hybrid_nonplanar_scheduler.cpp
+	test_hybrid_nonplanar_section_planner.cpp
+	test_hybrid_nonplanar_surface_planner.cpp
 	test_kdtreeindirect.cpp
 	test_arachne.cpp
 	test_arc_welder.cpp
