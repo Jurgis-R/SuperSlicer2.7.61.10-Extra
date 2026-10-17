@@ -3898,6 +3898,58 @@ PageShp TabPrinter::build_kinematics_page()
     optgroup = page->new_optgroup(L("Minimum feedrates"));
     append_option_line_kinematics(optgroup, "machine_min_extruding_rate");
     append_option_line_kinematics(optgroup, "machine_min_travel_rate");
+
+    // Experimental five-axis configuration lives in the printer preset. These
+    // options must be explicitly registered on a GUI page; PrintConfig
+    // definitions alone do not make them visible in the Printer Settings UI.
+    optgroup = page->new_optgroup(_L("Experimental five-axis output"));
+    optgroup->append_single_option_line("five_axis_enabled");
+    optgroup->append_single_option_line("five_axis_machine_name");
+    optgroup->append_single_option_line("five_axis_postprocessor_id");
+    optgroup->append_single_option_line("five_axis_mount");
+    optgroup->append_single_option_line("five_axis_simultaneous_rotary");
+
+    optgroup = page->new_optgroup(_L("Five-axis rotary output"));
+    optgroup->append_single_option_line("five_axis_rotary_1_word");
+    optgroup->append_single_option_line("five_axis_rotary_2_word");
+    optgroup->append_single_option_line("five_axis_max_rotary_rate");
+    optgroup->append_single_option_line("five_axis_max_rotary_delta_per_mm");
+    optgroup->append_single_option_line("five_axis_output_precision");
+
+    optgroup = page->new_optgroup(_L("Five-axis rotary geometry"));
+    for (const std::string& axis : { std::string("x"), std::string("y"), std::string("z") }) {
+        optgroup->append_single_option_line("five_axis_rotary_1_axis_" + axis);
+    }
+    for (const std::string& axis : { std::string("x"), std::string("y"), std::string("z") }) {
+        optgroup->append_single_option_line("five_axis_rotary_2_axis_" + axis);
+    }
+    for (const std::string& axis : { std::string("x"), std::string("y"), std::string("z") }) {
+        optgroup->append_single_option_line("five_axis_rotary_1_pivot_" + axis);
+    }
+    for (const std::string& axis : { std::string("x"), std::string("y"), std::string("z") }) {
+        optgroup->append_single_option_line("five_axis_rotary_2_pivot_" + axis);
+    }
+    optgroup->append_single_option_line("five_axis_rotary_1_min");
+    optgroup->append_single_option_line("five_axis_rotary_1_max");
+    optgroup->append_single_option_line("five_axis_rotary_2_min");
+    optgroup->append_single_option_line("five_axis_rotary_2_max");
+    optgroup->append_single_option_line("five_axis_tool_tip_offset_x");
+    optgroup->append_single_option_line("five_axis_tool_tip_offset_y");
+    optgroup->append_single_option_line("five_axis_tool_tip_offset_z");
+
+    optgroup = page->new_optgroup(_L("Five-axis machine envelope and collision"));
+    for (const std::string& axis : { std::string("x"), std::string("y"), std::string("z") }) {
+        optgroup->append_single_option_line("five_axis_machine_min_" + axis);
+    }
+    for (const std::string& axis : { std::string("x"), std::string("y"), std::string("z") }) {
+        optgroup->append_single_option_line("five_axis_machine_max_" + axis);
+    }
+    optgroup->append_single_option_line("five_axis_tool_clearance_radius");
+    optgroup->append_single_option_line("five_axis_collision_sample_spacing");
+    optgroup->append_single_option_line("five_axis_obstacle_boxes");
+    optgroup->append_single_option_line("five_axis_transition_clearance");
+    optgroup->append_single_option_line("five_axis_surface_match_distance");
+
     return page;
 }
 
