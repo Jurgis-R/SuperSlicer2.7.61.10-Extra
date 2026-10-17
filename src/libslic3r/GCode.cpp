@@ -3724,8 +3724,10 @@ LayerResult GCodeGenerator::process_layer(
                 if (!transform_hybrid_surface_mesh(source_mesh, part_transform, part_mesh))
                     throw RuntimeError("Hybrid surface-pass preflight rejected a transformed part mesh");
 
-                if (print_mesh.vertices.size() >
-                    static_cast<size_t>(std::numeric_limits<int>::max()) - part_mesh.vertices.size())
+                const size_t max_vertex_count =
+                    static_cast<size_t>(std::numeric_limits<int>::max());
+                if (part_mesh.vertices.size() > max_vertex_count ||
+                    print_mesh.vertices.size() > max_vertex_count - part_mesh.vertices.size())
                     throw RuntimeError("Hybrid surface-pass preflight rejected an oversized combined print mesh");
                 const int vertex_offset = static_cast<int>(print_mesh.vertices.size());
                 print_mesh.vertices.insert(print_mesh.vertices.end(),
