@@ -6,6 +6,7 @@
 #include "FiveAxisMachineProfile.hpp"
 #include "PrintConfig.hpp"
 
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <vector>

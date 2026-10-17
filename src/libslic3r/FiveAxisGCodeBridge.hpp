@@ -6,6 +6,7 @@
 #include "FiveAxisExtrusionAdapter.hpp"
 #include "FiveAxisPostprocessor.hpp"
 
+#include <cmath>
 #include <string>
 #include <vector>
 

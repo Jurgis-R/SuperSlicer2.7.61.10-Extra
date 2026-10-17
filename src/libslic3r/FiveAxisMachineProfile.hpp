@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <string>
+#include <vector>
 
 namespace Slic3r {
 

@@ -12,8 +12,10 @@
 #include <Eigen/Geometry>
 #include <Eigen/LU>
 
-#include <cmath>
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <utility>
 #include <limits>
 #include <memory>
 #include <string>
