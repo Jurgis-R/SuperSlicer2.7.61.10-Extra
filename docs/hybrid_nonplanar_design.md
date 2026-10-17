@@ -2,65 +2,31 @@
 
 ## Status
 
-This document tracks the implementation in the SuperSlicer EXTRA development branch. The feature is still experimental, has not been compiled in this environment, and has not been validated on a printer.
+This branch contains an experimental implementation and GUI controls. The latest changes have **not** been compiled or run through the automated test suite in this environment, and there has been no physical-printer validation. Do not treat this as printer-ready.
 
-### Implemented in the development branch
+### Available in the current source
 
-- Added a **Hybrid non-planar printing** checkbox, mutually exclusive with ZAA during G-code generation.
-- Added configurable interval `H` (default 2.0 mm), maximum slope angle (default 30 degrees), and maximum Z offset (default 0.4 mm).
-- Added a conservative non-planar speed cap (default 20 mm/s) for active deformed sections.
-- Added an initial **Mode B** path-deformation implementation: on the existing layer whose vertical span crosses each H boundary, eligible perimeter and top-solid paths are sampled against the model mesh and receive bounded Z offsets.
-- Added an adjacent-sample slope limiter and ramps the path offsets back to nominal layer Z at both ends.
-- Corrected the existing `ExtrusionPath3D` G-code writer to use each destination vertex's Z offset and true 3D segment length.
+- The Print Settings UI exposes a default-off **Hybrid non-planar printing (experimental)** option, H interval, slope/offset limits, speed cap, separate surface-pass preflight/output gates, and simplified tool-envelope parameters.
+- The interval scheduler is connected to `GCodeGenerator` and tracks due layer boundaries. The section planner is called at completed print-Z layer-group boundaries.
+- Existing-path deformation (Mode B) samples eligible perimeter/top-solid paths against the transformed model mesh, bounds offsets and local slope, and queues changed paths for typed 3D G-code emission. The current implementation replaces selected planar paths on the boundary layer; it does not preserve those selected paths as a separate planar deposit and then add a second contour on top.
+- A separate mesh-derived surface-following planner and gated surface-pass emission path are present. Output is off by default and runs the configured preflight before emission.
+- The collision validator rejects invalid/open/inconsistently oriented meshes and checks a simplified cylindrical nozzle-shaft/toolhead envelope against the model. This is **not** a complete model of a real printer's nozzle, heater block, fan duct, probe, carriage, bed limits, or every travel interaction.
+- Export currently fails closed for unsupported multi-object/instance/extruder/sequential-print layouts in the relevant experimental paths. This is a limitation, not support for those layouts.
+- Catch2 scheduler, geometry, collision, and G-code regression tests have been added. They are authored tests, not evidence of a successful build or test run.
 
-### Scheduler foundation added (not yet connected to G-code emission)
+### Before calling this usable
 
-- Added the header-only `HybridNonplanarScheduler` in `src/libslic3r/HybridNonplanarScheduler.hpp`. It tracks a configurable positive interval, emits each due Z boundary at most once, tolerates floating-point boundary error, handles variable-height layers, and rejects invalid/non-monotonic layer input.
-- Connected the scheduler to `GCodeGenerator`: it resets for each export, advances once for each processed planar layer, and Mode B now checks the scheduler's boundary result instead of recomputing an interval band with `floor()` per extrusion path.
-- Added Catch2 coverage in `tests/libslic3r/test_hybrid_nonplanar_scheduler.cpp` and registered it in `tests/libslic3r/CMakeLists.txt`.
-- The scheduler is now called by `GCodeGenerator` and controls Mode B eligibility, but it does not yet insert a separate finishing pass. Mode B still emits its contoured segments inline while the planar layer is generated; typed deferred-path queuing and safe separate-pass emission remain outstanding.
-- The C++ test target has not been compiled or run in this environment. Treat these tests as authored, not passed.
+1. Build the branch and run the configured native test targets; fix compile and test failures.
+2. Verify the UI layout parses and that settings serialize, reload, and reach the G-code generator.
+3. Run regression tests proving default settings produce unchanged ordinary 3-axis G-code, plus tests for both experimental paths, invalid meshes, writer-state restoration, and unsupported print layouts.
+4. Inspect generated G-code for extrusion continuity, travel/retract state, coordinate transforms, speed restoration, and correct section/pass ordering.
+5. Validate the simplified collision checks against measured printer geometry, then conduct supervised physical tests on a small model. A successful software preflight alone cannot prove collision freedom.
 
-### Section-boundary planner foundation (not yet wired into G-code)
+### Current intended behavior
 
-- Added `HybridNonplanarSectionPlanner.hpp`, a layer-group boundary tracker that describes a completed planar H section without retaining/replaying old extrusion paths.
-- The tracker is designed to be called once after each complete print-Z layer group, after all objects and tools at that height have finished. It records section start Z, nominal H boundary, actual boundary-layer top Z, and the number of planar layers in the section.
-- It fails closed for non-monotonic layer groups, invalid dimensions, or a single indivisible layer spanning multiple H boundaries. That multi-boundary case needs explicit subdivision/planning rather than guessed grouping.
-- Added Catch2 tests for normal boundaries, variable-height boundary layers, reset, and invalid/ambiguous input.
-- Added a shared path-constraint helper that clamps sampled Z offsets, ramps both endpoints to nominal Z, enforces adjacent-sample slope limits, validates the result, and rejects malformed samples without mutating the caller's path. The existing mesh-following contour sampler now uses it; on validation failure, hybrid contouring falls back to the untouched planar path. Unit tests cover slope/offset limits and malformed input.
-- Moved the experimental queue flush out of per-object extrusion and to the outer print-Z layer-group boundary, after the group's ordinary object/tool work. This is an ordering improvement only; it does not yet generate paths for the complete H section.
-- This is a testable scheduling primitive, not yet the section-level surface-path generator. It is not yet connected to `GCodeGenerator::process_layer`; the existing per-object deferred queue and its limitations remain. Do not treat this commit as completing the finishing pass.
-
-### Deferred Mode B finishing-pass implementation (not yet built)
-
-- Mode B now converts an eligible contour into a typed `ExtrusionPath3D` and queues it with its layer pointer, active `FullPrintConfig`, object origin, description, requested speed, and extruder ID.
-- The original planar extrusion for that selected path is skipped, so the same selected path is not deposited once planar and again as a duplicate contour. The queue is now flushed at the outer print-Z layer-group boundary, after all ordinary object/tool work at that Z, using the normal travel planner and typed 3D extrusion writer. A layer/extruder context mismatch aborts export instead of silently dropping the queued path. This improves ordering within one layer group but does not make the queue a whole-H-section surface planner.
-- The finishing pass is marked in G-code with `HYBRID_PLANAR_SECTION_END`, `HYBRID_FINISHING_PASS_BEGIN`, and `HYBRID_FINISHING_PASS_END`; these markers support output-order regression checks.
-- Added a G-code integration test in `tests/fff_print/test_printgcode.cpp` using the sloped pyramid test mesh. It checks marker order and that the finishing-pass region contains extrusion moves.
-- Scope limitation: this initial queue currently defers eligible paths only on the layer that reaches an H boundary, then flushes after that object/extruder's layer work. It does not yet accumulate an entire multi-layer H section into a single pass, nor does it implement a full swept-volume collision check.
-- Safety gate added: while the current flush remains inside per-object/per-extruder layer processing, export now aborts when hybrid mode is enabled for multiple print objects, multiple instances, multiple configured extruders, or sequential/complete-object ordering. This is a temporary fail-closed restriction, not support for those layouts. A regression test asserts that multi-object export is rejected.
-- The planar-path preservation requirement is still not met by the prototype: eligible source paths are replaced by deferred deformed paths. The section-level planner must instead leave ordinary planar toolpaths intact and generate a distinct finishing-path set from eligible exposed surface patches. Do not remove the safety gate or describe the current queue as a complete H-section pass until that planner and outer layer-group emission are integrated.
-
-### Not yet implemented / not yet verified
-
-- This first Mode B increment deforms paths on an existing layer; it does **not** insert a separate additional non-planar pass between planar layer groups.
-- Mode A (generating new surface-following paths) is not implemented yet.
-- Full nozzle, heater block, fan duct, probe, and carriage-envelope collision checking is not implemented.
-- C++ compilation, G-code regression tests, and physical printer tests remain outstanding. Do not treat the branch as printer-ready.
-
-Target workflow:
-
-1. Print ordinary planar layers for a configurable vertical interval `H` (for example, 2.0 mm).
-2. Insert a separately planned non-planar pass.
-3. Resume planar printing for another interval `H`.
-4. Repeat until the object is complete.
-
-Both modes must be available:
-
-- **Surface-following mode:** generate a new path over a selected model surface.
-- **Existing-path deformation mode:** retain the XY paths generated by the slicer and assign safe per-vertex Z offsets to those paths.
-
-The feature is intended for conventional 3-axis Cartesian FFF. A Z-axis move is not a substitute for a collision check.
+- **Existing-path deformation:** eligible existing paths on a scheduled boundary layer are deformed and emitted through the typed 3D writer. This is a prototype, not yet the intended full-H-section workflow.
+- **Surface-following pass:** generates mesh-derived candidate paths at completed H-section boundaries and emits them only when the separate experimental output gate is explicitly enabled and preflight accepts every route.
+- The feature targets conventional 3-axis Cartesian FFF; no rotary axis is required. All experimental gates remain off by default, and ordinary printing must remain unchanged when they are off.
 
 ## Source-code audit
 
@@ -69,7 +35,7 @@ The feature is intended for conventional 3-axis Cartesian FFF. A Z-axis move is 
 - `ExtrusionPath3D` in `src/libslic3r/ExtrusionEntity.hpp` already stores one `z_offsets` entry per polyline vertex and reverses the offsets together with the polyline.
 - `GCodeGenerator::extrude_path_3D()` in `src/libslic3r/GCode.cpp` is the active emission point for these paths.
 - The existing implementation used the XY segment length for extrusion and selected `z_offsets[i]` as the destination offset. The first hybrid development commit changes this to use the destination vertex's `z_offsets[i + 1]` and the true 3D segment length. This is a focused correctness fix, not the scheduler.
-- The current branch has no end-to-end scheduler that inserts non-planar passes at interval H. The legacy Z-offset path type alone does not provide surface generation, safe scheduling, or collision protection.
+- The branch now has an interval scheduler, a section-boundary planner, a mesh-derived candidate surface planner, and separate default-off surface-pass emission. These pieces still require a successful native build, test run, and physical validation.
 
 ### Slic3r non-planar fork
 
