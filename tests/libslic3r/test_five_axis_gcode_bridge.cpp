@@ -2,6 +2,8 @@
 
 #include <catch2/catch.hpp>
 
+#include <limits>
+
 using namespace Slic3r;
 
 static ExtrusionPath3D make_bridge_test_path()
