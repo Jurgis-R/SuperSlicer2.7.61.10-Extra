@@ -1,6 +1,7 @@
 /// Five-axis G-code travel integration for SuperSlicer.
 #include "../GCode.hpp"
 
+#include "../Exception.hpp"
 #include "../FiveAxisConfig.hpp"
 #include "../FiveAxisKinematics.hpp"
 

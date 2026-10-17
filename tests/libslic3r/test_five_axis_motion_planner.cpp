@@ -51,21 +51,36 @@ TEST_CASE("Five-axis planner maps work poses to machine commands", "[FiveAxisMot
     REQUIRE(commands[2].feed_mm_min == Approx(600.0));
 }
 
-TEST_CASE("Five-axis planner applies active tool offsets in machine coordinates", "[FiveAxisMotionPlanner]")
+TEST_CASE("Five-axis planner applies active tool offsets after rotary transforms", "[FiveAxisMotionPlanner]")
 {
-    FiveAxisKinematicsConfig kin;
-    kin.machine_frame_tool_offset = { -2.0, 3.0, 0.0 };
+    FiveAxisKinematicsConfig kin_with_offset;
+    kin_with_offset.machine_frame_tool_offset = { -2.0, 3.0, 0.0 };
+    FiveAxisKinematicsConfig kin_without_offset;
     FiveAxisOutputConfig output;
     FiveAxisCollisionConfig collision;
-    const auto poses = simple_poses();
-    std::vector<FiveAxisCommand> commands;
+    auto poses = simple_poses();
+    for (auto &pose : poses)
+        pose.normal = { 0.0, 1.0, 0.0 };
 
-    const auto result = plan_five_axis_path(kin, output, collision, poses, commands);
-    REQUIRE(result.valid);
-    REQUIRE(commands.size() == poses.size());
-    CHECK(commands.front().x == Approx(-2.0));
-    CHECK(commands.front().y == Approx(3.0));
-    CHECK(commands.front().z == Approx(10.0));
+    std::vector<FiveAxisCommand> with_offset;
+    std::vector<FiveAxisCommand> without_offset;
+    const auto offset_result =
+        plan_five_axis_path(kin_with_offset, output, collision, poses, with_offset);
+    const auto base_result =
+        plan_five_axis_path(kin_without_offset, output, collision, poses, without_offset);
+
+    REQUIRE(offset_result.valid);
+    REQUIRE(base_result.valid);
+    REQUIRE(with_offset.size() == poses.size());
+    REQUIRE(without_offset.size() == poses.size());
+    CHECK(with_offset.front().rotary_1_deg == Approx(90.0).margin(0.1));
+    for (std::size_t i = 0; i < poses.size(); ++i) {
+        CHECK(with_offset[i].x == Approx(without_offset[i].x - 2.0));
+        CHECK(with_offset[i].y == Approx(without_offset[i].y + 3.0));
+        CHECK(with_offset[i].z == Approx(without_offset[i].z));
+        CHECK(with_offset[i].rotary_1_deg == Approx(without_offset[i].rotary_1_deg));
+        CHECK(with_offset[i].rotary_2_deg == Approx(without_offset[i].rotary_2_deg));
+    }
 }
 
 TEST_CASE("Five-axis planner compensates rotary-bed pivots", "[FiveAxisMotionPlanner]")

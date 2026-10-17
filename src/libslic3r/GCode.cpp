@@ -5963,7 +5963,9 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
             const std::array<double, 3> normal = had_normals
                 ? simplifed_path.tool_axis_normals.front()
                 : std::array<double, 3>{{0.0, 0.0, 1.0}};
-            simplifed_path.polyline = ArcPolyline(simplifed_path.polyline.to_polyline());
+            // Sample arcs to a 20-micron chord-deviation tolerance; default to_polyline()
+            // may keep small arcs as a single chord, which is too coarse for five-axis paths.
+            simplifed_path.polyline = ArcPolyline(simplifed_path.polyline.to_polyline(scaled(0.02)));
             simplifed_path.z_offsets.assign(simplifed_path.polyline.size(), z_offset);
             if (had_normals)
                 simplifed_path.tool_axis_normals.assign(simplifed_path.polyline.size(), normal);
