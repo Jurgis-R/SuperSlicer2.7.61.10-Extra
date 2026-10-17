@@ -5833,9 +5833,11 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
             throw Slic3r::RuntimeError("Five-axis path has an incomplete per-vertex Z-offset array.");
 
         if (!simplifed_path.has_tool_axis_normals()) {
-            const bool planar_path = std::all_of(
-                simplifed_path.z_offsets.begin(), simplifed_path.z_offsets.end(),
-                [](coord_t offset) { return offset == 0; });
+            const bool planar_path = simplifed_path.z_offsets.empty() ||
+                std::all_of(simplifed_path.z_offsets.begin(), simplifed_path.z_offsets.end(),
+                    [&simplifed_path](coord_t offset) {
+                        return offset == simplifed_path.z_offsets.front();
+                    });
             if (!planar_path)
                 throw Slic3r::RuntimeError("Five-axis non-planar path is missing per-vertex tool-axis normals.");
             simplifed_path.tool_axis_normals.assign(
@@ -5853,13 +5855,14 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
             ? m_five_axis_rotary_state_1_deg : 0.0;
         const double initial_rotary_2 = m_five_axis_rotary_state_initialized
             ? m_five_axis_rotary_state_2_deg : 0.0;
-        const double z_offset = m_writer.gcode_config().z_offset.value;
-        const auto transform_point = [this, z_offset](const FiveAxisVec3 &point) {
+        const auto transform_point = [this](const FiveAxisVec3 &point) {
             const Vec2d tool_offset = m_writer.current_tool_offset();
+            // Z offset is applied only by GCodeWriter while formatting output.
+            // Keeping it out of kinematics avoids rotating around an offset pivot.
             return FiveAxisVec3{
                 point.x + m_origin.x() - tool_offset.x(),
                 point.y + m_origin.y() - tool_offset.y(),
-                point.z + z_offset
+                point.z
             };
         };
         // Geometry-stage normals are directions in the already transformed
@@ -5880,45 +5883,13 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
         if (!extrusion_result.valid)
             throw Slic3r::RuntimeError(std::string("Five-axis extrusion accounting failed: ") + extrusion_result.error);
 
-        // Preflight the approach from the current writer position as part of
-        // the same limit, envelope, and configured obstacle checks as printing.
-        double travel_speed_mm_s = m_config.get_computed_value("travel_speed");
-        if (!std::isfinite(travel_speed_mm_s) || travel_speed_mm_s <= 0.0)
-            travel_speed_mm_s = m_writer.gcode_config().travel_speed.value;
-        if (!std::isfinite(travel_speed_mm_s) || travel_speed_mm_s <= 0.0)
-            throw Slic3r::RuntimeError("Five-axis approach has an invalid travel speed.");
-        const Vec3d writer_position = m_writer.get_position();
-        FiveAxisCommand current_pose;
-        current_pose.x = writer_position.x();
-        current_pose.y = writer_position.y();
-        current_pose.z = writer_position.z() + z_offset;
-        current_pose.e = 0.0;
-        current_pose.rotary_1_deg = initial_rotary_1;
-        current_pose.rotary_2_deg = initial_rotary_2;
-        current_pose.feed_mm_min = travel_speed_mm_s * 60.0;
-
-        std::vector<FiveAxisCommand> transition;
-        transition.reserve(commands.size() + 1);
-        transition.push_back(current_pose);
-        transition.insert(transition.end(), commands.begin(), commands.end());
-        const FiveAxisValidationResult transition_limits =
-            validate_five_axis_path(five_axis_profile.output, transition);
-        if (!transition_limits.valid)
-            throw Slic3r::RuntimeError(std::string("Five-axis approach violates motion limits: ") + transition_limits.error);
-        const FiveAxisValidationResult transition_envelope =
-            validate_five_axis_machine_envelope(five_axis_profile, transition);
-        if (!transition_envelope.valid)
-            throw Slic3r::RuntimeError(std::string("Five-axis approach violates the machine envelope: ") + transition_envelope.error);
-        const FiveAxisValidationResult transition_clearance =
-            validate_five_axis_path_clearance(five_axis_profile.collision, transition);
-        if (!transition_clearance.valid)
-            throw Slic3r::RuntimeError(std::string("Five-axis approach fails configured clearance checks: ") + transition_clearance.error);
-
+        // The actual approach is preflighted after normal retraction/wipe/lift
+        // handling, when the writer's real current pose is known.
         m_five_axis_rotary_1_word = five_axis_profile.output.rotary_1_word;
         m_five_axis_rotary_2_word = five_axis_profile.output.rotary_2_word;
         m_five_axis_rotary_precision = five_axis_profile.output.precision;
         m_five_axis_entry_point = Vec3d(
-            commands.front().x, commands.front().y, commands.front().z - z_offset);
+            commands.front().x, commands.front().y, commands.front().z);
         m_five_axis_entry_rotary_1_deg = commands.front().rotary_1_deg;
         m_five_axis_entry_rotary_2_deg = commands.front().rotary_2_deg;
         m_five_axis_entry_pending = true;
@@ -5934,7 +5905,7 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
         for (std::size_t i = 1; i < commands.size(); ++i) {
             const FiveAxisCommand &command = commands[i];
             const Vec3d writer_point(
-                command.x, command.y, command.z - z_offset);
+                command.x, command.y, command.z);
             gcode += m_writer.extrude_to_xyz(
                 writer_point, extrusion_deltas[i], comment,
                 m_five_axis_rotary_1_word, command.rotary_1_deg,
@@ -5978,7 +5949,9 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
     }
     gcode += this->_after_extrude(simplifed_path);
     // ensure z is reset via lift if possible
-    if (!is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) && m_writer.get_position().z() > m_layer->print_z) {
+    if (!m_config.opt_bool("five_axis_enabled") &&
+        !is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) &&
+        m_writer.get_position().z() > m_layer->print_z) {
         //assert(m_writer.get_position().z() > m_layer->print_z);
         m_writer.set_lift(m_writer.get_position().z() - m_layer->print_z);
     }
@@ -7427,13 +7400,102 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
     if (m_five_axis_entry_pending) {
         m_writer.set_travel_acceleration((uint32_t)floor(travel_acceleration + 0.5));
         m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
-        const double travel_speed = m_config.get_computed_value("travel_speed");
-        gcode += m_writer.travel_to_xyz_rotary(
+
+        // Preserve the established retract/wipe policy and its generated
+        // extrusion commands, but replace its planar travel route with the
+        // kinematically planned machine-frame move below.
+        if (!last_pos_defined() || !last_pos().coincides_with_epsilon(path.first_point()))
+            (void)this->travel_to(gcode, path.first_point(), path.role());
+
+        FiveAxisMachineProfile five_axis_profile;
+        const FiveAxisValidationResult profile_result =
+            load_five_axis_machine_profile(m_config, five_axis_profile);
+        if (!profile_result.valid)
+            throw Slic3r::RuntimeError(std::string("Invalid five-axis machine profile: ") + profile_result.error);
+
+        double travel_speed = m_config.get_computed_value("travel_speed");
+        if (!std::isfinite(travel_speed) || travel_speed <= 0.0)
+            travel_speed = m_writer.gcode_config().travel_speed.value;
+        if (!std::isfinite(travel_speed) || travel_speed <= 0.0)
+            throw Slic3r::RuntimeError("Five-axis approach has an invalid travel speed.");
+
+        // Ramping lift is virtual until write_travel_to() consumes it. Since
+        // five-axis output bypasses that planar writer, convert it (and the
+        // minimum-lift requirement) into a coordinated vertical clearance move.
+        const Vec3d before_lift = m_writer.get_position();
+        const double extra_lift = m_writer.get_extra_lift();
+        if (!std::isfinite(extra_lift) || extra_lift < 0.0)
+            throw Slic3r::RuntimeError("Five-axis approach has an invalid pending lift.");
+        const double safe_lift_z = std::max(
+            before_lift.z() + extra_lift,
+            m_next_lift_min > before_lift.z() ? m_next_lift_min : before_lift.z());
+        const bool needs_clearance_lift = safe_lift_z > before_lift.z() + EPSILON;
+
+        FiveAxisCommand current_pose;
+        current_pose.x = before_lift.x();
+        current_pose.y = before_lift.y();
+        current_pose.z = before_lift.z();
+        current_pose.e = 0.0;
+        current_pose.rotary_1_deg = m_five_axis_rotary_state_initialized
+            ? m_five_axis_rotary_state_1_deg : 0.0;
+        current_pose.rotary_2_deg = m_five_axis_rotary_state_initialized
+            ? m_five_axis_rotary_state_2_deg : 0.0;
+        current_pose.feed_mm_min = travel_speed * 60.0;
+
+        std::vector<FiveAxisCommand> transition;
+        transition.reserve(needs_clearance_lift ? 3 : 2);
+        transition.push_back(current_pose);
+        if (needs_clearance_lift) {
+            FiveAxisCommand lift_pose = current_pose;
+            lift_pose.z = safe_lift_z;
+            transition.push_back(lift_pose);
+        }
+        FiveAxisCommand entry_pose;
+        entry_pose.x = m_five_axis_entry_point.x();
+        entry_pose.y = m_five_axis_entry_point.y();
+        entry_pose.z = m_five_axis_entry_point.z();
+        entry_pose.e = 0.0;
+        entry_pose.rotary_1_deg = m_five_axis_entry_rotary_1_deg;
+        entry_pose.rotary_2_deg = m_five_axis_entry_rotary_2_deg;
+        entry_pose.feed_mm_min = travel_speed * 60.0;
+        transition.push_back(entry_pose);
+
+        const FiveAxisValidationResult transition_limits =
+            validate_five_axis_path(five_axis_profile.output, transition);
+        if (!transition_limits.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis approach violates motion limits: ") + transition_limits.error);
+        const FiveAxisValidationResult transition_envelope =
+            validate_five_axis_machine_envelope(five_axis_profile, transition);
+        if (!transition_envelope.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis approach violates the machine envelope: ") + transition_envelope.error);
+        const FiveAxisValidationResult transition_clearance =
+            validate_five_axis_path_clearance(five_axis_profile.collision, transition);
+        if (!transition_clearance.valid)
+            throw Slic3r::RuntimeError(std::string("Five-axis approach fails configured clearance checks: ") + transition_clearance.error);
+
+        if (needs_clearance_lift) {
+            const std::string lift_gcode = m_writer.travel_to_xyz_rotary(
+                Vec3d(before_lift.x(), before_lift.y(), safe_lift_z), travel_speed,
+                "five-axis clearance lift",
+                m_five_axis_rotary_1_word, current_pose.rotary_1_deg,
+                m_five_axis_rotary_2_word, current_pose.rotary_2_deg,
+                m_five_axis_rotary_precision);
+            if (lift_gcode.empty())
+                throw Slic3r::RuntimeError("Five-axis writer rejected the preflighted clearance lift.");
+            gcode += lift_gcode;
+        }
+        m_writer.set_extra_lift(0.0);
+        m_next_lift_min = 0.0;
+
+        const std::string approach = m_writer.travel_to_xyz_rotary(
             m_five_axis_entry_point, travel_speed,
             "move to first " + description + " point",
             m_five_axis_rotary_1_word, m_five_axis_entry_rotary_1_deg,
             m_five_axis_rotary_2_word, m_five_axis_entry_rotary_2_deg,
             m_five_axis_rotary_precision);
+        if (approach.empty())
+            throw Slic3r::RuntimeError("Five-axis writer rejected the preflighted approach move.");
+        gcode += approach;
         this->set_last_pos(path.first_point());
         m_five_axis_entry_pending = false;
         return gcode;
