@@ -3895,26 +3895,32 @@ LayerResult GCodeGenerator::process_layer(
             const double saved_volumetric_speed = m_volumetric_speed;
             const double saved_max_volumetric_speed = m_config.max_volumetric_speed.value;
             const double hybrid_volumetric_auto_speed = m_config.hybrid_nonplanar_volumetric_auto_speed.value;
-            if (hybrid_volumetric_auto_speed > 0.) {
-                m_volumetric_speed = hybrid_volumetric_auto_speed;
-                m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
-            }
-            const bool use_volumetric_autospeed = m_volumetric_speed > 0.;
-            const double route_speed = use_volumetric_autospeed
-                ? 0.0 : m_config.hybrid_nonplanar_speed.value;
-            const double route_speed_limit = m_config.hybrid_nonplanar_speed.value;
+            try {
+                if (hybrid_volumetric_auto_speed > 0.) {
+                    m_volumetric_speed = hybrid_volumetric_auto_speed;
+                    m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
+                }
+                const bool use_volumetric_autospeed = m_volumetric_speed > 0.;
+                const double route_speed = use_volumetric_autospeed
+                    ? 0.0 : m_config.hybrid_nonplanar_speed.value;
+                const double route_speed_limit = m_config.hybrid_nonplanar_speed.value;
 
-            for (size_t path_idx = 0; path_idx < surface_paths.size(); ++path_idx) {
-                HybridPreExtrusionTravelContract contract;
-                contract.expected_start_position = writer_routes[path_idx].approach.expected_start;
-                contract.expected_start_lift_mm = 0.0;
-                contract.expected_end_position = writer_routes[path_idx].approach.extrusion_start;
-                contract.expected_end_lift_mm = 0.0;
-                contract.position_tolerance_mm = 1e-4;
-                contract.lift_tolerance_mm = 1e-4;
-                gcode += extrude_hybrid_surface_route(
-                    surface_paths[path_idx], writer_routes[path_idx], contract,
-                    "hybrid surface finishing pass", route_speed, route_speed_limit);
+                for (size_t path_idx = 0; path_idx < surface_paths.size(); ++path_idx) {
+                    HybridPreExtrusionTravelContract contract;
+                    contract.expected_start_position = writer_routes[path_idx].approach.expected_start;
+                    contract.expected_start_lift_mm = 0.0;
+                    contract.expected_end_position = writer_routes[path_idx].approach.extrusion_start;
+                    contract.expected_end_lift_mm = 0.0;
+                    contract.position_tolerance_mm = 1e-4;
+                    contract.lift_tolerance_mm = 1e-4;
+                    gcode += extrude_hybrid_surface_route(
+                        surface_paths[path_idx], writer_routes[path_idx], contract,
+                        "hybrid surface finishing pass", route_speed, route_speed_limit);
+                }
+            } catch (...) {
+                m_volumetric_speed = saved_volumetric_speed;
+                m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
+                throw;
             }
             m_volumetric_speed = saved_volumetric_speed;
             m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
