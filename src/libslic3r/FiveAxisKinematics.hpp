@@ -257,8 +257,12 @@ inline FiveAxisVec3 five_axis_compensate_head_position(
     const FiveAxisVec3 tool_offset_after_joint2 = config.rotary_2_pivot +
         five_axis_rotate(config.tool_tip_offset - config.rotary_2_pivot,
                          axis2, rotary_2_deg);
+    // Rotate the second-joint/tool-tip offset about joint 1's pivot.
+    // The pivot must be subtracted before rotation and added back afterwards;
+    // otherwise the pivot is incorrectly treated as an extra tool offset.
     const FiveAxisVec3 head_offset = config.rotary_1_pivot +
-        five_axis_rotate(tool_offset_after_joint2, axis1, rotary_1_deg);
+        five_axis_rotate(tool_offset_after_joint2 - config.rotary_1_pivot,
+                         axis1, rotary_1_deg);
     return tool_tip_machine - head_offset;
 }
 
