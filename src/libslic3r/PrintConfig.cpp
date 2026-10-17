@@ -469,7 +469,7 @@ void PrintConfigDef::init_common_params()
     def->set_default_value(new ConfigOptionString("Unconfigured five-axis machine"));
     def = this->add("five_axis_postprocessor_id", coString);
     def->label = L("Postprocessor id");
-    def->tooltip = L("Controller/postprocessor identifier. The registered Klipper writer emits rotary axes configured as GCODE_AXIS.");
+    def->tooltip = L("Controller/postprocessor identifier. Five-axis export currently requires Klipper with both rotary axes configured as GCODE_AXIS.");
     def->category = OptionCategory::mmsetup;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionString("klipper_gcode_axis"));
