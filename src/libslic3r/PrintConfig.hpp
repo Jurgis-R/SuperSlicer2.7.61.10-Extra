@@ -1285,6 +1285,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionBool,                 allow_empty_layers))
     ((ConfigOptionBool,                 hybrid_nonplanar_enabled))
     ((ConfigOptionBool,                 hybrid_surface_pass_preflight))
+    ((ConfigOptionBool,                 hybrid_surface_pass_emit))
     ((ConfigOptionFloat,                hybrid_tool_nozzle_tip_exclusion))
     ((ConfigOptionFloat,                hybrid_tool_nozzle_shaft_radius))
     ((ConfigOptionFloat,                hybrid_tool_nozzle_shaft_top))
