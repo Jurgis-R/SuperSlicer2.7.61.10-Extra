@@ -6025,11 +6025,7 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
         m_five_axis_rotary_state_initialized = true;
         gcode += this->_after_extrude(simplifed_path);
 
-        if (m_wipe.is_enabled()) {
-            ArcPolyline temp = simplifed_path.as_polyline();
-            temp.reverse();
-            m_wipe.set_path(std::move(temp.get_arc()), false);
-        }
+        m_wipe.reset_path();
         m_writer.set_acceleration((uint16_t)floor(get_default_acceleration(m_config) + 0.5));
         return gcode;
     }
@@ -7508,9 +7504,12 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         m_writer.set_travel_acceleration((uint32_t)floor(travel_acceleration + 0.5));
         m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
 
-        // Preserve the established retract/wipe policy and its generated
-        // extrusion commands, but replace its planar travel route with the
-        // kinematically planned machine-frame move below.
+        // Preserve normal retract/lift decisions. The stock wipe helper emits
+        // print-frame XY moves directly through GCodeWriter, which is incorrect
+        // once rotary kinematics have changed the machine frame. Five-axis
+        // export therefore clears pending wipe geometry until a kinematic wipe
+        // path implementation is available.
+        m_wipe.reset_path();
         if (!last_pos_defined() || !last_pos().coincides_with_epsilon(path.first_point()))
             (void)this->travel_to(gcode, path.first_point(), path.role());
 
