@@ -20,12 +20,19 @@ namespace Slic3r {
 // Coordinates in ExtrusionPath3D are scaled millimetres; base_z_mm is the
 // nominal layer Z in millimetres. E is emitted as a cumulative absolute value
 // beginning at initial_e, using the caller's already-computed E/mm factor.
-inline FiveAxisValidationResult make_five_axis_poses_from_extrusion_path(
+// The transforms are explicit so callers must define the source-to-G-code
+// frame and the corresponding direction transform. Extrusion distance remains
+// measured in the source path frame; the planner applies machine kinematics
+// afterwards. Translation must never be applied to a direction vector.
+template <typename PointTransform, typename NormalTransform>
+inline FiveAxisValidationResult make_five_axis_poses_from_extrusion_path_transformed(
     const ExtrusionPath3D &path,
     double base_z_mm,
     double initial_e,
     double e_per_mm,
     double feed_mm_min,
+    PointTransform transform_point,
+    NormalTransform transform_normal,
     std::vector<FiveAxisToolPose> &poses)
 {
     poses.clear();
@@ -46,33 +53,50 @@ inline FiveAxisValidationResult make_five_axis_poses_from_extrusion_path(
     std::vector<FiveAxisToolPose> candidate;
     candidate.reserve(count);
     double cumulative_e = initial_e;
-    FiveAxisVec3 previous_point {};
+    FiveAxisVec3 previous_source_point {};
     for (std::size_t i = 0; i < count; ++i) {
         const Point &xy = path.polyline.get_point(i);
-        const FiveAxisVec3 point {
+        const FiveAxisVec3 source_point {
             double(xy.x()) * SCALING_FACTOR,
             double(xy.y()) * SCALING_FACTOR,
-            base_z_mm + (i < path.z_offsets.size()
-                ? double(path.z_offsets[i]) * SCALING_FACTOR : 0.0)
+            base_z_mm + double(path.z_offsets[i]) * SCALING_FACTOR
         };
+        FiveAxisVec3 point = transform_point(source_point);
         const auto &raw_normal = path.tool_axis_normals[i];
-        FiveAxisVec3 normal { raw_normal[0], raw_normal[1], raw_normal[2] };
-        if (!five_axis_finite(point) || !five_axis_normalize(normal))
-            return { false, "Five-axis extrusion path contains an invalid point or zero/non-finite tool direction." };
+        FiveAxisVec3 normal = transform_normal(
+            FiveAxisVec3 { raw_normal[0], raw_normal[1], raw_normal[2] });
+        if (!five_axis_finite(source_point) || !five_axis_finite(point) ||
+            !five_axis_normalize(normal))
+            return { false, "Five-axis extrusion path contains an invalid point or zero/non-finite transformed tool direction." };
 
         if (i > 0) {
-            const FiveAxisVec3 delta = point - previous_point;
-            const double segment_length = five_axis_norm(delta);
+            const double segment_length = five_axis_norm(source_point - previous_source_point);
             if (!std::isfinite(segment_length))
                 return { false, "Five-axis extrusion segment length is non-finite." };
             cumulative_e += segment_length * e_per_mm;
         }
         candidate.push_back({ point, normal, cumulative_e, feed_mm_min });
-        previous_point = point;
+        previous_source_point = source_point;
     }
 
     poses.swap(candidate);
     return { true, {} };
+}
+
+// Identity-frame convenience wrapper retained for existing callers. Live
+// GCodeGenerator integration must use the transformed overload explicitly.
+inline FiveAxisValidationResult make_five_axis_poses_from_extrusion_path(
+    const ExtrusionPath3D &path,
+    double base_z_mm,
+    double initial_e,
+    double e_per_mm,
+    double feed_mm_min,
+    std::vector<FiveAxisToolPose> &poses)
+{
+    const auto identity = [](const FiveAxisVec3 &v) { return v; };
+    return make_five_axis_poses_from_extrusion_path_transformed(
+        path, base_z_mm, initial_e, e_per_mm, feed_mm_min,
+        identity, identity, poses);
 }
 
  
