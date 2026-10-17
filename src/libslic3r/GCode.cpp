@@ -6882,42 +6882,54 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     const bool saved_object_layer_over_raft = m_object_layer_over_raft;
     const double saved_volumetric_speed = m_volumetric_speed;
 
-    for (HybridNonplanarQueuedPath& queued : queued_paths) {
-        m_layer = queued.layer;
-        m_config = queued.config;
-        // Each queued path starts from the original autospeed baseline; a
-        // previous path may have used a hybrid-specific override.
-        m_volumetric_speed = saved_volumetric_speed;
-        m_origin = queued.origin;
-        m_current_perimeter_extrusion_width = queued.perimeter_extrusion_width;
-        m_object_layer_over_raft = queued.object_layer_over_raft;
-
-        const double base_z = queued.layer->print_z;
-        if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
-            gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: return to layer Z");
-
-        // A positive hybrid-specific flow target replaces the Speed tab's
-        // autospeed target only while this queued non-planar path is emitted.
-        // Ordinary feature speeds, the hybrid mm/s cap, and filament caps remain.
-        const double hybrid_volumetric_auto_speed = m_config.hybrid_nonplanar_volumetric_auto_speed.value;
-        if (hybrid_volumetric_auto_speed > 0.) {
-            m_volumetric_speed = hybrid_volumetric_auto_speed;
-            m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
+    try {
+        for (HybridNonplanarQueuedPath& queued : queued_paths) {
+            m_layer = queued.layer;
+            m_config = queued.config;
+            // Each queued path starts from the original autospeed baseline; a
+            // previous path may have used a hybrid-specific override.
+            m_volumetric_speed = saved_volumetric_speed;
+            m_origin = queued.origin;
+            m_current_perimeter_extrusion_width = queued.perimeter_extrusion_width;
+            m_object_layer_over_raft = queued.object_layer_over_raft;
+    
+            const double base_z = queued.layer->print_z;
+            if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
+                gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: return to layer Z");
+    
+            // A positive hybrid-specific flow target replaces the Speed tab's
+            // autospeed target only while this queued non-planar path is emitted.
+            // Ordinary feature speeds, the hybrid mm/s cap, and filament caps remain.
+            const double hybrid_volumetric_auto_speed = m_config.hybrid_nonplanar_volumetric_auto_speed.value;
+            if (hybrid_volumetric_auto_speed > 0.) {
+                m_volumetric_speed = hybrid_volumetric_auto_speed;
+                m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
+            }
+    
+            // extrude_path_3D/_before_extrude owns the approach travel, retract and
+            // unretract sequence. Do not call travel_to here as well: that would
+            // mutate the travel plan without writing its returned polyline.
+            const double speed_limit = m_config.hybrid_nonplanar_speed.value;
+            gcode += this->extrude_path_3D(
+                queued.path, queued.description, queued.speed_mm_per_sec,
+                speed_limit > 0. ? speed_limit : -1.);
+    
+            // The contour sampler ramps both endpoints to nominal layer Z. Keep
+            // the writer synchronized with that nominal Z before restoring context.
+            if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
+                gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: restore layer Z");
         }
-
-        // extrude_path_3D/_before_extrude owns the approach travel, retract and
-        // unretract sequence. Do not call travel_to here as well: that would
-        // mutate the travel plan without writing its returned polyline.
-        const double speed_limit = m_config.hybrid_nonplanar_speed.value;
-        gcode += this->extrude_path_3D(
-            queued.path, queued.description, queued.speed_mm_per_sec,
-            speed_limit > 0. ? speed_limit : -1.);
-
-        // The contour sampler ramps both endpoints to nominal layer Z. Keep
-        // the writer synchronized with that nominal Z before restoring context.
-        if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
-            gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: restore layer Z");
+    
+    } catch (...) {
+        m_layer = saved_layer;
+        m_config = saved_config;
+        m_origin = saved_origin;
+        m_current_perimeter_extrusion_width = saved_perimeter_width;
+        m_object_layer_over_raft = saved_object_layer_over_raft;
+        m_volumetric_speed = saved_volumetric_speed;
+        throw;
     }
+
 
     m_layer = saved_layer;
     m_config = saved_config;
