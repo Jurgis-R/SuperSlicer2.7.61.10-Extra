@@ -18,6 +18,8 @@ namespace Slic3r {
 struct FiveAxisGCodeBridgeResult {
     FiveAxisValidationResult validation;
     double final_e { 0.0 };
+    double final_rotary_1_deg { 0.0 };
+    double final_rotary_2_deg { 0.0 };
     std::size_t command_count { 0 };
 };
 
@@ -57,6 +59,40 @@ inline FiveAxisGCodeBridgeResult plan_and_emit_five_axis_extrusion(
     output.swap(candidate);
     result.command_count = commands.size();
     result.final_e = commands.back().e;
+    result.final_rotary_1_deg = commands.back().rotary_1_deg;
+    result.final_rotary_2_deg = commands.back().rotary_2_deg;
+    return result;
+}
+
+// Rotary positions are modal machine state. Keep them between consecutive
+// paths instead of silently restarting each plan at A0/B0. State is committed
+// only after the complete path has been planned and emitted successfully.
+struct FiveAxisRotaryState {
+    bool initialized { false };
+    double rotary_1_deg { 0.0 };
+    double rotary_2_deg { 0.0 };
+};
+
+inline FiveAxisGCodeBridgeResult plan_and_emit_five_axis_extrusion(
+    const FiveAxisMachineProfile &profile,
+    const ExtrusionPath3D &path,
+    double base_z_mm,
+    double initial_e,
+    double e_per_mm,
+    double feed_mm_min,
+    FiveAxisRotaryState &rotary_state,
+    std::string &output)
+{
+    const double initial_rotary_1 = rotary_state.initialized ? rotary_state.rotary_1_deg : 0.0;
+    const double initial_rotary_2 = rotary_state.initialized ? rotary_state.rotary_2_deg : 0.0;
+    FiveAxisGCodeBridgeResult result = plan_and_emit_five_axis_extrusion(
+        profile, path, base_z_mm, initial_e, e_per_mm, feed_mm_min, output,
+        initial_rotary_1, initial_rotary_2);
+    if (result.validation.valid && result.command_count > 0) {
+        rotary_state.rotary_1_deg = result.final_rotary_1_deg;
+        rotary_state.rotary_2_deg = result.final_rotary_2_deg;
+        rotary_state.initialized = true;
+    }
     return result;
 }
 
