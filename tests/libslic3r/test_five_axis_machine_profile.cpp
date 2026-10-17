@@ -1,5 +1,6 @@
 #include "libslic3r/FiveAxisMachineProfile.hpp"
 #include "libslic3r/FiveAxisConfig.hpp"
+#include "libslic3r/FiveAxisPostprocessor.hpp"
 
 #include <catch2/catch.hpp>
 
@@ -55,6 +56,20 @@ TEST_CASE("Persisted five-axis printer settings load into the validated profile"
     CHECK(profile.postprocessor_id == "test-controller");
     CHECK(profile.kinematics.mount == FiveAxisRotaryMount::RotaryHead);
     CHECK(profile.machine_max.x == Approx(320.0));
+}
+
+TEST_CASE("Enabled five-axis profile defaults to the registered live controller writer", "[FiveAxisMachineProfile]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.option<ConfigOptionBool>("five_axis_enabled")->value = true;
+
+    FiveAxisMachineProfile profile;
+    const FiveAxisValidationResult loaded = load_five_axis_machine_profile(config, profile);
+    REQUIRE(loaded.valid);
+    CHECK(profile.enabled);
+    CHECK(profile.postprocessor_id == FIVE_AXIS_KLIPPER_POSTPROCESSOR_ID);
+    CHECK(is_five_axis_postprocessor_registered(profile.postprocessor_id));
+    CHECK(validate_five_axis_export_gate(profile, profile.postprocessor_id).valid);
 }
 
 TEST_CASE("Five-axis export gate preserves disabled mode and rejects missing controller writer", "[FiveAxisMachineProfile]")
