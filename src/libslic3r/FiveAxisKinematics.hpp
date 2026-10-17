@@ -193,10 +193,30 @@ inline FiveAxisJointSolution solve_five_axis_orientation(
             return result;
         }
 
-        const FiveAxisVec3 ja = (predicted(std::min(config.rotary_1_max_deg, a + epsilon), b) - p) *
-            (1.0 / std::max(epsilon, std::min(config.rotary_1_max_deg, a + epsilon) - a));
-        const FiveAxisVec3 jb = (predicted(a, std::min(config.rotary_2_max_deg, b + epsilon)) - p) *
-            (1.0 / std::max(epsilon, std::min(config.rotary_2_max_deg, b + epsilon) - b));
+        // Use a one-sided finite difference that points into the valid
+        // joint range. A forward-only difference collapses to zero when the
+        // current estimate is at an upper limit, making a valid solution
+        // unreachable from that boundary.
+        const auto joint_derivative = [&](double angle, double min_angle,
+                                          double max_angle, bool first_joint) {
+            const double forward = std::min(max_angle, angle + epsilon);
+            const double backward = std::max(min_angle, angle - epsilon);
+            if (forward > angle) {
+                const FiveAxisVec3 shifted = first_joint
+                    ? predicted(forward, b) : predicted(a, forward);
+                return (shifted - p) * (1.0 / (forward - angle));
+            }
+            if (backward < angle) {
+                const FiveAxisVec3 shifted = first_joint
+                    ? predicted(backward, b) : predicted(a, backward);
+                return (p - shifted) * (1.0 / (angle - backward));
+            }
+            return FiveAxisVec3{0.0, 0.0, 0.0};
+        };
+        const FiveAxisVec3 ja = joint_derivative(
+            a, config.rotary_1_min_deg, config.rotary_1_max_deg, true);
+        const FiveAxisVec3 jb = joint_derivative(
+            b, config.rotary_2_min_deg, config.rotary_2_max_deg, false);
         const double h11 = five_axis_dot(ja, ja) + damping;
         const double h22 = five_axis_dot(jb, jb) + damping;
         const double h12 = five_axis_dot(ja, jb);
