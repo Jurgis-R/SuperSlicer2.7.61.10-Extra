@@ -231,10 +231,15 @@ inline FiveAxisVec3 five_axis_transform_bed_point(
         (1.0 / five_axis_norm(config.rotary_1_axis));
     const FiveAxisVec3 axis2 = config.rotary_2_axis *
         (1.0 / five_axis_norm(config.rotary_2_axis));
+    // The input point and both pivots are expressed in the zero-angle
+    // machine frame. Rotate about joint 2 first, then rotate the resulting
+    // point about joint 1. Subtract joint 1's pivot before the outer rotation
+    // and add it back afterwards; otherwise a non-zero pivot translates even
+    // at zero angles and produces incorrect carriage coordinates.
     const FiveAxisVec3 about_joint2 = config.rotary_2_pivot +
         five_axis_rotate(point - config.rotary_2_pivot, axis2, rotary_2_deg);
     return config.rotary_1_pivot +
-        five_axis_rotate(about_joint2, axis1, rotary_1_deg);
+        five_axis_rotate(about_joint2 - config.rotary_1_pivot, axis1, rotary_1_deg);
 }
 
 // Convert a desired tool-tip machine position to the XYZ carriage reference
