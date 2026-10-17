@@ -37,6 +37,7 @@ set(SLIC3R_SOURCES
     AStar.hpp
     HybridNonplanarScheduler.hpp
     HybridNonplanarSectionPlanner.hpp
+    HybridNonplanarSurfacePlanner.hpp
     HybridNonplanarExtrusion.hpp
     HybridNonplanarCollision.hpp
     AABBTreeIndirect.hpp
