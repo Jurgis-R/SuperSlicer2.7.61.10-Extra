@@ -69,6 +69,9 @@ struct FiveAxisKinematicsConfig {
     FiveAxisVec3 rotary_2_pivot { 0.0, 0.0, 0.0 };
     // Tool-tip offset in the second joint's child frame (head mount only).
     FiveAxisVec3 tool_tip_offset { 0.0, 0.0, 0.0 };
+    // Runtime carriage correction for the active SuperSlicer tool, applied
+    // AFTER machine kinematics so the tool offset never rotates with the bed.
+    FiveAxisVec3 machine_frame_tool_offset { 0.0, 0.0, 0.0 };
     double rotary_1_min_deg { -180.0 };
     double rotary_1_max_deg { 180.0 };
     double rotary_2_min_deg { -90.0 };
@@ -99,8 +102,9 @@ inline bool validate_five_axis_kinematics_config(
         return fail("Rotary joint axes must be finite non-zero vectors.");
     if (!five_axis_finite(config.rotary_1_pivot) ||
         !five_axis_finite(config.rotary_2_pivot) ||
-        !five_axis_finite(config.tool_tip_offset))
-        return fail("Rotary pivots and tool-tip offset must be finite.");
+        !five_axis_finite(config.tool_tip_offset) ||
+        !five_axis_finite(config.machine_frame_tool_offset))
+        return fail("Rotary pivots and machine-frame tool offsets must be finite.");
     if (!std::isfinite(config.rotary_1_min_deg) ||
         !std::isfinite(config.rotary_1_max_deg) ||
         !std::isfinite(config.rotary_2_min_deg) ||

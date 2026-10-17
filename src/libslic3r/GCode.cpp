@@ -6004,13 +6004,17 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
             ? m_five_axis_rotary_state_1_deg : 0.0;
         const double initial_rotary_2 = m_five_axis_rotary_state_initialized
             ? m_five_axis_rotary_state_2_deg : 0.0;
+        const Vec2d active_tool_offset = m_writer.current_tool_offset();
+        five_axis_profile.kinematics.machine_frame_tool_offset = {
+            -active_tool_offset.x(), -active_tool_offset.y(), 0.0
+        };
         const auto transform_point = [this](const FiveAxisVec3 &point) {
-            const Vec2d tool_offset = m_writer.current_tool_offset();
-            // Z offset is applied only by GCodeWriter while formatting output.
-            // Keeping it out of kinematics avoids rotating around an offset pivot.
+            // Origin belongs to the work frame. Active tool offset is applied
+            // later by the planner in the machine frame, after rotary transforms.
+            // Z offset remains output-only and is applied by GCodeWriter.
             return FiveAxisVec3{
-                point.x + m_origin.x() - tool_offset.x(),
-                point.y + m_origin.y() - tool_offset.y(),
+                point.x + m_origin.x(),
+                point.y + m_origin.y(),
                 point.z
             };
         };

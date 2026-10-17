@@ -51,6 +51,23 @@ TEST_CASE("Five-axis planner maps work poses to machine commands", "[FiveAxisMot
     REQUIRE(commands[2].feed_mm_min == Approx(600.0));
 }
 
+TEST_CASE("Five-axis planner applies active tool offsets in machine coordinates", "[FiveAxisMotionPlanner]")
+{
+    FiveAxisKinematicsConfig kin;
+    kin.machine_frame_tool_offset = { -2.0, 3.0, 0.0 };
+    FiveAxisOutputConfig output;
+    FiveAxisCollisionConfig collision;
+    const auto poses = simple_poses();
+    std::vector<FiveAxisCommand> commands;
+
+    const auto result = plan_five_axis_path(kin, output, collision, poses, commands);
+    REQUIRE(result.valid);
+    REQUIRE(commands.size() == poses.size());
+    CHECK(commands.front().x == Approx(-2.0));
+    CHECK(commands.front().y == Approx(3.0));
+    CHECK(commands.front().z == Approx(10.0));
+}
+
 TEST_CASE("Five-axis planner compensates rotary-bed pivots", "[FiveAxisMotionPlanner]")
 {
     FiveAxisKinematicsConfig kin;

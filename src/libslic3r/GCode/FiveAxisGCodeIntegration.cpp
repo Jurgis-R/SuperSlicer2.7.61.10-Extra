@@ -20,11 +20,14 @@ FiveAxisVec3 transform_work_point(
     double rotary_2_deg)
 {
     const FiveAxisVec3 point{work_point.x(), work_point.y(), work_point.z()};
+    FiveAxisVec3 machine;
     if (profile.kinematics.mount == FiveAxisRotaryMount::RotaryBed)
-        return five_axis_transform_bed_point(
+        machine = five_axis_transform_bed_point(
             profile.kinematics, point, rotary_1_deg, rotary_2_deg);
-    return five_axis_compensate_head_position(
-        profile.kinematics, point, rotary_1_deg, rotary_2_deg);
+    else
+        machine = five_axis_compensate_head_position(
+            profile.kinematics, point, rotary_1_deg, rotary_2_deg);
+    return machine + profile.kinematics.machine_frame_tool_offset;
 }
 
 FiveAxisCommand command_from_point(
@@ -42,7 +45,8 @@ FiveAxisCommand command_from_point(
     return command;
 }
 
-FiveAxisMachineProfile load_profile_or_throw(const FullPrintConfig &config)
+FiveAxisMachineProfile load_profile_or_throw(
+    const FullPrintConfig &config, const GCodeWriter &writer)
 {
     FiveAxisMachineProfile profile;
     const FiveAxisValidationResult loaded = load_five_axis_machine_profile(config, profile);
@@ -52,6 +56,8 @@ FiveAxisMachineProfile load_profile_or_throw(const FullPrintConfig &config)
         throw Slic3r::RuntimeError("Five-axis travel was requested while the profile is disabled.");
     if (!is_five_axis_postprocessor_registered(profile.postprocessor_id))
         throw Slic3r::RuntimeError("The configured five-axis controller has no registered writer.");
+    const Vec2d offset = writer.current_tool_offset();
+    profile.kinematics.machine_frame_tool_offset = {-offset.x(), -offset.y(), 0.0};
     return profile;
 }
 
@@ -92,7 +98,7 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
     if (travel.empty())
         return {};
 
-    const FiveAxisMachineProfile profile = load_profile_or_throw(m_config);
+    const FiveAxisMachineProfile profile = load_profile_or_throw(m_config, m_writer);
     const double speed = five_axis_travel_speed(m_writer, m_config);
     const double configured_clearance = m_config.opt_float("five_axis_transition_clearance");
     const double pending_lift = m_writer.get_extra_lift();
@@ -115,9 +121,13 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
     std::vector<FiveAxisVec3> targets;
     targets.reserve(travel.size() - begin);
     for (std::size_t i = begin; i < travel.size(); ++i) {
-        const Vec2d xy = this->point_to_gcode(travel.points[i]);
+        const Point &point = travel.points[i];
+        const Vec3d work_point(
+            unscaled<double>(point.x()) + m_origin.x(),
+            unscaled<double>(point.y()) + m_origin.y(),
+            base_z);
         const FiveAxisVec3 machine = transform_work_point(
-            profile, Vec3d(xy.x(), xy.y(), base_z), rotary_1, rotary_2);
+            profile, work_point, rotary_1, rotary_2);
         if (!five_axis_finite(machine))
             throw Slic3r::RuntimeError("Five-axis travel transform produced a non-finite point.");
         targets.push_back(machine);
@@ -181,7 +191,7 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
     if (travel.empty())
         return {};
 
-    const FiveAxisMachineProfile profile = load_profile_or_throw(m_config);
+    const FiveAxisMachineProfile profile = load_profile_or_throw(m_config, m_writer);
     const double speed = five_axis_travel_speed(m_writer, m_config);
     const double configured_clearance = m_config.opt_float("five_axis_transition_clearance");
     if (!std::isfinite(configured_clearance) || configured_clearance <= 0.0)
@@ -196,7 +206,10 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
     targets.reserve(travel.size());
     double highest_z = current.z();
     for (const Vec3crd &point : travel) {
-        const Vec3d work = this->point_to_gcode(point);
+        const Vec3d work(
+            unscaled<double>(point.x()) + m_origin.x(),
+            unscaled<double>(point.y()) + m_origin.y(),
+            unscaled<double>(point.z()));
         const FiveAxisVec3 machine = transform_work_point(profile, work, rotary_1, rotary_2);
         if (!five_axis_finite(machine))
             throw Slic3r::RuntimeError("Five-axis XYZ travel transform produced a non-finite point.");

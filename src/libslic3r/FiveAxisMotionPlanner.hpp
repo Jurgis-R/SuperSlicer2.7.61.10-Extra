@@ -158,6 +158,9 @@ inline FiveAxisValidationResult plan_five_axis_path(
             machine_point = five_axis_compensate_head_position(
                 kinematics, pose.point, joints.rotary_1_deg, joints.rotary_2_deg);
 
+        // Apply the active SuperSlicer tool's carriage-frame offset after
+        // rotary transforms; this offset must not rotate with the workpiece.
+        machine_point = machine_point + kinematics.machine_frame_tool_offset;
         if (!five_axis_finite(machine_point))
             return { false, "Kinematic point transform produced non-finite coordinates." };
 
