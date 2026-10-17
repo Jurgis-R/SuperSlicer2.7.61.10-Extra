@@ -94,6 +94,35 @@ inline bool hybrid_mesh_is_closed_oriented(const indexed_triangle_set &mesh)
     return true;
 }
 
+// Append one transformed closed-solid candidate to a shared collision mesh.
+// Vertex indices remain disjoint between components, so separate printable parts
+// retain their own watertight topology while sharing one spatial collision index.
+inline bool append_hybrid_transformed_mesh(const indexed_triangle_set &source,
+                                           const Transform3d &transform,
+                                           indexed_triangle_set &combined)
+{
+    indexed_triangle_set part;
+    if (!transform_hybrid_surface_mesh(source, transform, part) ||
+        part.vertices.empty() || part.indices.empty())
+        return false;
+
+    const size_t max_vertex_count =
+        static_cast<size_t>(std::numeric_limits<int>::max());
+    if (part.vertices.size() > max_vertex_count ||
+        combined.vertices.size() > max_vertex_count - part.vertices.size())
+        return false;
+
+    const int vertex_offset = static_cast<int>(combined.vertices.size());
+    combined.vertices.insert(combined.vertices.end(),
+                             part.vertices.begin(), part.vertices.end());
+    combined.indices.reserve(combined.indices.size() + part.indices.size());
+    for (const Vec3i32 &face : part.indices)
+        combined.indices.emplace_back(face(0) + vertex_offset,
+                                      face(1) + vertex_offset,
+                                      face(2) + vertex_offset);
+    return true;
+}
+
 class HybridSweptToolCollisionValidator {
 public:
     HybridSweptToolCollisionValidator(const indexed_triangle_set &mesh,
