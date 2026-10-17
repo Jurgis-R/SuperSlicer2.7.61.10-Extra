@@ -98,7 +98,7 @@ inline FiveAxisGCodeBridgeResult plan_and_emit_five_axis_extrusion(
 
  
 // Convert the planner's cumulative E positions to GCodeWriter's per-move dE.
-// The output is replaced only on success; retracts belong to the generator's
+// Failure leaves the output empty; retracts belong to the generator's
 // normal lifecycle and are deliberately not represented by this extrusion-only
 // helper.
 inline FiveAxisValidationResult five_axis_command_e_deltas(
