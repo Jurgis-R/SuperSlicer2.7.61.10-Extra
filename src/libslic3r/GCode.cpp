@@ -3789,8 +3789,12 @@ LayerResult GCodeGenerator::process_layer(
         const double nominal_z = print_z;
         const double nozzle_diameter = m_config.nozzle_diameter.get_at(0);
         const double max_overlap = m_config.filament_max_overlap.get_at(0);
+        // Flow::new_from_config accepts DynamicConfig, while m_config is FullPrintConfig.
+        // Copy the active settings so region/object overrides already applied to m_config are preserved.
+        DynamicPrintConfig surface_flow_config;
+        surface_flow_config.apply(m_config, true);
         const Flow surface_flow = Flow::new_from_config(
-            frTopSolidInfill, m_config, float(nozzle_diameter),
+            frTopSolidInfill, surface_flow_config, float(nozzle_diameter),
             float(object_layer->height), float(max_overlap), object_layer->id() == 0);
         const ExtrusionAttributes surface_attributes(
             ExtrusionRole::TopSolidInfill, surface_flow);
