@@ -345,6 +345,16 @@ TEST_CASE("Hybrid surface finishing emission is disabled by default and leaves p
     CHECK(gcode.find("G1") != std::string::npos);
 }
 
+TEST_CASE("hybrid non-planar volumetric auto-speed setting defaults to global autospeed",
+          "[GCode][HybridNonplanar]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    CHECK(config.opt_float("hybrid_nonplanar_volumetric_auto_speed") == 0.0);
+
+    config.set_deserialize_strict({{"hybrid_nonplanar_volumetric_auto_speed", 4.5}});
+    CHECK(config.opt_float("hybrid_nonplanar_volumetric_auto_speed") == Approx(4.5));
+}
+
 TEST_CASE("explicitly disabled hybrid options produce byte-identical planar G-code",
           "[GCode][HybridNonplanar]")
 {
