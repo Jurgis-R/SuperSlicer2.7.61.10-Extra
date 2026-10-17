@@ -37,6 +37,36 @@ TEST_CASE("Five-axis G-code bridge plans and emits atomically for the selected K
     CHECK(output.find("E3.200") != std::string::npos);
 }
 
+
+TEST_CASE("Five-axis G-code bridge carries rotary state across paths and leaves it unchanged on failure",
+          "[FiveAxisGCodeBridge]")
+{
+    FiveAxisMachineProfile profile;
+    profile.enabled = true;
+    profile.postprocessor_id = FIVE_AXIS_KLIPPER_POSTPROCESSOR_ID;
+    FiveAxisRotaryState state;
+    std::string output;
+
+    const auto first = plan_and_emit_five_axis_extrusion(
+        profile, make_bridge_test_path(), 10.0, 0.0, 0.1, 600.0, state, output);
+    REQUIRE(first.validation.valid);
+    REQUIRE(state.initialized);
+    CHECK(state.rotary_1_deg == Approx(first.final_rotary_1_deg));
+    CHECK(state.rotary_2_deg == Approx(first.final_rotary_2_deg));
+
+    ExtrusionPath3D invalid_path(ExtrusionAttributes{}, true);
+    invalid_path.push_back(Point(0, 0), 0);
+    invalid_path.push_back(Point(1000, 0), 0);
+    const double saved_1 = state.rotary_1_deg;
+    const double saved_2 = state.rotary_2_deg;
+    const auto failed = plan_and_emit_five_axis_extrusion(
+        profile, invalid_path, 10.0, first.final_e, 0.1, 600.0, state, output);
+    CHECK_FALSE(failed.validation.valid);
+    CHECK(state.initialized);
+    CHECK(state.rotary_1_deg == Approx(saved_1));
+    CHECK(state.rotary_2_deg == Approx(saved_2));
+}
+
 TEST_CASE("Five-axis G-code bridge leaves no partial output when oriented geometry is absent",
           "[FiveAxisGCodeBridge]")
 {
