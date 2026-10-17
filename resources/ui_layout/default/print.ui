@@ -257,7 +257,7 @@ group:Advanced Infill options
 	end_line
 	line:Z contouring (ZAA) / Hybrid non-planar
 		setting:label_width$0:label$_:zaa_enabled
-		setting:label$_:label_width$0:hybrid_nonplanar_enabled
+		setting:label_width$0:label$_:hybrid_nonplanar_enabled
 	end_line
 	line:ZAA settings
 		setting:label$Perimeters too:label_width$14:zaa_contour_perimeters
