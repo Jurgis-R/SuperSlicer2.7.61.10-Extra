@@ -105,6 +105,9 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
 
     const FiveAxisMachineProfile profile = load_profile_or_throw(m_config, m_writer);
     const double speed = five_axis_travel_speed(m_writer, m_config);
+    const unsigned travel_acceleration =
+        (unsigned)(m_config.travel_acceleration.value + 0.5);
+    m_writer.set_travel_acceleration(travel_acceleration);
     const double configured_clearance = m_config.opt_float("five_axis_transition_clearance");
     const double pending_lift = m_writer.get_extra_lift();
     const double current_lift = m_writer.get_lift();
@@ -144,8 +147,11 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
     for (const FiveAxisVec3 &target : targets)
         highest_z = std::max(highest_z, target.z);
     const double clearance = std::max({configured_clearance, pending_lift, current_lift});
-    const double safe_z = std::max(
-        highest_z, m_next_lift_min > highest_z ? m_next_lift_min : highest_z) + clearance;
+    if (!std::isfinite(m_next_lift_min))
+        throw Slic3r::RuntimeError("Five-axis travel has a non-finite minimum-lift target.");
+    const double safe_z = std::max({
+        highest_z, m_next_lift_min, current.z() + pending_lift
+    }) + clearance;
     if (!std::isfinite(safe_z))
         throw Slic3r::RuntimeError("Five-axis travel clearance produced non-finite Z.");
 
@@ -177,7 +183,17 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
     };
     std::string output;
     for (std::size_t i = 1; i < route.size(); ++i) {
-        const std::string move = emit(route[i]);
+        const FiveAxisCommand &previous = route[i - 1];
+        const FiveAxisCommand &pose = route[i];
+        const double linear_delta = std::hypot(
+            std::hypot(pose.x - previous.x, pose.y - previous.y),
+            pose.z - previous.z);
+        const bool rotary_changed =
+            std::abs(pose.rotary_1_deg - previous.rotary_1_deg) > 1e-9 ||
+            std::abs(pose.rotary_2_deg - previous.rotary_2_deg) > 1e-9;
+        if (linear_delta <= 1e-9 && !rotary_changed)
+            continue;
+        const std::string move = emit(pose);
         if (move.empty())
             throw Slic3r::RuntimeError("Five-axis writer rejected a preflighted travel waypoint.");
         output += move;
@@ -187,6 +203,8 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
     m_writer.set_lift(0.0);
     m_next_lift_min = 0.0;
     this->set_last_pos(travel.back());
+    if (!GCodeWriter::supports_separate_travel_acceleration(config().gcode_flavor))
+        m_writer.set_travel_acceleration(travel_acceleration);
     return output;
 }
 
@@ -198,9 +216,17 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
 
     const FiveAxisMachineProfile profile = load_profile_or_throw(m_config, m_writer);
     const double speed = five_axis_travel_speed(m_writer, m_config);
+    const unsigned travel_acceleration =
+        (unsigned)(m_config.travel_acceleration.value + 0.5);
+    m_writer.set_travel_acceleration(travel_acceleration);
     const double configured_clearance = m_config.opt_float("five_axis_transition_clearance");
-    if (!std::isfinite(configured_clearance) || configured_clearance <= 0.0)
-        throw Slic3r::RuntimeError("Five-axis travel clearance must be finite and positive.");
+    const double pending_lift = m_writer.get_extra_lift();
+    const double current_lift = m_writer.get_lift();
+    if (!std::isfinite(configured_clearance) || configured_clearance <= 0.0 ||
+        !std::isfinite(pending_lift) || pending_lift < 0.0 ||
+        !std::isfinite(current_lift) || current_lift < 0.0 ||
+        !std::isfinite(m_next_lift_min))
+        throw Slic3r::RuntimeError("Five-axis XYZ travel clearance or lift state is invalid.");
 
     const double rotary_1 = m_five_axis_rotary_state_initialized
         ? m_five_axis_rotary_state_1_deg : 0.0;
@@ -222,7 +248,10 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
         highest_z = std::max(highest_z, machine.z);
     }
 
-    const double safe_z = highest_z + configured_clearance;
+    const double clearance = std::max({configured_clearance, pending_lift, current_lift});
+    const double safe_z = std::max({
+        highest_z, m_next_lift_min, current.z() + pending_lift
+    }) + clearance;
     if (!std::isfinite(safe_z))
         throw Slic3r::RuntimeError("Five-axis XYZ travel clearance produced non-finite Z.");
 
@@ -252,7 +281,17 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
     };
     std::string output;
     for (std::size_t i = 1; i < route.size(); ++i) {
-        const std::string move = emit(route[i]);
+        const FiveAxisCommand &previous = route[i - 1];
+        const FiveAxisCommand &pose = route[i];
+        const double linear_delta = std::hypot(
+            std::hypot(pose.x - previous.x, pose.y - previous.y),
+            pose.z - previous.z);
+        const bool rotary_changed =
+            std::abs(pose.rotary_1_deg - previous.rotary_1_deg) > 1e-9 ||
+            std::abs(pose.rotary_2_deg - previous.rotary_2_deg) > 1e-9;
+        if (linear_delta <= 1e-9 && !rotary_changed)
+            continue;
+        const std::string move = emit(pose);
         if (move.empty())
             throw Slic3r::RuntimeError("Five-axis writer rejected a preflighted XYZ waypoint.");
         output += move;
@@ -261,6 +300,8 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
     m_writer.set_extra_lift(0.0);
     m_writer.set_lift(0.0);
     m_next_lift_min = 0.0;
+    if (!GCodeWriter::supports_separate_travel_acceleration(config().gcode_flavor))
+        m_writer.set_travel_acceleration(travel_acceleration);
     return output;
 }
 

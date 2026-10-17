@@ -905,7 +905,9 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     };
     if (!valid_rotary_word(rotary_1_word) || !valid_rotary_word(rotary_2_word) ||
         (rotary_1_word != '\0' && rotary_1_word == rotary_2_word) ||
-        !std::isfinite(rotary_1_deg) || !std::isfinite(rotary_2_deg))
+        !point.allFinite() || !std::isfinite(dE) ||
+        !std::isfinite(rotary_1_deg) || !std::isfinite(rotary_2_deg) ||
+        rotary_precision < -1 || rotary_precision > 8)
         return "";
 
     assert(std::abs(point.x()) < 120000.);

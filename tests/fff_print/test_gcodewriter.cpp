@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <memory>
+#include <limits>
 
 #include "libslic3r/GCode/GCodeWriter.hpp"
 
@@ -20,6 +21,25 @@ TEST_CASE("GCodeWriter emits coordinated XYZ and rotary travel for five-axis out
     CHECK(gcode.find("B-6.25") != std::string::npos);
     CHECK(gcode.find("F2400") != std::string::npos);
     CHECK((writer.get_position() - Vec3d(10.0, 20.0, 30.0)).norm() == Approx(0.0));
+}
+
+TEST_CASE("GCodeWriter rejects invalid rotary extrusion inputs before state mutation", "[GCodeWriter][FiveAxis]")
+{
+    GCodeWriter writer;
+    const Vec3d original_position = writer.get_position();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    CHECK(writer.extrude_to_xyz(
+        Vec3d(nan, 0.0, 0.0), 0.1, {}, 'A', 0.0, 'B', 0.0, 3).empty());
+    CHECK((writer.get_position() - original_position).norm() == Approx(0.0));
+
+    CHECK(writer.extrude_to_xyz(
+        Vec3d(1.0, 2.0, 3.0), nan, {}, 'A', 0.0, 'B', 0.0, 3).empty());
+    CHECK((writer.get_position() - original_position).norm() == Approx(0.0));
+
+    CHECK(writer.extrude_to_xyz(
+        Vec3d(1.0, 2.0, 3.0), 0.1, {}, 'A', 0.0, 'B', 0.0, 9).empty());
+    CHECK((writer.get_position() - original_position).norm() == Approx(0.0));
 }
 
 //note: erased by prusa, maybe it's wrong now?
