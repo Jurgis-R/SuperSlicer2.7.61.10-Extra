@@ -6860,6 +6860,9 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     for (HybridNonplanarQueuedPath& queued : queued_paths) {
         m_layer = queued.layer;
         m_config = queued.config;
+        // Each queued path starts from the original autospeed baseline; a
+        // previous path may have used a hybrid-specific override.
+        m_volumetric_speed = saved_volumetric_speed;
         m_origin = queued.origin;
         m_current_perimeter_extrusion_width = queued.perimeter_extrusion_width;
         m_object_layer_over_raft = queued.object_layer_over_raft;
