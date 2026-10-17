@@ -727,6 +727,7 @@ std::string GCodeWriter::travel_to_xyz_rotary(const Vec3d &point, const double s
     if (!valid_rotary_word(rotary_1_word) || !valid_rotary_word(rotary_2_word) ||
         rotary_1_word == rotary_2_word ||
         !std::isfinite(rotary_1_deg) || !std::isfinite(rotary_2_deg) ||
+        !point.allFinite() || !std::isfinite(speed) ||
         rotary_precision < -1 || rotary_precision > 8)
         return "";
 

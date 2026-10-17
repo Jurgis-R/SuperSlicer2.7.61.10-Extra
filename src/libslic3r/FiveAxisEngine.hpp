@@ -116,19 +116,26 @@ inline FiveAxisValidationResult validate_five_axis_path(
         if (!config.supports_simultaneous_rotary && da > 1e-9 && db > 1e-9)
             return { false, "Machine configuration forbids simultaneous motion of both rotary axes." };
 
+        const double max_delta = std::max(da, db);
+        const double feed_mm_min = std::min(prev.feed_mm_min, p.feed_mm_min);
         if (distance <= 1e-9) {
-            if (da > 1e-9 || db > 1e-9)
-                return { false, "Rotary-only moves are not accepted by this output stage." };
+            if (da <= 1e-9 && db <= 1e-9)
+                continue;
+            if (std::abs(p.e - prev.e) > 1e-9)
+                return { false, "Rotary-only moves may not extrude filament." };
+            const double rotary_distance = std::hypot(da, db);
+            const double duration_s = rotary_distance / (feed_mm_min / 60.0);
+            if (duration_s <= 0.0 ||
+                max_delta / duration_s > config.max_rotary_rate_deg_s + 1e-9)
+                return { false, "Rotary-only move exceeds the configured rotary-axis speed limit." };
             continue;
         }
 
-        const double max_delta = std::max(da, db);
         if (max_delta / distance > config.max_rotary_delta_deg_per_mm + 1e-9)
             return { false, "Path exceeds the configured rotary-angle change per millimetre." };
 
         // Use the slower endpoint feed as a conservative estimate for the
         // segment duration; the final motion planner may apply stricter limits.
-        const double feed_mm_min = std::min(prev.feed_mm_min, p.feed_mm_min);
         const double duration_s = distance / (feed_mm_min / 60.0);
         if (duration_s <= 0.0 ||
             max_delta / duration_s > config.max_rotary_rate_deg_s + 1e-9)

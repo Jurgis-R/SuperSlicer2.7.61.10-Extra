@@ -31,9 +31,6 @@
 #include "GCode/FanMover.hpp"
 #include "GCode/FindReplace.hpp"
 #include "GCode/GCodeWriter.hpp"
-
-#include <map>
-#include <memory>
 #include "GCode/LabelObjects.hpp"
 #include "GCode/PressureEqualizer.hpp"
 #include "GCode/RetractWhenCrossingPerimeters.hpp"

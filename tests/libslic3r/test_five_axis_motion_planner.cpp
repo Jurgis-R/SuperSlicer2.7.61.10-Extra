@@ -13,6 +13,28 @@ static std::vector<FiveAxisToolPose> simple_poses()
     };
 }
 
+TEST_CASE("Five-axis output validates non-extruding rotary-only moves", "[FiveAxisMotionPlanner]")
+{
+    FiveAxisOutputConfig config;
+    std::vector<FiveAxisCommand> path = {
+        { 10.0, 10.0, 10.0, 0.0, 0.0, 0.0, 600.0 },
+        { 10.0, 10.0, 10.0, 0.0, 15.0, 0.0, 600.0 }
+    };
+
+    CHECK(validate_five_axis_path(config, path).valid);
+    path[1].e = 0.2;
+    CHECK_FALSE(validate_five_axis_path(config, path).valid);
+    path[1].e = 0.0;
+
+    config.max_rotary_rate_deg_s = 5.0;
+    CHECK_FALSE(validate_five_axis_path(config, path).valid);
+    config.max_rotary_rate_deg_s = 30.0;
+    config.supports_simultaneous_rotary = false;
+    path[1].rotary_1_deg = 10.0;
+    path[1].rotary_2_deg = 10.0;
+    CHECK_FALSE(validate_five_axis_path(config, path).valid);
+}
+
 TEST_CASE("Five-axis planner maps work poses to machine commands", "[FiveAxisMotionPlanner]")
 {
     FiveAxisKinematicsConfig kin;

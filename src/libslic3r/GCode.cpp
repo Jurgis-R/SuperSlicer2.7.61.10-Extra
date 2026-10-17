@@ -56,6 +56,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <iterator>
 #include "AABBTreeIndirect.hpp"
 #include "TriangleMesh.hpp"
 #include <cstdlib>
