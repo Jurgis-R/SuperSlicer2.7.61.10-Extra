@@ -40,6 +40,32 @@ TEST_CASE("Five-axis adapter maps real 3D extrusion vertices to normalized poses
     CHECK(poses[2].feed_mm_min == Approx(600.0));
 }
 
+
+TEST_CASE("Five-axis adapter applies explicit point and direction frame transforms without changing source extrusion length", "[FiveAxisExtrusionAdapter]")
+{
+    const ExtrusionPath3D path = make_oriented_test_path();
+    std::vector<FiveAxisToolPose> poses;
+    const auto translate = [](const FiveAxisVec3 &p) {
+        return FiveAxisVec3 { p.x + 100.0, p.y - 20.0, p.z + 3.0 };
+    };
+    const auto rotate_direction = [](const FiveAxisVec3 &n) {
+        return FiveAxisVec3 { -n.y, n.x, n.z };
+    };
+    const auto result = make_five_axis_poses_from_extrusion_path_transformed(
+        path, 10.0, 5.0, 0.5, 600.0, translate, rotate_direction, poses);
+
+    REQUIRE(result.valid);
+    REQUIRE(poses.size() == 3);
+    CHECK(poses[0].point.x == Approx(100.0));
+    CHECK(poses[0].point.y == Approx(-20.0));
+    CHECK(poses[0].point.z == Approx(13.0));
+    CHECK(poses[1].point.x == Approx(101.0));
+    CHECK(poses[1].normal.x == Approx(-1.0));
+    CHECK(poses[1].normal.y == Approx(0.0));
+    // The frame translation must not affect E, and E uses source-path length.
+    CHECK(poses[1].extrusion == Approx(5.0 + std::sqrt(1.25) * 0.5));
+}
+
 TEST_CASE("Five-axis adapter rejects missing or misaligned tool directions", "[FiveAxisExtrusionAdapter]")
 {
     ExtrusionPath3D path = make_oriented_test_path();
