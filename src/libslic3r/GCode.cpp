@@ -6067,6 +6067,11 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
 
         for (std::size_t i = 1; i < commands.size(); ++i) {
             const FiveAxisCommand &command = commands[i];
+            const double segment_speed_mm_s = command.feed_mm_min / 60.0;
+            if (!std::isfinite(segment_speed_mm_s) || segment_speed_mm_s <= 0.0)
+                throw Slic3r::RuntimeError("Five-axis planner returned an invalid segment feedrate.");
+            if (std::abs(m_writer.get_speed_mm_s() - segment_speed_mm_s) > 1e-6)
+                gcode += m_writer.set_speed_mm_s(segment_speed_mm_s);
             const Vec3d writer_point(
                 command.x, command.y, command.z);
             gcode += m_writer.extrude_to_xyz(
@@ -7641,9 +7646,16 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         if (!transition_clearance.valid)
             throw Slic3r::RuntimeError(std::string("Five-axis transition fails configured clearance checks: ") + transition_clearance.error);
 
+        // The in-place reorientation must use a feed compatible with the
+        // configured angular speed; each writer move uses its validated F.
+        reoriented_clearance.feed_mm_min = std::min(
+            travel_speed * 60.0,
+            five_axis_profile.output.max_rotary_rate_deg_s * 60.0);
+
         const auto emit_travel = [&](const FiveAxisCommand &pose, const std::string_view label) {
+            const double pose_speed_mm_s = pose.feed_mm_min / 60.0;
             return m_writer.travel_to_xyz_rotary(
-                Vec3d(pose.x, pose.y, pose.z), travel_speed, label,
+                Vec3d(pose.x, pose.y, pose.z), pose_speed_mm_s, label,
                 m_five_axis_rotary_1_word, pose.rotary_1_deg,
                 m_five_axis_rotary_2_word, pose.rotary_2_deg,
                 m_five_axis_rotary_precision);

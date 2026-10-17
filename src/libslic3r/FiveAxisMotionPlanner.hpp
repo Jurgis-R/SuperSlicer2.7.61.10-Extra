@@ -171,6 +171,9 @@ inline FiveAxisValidationResult plan_five_axis_path(
         previous_b = joints.rotary_2_deg;
     }
 
+    const auto feed_limit = limit_five_axis_rotary_feedrates(output_config, candidate);
+    if (!feed_limit.valid)
+        return feed_limit;
     const auto path_validation = validate_five_axis_path(output_config, candidate);
     if (!path_validation.valid)
         return path_validation;

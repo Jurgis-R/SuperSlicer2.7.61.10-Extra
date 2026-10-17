@@ -25,6 +25,11 @@ TEST_CASE("Five-axis output validates non-extruding rotary-only moves", "[FiveAx
     path[1].e = 0.2;
     CHECK_FALSE(validate_five_axis_path(config, path).valid);
     path[1].e = 0.0;
+    path[1].rotary_1_deg = 0.0;
+    path[1].e = 0.2;
+    CHECK_FALSE(validate_five_axis_path(config, path).valid);
+    path[1].e = 0.0;
+    path[1].rotary_1_deg = 15.0;
 
     config.max_rotary_rate_deg_s = 5.0;
     CHECK_FALSE(validate_five_axis_path(config, path).valid);
@@ -33,6 +38,31 @@ TEST_CASE("Five-axis output validates non-extruding rotary-only moves", "[FiveAx
     path[1].rotary_1_deg = 10.0;
     path[1].rotary_2_deg = 10.0;
     CHECK_FALSE(validate_five_axis_path(config, path).valid);
+}
+
+TEST_CASE("Five-axis output limits feed to respect rotary speed", "[FiveAxisMotionPlanner]")
+{
+    FiveAxisOutputConfig config;
+    std::vector<FiveAxisCommand> path = {
+        { 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 6000.0 },
+        { 1.0, 0.0, 10.0, 0.1, 10.0, 0.0, 6000.0 },
+        { 2.0, 0.0, 10.0, 0.2, 20.0, 0.0, 6000.0 }
+    };
+
+    REQUIRE(limit_five_axis_rotary_feedrates(config, path).valid);
+    CHECK(path[0].feed_mm_min == Approx(180.0));
+    CHECK(path[1].feed_mm_min == Approx(180.0));
+    CHECK(path[2].feed_mm_min == Approx(180.0));
+    CHECK(validate_five_axis_path(config, path).valid);
+
+    std::vector<FiveAxisCommand> rotary_only = {
+        { 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 6000.0 },
+        { 0.0, 0.0, 10.0, 0.0, 15.0, 0.0, 6000.0 }
+    };
+    REQUIRE(limit_five_axis_rotary_feedrates(config, rotary_only).valid);
+    CHECK(rotary_only[0].feed_mm_min == Approx(1800.0));
+    CHECK(rotary_only[1].feed_mm_min == Approx(1800.0));
+    CHECK(validate_five_axis_path(config, rotary_only).valid);
 }
 
 TEST_CASE("Five-axis planner maps work poses to machine commands", "[FiveAxisMotionPlanner]")

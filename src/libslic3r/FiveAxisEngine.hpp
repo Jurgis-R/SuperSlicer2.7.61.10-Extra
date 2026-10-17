@@ -119,8 +119,11 @@ inline FiveAxisValidationResult validate_five_axis_path(
         const double max_delta = std::max(da, db);
         const double feed_mm_min = std::min(prev.feed_mm_min, p.feed_mm_min);
         if (distance <= 1e-9) {
-            if (da <= 1e-9 && db <= 1e-9)
+            if (da <= 1e-9 && db <= 1e-9) {
+                if (std::abs(p.e - prev.e) > 1e-9)
+                    return { false, "Extrusion-only moves at a fixed XYZ pose are not supported." };
                 continue;
+            }
             if (std::abs(p.e - prev.e) > 1e-9)
                 return { false, "Rotary-only moves may not extrude filament." };
             const double rotary_distance = std::hypot(da, db);
@@ -147,6 +150,66 @@ inline FiveAxisValidationResult validate_five_axis_path(
 // Formats only after whole-path validation succeeds. This function does not
 // emit setup commands, change XYZ/E coordinate modes, solve inverse kinematics,
 // or prove nozzle/tool clearance. The caller owns those responsibilities.
+// Reduce commanded feed when a planned segment's rotary change would
+// exceed the configured angular velocity. The same min-endpoint convention is
+// used by validate_five_axis_path(), so validation and emitted feed agree.
+inline FiveAxisValidationResult limit_five_axis_rotary_feedrates(
+    const FiveAxisOutputConfig &config,
+    std::vector<FiveAxisCommand> &path)
+{
+    const auto config_result = validate_five_axis_output_config(config);
+    if (!config_result.valid)
+        return config_result;
+    if (path.size() < 2)
+        return { false, "A five-axis path needs at least two commands." };
+
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        const FiveAxisCommand &command = path[i];
+        if (!five_axis_finite_command(command))
+            return { false, "Cannot limit feed for a non-finite five-axis command." };
+        if (command.rotary_1_deg < config.rotary_1_min_deg ||
+            command.rotary_1_deg > config.rotary_1_max_deg ||
+            command.rotary_2_deg < config.rotary_2_min_deg ||
+            command.rotary_2_deg > config.rotary_2_max_deg)
+            return { false, "Cannot limit feed for a command outside the rotary-axis limits." };
+    }
+
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        FiveAxisCommand &previous = path[i - 1];
+        FiveAxisCommand &current = path[i];
+        const double dx = current.x - previous.x;
+        const double dy = current.y - previous.y;
+        const double dz = current.z - previous.z;
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const double da = std::abs(current.rotary_1_deg - previous.rotary_1_deg);
+        const double db = std::abs(current.rotary_2_deg - previous.rotary_2_deg);
+        const double max_delta = std::max(da, db);
+        if (max_delta <= 1e-9)
+            continue;
+
+        double maximum_feed_mm_min = 0.0;
+        if (distance > 1e-9) {
+            maximum_feed_mm_min =
+                config.max_rotary_rate_deg_s * distance * 60.0 / max_delta;
+        } else {
+            if (std::abs(current.e - previous.e) > 1e-9)
+                return { false, "Rotary-only moves may not extrude filament." };
+            const double rotary_distance = std::hypot(da, db);
+            maximum_feed_mm_min =
+                config.max_rotary_rate_deg_s * 60.0 * rotary_distance / max_delta;
+        }
+        if (!std::isfinite(maximum_feed_mm_min) || maximum_feed_mm_min <= 0.0)
+            return { false, "Rotary feed limiting produced a non-positive or non-finite feedrate." };
+
+        previous.feed_mm_min = std::min(previous.feed_mm_min, maximum_feed_mm_min);
+        current.feed_mm_min = std::min(current.feed_mm_min, maximum_feed_mm_min);
+        if (!std::isfinite(previous.feed_mm_min) || previous.feed_mm_min <= 0.0 ||
+            !std::isfinite(current.feed_mm_min) || current.feed_mm_min <= 0.0)
+            return { false, "Rotary feed limiting produced an invalid feedrate." };
+    }
+    return { true, {} };
+}
+
 inline bool emit_five_axis_linear_gcode(
     const FiveAxisOutputConfig &config,
     const std::vector<FiveAxisCommand> &path,
