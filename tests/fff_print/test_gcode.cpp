@@ -344,3 +344,19 @@ TEST_CASE("Hybrid surface finishing emission is disabled by default and leaves p
     CHECK(gcode.find("hybrid surface finishing pass") == std::string::npos);
     CHECK(gcode.find("G1") != std::string::npos);
 }
+
+TEST_CASE("explicitly disabled hybrid options produce byte-identical planar G-code",
+          "[GCode][HybridNonplanar]")
+{
+    DynamicPrintConfig defaults = DynamicPrintConfig::full_print_config();
+    DynamicPrintConfig explicit_off = DynamicPrintConfig::full_print_config();
+    explicit_off.set_deserialize_strict({
+        { "hybrid_nonplanar_enabled", false },
+        { "hybrid_surface_pass_preflight", false },
+        { "hybrid_surface_pass_emit", false }
+    });
+
+    const std::string baseline = Test::slice({TestMesh::cube_20x20x20}, defaults);
+    const std::string disabled = Test::slice({TestMesh::cube_20x20x20}, explicit_off);
+    CHECK(disabled == baseline);
+}
