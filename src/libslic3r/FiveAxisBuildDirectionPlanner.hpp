@@ -13,6 +13,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace Slic3r {
 
