@@ -6093,19 +6093,25 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     auto validate_waypoints = [](const std::vector<Vec3d> &points) {
         if (points.size() < 2)
             return false;
+        bool has_motion = false;
         for (size_t i = 0; i < points.size(); ++i) {
             if (!points[i].allFinite())
                 return false;
-            if (i > 0 && (points[i] - points[i - 1]).norm() <= 0.0)
-                return false;
+            if (i > 0 && (points[i] - points[i - 1]).norm() > 0.0)
+                has_motion = true;
         }
-        return true;
+        return has_motion;
     };
     if (!validate_waypoints(route.approach.points) ||
         !validate_waypoints(route.extrusion_points) ||
         !validate_waypoints(route.departure_points) ||
         !validate_waypoints(route.return_points))
-        throw std::runtime_error("Hybrid surface route contains non-finite or zero-length waypoints.");
+        throw std::runtime_error("Hybrid surface route contains non-finite or motionless waypoints.");
+    // Extrusion segments must all have positive length because each one carries
+    // an E delta. Check this before retracting or moving the writer.
+    for (size_t i = 1; i < route.extrusion_points.size(); ++i)
+        if ((route.extrusion_points[i] - route.extrusion_points[i - 1]).norm() <= 0.0)
+            throw std::runtime_error("Hybrid surface extrusion contains a zero-length segment.");
 
     // The current writer route primitive deliberately requires zero active lift.
     // Refuse unsupported states before emitting any G-code; do not silently
@@ -6164,8 +6170,6 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     const std::string_view comment = m_config.gcode_comments ? description : ""sv;
     for (size_t i = 1; i < route.extrusion_points.size(); ++i) {
         const double segment_length = (route.extrusion_points[i] - route.extrusion_points[i - 1]).norm();
-        if (!std::isfinite(segment_length) || segment_length <= 0.0)
-            throw std::runtime_error("Hybrid surface extrusion contains a zero-length or invalid segment.");
         gcode += m_writer.extrude_to_xyz(route.extrusion_points[i], e_per_mm * segment_length, comment);
     }
     gcode += this->_after_extrude(oriented_path);
