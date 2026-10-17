@@ -1434,6 +1434,8 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionFloat, five_axis_machine_max_z))
     ((ConfigOptionFloat, five_axis_tool_clearance_radius))
     ((ConfigOptionFloat, five_axis_collision_sample_spacing))
+    ((ConfigOptionFloat, five_axis_surface_match_distance))
+    ((ConfigOptionFloat, five_axis_transition_clearance))
     ((ConfigOptionString, five_axis_obstacle_boxes))
     ((ConfigOptionBool, five_axis_simultaneous_rotary))
     ((ConfigOptionInt, five_axis_output_precision))
