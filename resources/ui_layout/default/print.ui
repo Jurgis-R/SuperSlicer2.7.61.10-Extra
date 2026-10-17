@@ -271,6 +271,7 @@ group:Advanced Infill options
 		setting:label$Max slope:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_slope
 		setting:label$Max Z offset:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_offset
 		setting:label$Speed limit:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_speed
+		setting:label$Volumetric auto-speed:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_volumetric_auto_speed
 	end_line
 	line:Hybrid surface-pass preflight / output
 		setting:label$_:label_width$0:hybrid_surface_pass_preflight
