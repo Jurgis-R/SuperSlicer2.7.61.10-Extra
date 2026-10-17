@@ -6900,6 +6900,19 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 }
 
 std::string GCodeGenerator::_extrude(const ExtrusionPath &path, const std::string_view description, double speed) {
+    // Last-line guard: queued tiny paths and internal callers can reach this
+    // lower-level writer directly, bypassing extrude_path(). Five-axis mode
+    // must route every extrusion through the planner and rotary-aware writer.
+    if (m_config.opt_bool("five_axis_enabled")) {
+        if (path.polyline.size() < 2)
+            return {};
+        ExtrusionPath3D oriented_path(path);
+        oriented_path.z_offsets.assign(oriented_path.polyline.size(), 0);
+        oriented_path.tool_axis_normals.assign(
+            oriented_path.polyline.size(), std::array<double, 3>{{0.0, 0.0, 1.0}});
+        return this->extrude_path_3D(oriented_path, description, speed);
+    }
+
 
     std::string descr = description.empty() ? gcode_extrusion_role_to_string(extrusion_role_to_gcode_extrusion_role(path.role())) : std::string(description);
     // ZAA: decide before the speed is used
