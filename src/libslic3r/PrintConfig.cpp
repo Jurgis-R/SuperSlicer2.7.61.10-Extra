@@ -3761,8 +3761,7 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0.4));
 
-    def = this->add("hybrid_nonplanar_speed",
-"hybrid_nonplanar_volumetric_auto_speed", coFloat);
+    def = this->add("hybrid_nonplanar_speed", coFloat);
     def->label = L("Hybrid non-planar speed limit");
     def->full_label = L("Hybrid non-planar speed limit");
     def->category = OptionCategory::infill;
@@ -10587,6 +10586,7 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "hybrid_nonplanar_max_slope",
 "hybrid_nonplanar_max_offset",
 "hybrid_nonplanar_speed",
+"hybrid_nonplanar_volumetric_auto_speed",
 "zaa_enabled",
 "zaa_contour_perimeters",
 "zaa_min_z",
