@@ -6855,6 +6855,7 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     const Vec2d saved_origin = m_origin;
     const double saved_perimeter_width = m_current_perimeter_extrusion_width;
     const bool saved_object_layer_over_raft = m_object_layer_over_raft;
+    const double saved_volumetric_speed = m_volumetric_speed;
 
     for (HybridNonplanarQueuedPath& queued : queued_paths) {
         m_layer = queued.layer;
@@ -6866,6 +6867,15 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
         const double base_z = queued.layer->print_z;
         if (std::abs(m_writer.get_position().z() - base_z) > 1e-4)
             gcode += m_writer.get_travel_to_z_gcode(base_z, "Hybrid pass: return to layer Z");
+
+        // A positive hybrid-specific flow target replaces the Speed tab's
+        // autospeed target only while this queued non-planar path is emitted.
+        // Ordinary feature speeds, the hybrid mm/s cap, and filament caps remain.
+        const double hybrid_volumetric_auto_speed = m_config.hybrid_nonplanar_volumetric_auto_speed.value;
+        if (hybrid_volumetric_auto_speed > 0.) {
+            m_volumetric_speed = hybrid_volumetric_auto_speed;
+            m_config.max_volumetric_speed.value = hybrid_volumetric_auto_speed;
+        }
 
         // extrude_path_3D/_before_extrude owns the approach travel, retract and
         // unretract sequence. Do not call travel_to here as well: that would
@@ -6886,6 +6896,7 @@ void GCodeGenerator::flush_hybrid_nonplanar_queue(std::string& gcode)
     m_origin = saved_origin;
     m_current_perimeter_extrusion_width = saved_perimeter_width;
     m_object_layer_over_raft = saved_object_layer_over_raft;
+    m_volumetric_speed = saved_volumetric_speed;
     gcode += ";HYBRID_FINISHING_PASS_END\n";
 }
 
