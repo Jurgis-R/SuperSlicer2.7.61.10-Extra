@@ -17,6 +17,8 @@
 #include <boost/log/trivial.hpp>
 
 #include <oneapi/tbb/parallel_for.h>
+#include <limits>
+#include <utility>
 
 
 namespace Slic3r {
