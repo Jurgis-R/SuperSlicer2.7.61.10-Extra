@@ -671,6 +671,12 @@ void PrintConfigDef::init_common_params()
     def->category = OptionCategory::mmsetup;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(1.));
+    def = this->add("five_axis_transition_clearance", coFloat);
+    def->label = L("Transition clearance");
+    def->tooltip = L("Minimum machine-Z clearance used for rotary reorientation and travel between five-axis poses, mm.");
+    def->category = OptionCategory::mmsetup;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(5.));
     def = this->add("five_axis_obstacle_boxes", coString);
     def->label = L("Obstacle boxes");
     def->tooltip = L("Optional obstacle AABBs in machine coordinates, encoded as semicolon-separated six-number groups: minX,minY,minZ,maxX,maxY,maxZ.");

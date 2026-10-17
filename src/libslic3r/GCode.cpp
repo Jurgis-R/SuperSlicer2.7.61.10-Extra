@@ -821,6 +821,11 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
             throw Slic3r::RuntimeError(export_gate.error);
         if (!is_five_axis_postprocessor_registered(five_axis_profile.postprocessor_id))
             throw Slic3r::RuntimeError("The selected five-axis postprocessor has no live GCodeGenerator writer.");
+        if (print->config().opt_bool("spiral_vase"))
+            throw Slic3r::RuntimeError("Spiral-vase export still uses a dedicated XYZ-only writer and is not supported in five-axis mode.");
+        const double transition_clearance = print->config().opt_float("five_axis_transition_clearance");
+        if (!std::isfinite(transition_clearance) || transition_clearance <= 0.0)
+            throw Slic3r::RuntimeError("Five-axis transition clearance must be finite and greater than zero.");
     }
 
     // Enabled and either not done, or marked as done while the output file is missing.
@@ -3412,7 +3417,8 @@ LayerResult GCodeGenerator::process_layer(
         gcode += this->change_layer(print_z);  // this will increase m_layer_index
         //forget wipe from previous layer
         //gcode += "; m_wipe.reset_path(); after change_layer\n";
-        assert(m_new_z_target || is_approx(print_z, m_writer.get_unlifted_position().z(), EPSILON));
+        if (!m_config.opt_bool("five_axis_enabled"))
+            assert(m_new_z_target || is_approx(print_z, m_writer.get_unlifted_position().z(), EPSILON));
     }
     for (const ObjectLayerToPrint &l : layers) {
         if (l.object_layer) {
@@ -4043,8 +4049,13 @@ std::string GCodeGenerator::change_layer(double print_z) {
     if (layer_count() > 0)
         // Increment a progress bar indicator.
         gcode += m_writer.update_progress(++ m_layer_index, layer_count());
-    // travel_ramping_lift only if not m_spiral_vase_layer and over the lift_min
-    if (!BOOL_EXTRUDER_CONFIG(travel_ramping_lift) || m_spiral_vase_layer > 0 || m_config.lift_min.value > print_z) {
+    if (m_config.opt_bool("five_axis_enabled")) {
+        m_wipe.reset_path();
+        if (BOOL_EXTRUDER_CONFIG(retract_layer_change))
+            gcode += this->retract_and_wipe();
+        gcode += "; five-axis layer change: positioning is deferred to the next planned transition\n";
+        m_new_z_target.reset();
+    } else if (!BOOL_EXTRUDER_CONFIG(travel_ramping_lift) || m_spiral_vase_layer > 0 || m_config.lift_min.value > print_z) {
         if (BOOL_EXTRUDER_CONFIG(retract_layer_change) && m_writer.will_move_z(print_z))
             gcode += this->retract_and_wipe();
         gcode += m_writer.travel_to_z(print_z, std::string("move to next layer (") + std::to_string(m_layer_index) + ", "+  to_string_nozero(print_z, 5) + ")");
@@ -5220,13 +5231,15 @@ std::string GCodeGenerator::extrude_loop(const ExtrusionLoop &original_loop, con
                             radius = 0;
                     }
                     if (radius == 0) {
-                        gcode += m_writer.travel_to_xy(this->point_to_gcode(segment.point), 0.0, "; extra wipe"sv);
+                        if (!m_config.opt_bool("five_axis_enabled"))
+                            gcode += m_writer.travel_to_xy(this->point_to_gcode(segment.point), 0.0, "; extra wipe"sv);
                     } else {
                         const Vec2d center_offset = this->point_to_gcode(center) - this->point_to_gcode(current_point);
                         coordf_t    angle         = Geometry::ArcWelder::arc_angle(current_point, segment.point, coordf_t(radius));
                         assert(angle > 0);
                         const coordf_t line_length = angle * std::abs(radius);
-                        gcode += m_writer.travel_arc_to_xy(this->point_to_gcode(segment.point), center_offset, segment.ccw(), 0.0/*speed*/, "; extra wipe"sv);
+                        if (!m_config.opt_bool("five_axis_enabled"))
+                            gcode += m_writer.travel_arc_to_xy(this->point_to_gcode(segment.point), center_offset, segment.ccw(), 0.0/*speed*/, "; extra wipe"sv);
                     }
                     prev_point = current_point;
                     current_point = segment.point;
@@ -5288,8 +5301,10 @@ std::string GCodeGenerator::extrude_loop(const ExtrusionLoop &original_loop, con
                     start_wipe = "";
                 }
                 // generate the travel move
-                gcode += m_writer.travel_to_xy(this->point_to_gcode(pt_inside), 0.0, "move inwards before travel");
-                this->set_last_pos(pt_inside);
+                if (!m_config.opt_bool("five_axis_enabled")) {
+                    gcode += m_writer.travel_to_xy(this->point_to_gcode(pt_inside), 0.0, "move inwards before travel");
+                    this->set_last_pos(pt_inside);
+                }
             } else {
                 // also shift the wipe on retract if wipe_inside_end
                 // go to the inside (use clipper for easy shift)
@@ -5467,8 +5482,10 @@ std::string GCodeGenerator::extrude_loop(const ExtrusionLoop &original_loop, con
                     start_wipe = "";
                 }
                 // generate the travel move
-                gcode += m_writer.travel_to_xy(this->point_to_gcode(start_point), 0.0, "move inwards before wipe");
-                this->set_last_pos(start_point);
+                if (!m_config.opt_bool("five_axis_enabled")) {
+                    gcode += m_writer.travel_to_xy(this->point_to_gcode(start_point), 0.0, "move inwards before wipe");
+                    this->set_last_pos(start_point);
+                }
             }
 
         }
@@ -5658,8 +5675,6 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     if (m_config.opt_bool("five_axis_enabled")) {
         if (path.polyline.size() < 2)
             return {};
-        if (path.polyline.has_arc())
-            throw Slic3r::RuntimeError("Five-axis output requires linearized extrusion paths; an arc reached the live path emitter.");
         ExtrusionPath3D five_axis_path(path);
         five_axis_path.z_offsets.assign(five_axis_path.polyline.size(), 0);
         five_axis_path.tool_axis_normals.assign(
@@ -5924,8 +5939,33 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
             throw Slic3r::RuntimeError("Five-axis extrusion requires an active print layer.");
         if (simplifed_path.polyline.size() < 2)
             return {};
-        if (simplifed_path.polyline.has_arc())
-            throw Slic3r::RuntimeError("Five-axis output requires linearized ExtrusionPath3D segments.");
+
+        if (simplifed_path.polyline.has_arc()) {
+            const std::size_t old_count = simplifed_path.polyline.size();
+            const bool constant_z = simplifed_path.z_offsets.empty() ||
+                (simplifed_path.z_offsets.size() == old_count &&
+                 std::all_of(simplifed_path.z_offsets.begin(), simplifed_path.z_offsets.end(),
+                    [&simplifed_path](coord_t z) { return z == simplifed_path.z_offsets.front(); }));
+            const bool constant_normal = simplifed_path.tool_axis_normals.empty() ||
+                (simplifed_path.tool_axis_normals.size() == old_count &&
+                 std::all_of(simplifed_path.tool_axis_normals.begin(), simplifed_path.tool_axis_normals.end(),
+                    [&simplifed_path](const std::array<double, 3> &normal) {
+                        return normal == simplifed_path.tool_axis_normals.front();
+                    }));
+            if (!constant_z || !constant_normal)
+                throw Slic3r::RuntimeError("A five-axis arc with varying Z offsets or tool directions must be linearized by the surface-path planner.");
+
+            const coord_t z_offset = simplifed_path.z_offsets.empty()
+                ? coord_t(0) : simplifed_path.z_offsets.front();
+            const bool had_normals = !simplifed_path.tool_axis_normals.empty();
+            const std::array<double, 3> normal = had_normals
+                ? simplifed_path.tool_axis_normals.front()
+                : std::array<double, 3>{{0.0, 0.0, 1.0}};
+            simplifed_path.polyline = ArcPolyline(simplifed_path.polyline.to_polyline());
+            simplifed_path.z_offsets.assign(simplifed_path.polyline.size(), z_offset);
+            if (had_normals)
+                simplifed_path.tool_axis_normals.assign(simplifed_path.polyline.size(), normal);
+        }
 
         const std::size_t point_count = simplifed_path.polyline.size();
         if (simplifed_path.z_offsets.empty())
@@ -5999,7 +6039,15 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
             commands.front().x, commands.front().y, commands.front().z);
         m_five_axis_entry_rotary_1_deg = commands.front().rotary_1_deg;
         m_five_axis_entry_rotary_2_deg = commands.front().rotary_2_deg;
-        m_five_axis_entry_pending = true;
+        const Vec3d current_writer_pose = m_writer.get_position();
+        const bool same_machine_pose =
+            m_five_axis_rotary_state_initialized &&
+            (current_writer_pose - m_five_axis_entry_point).norm() <= 1e-5 &&
+            std::abs(m_five_axis_rotary_state_1_deg - m_five_axis_entry_rotary_1_deg) <= 1e-5 &&
+            std::abs(m_five_axis_rotary_state_2_deg - m_five_axis_entry_rotary_2_deg) <= 1e-5;
+        const bool same_path_join = last_pos_defined() &&
+            last_pos().coincides_with_epsilon(simplifed_path.first_point());
+        m_five_axis_entry_pending = !(same_machine_pose && same_path_join);
 
         std::string gcode;
         const std::string_view comment = m_config.gcode_comments ? description : ""sv;
@@ -7504,11 +7552,8 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         m_writer.set_travel_acceleration((uint32_t)floor(travel_acceleration + 0.5));
         m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
 
-        // Preserve normal retract/lift decisions. The stock wipe helper emits
-        // print-frame XY moves directly through GCodeWriter, which is incorrect
-        // once rotary kinematics have changed the machine frame. Five-axis
-        // export therefore clears pending wipe geometry until a kinematic wipe
-        // path implementation is available.
+        // Preserve retraction and lift bookkeeping, but do not execute stored
+        // print-frame wipe paths while the rotary chain is active.
         m_wipe.reset_path();
         if (!last_pos_defined() || !last_pos().coincides_with_epsilon(path.first_point()))
             (void)this->travel_to(gcode, path.first_point(), path.role());
@@ -7525,29 +7570,19 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         if (!std::isfinite(travel_speed) || travel_speed <= 0.0)
             throw Slic3r::RuntimeError("Five-axis approach has an invalid travel speed.");
 
-        // Ramping lift is virtual until write_travel_to() consumes it. Since
-        // five-axis output bypasses that planar writer, convert it (and the
-        // minimum-lift requirement) into a coordinated vertical clearance move.
-        const Vec3d before_lift = m_writer.get_position();
+        const double configured_clearance = m_config.opt_float("five_axis_transition_clearance");
         const double extra_lift = m_writer.get_extra_lift();
         const double existing_lift = m_writer.get_lift();
-        if (!std::isfinite(extra_lift) || extra_lift < 0.0 ||
+        if (!std::isfinite(configured_clearance) || configured_clearance <= 0.0 ||
+            !std::isfinite(extra_lift) || extra_lift < 0.0 ||
             !std::isfinite(existing_lift) || existing_lift < 0.0)
-            throw Slic3r::RuntimeError("Five-axis approach has an invalid pending lift.");
-        const double entry_z = m_five_axis_entry_point.z();
-        const double safe_lift_z = std::max({
-            before_lift.z(),
-            before_lift.z() + extra_lift,
-            entry_z + existing_lift,
-            m_next_lift_min > before_lift.z() ? m_next_lift_min : before_lift.z()
-        });
-        const bool needs_clearance_lift = safe_lift_z > before_lift.z() + EPSILON;
-        const bool needs_elevated_traverse = safe_lift_z > entry_z + EPSILON;
+            throw Slic3r::RuntimeError("Five-axis transition clearance or pending lift is invalid.");
 
+        const Vec3d current_position = m_writer.get_position();
         FiveAxisCommand current_pose;
-        current_pose.x = before_lift.x();
-        current_pose.y = before_lift.y();
-        current_pose.z = before_lift.z();
+        current_pose.x = current_position.x();
+        current_pose.y = current_position.y();
+        current_pose.z = current_position.z();
         current_pose.e = 0.0;
         current_pose.rotary_1_deg = m_five_axis_rotary_state_initialized
             ? m_five_axis_rotary_state_1_deg : 0.0;
@@ -7564,79 +7599,58 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         entry_pose.rotary_2_deg = m_five_axis_entry_rotary_2_deg;
         entry_pose.feed_mm_min = travel_speed * 60.0;
 
-        std::vector<FiveAxisCommand> transition;
-        transition.reserve(2 + (needs_clearance_lift ? 1 : 0) +
-                           (needs_elevated_traverse ? 1 : 0));
-        transition.push_back(current_pose);
-        if (needs_clearance_lift) {
-            FiveAxisCommand lift_pose = current_pose;
-            lift_pose.z = safe_lift_z;
-            transition.push_back(lift_pose);
-        }
-        // Travel laterally with the destination rotary orientation while at
-        // clearance height, then lower vertically to the first extrusion point.
-        if (needs_elevated_traverse) {
-            FiveAxisCommand elevated_entry = entry_pose;
-            elevated_entry.z = safe_lift_z;
-            transition.push_back(elevated_entry);
-        }
-        transition.push_back(entry_pose);
+        const double clearance = std::max({configured_clearance, extra_lift, existing_lift});
+        // Clearance must be above both physical endpoints, not merely the old
+        // writer Z or the destination's print-layer Z.
+        const double clearance_z = std::max({
+            current_pose.z, entry_pose.z,
+            m_next_lift_min > current_pose.z ? m_next_lift_min : current_pose.z
+        }) + clearance;
+        if (!std::isfinite(clearance_z))
+            throw Slic3r::RuntimeError("Five-axis transition clearance produced non-finite machine Z.");
 
+        FiveAxisCommand current_clearance = current_pose;
+        current_clearance.z = clearance_z;
+        FiveAxisCommand reoriented_clearance = current_clearance;
+        reoriented_clearance.rotary_1_deg = entry_pose.rotary_1_deg;
+        reoriented_clearance.rotary_2_deg = entry_pose.rotary_2_deg;
+        FiveAxisCommand entry_clearance = entry_pose;
+        entry_clearance.z = clearance_z;
+
+        const std::vector<FiveAxisCommand> transition = {
+            current_pose, current_clearance, reoriented_clearance, entry_clearance, entry_pose
+        };
         const FiveAxisValidationResult transition_limits =
             validate_five_axis_path(five_axis_profile.output, transition);
         if (!transition_limits.valid)
-            throw Slic3r::RuntimeError(std::string("Five-axis approach violates motion limits: ") + transition_limits.error);
+            throw Slic3r::RuntimeError(std::string("Five-axis transition violates motion limits: ") + transition_limits.error);
         const FiveAxisValidationResult transition_envelope =
             validate_five_axis_machine_envelope(five_axis_profile, transition);
         if (!transition_envelope.valid)
-            throw Slic3r::RuntimeError(std::string("Five-axis approach violates the machine envelope: ") + transition_envelope.error);
+            throw Slic3r::RuntimeError(std::string("Five-axis transition violates the machine envelope: ") + transition_envelope.error);
         const FiveAxisValidationResult transition_clearance =
             validate_five_axis_path_clearance(five_axis_profile.collision, transition);
         if (!transition_clearance.valid)
-            throw Slic3r::RuntimeError(std::string("Five-axis approach fails configured clearance checks: ") + transition_clearance.error);
+            throw Slic3r::RuntimeError(std::string("Five-axis transition fails configured clearance checks: ") + transition_clearance.error);
 
-        if (needs_clearance_lift) {
-            const std::string lift_gcode = m_writer.travel_to_xyz_rotary(
-                Vec3d(before_lift.x(), before_lift.y(), safe_lift_z), travel_speed,
-                "five-axis clearance lift",
-                m_five_axis_rotary_1_word, current_pose.rotary_1_deg,
-                m_five_axis_rotary_2_word, current_pose.rotary_2_deg,
+        const auto emit_travel = [&](const FiveAxisCommand &pose, const std::string_view label) {
+            return m_writer.travel_to_xyz_rotary(
+                Vec3d(pose.x, pose.y, pose.z), travel_speed, label,
+                m_five_axis_rotary_1_word, pose.rotary_1_deg,
+                m_five_axis_rotary_2_word, pose.rotary_2_deg,
                 m_five_axis_rotary_precision);
-            if (lift_gcode.empty())
-                throw Slic3r::RuntimeError("Five-axis writer rejected the preflighted clearance lift.");
-            gcode += lift_gcode;
-        }
+        };
+        const std::string lift_move = emit_travel(current_clearance, "five-axis transition clearance lift");
+        const std::string orient_move = emit_travel(reoriented_clearance, "five-axis reorientation at clearance");
+        const std::string traverse_move = emit_travel(entry_clearance, "five-axis traverse at clearance");
+        const std::string descent_move = emit_travel(entry_pose, "five-axis descent to extrusion start");
+        if (lift_move.empty() || orient_move.empty() || traverse_move.empty() || descent_move.empty())
+            throw Slic3r::RuntimeError("Five-axis writer rejected a preflighted transition segment.");
+
+        gcode += lift_move + orient_move + traverse_move + descent_move;
         m_writer.set_extra_lift(0.0);
-        m_next_lift_min = 0.0;
-
-        if (needs_elevated_traverse) {
-            const Vec3d elevated_entry(
-                m_five_axis_entry_point.x(),
-                m_five_axis_entry_point.y(),
-                safe_lift_z);
-            const std::string lateral = m_writer.travel_to_xyz_rotary(
-                elevated_entry, travel_speed,
-                "five-axis elevated approach",
-                m_five_axis_rotary_1_word, m_five_axis_entry_rotary_1_deg,
-                m_five_axis_rotary_2_word, m_five_axis_entry_rotary_2_deg,
-                m_five_axis_rotary_precision);
-            if (lateral.empty())
-                throw Slic3r::RuntimeError("Five-axis writer rejected the preflighted elevated approach.");
-            gcode += lateral;
-        }
-
-        const std::string approach = m_writer.travel_to_xyz_rotary(
-            m_five_axis_entry_point, travel_speed,
-            "move to first " + description + " point",
-            m_five_axis_rotary_1_word, m_five_axis_entry_rotary_1_deg,
-            m_five_axis_rotary_2_word, m_five_axis_entry_rotary_2_deg,
-            m_five_axis_rotary_precision);
-        if (approach.empty())
-            throw Slic3r::RuntimeError("Five-axis writer rejected the preflighted approach move.");
-        gcode += approach;
-        // The kinematic approach has already reached the extrusion pose; don't
-        // let _before_extrude emit a legacy XYZ-only unlift away from that pose.
         m_writer.set_lift(0.0);
+        m_next_lift_min = 0.0;
         this->set_last_pos(path.first_point());
         m_five_axis_entry_pending = false;
         return gcode;
