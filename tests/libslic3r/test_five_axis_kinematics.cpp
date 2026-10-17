@@ -24,6 +24,22 @@ TEST_CASE("Five-axis orientation IK solves rotary-bed and rotary-head normals",
     REQUIRE(head_solution.orientation_error <= head.orientation_tolerance);
 }
 
+TEST_CASE("Five-axis IK can recover from a rotary joint upper-limit seed",
+          "[FiveAxisKinematics]")
+{
+    FiveAxisKinematicsConfig config;
+    const FiveAxisJointSolution solution = solve_five_axis_orientation(
+        config, FiveAxisVec3{0.0, 1.0, 0.0},
+        config.rotary_1_max_deg, config.rotary_2_max_deg);
+    REQUIRE(solution.valid);
+    REQUIRE(solution.orientation_error <= config.orientation_tolerance);
+    const FiveAxisVec3 predicted = five_axis_predict_normal(
+        config, solution.rotary_1_deg, solution.rotary_2_deg,
+        FiveAxisVec3{0.0, 1.0, 0.0});
+    REQUIRE(five_axis_norm(predicted - FiveAxisVec3{0.0, 0.0, 1.0})
+        <= config.orientation_tolerance);
+}
+
 TEST_CASE("Five-axis kinematics rejects unreachable normals and invalid axes",
           "[FiveAxisKinematics]")
 {
