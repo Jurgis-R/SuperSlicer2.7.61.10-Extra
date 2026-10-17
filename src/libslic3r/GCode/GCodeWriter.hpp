@@ -20,6 +20,7 @@
 #include <string_view>
 #include <vector>
 #include <charconv>
+#include <optional>
 
 namespace Slic3r {
 
