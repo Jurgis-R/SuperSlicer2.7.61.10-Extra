@@ -147,19 +147,19 @@ The current source does not yet have a printer-specific CAD envelope for these p
 
 ## Current status
 
-- [x] Read the live target branch and relevant `ExtrusionPath3D` / G-code writer code.
-- [x] Compare the main source-code approaches in AtomSlicer, CurviSlicer, RotBot, and the Slic3r non-planar fork.
-- [x] Create an isolated development branch and commit the narrow 3D extrusion correctness fix.
-- [ ] Compile and test the fix in the SuperSlicer build.
-- [x] Add an experimental `Hybrid non-planar printing` checkbox beside ZAA; selecting it suppresses ZAA so both modes cannot run together.
-- [ ] Implement the H-interval scheduler. The checkbox is only a reserved switch at this stage; it does not yet generate non-planar passes.
-- [ ] Implement both path-generation modes.
-- [ ] Implement and validate the collision envelope and motion constraints.
-- [ ] Add end-to-end G-code regression tests.
+- [x] Read the target branch's `ExtrusionPath3D` / G-code writer code and added the destination-vertex Z-offset / true 3D segment-length correction.
+- [x] Compare source-code approaches in AtomSlicer, CurviSlicer, RotBot, and the Slic3r non-planar fork.
+- [x] Add the H-interval scheduler and section-boundary planner and connect them to G-code generation.
+- [x] Add existing-path deformation and a separate mesh-derived surface-following planner/output gate.
+- [x] Add GUI controls beside ZAA, with hybrid and surface-pass output disabled by default.
+- [x] Add scheduler, geometry, collision, route-state, and G-code regression tests.
+- [x] Add a native Linux build/test workflow.
+- [ ] Run the native build and automated tests successfully; no passing result is confirmed in this environment.
+- [ ] Review output from representative models and validate the measured tool envelope on a physical Cartesian printer.
 
 ## References
 
-- SuperSlicer target branch: https://github.com/Jurgis-R/SuperSlicer2.7.61.10-Extra/tree/SS-2.7.61.10%2Bextra
+- SuperSlicer target branch: https://github.com/Jurgis-R/SuperSlicer2.7.61.10-Extra/tree/hybrid-nonplanar-dev
 - AtomSlicer: https://github.com/iota97/AtomSlicer
 - CurviSlicer: https://github.com/mfx-inria/curvislicer
 - RotBot: https://github.com/RotBotSlicer/Nonplanar_Slicing
@@ -168,14 +168,14 @@ The current source does not yet have a printer-specific CAD envelope for these p
 
 ## Implementation status
 
-- [x] Add the Hybrid non-planar checkbox and keep it mutually exclusive with ZAA in generated G-code.
-- [x] Add H interval, maximum slope angle, and maximum Z-offset controls.
-- [x] Implement the first Mode B increment: interval-triggered deformation of eligible existing paths.
-- [ ] Insert a separate non-planar pass between planar layer groups (the current interval trigger selects an existing layer instead).
-- [ ] Implement generated surface-following paths (Mode A).
-- [ ] Add full toolhead-envelope collision checks and safe fallback to planar paths.
-- [ ] Compile the C++ application and add automated G-code regression tests.
-- [ ] Validate with a small test print on the target Cartesian printer.
+- [x] Add the Hybrid non-planar checkbox beside ZAA and suppress standalone ZAA in generated G-code when hybrid deformation is selected.
+- [x] Add H interval, maximum slope, maximum Z-offset, speed-cap, preflight/output, and simplified tool-envelope controls.
+- [x] Implement interval-triggered existing-path deformation with typed 3D extrusion output (limited prototype; not a full H-section workflow).
+- [x] Implement a mesh-derived surface-following candidate planner and separate default-off finishing-pass emission after route preflight.
+- [x] Add sampled collision checks for the configured simplified nozzle-shaft/toolhead envelope and fail-closed handling for unsupported print layouts.
+- [x] Add automated regression tests and a native Linux build/test workflow; these are authored but have not yet been confirmed passing.
+- [ ] Complete a successful native build and run the targeted test suite.
+- [ ] Validate full mounted-tool collision coverage and perform supervised physical tests on the target Cartesian printer.
 
 
 ## Expanded external-source audit (2026-10-15)
