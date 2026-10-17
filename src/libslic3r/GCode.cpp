@@ -823,6 +823,8 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
             throw Slic3r::RuntimeError("The selected five-axis postprocessor has no live GCodeGenerator writer.");
         if (print->config().opt_bool("spiral_vase"))
             throw Slic3r::RuntimeError("Spiral-vase export still uses a dedicated XYZ-only writer and is not supported in five-axis mode.");
+        if (print->config().opt_bool("zaa_enabled"))
+            throw Slic3r::RuntimeError("ZAA contouring is not yet routed through five-axis kinematics; disable ZAA or use a planned surface-following path.");
         if (print->config().opt_bool("external_perimeters_vase"))
             throw Slic3r::RuntimeError("External-perimeter vase/scarf-seam mode still emits explicit XYZ layer-transition moves and is not supported in five-axis mode.");
         const double transition_clearance = print->config().opt_float("five_axis_transition_clearance");
@@ -3727,7 +3729,8 @@ void GCodeGenerator::process_layer_single_object(
             
             if (!print_args.print_instance.print_object.config().object_gcode.value.empty()) {
                 DynamicConfig config;
-                assert(std::abs(m_writer.get_position().z() - m_last_layer_z) < 0.0001);
+                assert(m_config.opt_bool("five_axis_enabled") ||
+                       std::abs(m_writer.get_position().z() - m_last_layer_z) < 0.0001);
                 m_gcode_label_objects_start += this->placeholder_parser_process("object_gcode",
                     print_args.print_instance.print_object.config().object_gcode.value, m_writer.tool()->id(), &config)
                     + "\n";
@@ -9191,7 +9194,8 @@ std::string GCodeGenerator::set_extruder(uint16_t extruder_id, double print_z, b
     ensure_end_object_change_labels(gcode);
 
     //just for testing
-    assert(m_layer == nullptr || is_approx(this->writer().get_position().z(), print_z, EPSILON));
+    assert(m_config.opt_bool("five_axis_enabled") ||
+           m_layer == nullptr || is_approx(this->writer().get_position().z(), print_z, EPSILON));
 
     // if we are running a single-extruder setup, just set the extruder and return nothing
     if (!m_writer.multiple_extruders) {
