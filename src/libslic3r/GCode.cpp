@@ -6071,6 +6071,111 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
     return gcode;
 }
 
+std::string GCodeGenerator::extrude_hybrid_surface_route(
+    const ExtrusionPath3D &path, const HybridNonplanarPassRoute &route,
+    const HybridPreExtrusionTravelContract &contract, const std::string_view description,
+    double speed, double max_speed_mm_s)
+{
+    // This executor accepts only absolute writer-frame route coordinates. It is
+    // intentionally not called by ordinary extrude_path_3D(), preserving planar
+    // and legacy 3D path behavior until a dedicated configuration gate is wired.
+    const double tolerance = contract.position_tolerance_mm;
+    auto coincides = [tolerance](const Vec3d &a, const Vec3d &b) {
+        return a.allFinite() && b.allFinite() && (a - b).norm() <= tolerance;
+    };
+    if (!std::isfinite(tolerance) || tolerance < 0.0 ||
+        path.polyline.size() < 2 || path.polyline.has_arc() ||
+        path.z_offsets.size() != path.polyline.size() ||
+        route.approach.points.size() < 2 || route.extrusion_points.size() != path.polyline.size() ||
+        route.departure_points.size() < 2 || route.return_points.size() < 2)
+        throw std::runtime_error("Hybrid surface route has invalid path or waypoint structure.");
+
+    // The current writer route primitive deliberately requires zero active lift.
+    // Refuse unsupported states before emitting any G-code; do not silently
+    // normalize an existing lift because that would invalidate collision checks.
+    if (std::abs(contract.expected_start_lift_mm) > contract.lift_tolerance_mm ||
+        std::abs(contract.expected_end_lift_mm) > contract.lift_tolerance_mm ||
+        !coincides(route.approach.expected_start, contract.expected_start_position) ||
+        !coincides(route.approach.extrusion_start, contract.expected_end_position) ||
+        !coincides(route.approach.points.front(), route.approach.expected_start) ||
+        !coincides(route.approach.points.back(), route.extrusion_points.front()) ||
+        !coincides(route.departure_points.front(), route.extrusion_points.back()) ||
+        !coincides(route.return_points.front(), route.departure_points.back()) ||
+        !coincides(route.return_points.back(), route.approach.expected_start))
+        throw std::runtime_error("Hybrid surface route does not match its explicit writer-state contract.");
+
+    // Prove the live starting position and lift before any writer mutation.
+    if (!validate_hybrid_pre_extrusion_state(
+            contract, m_writer.get_position(), m_writer.get_lift(), false))
+        throw std::runtime_error("Hybrid surface route start position/lift mismatch; aborting export.");
+
+    // Ensure the supplied path XY/Z vertices describe the exact route vertices.
+    // This prevents an E profile from one path being paired with unrelated XYZ.
+    for (size_t i = 0; i < path.polyline.size(); ++i) {
+        const Vec3d expected = this->point_to_gcode(path.polyline.get_point(i), path.z_offsets[i]);
+        if (!coincides(expected, route.extrusion_points[i]))
+            throw std::runtime_error("Hybrid surface route vertices do not match the extrusion path; aborting export.");
+    }
+
+    ExtrusionPath3D oriented_path = path;
+    if (this->visitor_flipped)
+        oriented_path.reverse();
+    // This executor does not perform nearest-end reversal: the collision-checked
+    // route and the extrusion direction must remain identical.
+    if (!coincides(this->point_to_gcode(oriented_path.polyline.get_point(0), oriented_path.z_offsets[0]),
+                   route.extrusion_points.front()))
+        throw std::runtime_error("Hybrid surface route extrusion direction is inconsistent.");
+
+    std::string gcode;
+    gcode.reserve(1024);
+    std::string speed_comment;
+    speed = _compute_speed_mm_per_sec(oriented_path, speed, m_overhang_fan_override,
+                                      m_config.gcode_comments ? &speed_comment : nullptr);
+    if (max_speed_mm_s > 0.0)
+        speed = std::min(speed, max_speed_mm_s);
+
+    // Retraction is E-only here: no wipe and no lift can invalidate the already
+    // collision-checked approach. The shared preparation helper unretracts only
+    // after the approach has reached its exact declared extrusion start.
+    gcode += m_writer.retract();
+    gcode += m_writer.travel_to_xyz_route(route.approach.points, tolerance, description);
+    if (!validate_hybrid_pre_extrusion_state(
+            contract, m_writer.get_position(), m_writer.get_lift(), true))
+        throw std::runtime_error("Hybrid surface approach did not reach its declared extrusion start; aborting export.");
+
+    gcode += this->_prepare_extrusion_after_travel(
+        oriented_path, description, speed, speed_comment, true, &contract);
+
+    const double e_per_mm = _compute_e_per_mm(oriented_path, speed);
+    const std::string_view comment = m_config.gcode_comments ? description : ""sv;
+    for (size_t i = 1; i < route.extrusion_points.size(); ++i) {
+        const double segment_length = (route.extrusion_points[i] - route.extrusion_points[i - 1]).norm();
+        if (!std::isfinite(segment_length) || segment_length <= 0.0)
+            throw std::runtime_error("Hybrid surface extrusion contains a zero-length or invalid segment.");
+        gcode += m_writer.extrude_to_xyz(route.extrusion_points[i], e_per_mm * segment_length, comment);
+    }
+    gcode += this->_after_extrude(oriented_path);
+
+    // Leave the surface only through the prevalidated departure and return
+    // polylines. E-only retraction preserves the zero-lift invariant required
+    // by the writer route primitive.
+    gcode += m_writer.retract();
+    gcode += m_writer.travel_to_xyz_route(route.departure_points, tolerance, "hybrid surface departure");
+    gcode += m_writer.travel_to_xyz_route(route.return_points, tolerance, "hybrid surface return");
+    if (!coincides(m_writer.get_position(), route.approach.expected_start) ||
+        std::abs(m_writer.get_lift()) > contract.lift_tolerance_mm)
+        throw std::runtime_error("Hybrid surface return did not restore the declared writer state; aborting export.");
+
+    if (m_wipe.is_enabled()) {
+        ArcPolyline wipe_path = oriented_path.as_polyline();
+        wipe_path.reverse();
+        m_wipe.set_path(std::move(wipe_path.get_arc()), false);
+    }
+    unset_last_pos();
+    m_writer.set_acceleration(static_cast<uint16_t>(std::floor(get_default_acceleration(m_config) + 0.5)));
+    return gcode;
+}
+
 void GCodeGenerator::set_region_for_extrude(const Print &print, const PrintObject *print_object, const LayerRegion *layerm, std::string &gcode)
 {
     const PrintRegionConfig &region_config = this->m_region == nullptr ? 
