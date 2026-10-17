@@ -8402,6 +8402,291 @@ std::vector<coord_t> GCodeGenerator::get_travel_elevation(Polyline& travel, doub
     return result;
 }
 
+std::string GCodeGenerator::_five_axis_write_travel_to(Polyline &travel, const std::string &comment)
+{
+    if (travel.empty())
+        return {};
+
+    FiveAxisMachineProfile profile;
+    const FiveAxisValidationResult profile_result = load_five_axis_machine_profile(m_config, profile);
+    if (!profile_result.valid)
+        throw Slic3r::RuntimeError(std::string("Invalid five-axis machine profile: ") + profile_result.error);
+    if (!is_five_axis_postprocessor_registered(profile.postprocessor_id))
+        throw Slic3r::RuntimeError("No registered five-axis controller is available for travel output.");
+
+    double travel_speed = m_config.get_computed_value("travel_speed");
+    if (!std::isfinite(travel_speed) || travel_speed <= 0.0)
+        travel_speed = m_writer.gcode_config().travel_speed.value;
+    if (m_writer.gcode_config().travel_speed_z.value > 0.0)
+        travel_speed = std::min(travel_speed, m_writer.gcode_config().travel_speed_z.value);
+    const double clearance_setting = m_config.opt_float("five_axis_transition_clearance");
+    const double extra_lift = m_writer.get_extra_lift();
+    const double current_lift = m_writer.get_lift();
+    if (!std::isfinite(travel_speed) || travel_speed <= 0.0 ||
+        !std::isfinite(clearance_setting) || clearance_setting <= 0.0 ||
+        !std::isfinite(extra_lift) || extra_lift < 0.0 ||
+        !std::isfinite(current_lift) || current_lift < 0.0)
+        throw Slic3r::RuntimeError("Five-axis travel received invalid speed, clearance, or lift state.");
+
+    m_five_axis_rotary_1_word = profile.output.rotary_1_word;
+    m_five_axis_rotary_2_word = profile.output.rotary_2_word;
+    m_five_axis_rotary_precision = profile.output.precision;
+    const double rotary_1 = m_five_axis_rotary_state_initialized ? m_five_axis_rotary_state_1_deg : 0.0;
+    const double rotary_2 = m_five_axis_rotary_state_initialized ? m_five_axis_rotary_state_2_deg : 0.0;
+    const Vec2d tool_offset = m_writer.current_tool_offset();
+    profile.kinematics.machine_frame_tool_offset = { -tool_offset.x(), -tool_offset.y(), 0.0 };
+
+    const double work_z = m_layer != nullptr ? m_layer->print_z : m_last_layer_z;
+    auto to_machine = [&](const Point &point) {
+        const FiveAxisVec3 work_point {
+            unscaled<double>(point.x()) + m_origin.x(),
+            unscaled<double>(point.y()) + m_origin.y(),
+            work_z
+        };
+        FiveAxisVec3 machine_point;
+        if (profile.kinematics.mount == FiveAxisRotaryMount::RotaryBed)
+            machine_point = five_axis_transform_bed_point(profile.kinematics, work_point, rotary_1, rotary_2);
+        else
+            machine_point = five_axis_compensate_head_position(profile.kinematics, work_point, rotary_1, rotary_2);
+        return machine_point + profile.kinematics.machine_frame_tool_offset;
+    };
+
+    std::vector<FiveAxisVec3> targets;
+    targets.reserve(travel.size());
+    // The first point normally denotes the current print-space position. The
+    // writer position below is authoritative after rotary and tool transforms.
+    const std::size_t first_target = travel.size() > 1 ? 1 : 0;
+    for (std::size_t i = first_target; i < travel.size(); ++i) {
+        const FiveAxisVec3 target = to_machine(travel.points[i]);
+        if (!five_axis_finite(target))
+            throw Slic3r::RuntimeError("Five-axis travel transform produced a non-finite target.");
+        targets.push_back(target);
+    }
+    if (targets.empty())
+        targets.push_back(to_machine(travel.back()));
+
+    const Vec3d current_position = m_writer.get_position();
+    double highest_z = current_position.z();
+    for (const FiveAxisVec3 &target : targets)
+        highest_z = std::max(highest_z, target.z);
+    if (m_next_lift_min > highest_z)
+        highest_z = m_next_lift_min;
+    const double clearance_z = highest_z + std::max({ clearance_setting, extra_lift, current_lift });
+    if (!std::isfinite(clearance_z))
+        throw Slic3r::RuntimeError("Five-axis travel clearance is non-finite.");
+
+    FiveAxisCommand current_pose {
+        current_position.x(), current_position.y(), current_position.z(), 0.0,
+        rotary_1, rotary_2, travel_speed * 60.0
+    };
+    std::vector<FiveAxisCommand> transition;
+    transition.reserve(targets.size() + 3);
+    transition.push_back(current_pose);
+
+    FiveAxisCommand current_clearance = current_pose;
+    current_clearance.z = clearance_z;
+    transition.push_back(current_clearance);
+    for (std::size_t i = 0; i + 1 < targets.size(); ++i) {
+        FiveAxisCommand waypoint = current_pose;
+        waypoint.x = targets[i].x;
+        waypoint.y = targets[i].y;
+        waypoint.z = clearance_z;
+        transition.push_back(waypoint);
+    }
+    FiveAxisCommand target_clearance = current_pose;
+    target_clearance.x = targets.back().x;
+    target_clearance.y = targets.back().y;
+    target_clearance.z = clearance_z;
+    transition.push_back(target_clearance);
+    FiveAxisCommand target_pose = current_pose;
+    target_pose.x = targets.back().x;
+    target_pose.y = targets.back().y;
+    target_pose.z = targets.back().z;
+    transition.push_back(target_pose);
+
+    const FiveAxisValidationResult limits = validate_five_axis_path(profile.output, transition);
+    if (!limits.valid)
+        throw Slic3r::RuntimeError(std::string("Five-axis travel violates motion limits: ") + limits.error);
+    const FiveAxisValidationResult envelope = validate_five_axis_machine_envelope(profile, transition);
+    if (!envelope.valid)
+        throw Slic3r::RuntimeError(std::string("Five-axis travel violates the machine envelope: ") + envelope.error);
+    const FiveAxisValidationResult clearance = validate_five_axis_path_clearance(profile.collision, transition);
+    if (!clearance.valid)
+        throw Slic3r::RuntimeError(std::string("Five-axis travel fails configured clearance checks: ") + clearance.error);
+
+    std::string gcode;
+    m_writer.set_travel_acceleration((uint32_t)floor(m_config.travel_acceleration.value + 0.5));
+    for (std::size_t i = 1; i < transition.size(); ++i) {
+        const FiveAxisCommand &previous = transition[i - 1];
+        const FiveAxisCommand &pose = transition[i];
+        const double linear_delta = std::hypot(
+            std::hypot(pose.x - previous.x, pose.y - previous.y), pose.z - previous.z);
+        if (linear_delta <= 1e-9 &&
+            std::abs(pose.rotary_1_deg - previous.rotary_1_deg) <= 1e-9 &&
+            std::abs(pose.rotary_2_deg - previous.rotary_2_deg) <= 1e-9)
+            continue;
+        const std::string move = m_writer.travel_to_xyz_rotary(
+            Vec3d(pose.x, pose.y, pose.z), pose.feed_mm_min / 60.0, comment,
+            m_five_axis_rotary_1_word, pose.rotary_1_deg,
+            m_five_axis_rotary_2_word, pose.rotary_2_deg,
+            m_five_axis_rotary_precision);
+        if (move.empty())
+            throw Slic3r::RuntimeError("Five-axis writer rejected a preflighted travel segment.");
+        gcode += move;
+    }
+
+    this->set_last_pos(travel.back());
+    m_writer.set_extra_lift(0.0);
+    m_writer.set_lift(0.0);
+    m_next_lift_min = 0.0;
+    m_new_z_target.reset();
+    m_five_axis_rotary_state_1_deg = rotary_1;
+    m_five_axis_rotary_state_2_deg = rotary_2;
+    m_five_axis_rotary_state_initialized = true;
+    return gcode;
+}
+
+std::string GCodeGenerator::_five_axis_generate_travel_gcode(const Points3 &travel, const std::string &comment)
+{
+    if (travel.empty())
+        return {};
+
+    FiveAxisMachineProfile profile;
+    const FiveAxisValidationResult profile_result = load_five_axis_machine_profile(m_config, profile);
+    if (!profile_result.valid)
+        throw Slic3r::RuntimeError(std::string("Invalid five-axis machine profile: ") + profile_result.error);
+    if (!is_five_axis_postprocessor_registered(profile.postprocessor_id))
+        throw Slic3r::RuntimeError("No registered five-axis controller is available for travel output.");
+
+    double travel_speed = m_config.get_computed_value("travel_speed");
+    if (!std::isfinite(travel_speed) || travel_speed <= 0.0)
+        travel_speed = m_writer.gcode_config().travel_speed.value;
+    if (m_writer.gcode_config().travel_speed_z.value > 0.0)
+        travel_speed = std::min(travel_speed, m_writer.gcode_config().travel_speed_z.value);
+    const double clearance_setting = m_config.opt_float("five_axis_transition_clearance");
+    const double extra_lift = m_writer.get_extra_lift();
+    const double current_lift = m_writer.get_lift();
+    if (!std::isfinite(travel_speed) || travel_speed <= 0.0 ||
+        !std::isfinite(clearance_setting) || clearance_setting <= 0.0 ||
+        !std::isfinite(extra_lift) || extra_lift < 0.0 ||
+        !std::isfinite(current_lift) || current_lift < 0.0)
+        throw Slic3r::RuntimeError("Five-axis travel received invalid speed, clearance, or lift state.");
+
+    m_five_axis_rotary_1_word = profile.output.rotary_1_word;
+    m_five_axis_rotary_2_word = profile.output.rotary_2_word;
+    m_five_axis_rotary_precision = profile.output.precision;
+    const double rotary_1 = m_five_axis_rotary_state_initialized ? m_five_axis_rotary_state_1_deg : 0.0;
+    const double rotary_2 = m_five_axis_rotary_state_initialized ? m_five_axis_rotary_state_2_deg : 0.0;
+    const Vec2d tool_offset = m_writer.current_tool_offset();
+    profile.kinematics.machine_frame_tool_offset = { -tool_offset.x(), -tool_offset.y(), 0.0 };
+
+    auto to_machine = [&](const Vec3crd &point) {
+        const FiveAxisVec3 work_point {
+            unscaled<double>(point.x()) + m_origin.x(),
+            unscaled<double>(point.y()) + m_origin.y(),
+            unscaled<double>(point.z())
+        };
+        FiveAxisVec3 machine_point;
+        if (profile.kinematics.mount == FiveAxisRotaryMount::RotaryBed)
+            machine_point = five_axis_transform_bed_point(profile.kinematics, work_point, rotary_1, rotary_2);
+        else
+            machine_point = five_axis_compensate_head_position(profile.kinematics, work_point, rotary_1, rotary_2);
+        return machine_point + profile.kinematics.machine_frame_tool_offset;
+    };
+
+    std::vector<FiveAxisVec3> targets;
+    targets.reserve(travel.size());
+    const std::size_t first_target = travel.size() > 1 ? 1 : 0;
+    for (std::size_t i = first_target; i < travel.size(); ++i) {
+        const FiveAxisVec3 target = to_machine(travel[i]);
+        if (!five_axis_finite(target))
+            throw Slic3r::RuntimeError("Five-axis travel transform produced a non-finite target.");
+        targets.push_back(target);
+    }
+    if (targets.empty())
+        targets.push_back(to_machine(travel.back()));
+
+    const Vec3d current_position = m_writer.get_position();
+    double highest_z = current_position.z();
+    for (const FiveAxisVec3 &target : targets)
+        highest_z = std::max(highest_z, target.z);
+    if (m_next_lift_min > highest_z)
+        highest_z = m_next_lift_min;
+    const double clearance_z = highest_z + std::max({ clearance_setting, extra_lift, current_lift });
+    if (!std::isfinite(clearance_z))
+        throw Slic3r::RuntimeError("Five-axis travel clearance is non-finite.");
+
+    FiveAxisCommand current_pose {
+        current_position.x(), current_position.y(), current_position.z(), 0.0,
+        rotary_1, rotary_2, travel_speed * 60.0
+    };
+    std::vector<FiveAxisCommand> transition;
+    transition.reserve(targets.size() + 3);
+    transition.push_back(current_pose);
+    FiveAxisCommand current_clearance = current_pose;
+    current_clearance.z = clearance_z;
+    transition.push_back(current_clearance);
+
+    for (std::size_t i = 0; i + 1 < targets.size(); ++i) {
+        FiveAxisCommand waypoint = current_pose;
+        waypoint.x = targets[i].x;
+        waypoint.y = targets[i].y;
+        waypoint.z = clearance_z;
+        transition.push_back(waypoint);
+    }
+    FiveAxisCommand target_clearance = current_pose;
+    target_clearance.x = targets.back().x;
+    target_clearance.y = targets.back().y;
+    target_clearance.z = clearance_z;
+    transition.push_back(target_clearance);
+    FiveAxisCommand target_pose = current_pose;
+    target_pose.x = targets.back().x;
+    target_pose.y = targets.back().y;
+    target_pose.z = targets.back().z;
+    transition.push_back(target_pose);
+
+    const FiveAxisValidationResult limits = validate_five_axis_path(profile.output, transition);
+    if (!limits.valid)
+        throw Slic3r::RuntimeError(std::string("Five-axis travel violates motion limits: ") + limits.error);
+    const FiveAxisValidationResult envelope = validate_five_axis_machine_envelope(profile, transition);
+    if (!envelope.valid)
+        throw Slic3r::RuntimeError(std::string("Five-axis travel violates the machine envelope: ") + envelope.error);
+    const FiveAxisValidationResult clearance = validate_five_axis_path_clearance(profile.collision, transition);
+    if (!clearance.valid)
+        throw Slic3r::RuntimeError(std::string("Five-axis travel fails configured clearance checks: ") + clearance.error);
+
+    std::string gcode;
+    m_writer.set_travel_acceleration((uint32_t)floor(m_config.travel_acceleration.value + 0.5));
+    for (std::size_t i = 1; i < transition.size(); ++i) {
+        const FiveAxisCommand &previous = transition[i - 1];
+        const FiveAxisCommand &pose = transition[i];
+        const double linear_delta = std::hypot(
+            std::hypot(pose.x - previous.x, pose.y - previous.y), pose.z - previous.z);
+        if (linear_delta <= 1e-9 &&
+            std::abs(pose.rotary_1_deg - previous.rotary_1_deg) <= 1e-9 &&
+            std::abs(pose.rotary_2_deg - previous.rotary_2_deg) <= 1e-9)
+            continue;
+        const std::string move = m_writer.travel_to_xyz_rotary(
+            Vec3d(pose.x, pose.y, pose.z), pose.feed_mm_min / 60.0, comment,
+            m_five_axis_rotary_1_word, pose.rotary_1_deg,
+            m_five_axis_rotary_2_word, pose.rotary_2_deg,
+            m_five_axis_rotary_precision);
+        if (move.empty())
+            throw Slic3r::RuntimeError("Five-axis writer rejected a preflighted travel segment.");
+        gcode += move;
+    }
+
+    this->set_last_pos(travel.back().head<2>());
+    m_writer.set_extra_lift(0.0);
+    m_writer.set_lift(0.0);
+    m_next_lift_min = 0.0;
+    m_new_z_target.reset();
+    m_five_axis_rotary_state_1_deg = rotary_1;
+    m_five_axis_rotary_state_2_deg = rotary_2;
+    m_five_axis_rotary_state_initialized = true;
+    return gcode;
+}
+
 void GCodeGenerator::write_travel_to(std::string &gcode, Polyline& travel, std::string comment)
 {
     if (m_config.opt_bool("five_axis_enabled")) {
