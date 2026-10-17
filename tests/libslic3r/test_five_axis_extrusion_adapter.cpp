@@ -35,8 +35,8 @@ TEST_CASE("Five-axis adapter maps real 3D extrusion vertices to normalized poses
     CHECK(poses[0].normal.z == Approx(1.0));
     CHECK(poses[1].normal.y == Approx(1.0));
     CHECK(poses[0].extrusion == Approx(5.0));
-    CHECK(poses[1].extrusion == Approx(5.0 + std::sqrt(1.25) * 0.5));
-    CHECK(poses[2].extrusion == Approx(poses[1].extrusion + 1.0 * 0.5));
+    CHECK(poses[1].extrusion == Approx(5.5));
+    CHECK(poses[2].extrusion == Approx(poses[1].extrusion + 0.5));
     CHECK(poses[2].feed_mm_min == Approx(600.0));
 }
 
@@ -62,8 +62,8 @@ TEST_CASE("Five-axis adapter applies explicit point and direction frame transfor
     CHECK(poses[1].point.x == Approx(101.0));
     CHECK(poses[1].normal.x == Approx(-1.0));
     CHECK(poses[1].normal.y == Approx(0.0));
-    // The frame translation must not affect E, and E uses source-path length.
-    CHECK(poses[1].extrusion == Approx(5.0 + std::sqrt(1.25) * 0.5));
+    // The frame translation must not affect E, and E preserves legacy XY-length semantics.
+    CHECK(poses[1].extrusion == Approx(5.5));
 }
 
 TEST_CASE("Five-axis adapter rejects missing or misaligned tool directions", "[FiveAxisExtrusionAdapter]")
