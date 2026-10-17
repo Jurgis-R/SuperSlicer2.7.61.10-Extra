@@ -7568,8 +7568,11 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         // Preserve retraction and lift bookkeeping, but do not execute stored
         // print-frame wipe paths while the rotary chain is active.
         m_wipe.reset_path();
+        Polyline planned_travel;
         if (!last_pos_defined() || !last_pos().coincides_with_epsilon(path.first_point()))
-            (void)this->travel_to(gcode, path.first_point(), path.role());
+            planned_travel = this->travel_to(gcode, path.first_point(), path.role());
+        else
+            planned_travel = Polyline{path.first_point()};
 
         FiveAxisMachineProfile five_axis_profile;
         const FiveAxisValidationResult profile_result =
@@ -7613,12 +7616,45 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         entry_pose.feed_mm_min = travel_speed * 60.0;
 
         const double clearance = std::max({configured_clearance, extra_lift, existing_lift});
-        // Clearance must be above both physical endpoints, not merely the old
-        // writer Z or the destination's print-layer Z.
-        const double clearance_z = std::max({
-            current_pose.z, entry_pose.z,
-            m_next_lift_min > current_pose.z ? m_next_lift_min : current_pose.z
-        }) + clearance;
+        const Vec2d active_tool_offset = m_writer.current_tool_offset();
+        five_axis_profile.kinematics.machine_frame_tool_offset = {
+            -active_tool_offset.x(), -active_tool_offset.y(), 0.0
+        };
+
+        // Keep slicer-planned intermediate detours when changing orientation.
+        // Transform them in the target rotary frame and lift above every
+        // transformed waypoint before traversing the route.
+        std::vector<FiveAxisVec3> machine_detours;
+        double highest_transition_z = std::max(current_pose.z, entry_pose.z);
+        for (std::size_t i = 1; i + 1 < planned_travel.size(); ++i) {
+            const Point &point = planned_travel.points[i];
+            const FiveAxisVec3 work_point{
+                unscaled<double>(point.x()) + m_origin.x(),
+                unscaled<double>(point.y()) + m_origin.y(),
+                m_layer->print_z
+            };
+            FiveAxisVec3 machine_point;
+            if (five_axis_profile.kinematics.mount == FiveAxisRotaryMount::RotaryBed)
+                machine_point = five_axis_transform_bed_point(
+                    five_axis_profile.kinematics, work_point,
+                    entry_pose.rotary_1_deg, entry_pose.rotary_2_deg);
+            else
+                machine_point = five_axis_compensate_head_position(
+                    five_axis_profile.kinematics, work_point,
+                    entry_pose.rotary_1_deg, entry_pose.rotary_2_deg);
+            machine_point = machine_point + five_axis_profile.kinematics.machine_frame_tool_offset;
+            if (!five_axis_finite(machine_point))
+                throw Slic3r::RuntimeError("Five-axis transition detour transform produced a non-finite point.");
+            highest_transition_z = std::max(highest_transition_z, machine_point.z);
+            machine_detours.push_back(machine_point);
+        }
+
+        // Clearance must exceed both physical endpoints and all transformed
+        // slicer detours, not just the previous Z or nominal layer height.
+        const double clearance_z = std::max(
+            highest_transition_z,
+            m_next_lift_min > highest_transition_z ? m_next_lift_min : highest_transition_z
+        ) + clearance;
         if (!std::isfinite(clearance_z))
             throw Slic3r::RuntimeError("Five-axis transition clearance produced non-finite machine Z.");
 
@@ -7652,6 +7688,15 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
                 intermediate.feed_mm_min = reoriented_clearance.feed_mm_min;
                 transition.push_back(intermediate);
             }
+        }
+        for (const FiveAxisVec3 &detour : machine_detours) {
+            FiveAxisCommand waypoint = entry_pose;
+            waypoint.x = detour.x;
+            waypoint.y = detour.y;
+            waypoint.z = clearance_z;
+            waypoint.e = 0.0;
+            waypoint.feed_mm_min = travel_speed * 60.0;
+            transition.push_back(waypoint);
         }
         transition.push_back(entry_clearance);
         transition.push_back(entry_pose);
