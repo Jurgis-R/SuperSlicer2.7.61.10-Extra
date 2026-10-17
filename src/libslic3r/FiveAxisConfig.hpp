@@ -21,6 +21,10 @@ inline FiveAxisValidationResult load_five_axis_machine_profile(
     candidate.enabled = config.opt_bool("five_axis_enabled");
     candidate.name = config.opt_string("five_axis_machine_name");
     candidate.postprocessor_id = config.opt_string("five_axis_postprocessor_id");
+    // A legacy profile predating this field may persist an empty string. The
+    // Klipper GCODE_AXIS writer is currently the only registered controller.
+    if (candidate.enabled && candidate.postprocessor_id.empty())
+        candidate.postprocessor_id = "klipper_gcode_axis";
 
     const std::string mount = config.opt_string("five_axis_mount");
     if (mount == "rotary_bed")

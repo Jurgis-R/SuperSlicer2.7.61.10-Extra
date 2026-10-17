@@ -8282,6 +8282,10 @@ std::vector<coord_t> GCodeGenerator::get_travel_elevation(Polyline& travel, doub
 
 void GCodeGenerator::write_travel_to(std::string &gcode, Polyline& travel, std::string comment)
 {
+    if (m_config.opt_bool("five_axis_enabled")) {
+        gcode += this->_five_axis_write_travel_to(travel, comment);
+        return;
+    }
     // Note: if last_pos is undefined, then travel.size() == 1
     // ramping travel?
     //TODO: ramp up for the first half, then ramp down.
@@ -8440,6 +8444,8 @@ std::string GCodeGenerator::generate_travel_gcode(
     const Points3& travel,
     const std::string& comment
 ) {
+    if (m_config.opt_bool("five_axis_enabled"))
+        return this->_five_axis_generate_travel_gcode(travel, comment);
     std::string gcode;
 
     const unsigned acceleration =(unsigned)(m_config.travel_acceleration.value + 0.5);
@@ -8962,8 +8968,16 @@ std::string GCodeGenerator::retract_and_wipe(bool toolchange, bool inhibit_lift)
     // begining of an object gcode
     gcode += m_writer.reset_e();
     
+    // Wipe paths are print-frame XY geometry. They must not be emitted by
+    // the stock writer after a rotary transform; five-axis retraction keeps
+    // the retraction itself but lets the kinematic travel planner reposition.
+    if (m_config.opt_bool("five_axis_enabled")) {
+        m_wipe.reset_path();
+    }
+
     // wipe (if it's enabled for this extruder and we have a stored wipe path)
-    if (BOOL_EXTRUDER_CONFIG(wipe) && m_wipe.has_path()) {
+    if (!m_config.opt_bool("five_axis_enabled") &&
+        BOOL_EXTRUDER_CONFIG(wipe) && m_wipe.has_path()) {
         gcode += toolchange ? m_writer.retract_for_toolchange(true) : m_writer.retract(true);
         gcode += m_wipe.wipe(*this, toolchange);
     }

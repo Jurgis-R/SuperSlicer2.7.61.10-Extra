@@ -384,6 +384,8 @@ private:
      );
     Polyline        travel_to(std::string& gcode, const Point &end_point, ExtrusionRole role);
     void            write_travel_to(std::string& gcode, Polyline& travel, std::string comment);
+    std::string     _five_axis_write_travel_to(Polyline &travel, const std::string &comment);
+    std::string     _five_axis_generate_travel_gcode(const Points3 &travel, const std::string &comment);
     std::vector<coord_t> get_travel_elevation(Polyline& travel, double z_change);
     //std::string     travel_to_first_position(const Vec3crd& point);
     bool            can_cross_perimeter(const Polyline& travel, bool offset);
