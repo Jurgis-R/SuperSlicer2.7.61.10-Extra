@@ -3316,17 +3316,14 @@ LayerResult GCodeGenerator::process_layer(
         // The current finishing queue is not yet a whole-section planner. Fail
         // closed on layouts whose object/tool ordering it cannot safely handle.
         if (m_config.hybrid_nonplanar_enabled.value) {
-            const bool multiple_objects = print.objects().size() != 1;
-            const bool multiple_instances = !multiple_objects &&
-                print.objects().front()->instances().size() != 1;
             const bool multiple_extruders = print.config().nozzle_diameter.size() != 1;
             const bool sequential_ordering = print.config().complete_objects.value ||
                 print.config().parallel_objects_step.value > 0;
-            if (multiple_objects || multiple_instances || multiple_extruders || sequential_ordering) {
+            if (multiple_extruders || sequential_ordering) {
                 throw RuntimeError(
-                    "Hybrid non-planar printing currently requires one object, one instance, "
-                    "one extruder, and layer-by-layer ordering; export aborted because safe "
-                    "finishing-pass ordering is not implemented for this print layout");
+                    "Hybrid non-planar finishing currently requires one extruder and "
+                    "layer-by-layer ordering; multi-extruder and sequential finishing-pass "
+                    "ordering are not implemented");
             }
         }
     }
@@ -3697,22 +3694,51 @@ LayerResult GCodeGenerator::process_layer(
     // Ordinary planar extrusion entities remain untouched.
     if ((m_config.hybrid_surface_pass_preflight.value || m_config.hybrid_surface_pass_emit.value) &&
         m_hybrid_completed_section) {
-        if (print.objects().size() != 1 || print.objects().front()->instances().size() != 1 ||
-            print.config().nozzle_diameter.size() != 1 || print.config().complete_objects.value ||
+        if (print.config().nozzle_diameter.size() != 1 || print.config().complete_objects.value ||
             print.config().parallel_objects_step.value > 0 || object_layer == nullptr) {
-            throw RuntimeError("Hybrid surface-pass preflight supports only one object, one instance, one extruder and layer-by-layer ordering");
+            throw RuntimeError("Hybrid surface-pass preflight currently requires one extruder and layer-by-layer ordering");
         }
 
-        const PrintObject &print_object = *object_layer->object();
-        const ModelObject *model_object = print_object.model_object();
-        if (model_object == nullptr || print_object.instances().empty() ||
-            print_object.instances().front().model_instance == nullptr)
-            throw RuntimeError("Hybrid surface-pass preflight could not resolve the active model instance");
-
-        indexed_triangle_set source_mesh = model_object->raw_indexed_triangle_set();
+        // Build one collision/planning mesh for every placed part on the plate.
+        // Planning against only object_layer->object() would ignore nearby models
+        // when checking the nozzle and toolhead sweep.
         indexed_triangle_set print_mesh;
-        if (!transform_hybrid_surface_mesh(source_mesh, print_object.trafo_centered(), print_mesh))
-            throw RuntimeError("Hybrid surface-pass preflight rejected the transformed print mesh");
+        for (const PrintObject *part_object_ptr : print.objects()) {
+            if (part_object_ptr == nullptr)
+                throw RuntimeError("Hybrid surface-pass preflight could not resolve a print object");
+            const PrintObject &part_object = *part_object_ptr;
+            const ModelObject *model_object = part_object.model_object();
+            if (model_object == nullptr || part_object.instances().empty())
+                throw RuntimeError("Hybrid surface-pass preflight could not resolve a placed model instance");
+
+            const indexed_triangle_set source_mesh = model_object->raw_indexed_triangle_set();
+            for (const PrintInstance &instance : part_object.instances()) {
+                if (instance.model_instance == nullptr)
+                    throw RuntimeError("Hybrid surface-pass preflight could not resolve a source model instance");
+
+                Transform3d part_transform = part_object.trafo_centered();
+                part_transform.pretranslate(Vec3d(
+                    unscale<double>(instance.shift.x()),
+                    unscale<double>(instance.shift.y()), 0.0));
+                indexed_triangle_set part_mesh;
+                if (!transform_hybrid_surface_mesh(source_mesh, part_transform, part_mesh))
+                    throw RuntimeError("Hybrid surface-pass preflight rejected a transformed part mesh");
+
+                if (print_mesh.vertices.size() >
+                    static_cast<size_t>(std::numeric_limits<int>::max()) - part_mesh.vertices.size())
+                    throw RuntimeError("Hybrid surface-pass preflight rejected an oversized combined print mesh");
+                const int vertex_offset = static_cast<int>(print_mesh.vertices.size());
+                print_mesh.vertices.insert(print_mesh.vertices.end(),
+                                           part_mesh.vertices.begin(), part_mesh.vertices.end());
+                print_mesh.indices.reserve(print_mesh.indices.size() + part_mesh.indices.size());
+                for (const Vec3i32 &face : part_mesh.indices)
+                    print_mesh.indices.emplace_back(face(0) + vertex_offset,
+                                                     face(1) + vertex_offset,
+                                                     face(2) + vertex_offset);
+            }
+        }
+        if (print_mesh.vertices.empty() || print_mesh.indices.empty())
+            throw RuntimeError("Hybrid surface-pass preflight found no placed model geometry");
 
         AABBMesh collision_index(print_mesh);
         HybridSweptToolOptions tool_options;
