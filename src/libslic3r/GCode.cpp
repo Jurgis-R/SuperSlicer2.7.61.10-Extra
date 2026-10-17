@@ -29,6 +29,8 @@
 #include "GCode.hpp"
 #include "FiveAxisConfig.hpp"
 #include "FiveAxisGCodeBridge.hpp"
+#include "FiveAxisSurfaceNormals.hpp"
+#include "Model.hpp"
 #include "Exception.hpp"
 #include "ExtrusionEntity.hpp"
 #include "Geometry/ConvexHull.hpp"
@@ -108,6 +110,14 @@ using namespace std::literals::string_view_literals;
 
 
 namespace Slic3r {
+
+struct FiveAxisSurfaceSourceCache {
+    std::vector<indexed_triangle_set> meshes;
+    std::vector<ObjectID> volume_ids;
+    FiveAxisSurfaceCorrespondence correspondence;
+};
+
+
 
 // Only add a newline in case the current G-code does not end with a newline.
     static inline void check_add_eol(std::string& gcode)
@@ -750,6 +760,8 @@ void check_remaning_times(GCodeFlavor firmware, RemainingTimeType type, Print::S
     }
 }
 
+GCodeGenerator::~GCodeGenerator() = default;
+
 GCodeGenerator::GCodeGenerator() :
     m_origin(Vec2d::Zero()),
     m_enable_loop_clipping(true), 
@@ -795,6 +807,7 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
     // below owns five-axis routing and controller-specific word emission.
     m_five_axis_entry_pending = false;
     m_five_axis_rotary_state_initialized = false;
+    m_five_axis_surface_source_caches.clear();
     if (print->config().opt_bool("five_axis_enabled")) {
         FiveAxisMachineProfile five_axis_profile;
         const FiveAxisValidationResult profile_result =
@@ -5795,6 +5808,93 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     return gcode;
 }
 
+std::string GCodeGenerator::_assign_five_axis_surface_normals(
+    ExtrusionPath3D &path, double base_z_mm)
+{
+    if (m_layer == nullptr || m_layer->object() == nullptr)
+        return "Cannot derive tool directions without an active model object.";
+    if (path.source_provenance.state == FiveAxisProvenanceState::Mixed ||
+        path.source_provenance.state == FiveAxisProvenanceState::Ambiguous)
+        return "Path provenance is mixed or ambiguous; a single source surface cannot be selected safely.";
+
+    const double max_distance_mm = m_config.opt_float("five_axis_surface_match_distance");
+    if (!std::isfinite(max_distance_mm) || max_distance_mm < 0.0)
+        return "Configured surface match distance must be finite and non-negative.";
+
+    const PrintObject *print_object = m_layer->object();
+    auto found = m_five_axis_surface_source_caches.find(print_object);
+    if (found == m_five_axis_surface_source_caches.end()) {
+        const ModelObject *model_object = print_object->model_object();
+        if (model_object == nullptr)
+            return "The active print object has no source model.";
+
+        std::vector<const ModelVolume *> source_volumes;
+        for (const ModelVolume *volume : model_object->volumes) {
+            if (volume == nullptr || !volume->is_model_part())
+                continue;
+            const indexed_triangle_set &volume_mesh = volume->mesh().its;
+            if (volume_mesh.vertices.empty() || volume_mesh.indices.empty())
+                continue;
+            source_volumes.push_back(volume);
+        }
+        if (source_volumes.empty())
+            return "The active print object has no printable source-volume meshes for surface sampling.";
+
+        auto cache = std::make_unique<FiveAxisSurfaceSourceCache>();
+        cache->meshes.reserve(source_volumes.size());
+        cache->volume_ids.reserve(source_volumes.size());
+
+        // Finish the mesh vector before registering samplers: they hold references
+        // to each indexed mesh for the lifetime of this per-object cache.
+        for (const ModelVolume *volume : source_volumes) {
+            cache->meshes.emplace_back();
+            const FiveAxisValidationResult transformed =
+                transform_five_axis_print_volume_mesh(*print_object, *volume, cache->meshes.back());
+            if (!transformed.valid)
+                return "Could not prepare source volume " + std::to_string(volume->id().id) +
+                    " for five-axis surface sampling: " + transformed.error;
+            cache->volume_ids.push_back(volume->id());
+        }
+
+        for (std::size_t i = 0; i < cache->meshes.size(); ++i) {
+            const FiveAxisValidationResult registered =
+                cache->correspondence.add_source(static_cast<int>(i + 1), cache->meshes[i]);
+            if (!registered.valid)
+                return "Could not register a source mesh for five-axis surface sampling: " + registered.error;
+        }
+        found = m_five_axis_surface_source_caches.emplace(
+            print_object, std::move(cache)).first;
+    }
+
+    FiveAxisSurfaceSourceCache &cache = *found->second;
+    FiveAxisValidationResult assignment;
+    int matched_source_id = -1;
+    if (path.source_provenance.is_unique()) {
+        const auto volume = std::find(
+            cache.volume_ids.begin(), cache.volume_ids.end(),
+            path.source_provenance.source_volume_ids.front());
+        if (volume == cache.volume_ids.end())
+            return "Path provenance points to a source volume not present in the active print object.";
+        const int source_id = static_cast<int>(
+            std::distance(cache.volume_ids.begin(), volume) + 1);
+        assignment = cache.correspondence.assign_path_normals_from_source(
+            path, base_z_mm, max_distance_mm, source_id);
+        matched_source_id = source_id;
+    } else {
+        assignment = cache.correspondence.assign_path_normals(
+            path, base_z_mm, max_distance_mm, 0.05, &matched_source_id);
+    }
+    if (!assignment.valid)
+        return assignment.error;
+    if (matched_source_id <= 0 ||
+        static_cast<std::size_t>(matched_source_id) > cache.volume_ids.size())
+        return "Surface sampler returned an invalid source-volume identifier.";
+
+    path.source_provenance = FiveAxisSourceProvenance::unique(
+        cache.volume_ids[static_cast<std::size_t>(matched_source_id - 1)]);
+    return {};
+}
+
 std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const std::string_view description, double speed) {
     //path.simplify(SCALED_RESOLUTION);
     ExtrusionPath3D simplifed_path = path;
@@ -5838,10 +5938,16 @@ std::string GCodeGenerator::extrude_path_3D(const ExtrusionPath3D &path, const s
                     [&simplifed_path](coord_t offset) {
                         return offset == simplifed_path.z_offsets.front();
                     });
-            if (!planar_path)
-                throw Slic3r::RuntimeError("Five-axis non-planar path is missing per-vertex tool-axis normals.");
-            simplifed_path.tool_axis_normals.assign(
-                point_count, std::array<double, 3>{{0.0, 0.0, 1.0}});
+            if (planar_path) {
+                simplifed_path.tool_axis_normals.assign(
+                    point_count, std::array<double, 3>{{0.0, 0.0, 1.0}});
+            } else {
+                const std::string normal_error =
+                    this->_assign_five_axis_surface_normals(simplifed_path, m_layer->print_z);
+                if (!normal_error.empty())
+                    throw Slic3r::RuntimeError(
+                        std::string("Five-axis surface-normal assignment failed: ") + normal_error);
+            }
         }
 
         const double e_per_mm = _compute_e_per_mm(simplifed_path);

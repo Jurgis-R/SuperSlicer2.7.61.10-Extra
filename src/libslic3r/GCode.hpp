@@ -31,6 +31,9 @@
 #include "GCode/FanMover.hpp"
 #include "GCode/FindReplace.hpp"
 #include "GCode/GCodeWriter.hpp"
+
+#include <map>
+#include <memory>
 #include "GCode/LabelObjects.hpp"
 #include "GCode/PressureEqualizer.hpp"
 #include "GCode/RetractWhenCrossingPerimeters.hpp"
@@ -119,11 +122,13 @@ struct PrintObjectInstance
 
 } // namespace GCode
 
+struct FiveAxisSurfaceSourceCache;
+
 class GCodeGenerator : ExtrusionVisitorConst {
 
 public:
     GCodeGenerator();
-    ~GCodeGenerator() = default;
+    ~GCodeGenerator();
 
     // throws std::runtime_exception on error,
     // throws CanceledException through print->throw_if_canceled().
@@ -418,6 +423,7 @@ private:
     bool                                m_five_axis_rotary_state_initialized = false;
     double                              m_five_axis_rotary_state_1_deg = 0.0;
     double                              m_five_axis_rotary_state_2_deg = 0.0;
+    std::map<const PrintObject *, std::unique_ptr<FiveAxisSurfaceSourceCache>> m_five_axis_surface_source_caches;
 
     struct PlaceholderParserIntegration {
         void reset();
@@ -613,6 +619,7 @@ private:
     void                      _extrude_line_cut_corner(std::string& gcode_str, const Line& line, const double e_per_mm, const std::string_view comment, Point& last_pos, const double path_width);
     std::string               _before_extrude(const ExtrusionPath &path, const std::string_view description, double speed = -1);
     std::string               _travel_before_extrude(const ExtrusionPath &path, const std::string_view description, double speed_mm_s = -1);
+    std::string               _assign_five_axis_surface_normals(ExtrusionPath3D &path, double base_z_mm);
     double_t                  _compute_speed_mm_per_sec(const ExtrusionPath &path_attrs, const double speed, double &fan_speed, std::string *comment) const;
     std::pair<double, double> _compute_acceleration(const ExtrusionPath &path);
     std::string               _after_extrude(const ExtrusionPath &path);

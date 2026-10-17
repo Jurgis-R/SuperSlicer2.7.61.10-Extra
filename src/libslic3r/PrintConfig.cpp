@@ -665,6 +665,12 @@ void PrintConfigDef::init_common_params()
     def->category = OptionCategory::mmsetup;
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(1.));
+    def = this->add("five_axis_surface_match_distance", coFloat);
+    def->label = L("Surface match distance");
+    def->tooltip = L("Maximum distance from a non-planar toolpath vertex to its source model surface when deriving tool directions, mm.");
+    def->category = OptionCategory::mmsetup;
+    def->mode = comExpert | comSuSi;
+    def->set_default_value(new ConfigOptionFloat(1.));
     def = this->add("five_axis_obstacle_boxes", coString);
     def->label = L("Obstacle boxes");
     def->tooltip = L("Optional obstacle AABBs in machine coordinates, encoded as semicolon-separated six-number groups: minX,minY,minZ,maxX,maxY,maxZ.");

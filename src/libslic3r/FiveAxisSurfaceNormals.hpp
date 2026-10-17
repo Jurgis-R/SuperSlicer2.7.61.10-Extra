@@ -250,6 +250,21 @@ public:
 
     std::size_t source_count() const { return m_sources.size(); }
 
+    // Use a source already proven by path provenance instead of repeating
+    // nearest-volume selection. source_id is the identifier passed to add_source().
+    FiveAxisValidationResult assign_path_normals_from_source(
+        ExtrusionPath3D &path,
+        double base_z_mm,
+        double max_distance_mm,
+        int source_id) const
+    {
+        for (const auto &source : m_sources) {
+            if (source->volume_id == source_id)
+                return source->sampler.assign_path_normals(path, base_z_mm, max_distance_mm);
+        }
+        return { false, "Path provenance references a source volume not registered for this print object." };
+    }
+
     FiveAxisValidationResult assign_path_normals(
         ExtrusionPath3D &path,
         double base_z_mm,
