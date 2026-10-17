@@ -96,6 +96,39 @@ inline FiveAxisGCodeBridgeResult plan_and_emit_five_axis_extrusion(
     return result;
 }
 
+ 
+// Convert the planner's cumulative E positions to GCodeWriter's per-move dE.
+// The output is replaced only on success; retracts belong to the generator's
+// normal lifecycle and are deliberately not represented by this extrusion-only
+// helper.
+inline FiveAxisValidationResult five_axis_command_e_deltas(
+    const std::vector<FiveAxisCommand> &commands,
+    double initial_e,
+    std::vector<double> &deltas)
+{
+    deltas.clear();
+    if (!std::isfinite(initial_e))
+        return { false, "Initial extrusion position must be finite." };
+    if (commands.empty())
+        return { false, "Cannot derive extrusion deltas from an empty command path." };
+
+    std::vector<double> candidate;
+    candidate.reserve(commands.size());
+    double previous_e = initial_e;
+    for (const FiveAxisCommand &command : commands) {
+        if (!std::isfinite(command.e))
+            return { false, "Command path contains a non-finite extrusion position." };
+        const double delta_e = command.e - previous_e;
+        if (delta_e < -1e-9)
+            return { false, "Extrusion-only path contains a decreasing cumulative E position." };
+        candidate.push_back(std::abs(delta_e) <= 1e-9 ? 0.0 : delta_e);
+        previous_e = command.e;
+    }
+
+    deltas.swap(candidate);
+    return { true, {} };
+}
+
 } // namespace Slic3r
 
 #endif // slic3r_FiveAxisGCodeBridge_hpp_
