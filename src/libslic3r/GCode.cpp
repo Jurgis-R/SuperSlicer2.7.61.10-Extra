@@ -5150,7 +5150,7 @@ std::string GCodeGenerator::extrude_loop(const ExtrusionLoop &original_loop, con
             to_string_nozero(seam_gcode_point.x(), 3) + ":" + to_string_nozero(seam_gcode_point.y(), 3) + "\n";
     }
     // reset acceleration
-    m_writer.set_acceleration((uint16_t)floor(get_default_acceleration(m_config) + 0.5));
+    m_writer.set_acceleration((uint32_t)floor(get_default_acceleration(m_config) + 0.5));
 
     //basic wipe, may be erased after if we need a more complex one
     add_wipe_points(wipe_paths, false, true);
