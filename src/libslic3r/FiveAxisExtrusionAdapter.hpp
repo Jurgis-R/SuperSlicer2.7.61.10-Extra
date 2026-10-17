@@ -70,10 +70,16 @@ inline FiveAxisValidationResult make_five_axis_poses_from_extrusion_path_transfo
             return { false, "Five-axis extrusion path contains an invalid point or zero/non-finite transformed tool direction." };
 
         if (i > 0) {
-            const double segment_length = five_axis_norm(source_point - previous_source_point);
-            if (!std::isfinite(segment_length))
-                return { false, "Five-axis extrusion segment length is non-finite." };
-            cumulative_e += segment_length * e_per_mm;
+            // Match legacy GCodeGenerator::extrude_path_3D(): its E/mm factor
+            // is applied to XY segment length, not the 3D surface-following
+            // distance. Do not silently change filament consumption while
+            // introducing rotary motion.
+            const double dx = source_point.x - previous_source_point.x;
+            const double dy = source_point.y - previous_source_point.y;
+            const double segment_length_xy = std::hypot(dx, dy);
+            if (!std::isfinite(segment_length_xy))
+                return { false, "Five-axis extrusion XY segment length is non-finite." };
+            cumulative_e += segment_length_xy * e_per_mm;
         }
         candidate.push_back({ point, normal, cumulative_e, feed_mm_min });
         previous_source_point = source_point;
