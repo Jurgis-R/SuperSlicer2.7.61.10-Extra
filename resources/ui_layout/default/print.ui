@@ -259,19 +259,19 @@ group:Advanced Infill options
 		setting:label_width$0:label$_:zaa_enabled
 		setting:label_width$0:label$_:hybrid_nonplanar_enabled
 	end_line
+	line:Hybrid non-planar settings
+		setting:label$H interval:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_interval
+		setting:label$Max slope:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_slope
+		setting:label$Max Z offset:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_offset
+		setting:label$Non-planar speed limit:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_speed
+		setting:label$Non-planar volumetric auto-speed:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_volumetric_auto_speed
+	end_line
 	line:ZAA settings
 		setting:label$Perimeters too:label_width$14:zaa_contour_perimeters
 		setting:label$Min height:label_width$10:width$5:sidetext_width$3:zaa_min_z
 		setting:label$Max height:label_width$10:width$5:sidetext_width$3:zaa_max_height
 		setting:label$Sample every:label_width$12:width$5:sidetext_width$3:zaa_sample_distance
 		setting:label$Speed:label_width$7:width$5:sidetext_width$4:zaa_speed
-	end_line
-	line:Hybrid interval and contour limits
-		setting:label$H interval:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_interval
-		setting:label$Max slope:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_slope
-		setting:label$Max Z offset:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_offset
-		setting:label$Non-planar speed limit:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_speed
-		setting:label$Non-planar volumetric auto-speed:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_volumetric_auto_speed
 	end_line
 	line:Hybrid surface-pass preflight / output
 		setting:label$_:label_width$0:hybrid_surface_pass_preflight
