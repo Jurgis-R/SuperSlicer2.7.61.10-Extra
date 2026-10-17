@@ -85,6 +85,15 @@ TEST_CASE("Five-axis kinematics transforms bed points and compensates rotary-hea
     REQUIRE(rotated_carriage.x == Approx(95.0).margin(1e-6));
     REQUIRE(rotated_carriage.y == Approx(100.0).margin(1e-6));
     REQUIRE(rotated_carriage.z == Approx(95.0).margin(1e-6));
+
+    // Use a pivot that is not on the outer joint axis so a missing
+    // subtract-rotate-add pivot operation cannot pass accidentally.
+    head.rotary_1_pivot = FiveAxisVec3{10.0, 2.0, 0.0};
+    const FiveAxisVec3 outer_rotated_carriage = five_axis_compensate_head_position(
+        head, FiveAxisVec3{100.0, 100.0, 100.0}, 90.0, 0.0);
+    REQUIRE(outer_rotated_carriage.x == Approx(100.0).margin(1e-6));
+    REQUIRE(outer_rotated_carriage.y == Approx(108.0).margin(1e-6));
+    REQUIRE(outer_rotated_carriage.z == Approx(102.0).margin(1e-6));
 }
 
 TEST_CASE("Five-axis kinematics normalizes non-unit rotary axes",
