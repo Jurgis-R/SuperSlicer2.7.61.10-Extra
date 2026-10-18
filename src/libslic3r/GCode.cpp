@@ -7588,7 +7588,9 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
 
     if (m_five_axis_entry_pending) {
         m_writer.set_travel_acceleration((uint32_t)floor(travel_acceleration + 0.5));
-        m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
+        // The active flavor is Klipper, where travel acceleration is not a
+        // separate modal setting. Keep the transition itself at travel accel.
+        m_writer.set_acceleration((uint32_t)floor(travel_acceleration + 0.5));
 
         // Preserve retraction and lift bookkeeping, but do not execute stored
         // print-frame wipe paths while the rotary chain is active.
@@ -7781,6 +7783,9 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         m_writer.set_lift(0.0);
         m_next_lift_min = 0.0;
         this->set_last_pos(path.first_point());
+        // Restore print acceleration after the clearance/reorientation travel
+        // so the first extrusion does not inherit the travel setting.
+        m_writer.set_acceleration((uint32_t)floor(acceleration + 0.5));
         m_five_axis_entry_pending = false;
         return gcode;
     }
