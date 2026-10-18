@@ -3929,7 +3929,7 @@ LayerResult GCodeGenerator::process_layer(
                 for (size_t path_idx = 0; path_idx < surface_paths.size(); ++path_idx) {
                     HybridPreExtrusionTravelContract contract;
                     contract.expected_start_position = writer_routes[path_idx].approach.expected_start;
-                    contract.expected_start_lift_mm = 0.0;
+                    contract.expected_start_lift_mm = path_idx == 0 ? m_writer.get_lift() : 0.0;
                     contract.expected_end_position = writer_routes[path_idx].approach.extrusion_start;
                     contract.expected_end_lift_mm = 0.0;
                     contract.position_tolerance_mm = 1e-4;
@@ -6197,7 +6197,9 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     // The current writer route primitive deliberately requires zero active lift.
     // Refuse unsupported states before emitting any G-code; do not silently
     // normalize an existing lift because that would invalidate collision checks.
-    if (std::abs(contract.expected_start_lift_mm) > contract.lift_tolerance_mm ||
+    if (!std::isfinite(contract.expected_start_lift_mm) ||
+        !std::isfinite(contract.expected_end_lift_mm) ||
+        !std::isfinite(contract.lift_tolerance_mm) || contract.lift_tolerance_mm < 0.0 ||
         std::abs(contract.expected_end_lift_mm) > contract.lift_tolerance_mm ||
         !coincides(route.approach.expected_start, contract.expected_start_position) ||
         !coincides(route.approach.extrusion_start, contract.expected_end_position) ||
@@ -6241,7 +6243,8 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     // collision-checked approach. The shared preparation helper unretracts only
     // after the approach has reached its exact declared extrusion start.
     gcode += m_writer.retract();
-    gcode += m_writer.travel_to_xyz_route(route.approach.points, tolerance, description);
+    gcode += m_writer.travel_to_xyz_route(
+        route.approach.points, tolerance, description, contract.expected_start_lift_mm);
     if (!validate_hybrid_pre_extrusion_state(
             contract, m_writer.get_position(), m_writer.get_lift(), true))
         throw std::runtime_error("Hybrid surface approach did not reach its declared extrusion start; aborting export.");
