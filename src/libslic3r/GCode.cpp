@@ -839,6 +839,15 @@ void GCodeGenerator::do_export(Print* print, const char* path, GCodeProcessorRes
         const double transition_clearance = print->config().opt_float("five_axis_transition_clearance");
         if (!std::isfinite(transition_clearance) || transition_clearance <= 0.0)
             throw Slic3r::RuntimeError("Five-axis transition clearance must be finite and greater than zero.");
+
+        // GCodeWriter applies z_offset only while formatting emitted moves;
+        // the five-axis envelope/collision preflight uses its unshifted
+        // internal coordinates. Reject a non-zero offset until that offset is
+        // incorporated into all machine-space preflight checks.
+        const double five_axis_z_offset = print->config().z_offset.value;
+        if (!std::isfinite(five_axis_z_offset) || std::abs(five_axis_z_offset) > 1e-9)
+            throw Slic3r::RuntimeError(
+                "Five-axis output currently requires a zero slicer Z offset so machine-envelope and clearance checks match emitted coordinates.");
     }
 
     // Enabled and either not done, or marked as done while the output file is missing.
