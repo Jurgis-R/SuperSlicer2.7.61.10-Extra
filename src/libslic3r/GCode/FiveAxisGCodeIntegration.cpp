@@ -107,6 +107,11 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
     const double speed = five_axis_travel_speed(m_writer, m_config);
     const unsigned travel_acceleration =
         (unsigned)(m_config.travel_acceleration.value + 0.5);
+    // Klipper does not support a separate travel-acceleration setting in
+    // GCodeWriter: set_travel_acceleration() temporarily changes the active
+    // acceleration. Restore it after this travel so the next extrusion does
+    // not accidentally run at travel acceleration.
+    const uint32_t acceleration_before_travel = m_writer.get_acceleration();
     m_writer.set_travel_acceleration(travel_acceleration);
     const double configured_clearance = m_config.opt_float("five_axis_transition_clearance");
     const double pending_lift = m_writer.get_extra_lift();
@@ -203,8 +208,10 @@ std::string GCodeGenerator::_five_axis_write_travel_to(
     m_writer.set_lift(0.0);
     m_next_lift_min = 0.0;
     this->set_last_pos(travel.back());
-    if (!GCodeWriter::supports_separate_travel_acceleration(config().gcode_flavor))
-        m_writer.set_travel_acceleration(travel_acceleration);
+    // On Klipper, restore the acceleration that was active before travel.
+    // Do not call set_travel_acceleration() here: it would overwrite this
+    // restored value because Klipper has no independent travel acceleration.
+    m_writer.set_acceleration(acceleration_before_travel);
     return output;
 }
 
@@ -218,6 +225,11 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
     const double speed = five_axis_travel_speed(m_writer, m_config);
     const unsigned travel_acceleration =
         (unsigned)(m_config.travel_acceleration.value + 0.5);
+    // Klipper does not support a separate travel-acceleration setting in
+    // GCodeWriter: set_travel_acceleration() temporarily changes the active
+    // acceleration. Restore it after this travel so the next extrusion does
+    // not accidentally run at travel acceleration.
+    const uint32_t acceleration_before_travel = m_writer.get_acceleration();
     m_writer.set_travel_acceleration(travel_acceleration);
     const double configured_clearance = m_config.opt_float("five_axis_transition_clearance");
     const double pending_lift = m_writer.get_extra_lift();
@@ -300,8 +312,10 @@ std::string GCodeGenerator::_five_axis_generate_travel_gcode(
     m_writer.set_extra_lift(0.0);
     m_writer.set_lift(0.0);
     m_next_lift_min = 0.0;
-    if (!GCodeWriter::supports_separate_travel_acceleration(config().gcode_flavor))
-        m_writer.set_travel_acceleration(travel_acceleration);
+    // On Klipper, restore the acceleration that was active before travel.
+    // Do not call set_travel_acceleration() here: it would overwrite this
+    // restored value because Klipper has no independent travel acceleration.
+    m_writer.set_acceleration(acceleration_before_travel);
     return output;
 }
 
