@@ -3623,9 +3623,9 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Hybrid non-planar printing (experimental)");
     def->full_label = L("Hybrid non-planar printing");
     def->category = OptionCategory::infill;
-    def->tooltip = L("Experimental interval-triggered non-planar deformation of existing perimeter and top-solid paths. ZAA is automatically suppressed while this option is enabled."
-                     "\nThis first implementation deforms eligible existing paths on the layer that crosses each H interval; it does not yet create a separate additional pass or generate new surface paths."
-                     "\nUse a small test model first. No complete toolhead-envelope collision check is available yet.");
+    def->tooltip = L("Enables experimental interval-triggered non-planar deformation of eligible existing perimeter and top-solid paths. ZAA is automatically suppressed while this option is enabled."
+                     "\nA separate mesh-derived surface finishing pass is also implemented, but is controlled independently by \"Emit experimental hybrid surface finishing pass\" and is disabled by default."
+                     "\nThe configured tool-envelope collision preflight is simplified and cannot guarantee collision-free motion. Measure the mounted tool envelope, inspect generated G-code, and test on a small model under supervision.");
     def->mode = comNone; // Keep experimental controls visible in every UI view mode.
     def->set_default_value(new ConfigOptionBool(false));
 
