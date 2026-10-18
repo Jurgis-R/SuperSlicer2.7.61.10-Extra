@@ -719,13 +719,14 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, const bool is_lift, c
 std::string GCodeWriter::travel_to_xyz_route(
     const std::vector<Vec3d> &points,
     double position_tolerance_mm,
-    const std::string_view comment)
+    const std::string_view comment,
+    double expected_start_lift_mm)
 {
     // Validate the entire route before generating any move. This is structural
     // validation only: the caller must already have checked swept-tool clearance.
     if (points.size() < 2 || !std::isfinite(position_tolerance_mm) ||
-        position_tolerance_mm < 0.0)
-        throw std::invalid_argument("Invalid XYZ route or position tolerance");
+        position_tolerance_mm < 0.0 || !std::isfinite(expected_start_lift_mm))
+        throw std::invalid_argument("Invalid XYZ route, position tolerance or starting lift");
 
     const double tolerance_sq = position_tolerance_mm * position_tolerance_mm;
     auto coincides = [tolerance_sq](const Vec3d &a, const Vec3d &b) {
@@ -733,8 +734,8 @@ std::string GCodeWriter::travel_to_xyz_route(
                (a - b).squaredNorm() <= tolerance_sq;
     };
 
-    if (std::abs(m_lifted) > position_tolerance_mm)
-        throw std::logic_error("XYZ route requires the normal lift to be cleared first");
+    if (std::abs(m_lifted - expected_start_lift_mm) > position_tolerance_mm)
+        throw std::logic_error("XYZ route starting lift does not match the declared writer-state contract");
     if (!coincides(points.front(), m_pos))
         throw std::logic_error("XYZ route start does not match the live G-code writer position");
 
