@@ -7057,7 +7057,11 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const double max_up    = hybrid ? hybrid_offset : std::max(0., max_line - h);
     const double tol       = 0.03;
     // a real top surface of this layer is at most half a layer above the layer top (the layer is sliced in its middle)
-    const double valid_up  = (real_top ? std::min(max_up, 0.5 * h) : max_up) + tol;
+    // The half-layer reach limit is a ZAA constraint for ordinary top-solid
+    // paths. Hybrid mode is scheduled at H-section boundaries and must honor its
+    // own configured offset limit instead of silently capping upward motion at
+    // half the nominal layer height.
+    const double valid_up  = (hybrid ? max_up : (real_top ? std::min(max_up, 0.5 * h) : max_up)) + tol;
     const double step_mm   = std::max(0.05, m_config.zaa_sample_distance.value);
     const double active_thr = 0.02; // mm: below this the surface counts as flat
     const double pad_mm     = 1.0;  // mm: active runs are extended by this much on both sides
