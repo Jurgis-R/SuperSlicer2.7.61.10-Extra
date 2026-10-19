@@ -178,6 +178,15 @@ TEST_CASE("XYZ route consumes a declared starting lift and preserves nominal Z o
     REQUIRE((writer.get_position() - lifted_start).norm() <= 1e-4);
     REQUIRE(writer.get_lift() == Approx(1.5));
 
+    // A Z target between nominal and lifted Z cannot be emitted as an ordinary
+    // XYZ travel. The route API must reject it before changing the live writer.
+    const std::vector<Vec3d> invalid_lift_transition{ lifted_start, Vec3d(5.0, 0.0, 0.5) };
+    REQUIRE_THROWS_AS(
+        writer.travel_to_xyz_route(invalid_lift_transition, 1e-4, std::string_view{}, 1.5),
+        std::invalid_argument);
+    REQUIRE((writer.get_position() - lifted_start).norm() <= 1e-4);
+    REQUIRE(writer.get_lift() == Approx(1.5));
+
     const std::vector<Vec3d> route{
         lifted_start, Vec3d(10.0, 0.0, 1.5), Vec3d(10.0, 0.0, 0.0)
     };
