@@ -211,6 +211,29 @@ TEST_CASE("Five-axis planner supports rotary-head tool-tip compensation", "[Five
     REQUIRE(commands.front().z == Approx(90.0));
 }
 
+TEST_CASE("Rotary-head clearance checks the swept shaft, not only carriage XYZ", "[FiveAxisMotionPlanner]")
+{
+    FiveAxisKinematicsConfig kin;
+    kin.mount = FiveAxisRotaryMount::RotaryHead;
+    kin.rotary_1_pivot = { 0.0, 0.0, 0.0 };
+    kin.rotary_2_pivot = { 0.0, 0.0, 0.0 };
+    kin.tool_tip_offset = { 0.0, 0.0, 10.0 };
+    FiveAxisCollisionConfig collision;
+    collision.max_sample_spacing_mm = 0.25;
+    collision.tool_clearance_radius_mm = 0.1;
+    collision.obstacles.push_back({ { 4.0, -1.0, -1.0 }, { 6.0, 1.0, 1.0 } });
+    const std::vector<FiveAxisCommand> path = {
+        { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 600.0 },
+        { 0.0, 0.0, 0.0, 0.0, 90.0, 0.0, 600.0 }
+    };
+
+    // Carriage XYZ remains at the origin, so point-only clearance passes.
+    CHECK(validate_five_axis_path_clearance(collision, path).valid);
+    // The shaft sweeps through the obstacle while the rotary joint turns.
+    const auto swept = validate_five_axis_machine_swept_clearance(kin, collision, path);
+    CHECK_FALSE(swept.valid);
+}
+
 TEST_CASE("Five-axis collision sampling rejects excessive sampling work", "[FiveAxisMotionPlanner]")
 {
     FiveAxisCollisionConfig collision;
