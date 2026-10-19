@@ -3827,9 +3827,11 @@ LayerResult GCodeGenerator::process_layer(
         const ExtrusionAttributes surface_attributes(
             ExtrusionRole::TopSolidInfill, surface_flow);
         std::vector<ExtrusionPath3D> surface_paths;
+        std::string conversion_failure;
         if (!make_hybrid_surface_extrusion_paths(
-                candidates, nominal_z, surface_attributes, surface_paths))
-            throw RuntimeError("Hybrid surface-pass preflight could not convert candidates to typed extrusion paths");
+                candidates, nominal_z, surface_attributes, surface_paths, &conversion_failure))
+            throw RuntimeError("Hybrid surface-pass preflight could not convert candidates to typed extrusion paths: " +
+                               conversion_failure);
 
         // Re-check the quantized path geometry, not just the floating-point
         // planner candidates. The configured swept-tool validator must approve
