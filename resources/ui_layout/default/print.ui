@@ -249,7 +249,7 @@ group:sidetext_width$5:Advanced
 	end_line
 	setting:infill_first
 group:Hybrid non-planar printing (experimental)
-	line:Deform existing paths at H intervals
+	line:Hybrid H-section surface finishing pass
 		setting:label_width$0:label$_:hybrid_nonplanar_enabled
 	end_line
 	line:Hybrid non-planar settings
