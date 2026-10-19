@@ -3754,8 +3754,20 @@ LayerResult GCodeGenerator::process_layer(
             return collision_validator.segment_is_clear(from, to);
         };
         if (!plan_hybrid_surface_paths(print_mesh, planner_options, segment_is_clear, candidates))
-            throw RuntimeError("Hybrid surface-pass preflight found no fully validated candidate paths; export aborted");
+            throw RuntimeError("Hybrid surface-pass preflight rejected invalid or unsafe candidate paths; export aborted");
 
+        // A completed H section can legitimately contain no eligible surface
+        // segment: e.g. this part of a sphere has no facets within the configured
+        // height/slope limits. Empty is not a conversion failure and must not
+        // abort otherwise valid planar export. The planner returns false for
+        // invalid input or collision failures; an empty successful result means
+        // there is simply no finishing pass to execute at this boundary.
+        if (candidates.empty()) {
+            BOOST_LOG_TRIVIAL(info)
+                << "Hybrid surface-pass preflight found no eligible surface paths at H-section boundary "
+                << m_hybrid_completed_section->boundary_z
+                << " mm; skipping this section.";
+        } else {
         // Validate the live-writer departure lift, high-Z travel, vertical
         // approaches/departures, candidate paths and high-Z transitions. These
         // checks use the simplified user-supplied envelope and remain preflight
@@ -3952,6 +3964,7 @@ LayerResult GCodeGenerator::process_layer(
             m_volumetric_speed = saved_volumetric_speed;
             m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
         }
+        } // candidates not empty
     }
 
     // Legacy Mode B still queues deformed existing paths. This is deliberately
