@@ -100,7 +100,8 @@ public:
     // return the de that isn't emmited as it's truncated
     double emit_e(const std::string_view axis, double v);
 
-    void emit_f(double speed) { this->emit_axis('F', speed, m_gcode_precision_xyz); }
+    // Emit feedrates as whole mm/min values; fractional digits are unnecessary.
+    void emit_f(double speed) { this->emit_axis('F', std::round(speed), 0); }
 
     void emit_string(const std::string_view s)
     {
