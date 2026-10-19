@@ -931,8 +931,10 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     // Do not repeat Z on pure XY extrusion moves. Compare the actual writer
     // coordinates as well as the formatted-word cache, which can be invalidated
     // by surrounding travel/retract operations.
-    bool has_z = std::abs(point.z() - previous_z) > 1e-9 &&
-                 w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    // Always refresh the formatted-Z cache, but emit Z only when the actual
+    // target height changes. This prevents stale cached Z text after travel moves.
+    const bool z_word_changed = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    bool has_z = std::abs(point.z() - previous_z) > 1e-9 && z_word_changed;
     if (!has_z) {
         if (!has_x_y) {
             // m_pos has already been updated to the new (but indistinguishable from current one) posiiton
