@@ -218,24 +218,25 @@ inline bool validate_hybrid_nonplanar_approach(
 }
 
 
-// Explicit writer-state contract for the lifecycle surrounding an experimental
-// pre-extrusion route. Positions are absolute writer-frame XYZ in millimetres;
-// lift is the writer's tracked lift amount, not an inferred Z difference.
-// This describes and validates state only; it does not move the writer or emit G-code.
+// Explicit writer-state contract for an experimental surface-route lifecycle.
+// Positions are absolute writer-frame XYZ in millimetres; lift is the writer's
+// tracked lift amount, not an inferred Z difference. This describes state only;
+// it does not move the writer or emit G-code.
 struct HybridPreExtrusionTravelContract
 {
     Vec3d expected_start_position { Vec3d::Zero() };
     double expected_start_lift_mm { 0.0 };
     Vec3d expected_end_position { Vec3d::Zero() };
     double expected_end_lift_mm { 0.0 };
+    Vec3d expected_return_position { Vec3d::Zero() };
+    double expected_return_lift_mm { 0.0 };
     double position_tolerance_mm { 1e-4 };
     double lift_tolerance_mm { 1e-4 };
 };
 
-// Check either side of the contract against live writer state. The end position
-// is explicit because a surface-following route is not required to end at the
-// nominal planar layer Z. Callers must abort the export on failure; writer state
-// cannot safely be reused after any partially emitted route.
+// Check either side of the pre-extrusion contract against live writer state. The
+// extrusion end is explicit because a surface-following route need not end at the
+// nominal planar layer Z. Callers must abort export on failure after any route move.
 inline bool validate_hybrid_pre_extrusion_state(
     const HybridPreExtrusionTravelContract &contract,
     const Vec3d &live_writer_position,
@@ -261,6 +262,28 @@ inline bool validate_hybrid_pre_extrusion_state(
     return (live_writer_position - expected_position).norm() <=
                contract.position_tolerance_mm &&
            std::abs(live_lift_mm - expected_lift) <= contract.lift_tolerance_mm;
+}
+
+// Validate the post-route state separately from the extrusion-start state. The
+// route emitter normalizes lift to zero during travel, so callers restore the saved
+// lift only after the physical return coordinate has been reached.
+inline bool validate_hybrid_return_state(
+    const HybridPreExtrusionTravelContract &contract,
+    const Vec3d &live_writer_position,
+    double live_lift_mm)
+{
+    return contract.expected_return_position.allFinite() &&
+           live_writer_position.allFinite() &&
+           std::isfinite(contract.expected_return_lift_mm) &&
+           std::isfinite(live_lift_mm) &&
+           std::isfinite(contract.position_tolerance_mm) &&
+           contract.position_tolerance_mm >= 0.0 &&
+           std::isfinite(contract.lift_tolerance_mm) &&
+           contract.lift_tolerance_mm >= 0.0 &&
+           (live_writer_position - contract.expected_return_position).norm() <=
+               contract.position_tolerance_mm &&
+           std::abs(live_lift_mm - contract.expected_return_lift_mm) <=
+               contract.lift_tolerance_mm;
 }
 
 // Complete, pre-emission route contract. The extrusion points are the exact
