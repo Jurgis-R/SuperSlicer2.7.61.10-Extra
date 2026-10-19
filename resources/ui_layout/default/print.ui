@@ -248,6 +248,31 @@ group:sidetext_width$5:Advanced
 		setting:enforce_retract_first_layer
 	end_line
 	setting:infill_first
+group:Hybrid non-planar printing (experimental)
+	line:Hybrid H-section surface finishing pass
+		setting:label_width$0:label$_:hybrid_nonplanar_enabled
+	end_line
+	line:Hybrid non-planar settings
+		setting:label$H interval:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_interval
+		setting:label$Max slope:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_slope
+		setting:label$Max Z offset:label_width$12:width$5:sidetext_width$3:hybrid_nonplanar_max_offset
+		setting:label$Non-planar speed limit:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_speed
+		setting:label$Non-planar volumetric auto-speed:label_width$12:width$5:sidetext_width$4:hybrid_nonplanar_volumetric_auto_speed
+	end_line
+	line:Hybrid surface-pass preflight / output
+		setting:label$_:label_width$0:hybrid_surface_pass_preflight
+		setting:label$_:label_width$0:hybrid_surface_pass_emit
+	end_line
+	line:Hybrid tool-envelope dimensions (measure your mounted tool)
+		setting:label$Tip exclusion:label_width$12:width$5:sidetext_width$3:hybrid_tool_nozzle_tip_exclusion
+		setting:label$Nozzle shaft radius:label_width$12:width$5:sidetext_width$3:hybrid_tool_nozzle_shaft_radius
+		setting:label$Nozzle shaft top:label_width$12:width$5:sidetext_width$3:hybrid_tool_nozzle_shaft_top
+		setting:label$Toolhead start:label_width$12:width$5:sidetext_width$3:hybrid_toolhead_start
+		setting:label$Toolhead radius:label_width$12:width$5:sidetext_width$3:hybrid_toolhead_radius
+		setting:label$Toolhead top:label_width$12:width$5:sidetext_width$3:hybrid_toolhead_top
+		setting:label$Required clearance:label_width$12:width$5:sidetext_width$3:hybrid_tool_required_clearance
+		setting:label$Collision sample step:label_width$12:width$5:sidetext_width$3:hybrid_tool_path_sample_step
+	end_line
 group:Advanced Infill options
 	line:Ironing infill pattern tuning
 		setting:label_width$8:width$5:fill_smooth_distribution
@@ -257,14 +282,17 @@ group:Advanced Infill options
 	end_line
 	line:Z contouring (ZAA)
 		setting:label_width$0:label$_:zaa_enabled
-		setting:label$Perimeters too:label_width$14:zaa_contour_perimeters
 	end_line
+	
 	line:ZAA settings
+		setting:label$Perimeters too:label_width$14:zaa_contour_perimeters
 		setting:label$Min height:label_width$10:width$5:sidetext_width$3:zaa_min_z
 		setting:label$Max height:label_width$10:width$5:sidetext_width$3:zaa_max_height
 		setting:label$Sample every:label_width$12:width$5:sidetext_width$3:zaa_sample_distance
 		setting:label$Speed:label_width$7:width$5:sidetext_width$4:zaa_speed
 	end_line
+	
+	
 	line:Skip tiny paths
 		setting:label$Perimeter shorter than:label_width$16:width$5:sidetext_width$4:skip_tiny_perimeter_length
 		setting:label$Fill diagonal below:label_width$16:width$5:sidetext_width$4:skip_tiny_fill_diagonal

@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <memory>
+#include <stdexcept>
 
 #include "libslic3r/GCode/GCodeWriter.hpp"
 
@@ -21,13 +22,13 @@ SCENARIO("lift() is not ignored after unlift() at normal values of Z", "[GCodeWr
             double trouble_Z = 203;
             writer.travel_to_z(trouble_Z);
             AND_WHEN("GcodeWriter::Lift() is called") {
-                REQUIRE(writer.lift().size() > 0);
+                REQUIRE(writer.lift(1).size() > 0);
                 AND_WHEN("Z is moved post-lift to the same delta as the config Z lift") {
                     REQUIRE(writer.travel_to_z(trouble_Z + config.retract_lift.values[0]).size() == 0);
                     AND_WHEN("GCodeWriter::Unlift() is called") {
                         REQUIRE(writer.unlift().size() == 0); // we're the same height so no additional move happens.
                         THEN("GCodeWriter::Lift() emits gcode.") {
-                            REQUIRE(writer.lift().size() > 0);
+                            REQUIRE(writer.lift(1).size() > 0);
                         }
                     }
                 }
@@ -37,13 +38,13 @@ SCENARIO("lift() is not ignored after unlift() at normal values of Z", "[GCodeWr
             double trouble_Z = 500003;
             writer.travel_to_z(trouble_Z);
             AND_WHEN("GcodeWriter::Lift() is called") {
-                REQUIRE(writer.lift().size() > 0);
+                REQUIRE(writer.lift(1).size() > 0);
                 AND_WHEN("Z is moved post-lift to the same delta as the config Z lift") {
                     REQUIRE(writer.travel_to_z(trouble_Z + config.retract_lift.values[0]).size() == 0);
                     AND_WHEN("GCodeWriter::Unlift() is called") {
                         REQUIRE(writer.unlift().size() == 0); // we're the same height so no additional move happens.
                         THEN("GCodeWriter::Lift() emits gcode.") {
-                            REQUIRE(writer.lift().size() > 0);
+                            REQUIRE(writer.lift(1).size() > 0);
                         }
                     }
                 }
@@ -53,13 +54,13 @@ SCENARIO("lift() is not ignored after unlift() at normal values of Z", "[GCodeWr
             double trouble_Z = 10.3;
             writer.travel_to_z(trouble_Z);
             AND_WHEN("GcodeWriter::Lift() is called") {
-                REQUIRE(writer.lift().size() > 0);
+                REQUIRE(writer.lift(1).size() > 0);
                 AND_WHEN("Z is moved post-lift to the same delta as the config Z lift") {
                     REQUIRE(writer.travel_to_z(trouble_Z + config.retract_lift.values[0]).size() == 0);
                     AND_WHEN("GCodeWriter::Unlift() is called") {
                         REQUIRE(writer.unlift().size() == 0); // we're the same height so no additional move happens.
                         THEN("GCodeWriter::Lift() emits gcode.") {
-                            REQUIRE(writer.lift().size() > 0);
+                            REQUIRE(writer.lift(1).size() > 0);
                         }
                     }
                 }
@@ -158,3 +159,52 @@ SCENARIO("set_fan saves state.", "[GCode][GCodeWriter]") {
         }
     }
 }
+
+TEST_CASE("XYZ route consumes a declared starting lift and preserves nominal Z on return", "[GCodeWriter]")
+{
+    GCodeWriter writer;
+    writer.config.set_defaults();
+    writer.config.travel_speed.value = 60.0;
+
+    const Vec3d lifted_start(0.0, 0.0, 1.5);
+    REQUIRE_FALSE(writer.travel_to_xyz(lifted_start, true).empty());
+    REQUIRE((writer.get_position() - lifted_start).norm() <= 1e-4);
+    REQUIRE(writer.get_lift() == Approx(1.5));
+
+    const std::vector<Vec3d> motionless_route{ lifted_start, lifted_start };
+    REQUIRE_THROWS_AS(
+        writer.travel_to_xyz_route(motionless_route, 1e-4, std::string_view{}, 1.5),
+        std::invalid_argument);
+    REQUIRE((writer.get_position() - lifted_start).norm() <= 1e-4);
+    REQUIRE(writer.get_lift() == Approx(1.5));
+
+    // A Z target between nominal and lifted Z cannot be emitted as an ordinary
+    // XYZ travel. The route API must reject it before changing the live writer.
+    const std::vector<Vec3d> invalid_lift_transition{ lifted_start, Vec3d(5.0, 0.0, 0.5) };
+    REQUIRE_THROWS_AS(
+        writer.travel_to_xyz_route(invalid_lift_transition, 1e-4, std::string_view{}, 1.5),
+        std::invalid_argument);
+    REQUIRE((writer.get_position() - lifted_start).norm() <= 1e-4);
+    REQUIRE(writer.get_lift() == Approx(1.5));
+
+    const std::vector<Vec3d> route{
+        lifted_start, Vec3d(10.0, 0.0, 1.5), Vec3d(10.0, 0.0, 0.0)
+    };
+    REQUIRE_FALSE(
+        writer.travel_to_xyz_route(route, 1e-4, std::string_view{}, 1.5).empty());
+    REQUIRE((writer.get_position() - route.back()).norm() <= 1e-4);
+    REQUIRE(writer.get_lift() == Approx(0.0));
+
+    const std::vector<Vec3d> return_route{ route.back(), lifted_start };
+    REQUIRE_FALSE(
+        writer.travel_to_xyz_route(return_route, 1e-4, std::string_view{}, 0.0).empty());
+    REQUIRE((writer.get_position() - lifted_start).norm() <= 1e-4);
+
+    // Mirror the executor: restore tracked lift only at the verified return point.
+    writer.set_lift(1.5);
+    REQUIRE(writer.get_unlifted_position().z() == Approx(0.0));
+    REQUIRE_FALSE(writer.unlift().empty());
+    REQUIRE(writer.get_lift() == Approx(0.0));
+    REQUIRE(writer.get_position().z() == Approx(0.0));
+}
+

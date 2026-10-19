@@ -323,3 +323,50 @@ TEST_CASE("M201 for acceleation reset", "[GCode]") {
     INFO("M204 is not generated for repetier firmware");
     CHECK(!has_m204);
 }
+
+
+TEST_CASE("Hybrid surface finishing emission is disabled by default and leaves planar G-code unchanged",
+          "[GCode][HybridNonplanarEmission]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        { "start_gcode", "" },
+        { "end_gcode", "" },
+        { "gcode_comments", 1 }
+    });
+
+    // The separate emission gate must remain opt-in. With both experimental
+    // surface options at their defaults, the standard planar slicer still emits
+    // ordinary extrusion moves and never emits the experimental pass marker.
+    CHECK_FALSE(config.opt_bool("hybrid_surface_pass_emit"));
+    CHECK_FALSE(config.opt_bool("hybrid_surface_pass_preflight"));
+    const std::string gcode = Test::slice({TestMesh::cube_20x20x20}, config);
+    CHECK(gcode.find("hybrid surface finishing pass") == std::string::npos);
+    CHECK(gcode.find("G1") != std::string::npos);
+}
+
+TEST_CASE("hybrid non-planar volumetric auto-speed setting defaults to global autospeed",
+          "[GCode][HybridNonplanar]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    CHECK(config.opt_float("hybrid_nonplanar_volumetric_auto_speed") == 0.0);
+
+    config.set_deserialize_strict({{"hybrid_nonplanar_volumetric_auto_speed", 4.5}});
+    CHECK(config.opt_float("hybrid_nonplanar_volumetric_auto_speed") == Approx(4.5));
+}
+
+TEST_CASE("explicitly disabled hybrid options produce byte-identical planar G-code",
+          "[GCode][HybridNonplanar]")
+{
+    DynamicPrintConfig defaults = DynamicPrintConfig::full_print_config();
+    DynamicPrintConfig explicit_off = DynamicPrintConfig::full_print_config();
+    explicit_off.set_deserialize_strict({
+        { "hybrid_nonplanar_enabled", false },
+        { "hybrid_surface_pass_preflight", false },
+        { "hybrid_surface_pass_emit", false }
+    });
+
+    const std::string baseline = Test::slice({TestMesh::cube_20x20x20}, defaults);
+    const std::string disabled = Test::slice({TestMesh::cube_20x20x20}, explicit_off);
+    CHECK(disabled == baseline);
+}

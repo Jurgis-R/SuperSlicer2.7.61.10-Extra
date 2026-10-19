@@ -24,6 +24,7 @@
 #include <iostream>
 #include <map>
 #include <string_view>
+#include <stdexcept>
 #include <boost/math/special_functions/pow.hpp>
 #ifdef __APPLE__
     #include <boost/spirit/include/karma.hpp>
@@ -714,6 +715,77 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, const bool is_lift, c
     return write_acceleration() + w.string();
 }
 
+
+std::string GCodeWriter::travel_to_xyz_route(
+    const std::vector<Vec3d> &points,
+    double position_tolerance_mm,
+    const std::string_view comment,
+    double expected_start_lift_mm)
+{
+    // Validate the entire route before generating any move. This is structural
+    // validation only: the caller must already have checked swept-tool clearance.
+    if (points.size() < 2 || !std::isfinite(position_tolerance_mm) ||
+        position_tolerance_mm < 0.0 || !std::isfinite(expected_start_lift_mm))
+        throw std::invalid_argument("Invalid XYZ route, position tolerance or starting lift");
+
+    const double tolerance_sq = position_tolerance_mm * position_tolerance_mm;
+    auto coincides = [tolerance_sq](const Vec3d &a, const Vec3d &b) {
+        return a.allFinite() && b.allFinite() &&
+               (a - b).squaredNorm() <= tolerance_sq;
+    };
+
+    if (std::abs(m_lifted - expected_start_lift_mm) > position_tolerance_mm)
+        throw std::logic_error("XYZ route starting lift does not match the declared writer-state contract");
+    if (!coincides(points.front(), m_pos))
+        throw std::logic_error("XYZ route start does not match the live G-code writer position");
+
+    bool has_motion = false;
+    for (size_t i = 0; i < points.size(); ++i) {
+        const Vec3d &point = points[i];
+        // GCodeWriter's coordinate formatter and machine-coordinate contract
+        // use the same absolute bound on all three axes. Check Z here as well,
+        // before the first waypoint can mutate writer state.
+        if (!point.allFinite() || std::abs(point.x()) >= 120000. ||
+            std::abs(point.y()) >= 120000. || std::abs(point.z()) >= 120000.)
+            throw std::invalid_argument("XYZ route contains an invalid or out-of-range waypoint");
+        if (i > 0 && !coincides(points[i - 1], point))
+            has_motion = true;
+    }
+    if (!has_motion)
+        throw std::invalid_argument("XYZ route contains no executable movement");
+
+    // GCodeWriter's normal XYZ travel suppresses a Z move when the target lies
+    // between nominal Z and the current lifted Z. Such a first waypoint would
+    // only adjust lift bookkeeping and then fail the route's position check after
+    // mutation. Reject that unsupported transition before emitting any G-code.
+    if (m_lifted > 0.0) {
+        const double nominal_z = m_pos.z() - m_lifted;
+        for (size_t i = 1; i < points.size(); ++i) {
+            if (coincides(points[i - 1], points[i]))
+                continue;
+            const double target_z = points[i].z();
+            if (target_z >= nominal_z - EPSILON &&
+                target_z <= m_pos.z() + EPSILON &&
+                std::abs(target_z - m_pos.z()) > position_tolerance_mm)
+                throw std::invalid_argument("XYZ route first move lies inside the active lift interval");
+            break;
+        }
+    }
+
+    // From here on, an invariant failure must abort the complete export: the
+    // writer state may already have advanced and cannot be rolled back safely.
+    // Callers must also discard the accumulated string on exception.
+    std::string gcode;
+    for (size_t i = 1; i < points.size(); ++i) {
+        if (coincides(points[i - 1], points[i]))
+            continue;
+        gcode += this->travel_to_xyz(points[i], false, 0.0, comment);
+        if (!coincides(this->get_position(), points[i]))
+            throw std::runtime_error("G-code writer position diverged while executing XYZ route; abort export");
+    }
+    return gcode;
+}
+
 std::string GCodeWriter::travel_to_z(const double z, const std::string_view comment)
 {
     /*  If target Z is lower than current Z but higher than nominal Z
@@ -845,6 +917,7 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     assert(std::abs(point.z()) < 120000.);
     assert(dE == dE);
     //assert(point.z() >= m_pos.z() - EPSILON);
+    const double previous_z = m_pos.z();
     m_pos = point;
     m_lifted = 0;
      auto [/*double*/ delta_e, /*double*/ e_to_write]  = this->m_tool->extrude(dE + this->m_de_left);
@@ -855,7 +928,13 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     if (!has_x_y) {
         w.clear();
     }
-    bool has_z = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    // Do not repeat Z on pure XY extrusion moves. Compare the actual writer
+    // coordinates as well as the formatted-word cache, which can be invalidated
+    // by surrounding travel/retract operations.
+    // Always refresh the formatted-Z cache, but emit Z only when the actual
+    // target height changes. This prevents stale cached Z text after travel moves.
+    const bool z_word_changed = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    bool has_z = std::abs(point.z() - previous_z) > 1e-9 && z_word_changed;
     if (!has_z) {
         if (!has_x_y) {
             // m_pos has already been updated to the new (but indistinguishable from current one) posiiton

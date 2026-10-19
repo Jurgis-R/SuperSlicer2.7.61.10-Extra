@@ -568,6 +568,17 @@ static std::vector<std::string> s_Preset_print_options {
         "only_retract_when_crossing_perimeters", "enforce_retract_first_layer",
         "infill_first",
         "skip_tiny_perimeter_length", "skip_tiny_fill_diagonal",
+        // Hybrid non-planar print settings: keep them in print presets so UI
+        // edits survive save/reload and switching between print profiles.
+        "hybrid_nonplanar_enabled",
+        "hybrid_surface_pass_preflight", "hybrid_surface_pass_emit",
+        "hybrid_tool_nozzle_tip_exclusion", "hybrid_tool_nozzle_shaft_radius",
+        "hybrid_tool_nozzle_shaft_top", "hybrid_toolhead_radius",
+        "hybrid_toolhead_start", "hybrid_toolhead_top",
+        "hybrid_tool_required_clearance", "hybrid_tool_path_sample_step",
+        "hybrid_nonplanar_interval", "hybrid_nonplanar_max_slope",
+        "hybrid_nonplanar_max_offset", "hybrid_nonplanar_speed",
+        "hybrid_nonplanar_volumetric_auto_speed",
         "zaa_enabled", "zaa_contour_perimeters", "zaa_min_z", "zaa_sample_distance", "zaa_speed", "zaa_max_height",
         "avoid_crossing_perimeters_max_detour",
         "max_volumetric_extrusion_rate_slope_positive", "max_volumetric_extrusion_rate_slope_negative",

@@ -3619,6 +3619,170 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert | comSuSi;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    def = this->add("hybrid_nonplanar_enabled", coBool);
+    def->label = L("Hybrid non-planar printing (experimental)");
+    def->full_label = L("Hybrid non-planar printing");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Print ordinary planar layers for the configured H interval, then generate an additional mesh-derived surface-following finishing pass at each completed H-section boundary. The normal planar paths are preserved; the mesh pass is added separately. Each emitted section runs full candidate, approach, departure and return preflight automatically."
+                     "\nThe standalone preflight-only option can validate sections without output. The separate emit override can request mesh-pass output even when this main option is off."
+                     "\nThe configured tool-envelope check is simplified and cannot guarantee collision-free motion. Measure the mounted tool envelope, inspect generated G-code, and test on a small model under supervision.");
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("hybrid_surface_pass_preflight", coBool);
+    def->label = L("Hybrid surface-pass collision preflight (no G-code output)");
+    def->full_label = L("Hybrid surface-pass collision preflight");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("When the main Hybrid option and the emit override are both off, this validates eligible mesh-derived paths and their complete approach/departure routes without emitting a finishing pass. It never enables output by itself. The main Hybrid option and the emit override always run this preflight before output. Envelope values must be measured for the actual mounted tool; this approximation is not a proof of collision freedom.");
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("hybrid_surface_pass_emit", coBool);
+    def->label = L("Emit mesh-derived pass even when hybrid mode is off");
+    def->full_label = L("Experimental mesh-derived surface-pass output override");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("DANGEROUS EXPERIMENTAL OUTPUT. This override can emit the mesh-derived surface pass at completed H-section boundaries even when the main Hybrid non-planar printing option is off. Full candidate generation and the configured simplified-envelope preflight run before any output. Enable only after measuring the actual mounted tool envelope, reviewing the G-code, and supervising a small test print.");
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionBool(false));
+
+    // Explicit machine-envelope inputs for experimental hybrid surface-pass
+    // preflight. Defaults are placeholders only: users must measure the actual
+    // mounted nozzle and toolhead before treating a successful preflight as useful.
+    def = this->add("hybrid_tool_nozzle_tip_exclusion", coFloat);
+    def->label = L("Hybrid nozzle tip exclusion height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip excluded from mesh-clearance checks. Measure the actual nozzle tip/contact region; this is not a collision guarantee.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 10;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(0.6));
+
+    def = this->add("hybrid_tool_nozzle_shaft_radius", coFloat);
+    def->label = L("Hybrid nozzle shaft radius");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Radius of the nozzle/shaft envelope measured from the nozzle tip axis. Use the largest actual radius over this height.");
+    def->sidetext = L("mm");
+    def->min = 0.1;
+    def->max = 30;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(0.4));
+
+    def = this->add("hybrid_tool_nozzle_shaft_top", coFloat);
+    def->label = L("Hybrid nozzle shaft envelope top");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip where the upper toolhead envelope begins.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 100;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_radius", coFloat);
+    def->label = L("Hybrid upper toolhead radius");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Conservative radial envelope of the mounted toolhead above its start height. Measure the actual assembly.");
+    def->sidetext = L("mm");
+    def->min = 0.1;
+    def->max = 100;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_start", coFloat);
+    def->label = L("Hybrid upper toolhead start height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Height above the nozzle tip where the upper toolhead radius applies; must be at or above the nozzle shaft envelope top.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 100;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(8.0));
+
+    def = this->add("hybrid_toolhead_top", coFloat);
+    def->label = L("Hybrid toolhead envelope top height");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Top height above the nozzle tip included in the simplified toolhead collision envelope.");
+    def->sidetext = L("mm");
+    def->min = 0.3;
+    def->max = 200;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(25.0));
+
+    def = this->add("hybrid_tool_required_clearance", coFloat);
+    def->label = L("Hybrid toolhead required clearance");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Additional clearance around the simplified tool envelope and model surface.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 20;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
+    def = this->add("hybrid_tool_path_sample_step", coFloat);
+    def->label = L("Hybrid tool collision sample step");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum sampling step in millimetres for the approximate swept-tool check. Smaller steps are slower; this does not model every toolhead feature.");
+    def->sidetext = L("mm");
+    def->min = 0.05;
+    def->max = 2;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
+    def = this->add("hybrid_nonplanar_interval", coFloat);
+    def->label = L("Hybrid non-planar interval H");
+    def->full_label = L("Hybrid non-planar interval H");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Vertical distance in millimetres between mesh-derived finishing passes. The slicer prints the ordinary planar layers in each H section, then validates and emits an additional surface-following pass at the section boundary.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 20;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
+    def = this->add("hybrid_nonplanar_max_slope", coFloat);
+    def->label = L("Hybrid non-planar maximum slope");
+    def->full_label = L("Hybrid non-planar maximum slope");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum local surface slope accepted by the mesh-derived pass, measured as the surface angle relative to the XY plane. Lower values skip steeper parts of the model; higher values permit more vertical Z changes but do not replace tool-envelope collision checks.");
+    def->sidetext = L("deg");
+    def->min = 1;
+    def->max = 60;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(30.0));
+
+    def = this->add("hybrid_nonplanar_max_offset", coFloat);
+    def->label = L("Hybrid non-planar maximum Z offset");
+    def->full_label = L("Hybrid non-planar maximum Z offset");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum Z offset used to select mesh surface points around each H-section boundary and to limit their offset from the actual planar layer Z, in millimetres.");
+    def->sidetext = L("mm");
+    def->min = 0.05;
+    def->max = 2;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(0.4));
+
+    def = this->add("hybrid_nonplanar_speed", coFloat);
+    def->label = L("Hybrid non-planar speed limit");
+    def->full_label = L("Hybrid non-planar speed limit");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Maximum speed used on active non-planar path sections. Start conservatively and increase only after validation.");
+    def->sidetext = L("mm/s");
+    def->min = 1;
+    def->max = 100;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(20.0));
+
+    def = this->add("hybrid_nonplanar_volumetric_auto_speed", coFloat);
+    def->label = L("Hybrid volumetric auto-speed");
+    def->full_label = L("Hybrid non-planar volumetric auto-speed");
+    def->category = OptionCategory::infill;
+    def->tooltip = L("Overrides the Speed tab's Volumetric auto-speed only for hybrid non-planar paths. This volumetric flow target is converted to path speed using the path's extrusion cross-section; the hybrid speed limit and filament limits still apply. Set to 0 to use the Speed tab's Volumetric auto-speed.");
+    def->sidetext = L("mm³/s");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
     def = this->add("zaa_enabled", coBool);
     def->label = L("Z contouring (ZAA) on top surfaces");
     def->full_label = L("Z contouring (ZAA)");
@@ -10407,6 +10571,22 @@ std::unordered_set<std::string> prusa_export_to_remove_keys = {
 "min_width_top_surface",
 "skip_tiny_fill_diagonal",
 "skip_tiny_perimeter_length",
+"hybrid_nonplanar_enabled",
+"hybrid_surface_pass_preflight",
+"hybrid_surface_pass_emit",
+"hybrid_tool_nozzle_tip_exclusion",
+"hybrid_tool_nozzle_shaft_radius",
+"hybrid_tool_nozzle_shaft_top",
+"hybrid_toolhead_radius",
+"hybrid_toolhead_start",
+"hybrid_toolhead_top",
+"hybrid_tool_required_clearance",
+"hybrid_tool_path_sample_step",
+"hybrid_nonplanar_interval",
+"hybrid_nonplanar_max_slope",
+"hybrid_nonplanar_max_offset",
+"hybrid_nonplanar_speed",
+"hybrid_nonplanar_volumetric_auto_speed",
 "zaa_enabled",
 "zaa_contour_perimeters",
 "zaa_min_z",

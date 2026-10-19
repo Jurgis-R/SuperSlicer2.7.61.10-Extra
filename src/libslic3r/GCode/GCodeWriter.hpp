@@ -81,6 +81,11 @@ public:
     std::string travel_to_xy(const Vec2d &point, const double speed = 0.0, const std::string_view comment = {});
     std::string travel_arc_to_xy(const Vec2d& point, const Vec2d& center_offset, const bool is_ccw, const double speed, const std::string_view comment);
     std::string travel_to_xyz(const Vec3d &point, const bool is_lift, const double speed = 0.0, const std::string_view comment = {});
+    // Execute an already collision-validated absolute XYZ travel route. The complete
+    // route, live start and declared starting lift are checked before any G-code is
+    // generated. The first actual XYZ move clears any declared lift; route geometry
+    // must include that physical transition and be collision-validated by the caller.
+    std::string travel_to_xyz_route(const std::vector<Vec3d> &points, double position_tolerance_mm = 1e-4, const std::string_view comment = {}, double expected_start_lift_mm = 0.0);
     std::string travel_to_z(const double z, const std::string_view comment = {});
     // low-level method to force a z travel, disregarding the lift and other thigns. Prefer using "travel_to_z" "lift" and "unlift".
     std::string get_travel_to_z_gcode(const double z, const std::string_view comment = {});
