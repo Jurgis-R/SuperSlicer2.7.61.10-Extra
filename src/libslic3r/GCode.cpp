@@ -3674,9 +3674,9 @@ LayerResult GCodeGenerator::process_layer(
                 "export aborted rather than guessing a section boundary");
     }
 
-    // Emission has its own default-off gate. If enabled, always run the same
-    // complete preflight first, even when the preflight-only UI option is off.
-    // Ordinary planar extrusion entities remain untouched.
+    // The main Hybrid option adds a mesh-derived pass at each completed H
+    // section. The preflight-only and emit-override switches also work independently.
+    // Every output path runs the complete preflight first; planar extrusion stays intact.
     if ((m_config.hybrid_nonplanar_enabled.value ||
          m_config.hybrid_surface_pass_preflight.value ||
          m_config.hybrid_surface_pass_emit.value) && m_hybrid_completed_section) {
