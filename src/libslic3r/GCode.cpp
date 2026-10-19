@@ -6083,7 +6083,6 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     for(int i=1;i<simplifed_path.polyline.size();++i)
         assert(!simplifed_path.polyline.get_point(i - 1).coincides_with_epsilon(simplifed_path.polyline.get_point(i)));
     // print the path
-    m_hybrid_path_deferred = false;
     gcode += this->_extrude(simplifed_path, description, speed_mm_per_sec);
 
     // A deferred path has not been extruded yet, so do not advertise it as a
