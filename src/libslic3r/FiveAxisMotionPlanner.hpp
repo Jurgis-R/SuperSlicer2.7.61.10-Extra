@@ -155,10 +155,6 @@ inline FiveAxisValidationResult validate_five_axis_head_swept_clearance(
                                      axis2, pose.rotary_2_deg) -
                     kinematics.rotary_1_pivot,
                 axis1, pose.rotary_1_deg);
-        tip = tip + kinematics.machine_frame_tool_offset;
-        carriage = carriage + kinematics.machine_frame_tool_offset;
-        joint1 = joint1 + kinematics.machine_frame_tool_offset;
-        joint2 = joint2 + kinematics.machine_frame_tool_offset;
     };
     auto check_segment = [&](const FiveAxisVec3 &a, const FiveAxisVec3 &b) -> bool {
         const double distance = five_axis_norm(b - a);
@@ -309,7 +305,8 @@ inline FiveAxisValidationResult plan_five_axis_path(
     const auto path_validation = validate_five_axis_path(output_config, candidate);
     if (!path_validation.valid)
         return path_validation;
-    const auto clearance = validate_five_axis_path_clearance(collision_config, candidate);
+    const auto clearance = validate_five_axis_machine_swept_clearance(
+        kinematics, collision_config, candidate);
     if (!clearance.valid)
         return clearance;
     commands.swap(candidate);
