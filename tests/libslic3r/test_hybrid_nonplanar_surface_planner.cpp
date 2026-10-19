@@ -59,6 +59,26 @@ TEST_CASE("Hybrid surface planner generates new paths from upward mesh facets",
     }
 }
 
+TEST_CASE("Hybrid surface planner returns an empty successful result when a section has no eligible surface",
+          "[HybridNonplanarSurfacePlanner]")
+{
+    const indexed_triangle_set mesh = make_flat_surface();
+    HybridSurfacePlannerOptions options;
+    options.sample_spacing_mm = 0.5;
+    options.section_start_z = 3.5;
+    options.section_top_z = 4.0;
+    options.max_z_offset_mm = 0.2;
+
+    std::vector<HybridSurfacePath> paths(1);
+    paths.front().points.emplace_back(1.0, 1.0, 2.0);
+    const auto clear = [](const Vec3d &, const Vec3d &) { return true; };
+
+    // The flat mesh is at Z=2, outside this section's allowed surface window.
+    // This is not a collision/input failure: there is nothing eligible to print.
+    REQUIRE(plan_hybrid_surface_paths(mesh, options, clear, paths));
+    REQUIRE(paths.empty());
+}
+
 TEST_CASE("Hybrid surface planner fails closed without swept-tool collision validation",
           "[HybridNonplanarSurfacePlanner]")
 {
