@@ -7420,13 +7420,6 @@ std::string GCodeGenerator::_before_extrude(const ExtrusionPath &path, const std
     // compensate retraction
     if (m_delayed_layer_change.empty()) {
         gcode += m_writer.unlift();//this->unretract();
-        // Firmware G11 restores filament, not a slicer-generated Z hop.
-        // Restore nominal layer height before extrusion if lift state is stale.
-        if (m_layer != nullptr &&
-            std::isfinite(m_layer->print_z) &&
-            std::abs(m_writer.get_position().z() - m_layer->print_z) > EPSILON) {
-            gcode += m_writer.get_travel_to_z_gcode(m_layer->print_z, "restore nominal layer Z");
-        }
         assert(is_approx(m_writer.get_position().z(), m_layer->print_z, EPSILON) || m_loop_vase_mode);
     } else {
         //check if an unlift happens
