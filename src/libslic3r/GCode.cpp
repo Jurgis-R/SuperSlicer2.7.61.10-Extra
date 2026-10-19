@@ -7745,7 +7745,8 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         if (!transition_envelope.valid)
             throw Slic3r::RuntimeError(std::string("Five-axis transition violates the machine envelope: ") + transition_envelope.error);
         const FiveAxisValidationResult transition_clearance =
-            validate_five_axis_path_clearance(five_axis_profile.collision, transition);
+            validate_five_axis_machine_swept_clearance(
+                five_axis_profile.kinematics, five_axis_profile.collision, transition);
         if (!transition_clearance.valid)
             throw Slic3r::RuntimeError(std::string("Five-axis transition fails configured clearance checks: ") + transition_clearance.error);
 
