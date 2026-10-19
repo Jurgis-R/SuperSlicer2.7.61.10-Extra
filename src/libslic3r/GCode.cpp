@@ -3692,8 +3692,9 @@ LayerResult GCodeGenerator::process_layer(
     // Emission has its own default-off gate. If enabled, always run the same
     // complete preflight first, even when the preflight-only UI option is off.
     // Ordinary planar extrusion entities remain untouched.
-    if ((m_config.hybrid_surface_pass_preflight.value || m_config.hybrid_surface_pass_emit.value) &&
-        m_hybrid_completed_section) {
+    if ((m_config.hybrid_nonplanar_enabled.value ||
+         m_config.hybrid_surface_pass_preflight.value ||
+         m_config.hybrid_surface_pass_emit.value) && m_hybrid_completed_section) {
         if (print.config().nozzle_diameter.size() != 1 || print.config().complete_objects.value ||
             print.config().parallel_objects_step.value > 0 || object_layer == nullptr) {
             throw RuntimeError("Hybrid surface-pass preflight currently requires one extruder and layer-by-layer ordering");
@@ -3924,7 +3925,11 @@ LayerResult GCodeGenerator::process_layer(
         // Execute only after every route has passed geometry checks and has been
         // converted to writer coordinates. A writer-state mismatch throws and
         // aborts export; it never falls back to ordinary planar travel.
-        if (m_config.hybrid_surface_pass_emit.value) {
+        if (m_config.hybrid_nonplanar_enabled.value || m_config.hybrid_surface_pass_emit.value) {
+            // These markers surround exactly one mesh-derived pass per completed
+            // H section, not each planar layer. A preflight-only run never writes them.
+            gcode += ";HYBRID_PLANAR_SECTION_END\n";
+            gcode += ";HYBRID_SURFACE_PASS_BEGIN\n";
             // Apply the hybrid volumetric target to this mesh-derived route as
             // well as to legacy queued paths. A zero requested speed lets the
             // normal autospeed hierarchy derive mm/s from the selected mm^3/s
@@ -3965,6 +3970,7 @@ LayerResult GCodeGenerator::process_layer(
             }
             m_volumetric_speed = saved_volumetric_speed;
             m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
+            gcode += ";HYBRID_SURFACE_PASS_END\n";
         }
         } // candidates not empty
     }
@@ -7020,21 +7026,18 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
 {
     out.clear();
     m_zaa_active.clear();
-    // Hybrid mode reuses the existing mesh-following path sampler, but only on
-    // layers that cross an H interval. It is mutually exclusive with standalone ZAA.
-    const bool hybrid = m_config.hybrid_nonplanar_enabled.value;
-    if ((!hybrid && !m_config.zaa_enabled.value) ||
+    // Hybrid printing now emits a separate mesh-derived pass after each
+    // completed H section. Keep ordinary planar paths untouched while that mode
+    // is enabled; standalone ZAA remains available when hybrid mode is off.
+    if (m_config.hybrid_nonplanar_enabled.value || !m_config.zaa_enabled.value ||
         m_layer == nullptr || m_layer->id() == 0 || m_spiral_vase_layer > 0)
-        return false;
-    if (hybrid && !m_hybrid_nonplanar_layer_due)
         return false;
     const ExtrusionRole role = path.role();
     const bool real_top = role == ExtrusionRole::TopSolidInfill;
-    const bool contour_solid_infill = !hybrid && m_config.zaa_contour_perimeters.value;
-    const bool is_top   = real_top ||
-                          ((hybrid || contour_solid_infill) && role == ExtrusionRole::SolidInfill);
-    const bool is_peri  = (hybrid || m_config.zaa_contour_perimeters.value) &&
-                          (role == ExtrusionRole::Perimeter || role == ExtrusionRole::ExternalPerimeter);
+    const bool is_top = real_top ||
+                        (m_config.zaa_contour_perimeters.value && role == ExtrusionRole::SolidInfill);
+    const bool is_peri = m_config.zaa_contour_perimeters.value &&
+                         (role == ExtrusionRole::Perimeter || role == ExtrusionRole::ExternalPerimeter);
     if (!is_top && !is_peri)
         return false;
     const PrintObject *obj = m_layer->object();
@@ -7049,19 +7052,12 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const double ray_z     = m_layer->slice_z;                              // inside the solid under a top surface
     const double min_line  = std::max(0., m_config.zaa_min_z.value);        // ZAA minimum line height
     const double max_line  = std::max(h, m_config.zaa_max_height.value);    // ZAA maximum line height
-    const double hybrid_offset = std::max(0.05, m_config.hybrid_nonplanar_max_offset.value);
-    // In hybrid mode keep the deposited line from collapsing and limit upward
-    // displacement conservatively on top-solid paths.
-    const double max_down  = hybrid ? std::min(h - std::min(h, 0.05), hybrid_offset)
-                                    : std::max(0., h - min_line);
-    const double max_up    = hybrid ? hybrid_offset : std::max(0., max_line - h);
+    const double max_down  = std::max(0., h - min_line);
+    const double max_up    = std::max(0., max_line - h);
     const double tol       = 0.03;
-    // a real top surface of this layer is at most half a layer above the layer top (the layer is sliced in its middle)
-    // The half-layer reach limit is a ZAA constraint for ordinary top-solid
-    // paths. Hybrid mode is scheduled at H-section boundaries and must honor its
-    // own configured offset limit instead of silently capping upward motion at
-    // half the nominal layer height.
-    const double valid_up  = (hybrid ? max_up : (real_top ? std::min(max_up, 0.5 * h) : max_up)) + tol;
+    // A real top surface of this layer is at most half a layer above the layer
+    // top (the layer is sliced in its middle).
+    const double valid_up  = (real_top ? std::min(max_up, 0.5 * h) : max_up) + tol;
     const double step_mm   = std::max(0.05, m_config.zaa_sample_distance.value);
     const double active_thr = 0.02; // mm: below this the surface counts as flat
     const double pad_mm     = 1.0;  // mm: active runs are extended by this much on both sides
@@ -7115,14 +7111,6 @@ bool GCodeGenerator::_zaa_contour(const ExtrusionPath &path, std::vector<std::pa
     const size_t n = spts.size();
     if (n < 2)
         return false;
-
-    if (hybrid) {
-        // Use the shared fail-closed constraint planner so offsets and the
-        // endpoint ramps are tested independently of G-code emission.
-        const double max_angle = std::max(1.0, std::min(60.0, m_config.hybrid_nonplanar_max_slope.value));
-        if (!constrain_hybrid_nonplanar_offsets(ss, sd, hybrid_offset, max_angle))
-            return false; // malformed samples: preserve the original planar path
-    }
 
     // --- x-ray: which samples follow the surface ---
     std::vector<char> act(n, 0);
