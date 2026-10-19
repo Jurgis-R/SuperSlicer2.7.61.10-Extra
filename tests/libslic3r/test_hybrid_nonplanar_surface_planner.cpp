@@ -242,21 +242,28 @@ TEST_CASE("Hybrid surface extrusion conversion rejects invalid input without par
     std::vector<ExtrusionPath3D> paths;
     paths.emplace_back(attributes, false);
     paths.back().push_back(Point::new_scale(0.0, 0.0), 0);
+    std::string failure_reason;
     HybridSurfacePath too_short;
     too_short.points = { Vec3d(0.0, 0.0, 2.0) };
-    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ too_short }, 2.0, attributes, paths));
+    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths(
+        { too_short }, 2.0, attributes, paths, &failure_reason));
+    REQUIRE(failure_reason == "candidate path has fewer than two points");
     REQUIRE(paths.empty());
 
     HybridSurfacePath non_finite;
     non_finite.points = { Vec3d(0.0, 0.0, 2.0),
                           Vec3d(std::numeric_limits<double>::quiet_NaN(), 1.0, 2.0) };
-    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ non_finite }, 2.0, attributes, paths));
+    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths(
+        { non_finite }, 2.0, attributes, paths, &failure_reason));
+    REQUIRE(failure_reason == "candidate path contains a non-finite point");
     REQUIRE(paths.empty());
 
     attributes.mm3_per_mm = 0.0;
     HybridSurfacePath valid;
     valid.points = { Vec3d(0.0, 0.0, 2.0), Vec3d(1.0, 0.0, 2.0) };
-    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths({ valid }, 2.0, attributes, paths));
+    REQUIRE_FALSE(make_hybrid_surface_extrusion_paths(
+        { valid }, 2.0, attributes, paths, &failure_reason));
+    REQUIRE(failure_reason == "invalid extrusion flow area");
     REQUIRE(paths.empty());
 }
 
