@@ -704,11 +704,7 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, const bool is_lift, c
     if (config.z_step > SCALING_FACTOR) {
         w.m_gcode_precision_xyz = 6;
     }
-    // The cached formatted Z can be invalidated by surrounding travel/retract
-    // operations. The writer position is authoritative: do not emit Z on a pure
-    // XY extrusion when the target Z is unchanged.
-    bool has_z = std::abs(point.z() - previous_z) > 1e-9 &&
-                 w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    bool has_z = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
     if (!has_x_y && !has_z) {
         //if point too close to the other, no move are needed.
         return "";
@@ -932,7 +928,11 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     if (!has_x_y) {
         w.clear();
     }
-    bool has_z = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    // Do not repeat Z on pure XY extrusion moves. Compare the actual writer
+    // coordinates as well as the formatted-word cache, which can be invalidated
+    // by surrounding travel/retract operations.
+    bool has_z = std::abs(point.z() - previous_z) > 1e-9 &&
+                 w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
     if (!has_z) {
         if (!has_x_y) {
             // m_pos has already been updated to the new (but indistinguishable from current one) posiiton
