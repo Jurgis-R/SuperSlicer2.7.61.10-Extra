@@ -41,7 +41,6 @@
 #include "GCode/WipeTowerIntegration.hpp"
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
-#include "HybridNonplanarScheduler.hpp"
 #include "HybridNonplanarSectionPlanner.hpp"
 #include "HybridNonplanarExtrusion.hpp"
 #include "GCode/ThumbnailData.hpp"
@@ -535,36 +534,8 @@ private:
     const ZaaMeshData*        zaa_mesh_for(const PrintObject *obj);
     bool                      _zaa_contour(const ExtrusionPath &path, std::vector<std::pair<Point, coord_t>> &out);
     std::vector<char>         m_zaa_active; // v3: per sample of the last _zaa_contour(): 1 = follows the surface, 0 = flat
-    HybridNonplanarScheduler  m_hybrid_nonplanar_scheduler; // legacy Mode B gate; retained until the surface planner replaces it
     HybridNonplanarSectionPlanner m_hybrid_nonplanar_section_planner;
     std::optional<HybridNonplanarSection> m_hybrid_completed_section;
-    bool                      m_hybrid_nonplanar_layer_due { false };
-
-    // Paths selected for the hybrid finishing pass are deferred until the
-    // planar layer section has completed. Keep the layer/config/origin with
-    // each typed path so extrusion uses the same geometry and feature settings.
-    struct HybridNonplanarQueuedPath {
-        ExtrusionPath3D path;
-        const Layer* layer { nullptr };
-        FullPrintConfig config;
-        Vec2d origin { Vec2d::Zero() };
-        std::string description;
-        double speed_mm_per_sec { -1.0 };
-        uint16_t extruder_id { 0 };
-        double perimeter_extrusion_width { 0.4 };
-        bool object_layer_over_raft { false };
-
-        HybridNonplanarQueuedPath(const ExtrusionPath3D& p, const Layer* l,
-                                  const FullPrintConfig& c, const Vec2d& o,
-                                  std::string d, double speed, uint16_t extruder,
-                                  double perimeter_width, bool over_raft)
-            : path(p), layer(l), config(c), origin(o), description(std::move(d)),
-              speed_mm_per_sec(speed), extruder_id(extruder),
-              perimeter_extrusion_width(perimeter_width), object_layer_over_raft(over_raft) {}
-    };
-    std::vector<HybridNonplanarQueuedPath> m_hybrid_nonplanar_queue;
-    void flush_hybrid_nonplanar_queue(std::string& gcode);
-    bool m_hybrid_path_deferred { false };
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
     double                              m_last_mm3_per_mm;
 #endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
