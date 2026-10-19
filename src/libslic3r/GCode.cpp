@@ -3929,7 +3929,7 @@ LayerResult GCodeGenerator::process_layer(
             // These markers surround exactly one mesh-derived pass per completed
             // H section, not each planar layer. A preflight-only run never writes them.
             gcode += ";HYBRID_PLANAR_SECTION_END\n";
-            gcode += ";HYBRID_SURFACE_PASS_BEGIN\n";
+            gcode += ";HYBRID_FINISHING_PASS_BEGIN\n";
             // Apply the hybrid volumetric target to this mesh-derived route as
             // well as to legacy queued paths. A zero requested speed lets the
             // normal autospeed hierarchy derive mm/s from the selected mm^3/s
@@ -3970,7 +3970,7 @@ LayerResult GCodeGenerator::process_layer(
             }
             m_volumetric_speed = saved_volumetric_speed;
             m_config.max_volumetric_speed.value = saved_max_volumetric_speed;
-            gcode += ";HYBRID_SURFACE_PASS_END\n";
+            gcode += ";HYBRID_FINISHING_PASS_END\n";
         }
         } // candidates not empty
     }
