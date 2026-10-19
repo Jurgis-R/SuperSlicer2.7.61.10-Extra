@@ -7705,6 +7705,12 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
         FiveAxisCommand entry_clearance = entry_pose;
         entry_clearance.z = clearance_z;
 
+        // The in-place reorientation must use a feed compatible with the
+        // configured angular speed; each writer move uses its validated F.
+        reoriented_clearance.feed_mm_min = std::min(
+            travel_speed * 60.0,
+            five_axis_profile.output.max_rotary_rate_deg_s * 60.0);
+
         std::vector<FiveAxisCommand> transition = { current_pose, current_clearance };
         if (five_axis_profile.output.supports_simultaneous_rotary) {
             if (std::abs(entry_pose.rotary_1_deg - current_pose.rotary_1_deg) > 1e-9 ||
@@ -7749,12 +7755,6 @@ std::string GCodeGenerator::_travel_before_extrude(const ExtrusionPath &path, co
                 five_axis_profile.kinematics, five_axis_profile.collision, transition);
         if (!transition_clearance.valid)
             throw Slic3r::RuntimeError(std::string("Five-axis transition fails configured clearance checks: ") + transition_clearance.error);
-
-        // The in-place reorientation must use a feed compatible with the
-        // configured angular speed; each writer move uses its validated F.
-        reoriented_clearance.feed_mm_min = std::min(
-            travel_speed * 60.0,
-            five_axis_profile.output.max_rotary_rate_deg_s * 60.0);
 
         const auto emit_travel = [&](const FiveAxisCommand &pose, const std::string_view label) {
             const double pose_speed_mm_s = pose.feed_mm_min / 60.0;
