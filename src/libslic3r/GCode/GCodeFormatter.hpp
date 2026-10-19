@@ -16,6 +16,7 @@
 #include <string_view>
 #include <vector>
 #include <charconv>
+#include <cmath>
 
 namespace Slic3r {
 
