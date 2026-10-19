@@ -11,6 +11,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -68,14 +69,26 @@ inline bool make_hybrid_surface_extrusion_paths(
     const std::vector<HybridSurfacePath> &candidates,
     double base_z_mm,
     const ExtrusionAttributes &attributes,
-    std::vector<ExtrusionPath3D> &output)
+    std::vector<ExtrusionPath3D> &output,
+    std::string *failure_reason = nullptr)
 {
     output.clear();
+    if (failure_reason != nullptr)
+        failure_reason->clear();
+    auto fail = [failure_reason](const char *reason) {
+        if (failure_reason != nullptr)
+            *failure_reason = reason;
+        return false;
+    };
     if (candidates.empty() || !std::isfinite(base_z_mm) ||
         !std::isfinite(attributes.mm3_per_mm) || attributes.mm3_per_mm <= 0.0 ||
         !std::isfinite(attributes.width) || attributes.width <= 0.f ||
         !std::isfinite(attributes.height) || attributes.height <= 0.f)
-        return false;
+        return fail(candidates.empty() ? "no candidate paths" :
+                    !std::isfinite(base_z_mm) ? "non-finite base Z" :
+                    !std::isfinite(attributes.mm3_per_mm) || attributes.mm3_per_mm <= 0.0 ? "invalid extrusion flow area" :
+                    !std::isfinite(attributes.width) || attributes.width <= 0.f ? "invalid extrusion width" :
+                    "invalid extrusion height");
 
     const double max_scaled_mm =
         static_cast<double>(std::numeric_limits<coord_t>::max()) * SCALING_FACTOR;
@@ -84,19 +97,19 @@ inline bool make_hybrid_surface_extrusion_paths(
 
     for (const HybridSurfacePath &candidate : candidates) {
         if (candidate.points.size() < 2)
-            return false;
+            return fail("candidate path has fewer than two points");
 
         ExtrusionPath3D path(attributes, false);
         Vec3d previous_scaled;
         bool have_previous = false;
         for (const Vec3d &point : candidate.points) {
             if (!point.allFinite())
-                return false;
+                return fail("candidate path contains a non-finite point");
             const double z_offset_mm = point.z() - base_z_mm;
             if (std::abs(point.x()) > max_scaled_mm ||
                 std::abs(point.y()) > max_scaled_mm ||
                 std::abs(z_offset_mm) > max_scaled_mm)
-                return false;
+                return fail("candidate point exceeds supported scaled-coordinate range");
 
             const Point xy = Point::new_scale(point.x(), point.y());
             const coord_t z_offset = scale_t(z_offset_mm);
@@ -104,7 +117,7 @@ inline bool make_hybrid_surface_extrusion_paths(
                                      static_cast<double>(xy.y()),
                                      static_cast<double>(z_offset));
             if (have_previous && (scaled_point - previous_scaled).squaredNorm() <= 0.0)
-                return false;
+                return fail("adjacent candidate points collapse to the same scaled XYZ coordinate");
 
             path.push_back(xy, z_offset);
             previous_scaled = scaled_point;
@@ -112,7 +125,7 @@ inline bool make_hybrid_surface_extrusion_paths(
         }
 
         if (path.polyline.size() < 2 || path.z_offsets.size() != path.polyline.size())
-            return false;
+            return fail("typed path has invalid point/Z-offset array lengths");
         converted.emplace_back(std::move(path));
     }
 
