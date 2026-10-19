@@ -845,6 +845,7 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     assert(std::abs(point.z()) < 120000.);
     assert(dE == dE);
     //assert(point.z() >= m_pos.z() - EPSILON);
+    const double previous_z = m_pos.z();
     m_pos = point;
     m_lifted = 0;
      auto [/*double*/ delta_e, /*double*/ e_to_write]  = this->m_tool->extrude(dE + this->m_de_left);
@@ -855,7 +856,9 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     if (!has_x_y) {
         w.clear();
     }
-    bool has_z = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    // Refresh the formatted-Z cache, but output Z only when the target height changes.
+    const bool z_word_changed = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    bool has_z = std::abs(point.z() - previous_z) > 1e-9 && z_word_changed;
     if (!has_z) {
         if (!has_x_y) {
             // m_pos has already been updated to the new (but indistinguishable from current one) posiiton
