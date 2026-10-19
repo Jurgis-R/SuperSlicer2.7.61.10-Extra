@@ -3620,11 +3620,11 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionFloat(0));
 
     def = this->add("hybrid_nonplanar_enabled", coBool);
-    def->label = L("Deform existing paths at H intervals (experimental)");
-    def->full_label = L("Hybrid existing-path deformation");
+    def->label = L("Hybrid non-planar printing (experimental)");
+    def->full_label = L("Hybrid non-planar printing");
     def->category = OptionCategory::infill;
-    def->tooltip = L("Experimental existing-path deformation: selected perimeter and top-solid paths on H-interval boundary layers are deformed and emitted in that layer’s finishing queue. This replaces those selected planar paths; it does not add a second mesh-derived pass. ZAA is automatically suppressed while this option is enabled."
-                     "\nTo add a separate mesh-derived surface-following pass after completed H sections, use the independent surface-pass controls below. Enabling surface-pass output always runs its collision preflight first, even if the preflight-only checkbox is off."
+    def->tooltip = L("Print ordinary planar layers for the configured H interval, then generate an additional mesh-derived surface-following finishing pass at each completed H-section boundary. The normal planar paths are preserved; the mesh pass is added separately. Each emitted section runs full candidate, approach, departure and return preflight automatically."
+                     "\nThe standalone preflight-only option can validate sections without output. The separate emit override can request mesh-pass output even when this main option is off."
                      "\nThe configured tool-envelope check is simplified and cannot guarantee collision-free motion. Measure the mounted tool envelope, inspect generated G-code, and test on a small model under supervision.");
     def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionBool(false));
@@ -3638,10 +3638,10 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("hybrid_surface_pass_emit", coBool);
-    def->label = L("Emit additional mesh-derived surface finishing pass");
-    def->full_label = L("Experimental mesh-derived surface-pass emission");
+    def->label = L("Emit mesh-derived pass even when hybrid mode is off");
+    def->full_label = L("Experimental mesh-derived surface-pass output override");
     def->category = OptionCategory::infill;
-    def->tooltip = L("DANGEROUS EXPERIMENTAL OUTPUT, disabled by default. Runs full candidate generation and the configured simplified-envelope preflight, then emits a separate mesh-derived finishing pass at completed H-section boundaries. Enable only after measuring the actual mounted tool envelope and reviewing the generated G-code; this approximation is not a guarantee of collision freedom. Use a small test model and supervise the first print.");
+    def->tooltip = L("DANGEROUS EXPERIMENTAL OUTPUT. This override can emit the mesh-derived surface pass at completed H-section boundaries even when the main Hybrid non-planar printing option is off. Full candidate generation and the configured simplified-envelope preflight run before any output. Enable only after measuring the actual mounted tool envelope, reviewing the G-code, and supervising a small test print.");
     def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionBool(false));
 
@@ -3732,7 +3732,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Hybrid non-planar interval H");
     def->full_label = L("Hybrid non-planar interval H");
     def->category = OptionCategory::infill;
-    def->tooltip = L("Vertical distance in millimetres between layers selected for experimental non-planar path deformation.");
+    def->tooltip = L("Vertical distance in millimetres between mesh-derived finishing passes. The slicer prints the ordinary planar layers in each H section, then validates and emits an additional surface-following pass at the section boundary.");
     def->sidetext = L("mm");
     def->min = 0.2;
     def->max = 20;
