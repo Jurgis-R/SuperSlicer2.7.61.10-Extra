@@ -3307,8 +3307,8 @@ LayerResult GCodeGenerator::process_layer(
             m_config.hybrid_nonplanar_interval.value, 1e-6, layer.bottom_z());
         m_hybrid_completed_section.reset();
 
-        // The current finishing queue is not yet a whole-section planner. Fail
-        // closed on layouts whose object/tool ordering it cannot safely handle.
+        // Mesh-derived H-section output currently supports only a single
+        // extruder and layer-by-layer ordering; reject unsupported layouts.
         if (m_config.hybrid_nonplanar_enabled.value) {
             const bool multiple_extruders = print.config().nozzle_diameter.size() != 1;
             const bool sequential_ordering = print.config().complete_objects.value ||
@@ -3915,8 +3915,8 @@ LayerResult GCodeGenerator::process_layer(
             // H section, not each planar layer. A preflight-only run never writes them.
             gcode += ";HYBRID_PLANAR_SECTION_END\n";
             gcode += ";HYBRID_FINISHING_PASS_BEGIN\n";
-            // Apply the hybrid volumetric target to this mesh-derived route as
-            // well as to legacy queued paths. A zero requested speed lets the
+            // Apply the hybrid volumetric target to this mesh-derived route.
+            // A zero requested speed lets the
             // normal autospeed hierarchy derive mm/s from the selected mm^3/s
             // target; the separate hybrid speed limit is still applied after
             // that calculation.
@@ -6085,8 +6085,7 @@ std::string GCodeGenerator::extrude_path(const ExtrusionPath &path, const std::s
     // print the path
     gcode += this->_extrude(simplifed_path, description, speed_mm_per_sec);
 
-    // A deferred path has not been extruded yet, so do not advertise it as a
-    // completed wipe path. The actual finishing pass updates wipe state later.
+    // Update wipe-path state from the actual emitted extrusion geometry.
     if (m_wipe.is_enabled()) {
         simplifed_path.reverse();
         m_wipe.set_path(simplifed_path.polyline.get_arc(), false);
@@ -6164,8 +6163,8 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     double speed, double max_speed_mm_s)
 {
     // This executor accepts only absolute writer-frame route coordinates. It is
-    // intentionally not called by ordinary extrude_path_3D(), preserving planar
-    // and legacy 3D path behavior until a dedicated configuration gate is wired.
+    // called by the H-section emitter after the complete route has passed
+    // collision preflight; ordinary planar and legacy 3D path output is unchanged.
     const double tolerance = contract.position_tolerance_mm;
     auto coincides = [tolerance](const Vec3d &a, const Vec3d &b) {
         return a.allFinite() && b.allFinite() && (a - b).norm() <= tolerance;
