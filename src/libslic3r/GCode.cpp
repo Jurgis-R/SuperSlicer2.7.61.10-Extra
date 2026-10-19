@@ -6274,8 +6274,6 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     gcode += m_writer.retract();
     gcode += m_writer.travel_to_xyz_route(route.departure_points, tolerance, "hybrid surface departure");
     gcode += m_writer.travel_to_xyz_route(route.return_points, tolerance, "hybrid surface return");
-    // A route may return to the next route's declared start rather than its
-    // own start. The next route's contract will validate that hand-off.
     // Intermediate routes return to the next route's declared start; the next
     // route validates that hand-off. The final route returns to the original live
     // position. Lift bookkeeping is restored only after the physical return is
