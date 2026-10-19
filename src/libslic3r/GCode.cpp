@@ -3764,6 +3764,9 @@ LayerResult GCodeGenerator::process_layer(
         for (const Vec3f &vertex : print_mesh.vertices)
             mesh_top_z = std::max(mesh_top_z, static_cast<double>(vertex.z()));
         const Vec3d writer_position = m_writer.get_position();
+        const double original_writer_lift = m_writer.get_lift();
+        if (!std::isfinite(original_writer_lift))
+            throw RuntimeError("Hybrid surface-pass preflight found a non-finite live writer lift");
         const Vec2d tool_offset = m_writer.current_tool_offset();
         Vec3d current_tip = Vec3d::Zero();
         if (!hybrid_writer_to_print_xyz(writer_position, m_origin, tool_offset, current_tip))
@@ -3929,9 +3932,12 @@ LayerResult GCodeGenerator::process_layer(
                 for (size_t path_idx = 0; path_idx < surface_paths.size(); ++path_idx) {
                     HybridPreExtrusionTravelContract contract;
                     contract.expected_start_position = writer_routes[path_idx].approach.expected_start;
-                    contract.expected_start_lift_mm = path_idx == 0 ? m_writer.get_lift() : 0.0;
+                    contract.expected_start_lift_mm = path_idx == 0 ? original_writer_lift : 0.0;
                     contract.expected_end_position = writer_routes[path_idx].approach.extrusion_start;
                     contract.expected_end_lift_mm = 0.0;
+                    contract.expected_return_position = writer_routes[path_idx].return_points.back();
+                    contract.expected_return_lift_mm = path_idx + 1 == surface_paths.size()
+                        ? original_writer_lift : 0.0;
                     contract.position_tolerance_mm = 1e-4;
                     contract.lift_tolerance_mm = 1e-4;
                     gcode += extrude_hybrid_surface_route(
@@ -6194,11 +6200,13 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
         if ((route.extrusion_points[i] - route.extrusion_points[i - 1]).norm() <= 0.0)
             throw std::runtime_error("Hybrid surface extrusion contains a zero-length segment.");
 
-    // The current writer route primitive deliberately requires zero active lift.
-    // Refuse unsupported states before emitting any G-code; do not silently
-    // normalize an existing lift because that would invalidate collision checks.
+    // Validate the lift contract even when this route legitimately begins lifted.
+    // The starting lift must match the live writer and its physical position; the
+    // validated approach transitions the writer into the zero-lift extrusion state.
     if (!std::isfinite(contract.expected_start_lift_mm) ||
         !std::isfinite(contract.expected_end_lift_mm) ||
+        !std::isfinite(contract.expected_return_lift_mm) ||
+        !contract.expected_return_position.allFinite() ||
         !std::isfinite(contract.lift_tolerance_mm) || contract.lift_tolerance_mm < 0.0 ||
         std::abs(contract.expected_end_lift_mm) > contract.lift_tolerance_mm ||
         !coincides(route.approach.expected_start, contract.expected_start_position) ||
@@ -6268,9 +6276,17 @@ std::string GCodeGenerator::extrude_hybrid_surface_route(
     gcode += m_writer.travel_to_xyz_route(route.return_points, tolerance, "hybrid surface return");
     // A route may return to the next route's declared start rather than its
     // own start. The next route's contract will validate that hand-off.
-    if (!coincides(m_writer.get_position(), route.return_points.back()) ||
+    // Intermediate routes return to the next route's declared start; the next
+    // route validates that hand-off. The final route returns to the original live
+    // position. Lift bookkeeping is restored only after the physical return is
+    // confirmed, preserving nominal Z for the next normal unlift/travel.
+    if (!coincides(m_writer.get_position(), contract.expected_return_position) ||
         std::abs(m_writer.get_lift()) > contract.lift_tolerance_mm)
         throw std::runtime_error("Hybrid surface return did not reach its declared endpoint; aborting export.");
+    m_writer.set_lift(contract.expected_return_lift_mm);
+    if (!validate_hybrid_return_state(
+            contract, m_writer.get_position(), m_writer.get_lift()))
+        throw std::runtime_error("Hybrid surface return position/lift restoration failed; aborting export.");
 
     if (m_wipe.is_enabled()) {
         ArcPolyline wipe_path = oriented_path.as_polyline();
