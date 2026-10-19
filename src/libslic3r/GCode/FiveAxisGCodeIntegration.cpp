@@ -89,7 +89,8 @@ void validate_five_axis_travel(
     if (!envelope.valid)
         throw Slic3r::RuntimeError(std::string("Five-axis ") + kind +
             " violates the machine envelope: " + envelope.error);
-    const FiveAxisValidationResult collision = validate_five_axis_path_clearance(profile.collision, route);
+    const FiveAxisValidationResult collision = validate_five_axis_machine_swept_clearance(
+        profile.kinematics, profile.collision, route);
     if (!collision.valid)
         throw Slic3r::RuntimeError(std::string("Five-axis ") + kind +
             " fails configured clearance checks: " + collision.error);
