@@ -7,9 +7,9 @@ This branch contains an experimental implementation and GUI controls. The latest
 ### Available in the current source
 
 - The Print Settings UI exposes a default-off **Hybrid non-planar printing (experimental)** option, H interval, slope/offset limits, speed cap, separate surface-pass preflight/output gates, and simplified tool-envelope parameters.
-- The interval scheduler is connected to `GCodeGenerator` and tracks due layer boundaries. The section planner is called at completed print-Z layer-group boundaries.
-- Existing-path deformation (Mode B) samples eligible perimeter/top-solid paths against the transformed model mesh, bounds offsets and local slope, and queues changed paths for typed 3D G-code emission. The current implementation replaces selected planar paths on the boundary layer; it does not preserve those selected paths as a separate planar deposit and then add a second contour on top.
-- A separate mesh-derived surface-following planner and gated surface-pass emission path are present. Output is off by default and runs the configured preflight before emission.
+- The primary **Hybrid non-planar printing** option uses the H-section planner to add a separate mesh-derived surface-following finishing pass after each completed H interval. Ordinary planar extrusion paths remain intact; the surface pass is additional material, not a replacement for the planar paths.
+- The main Hybrid option runs the complete configured candidate, swept-tool, approach, departure, and return preflight before emitting a section pass. The standalone preflight-only option validates sections without output when the main Hybrid and emit-override options are off.
+- The separate emit override can request the mesh-derived pass even with the main Hybrid option off. If a section has no eligible candidate paths under its slope/offset limits, that section is skipped and normal planar printing continues.
 - The collision validator rejects invalid/open/inconsistently oriented meshes and checks a simplified cylindrical nozzle-shaft/toolhead envelope against the model. This is **not** a complete model of a real printer's nozzle, heater block, fan duct, probe, carriage, bed limits, or every travel interaction.
 - Export currently fails closed for unsupported multi-object/instance/extruder/sequential-print layouts in the relevant experimental paths. This is a limitation, not support for those layouts.
 - Catch2 scheduler, geometry, collision, and G-code regression tests have been added. They are authored tests, not evidence of a successful build or test run.
@@ -24,8 +24,9 @@ This branch contains an experimental implementation and GUI controls. The latest
 
 ### Current intended behavior
 
-- **Existing-path deformation:** eligible existing paths on a scheduled boundary layer are deformed and emitted through the typed 3D writer. This is a prototype, not yet the intended full-H-section workflow.
-- **Surface-following pass:** generates mesh-derived candidate paths at completed H-section boundaries and emits them only when the separate experimental output gate is explicitly enabled and preflight accepts every route.
+- **Hybrid H-section output:** prints the ordinary planar layers for the configured H interval, then attempts an additional mesh-derived surface-following pass at the completed section boundary. It emits one pair of finishing-pass markers per section that actually contains eligible, validated paths; empty sections do not emit fake begin/end markers.
+- **Preflight-only:** with the main Hybrid and emit-override options off, validates eligible surface paths and their full travel routes but emits no finishing G-code.
+- **Emit override:** can run the same preflight and emit the additional surface pass while the main Hybrid option is off.
 - The feature targets conventional 3-axis Cartesian FFF; no rotary axis is required. All experimental gates remain off by default, and ordinary printing must remain unchanged when they are off.
 
 ## Source-code audit
