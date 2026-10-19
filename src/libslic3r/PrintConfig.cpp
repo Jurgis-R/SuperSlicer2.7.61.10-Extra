@@ -3633,7 +3633,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Hybrid surface-pass collision preflight (no G-code output)");
     def->full_label = L("Hybrid surface-pass collision preflight");
     def->category = OptionCategory::infill;
-    def->tooltip = L("Experimental preflight only. At completed H-section boundaries, build candidate surface paths from the transformed model mesh and validate the user-configured simplified tool envelope, live-writer approach/departure and high-Z transitions. This option does NOT emit a finishing pass. Envelope values must be measured for the actual mounted tool; this approximation is not a proof of collision freedom.");
+    def->tooltip = L("When the main Hybrid option and the emit override are both off, this validates eligible mesh-derived paths and their complete approach/departure routes without emitting a finishing pass. It never enables output by itself. The main Hybrid option and the emit override always run this preflight before output. Envelope values must be measured for the actual mounted tool; this approximation is not a proof of collision freedom.");
     def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionBool(false));
 
@@ -3743,7 +3743,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Hybrid non-planar maximum slope");
     def->full_label = L("Hybrid non-planar maximum slope");
     def->category = OptionCategory::infill;
-    def->tooltip = L("Limits the angle of Z change along a deformed extrusion path. Lower values are gentler; this does not replace collision checks.");
+    def->tooltip = L("Maximum local surface slope accepted by the mesh-derived pass, measured as the surface angle relative to the XY plane. Lower values skip steeper parts of the model; higher values permit more vertical Z changes but do not replace tool-envelope collision checks.");
     def->sidetext = L("deg");
     def->min = 1;
     def->max = 60;
@@ -3754,7 +3754,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Hybrid non-planar maximum Z offset");
     def->full_label = L("Hybrid non-planar maximum Z offset");
     def->category = OptionCategory::infill;
-    def->tooltip = L("Maximum upward or downward Z displacement from the nominal layer surface, in millimetres.");
+    def->tooltip = L("Maximum Z offset used to select mesh surface points around each H-section boundary and to limit their offset from the actual planar layer Z, in millimetres.");
     def->sidetext = L("mm");
     def->min = 0.05;
     def->max = 2;
