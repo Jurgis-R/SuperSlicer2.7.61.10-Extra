@@ -754,6 +754,24 @@ std::string GCodeWriter::travel_to_xyz_route(
     if (!has_motion)
         throw std::invalid_argument("XYZ route contains no executable movement");
 
+    // GCodeWriter's normal XYZ travel suppresses a Z move when the target lies
+    // between nominal Z and the current lifted Z. Such a first waypoint would
+    // only adjust lift bookkeeping and then fail the route's position check after
+    // mutation. Reject that unsupported transition before emitting any G-code.
+    if (m_lifted > 0.0) {
+        const double nominal_z = m_pos.z() - m_lifted;
+        for (size_t i = 1; i < points.size(); ++i) {
+            if (coincides(points[i - 1], points[i]))
+                continue;
+            const double target_z = points[i].z();
+            if (target_z >= nominal_z - EPSILON &&
+                target_z <= m_pos.z() + EPSILON &&
+                std::abs(target_z - m_pos.z()) > position_tolerance_mm)
+                throw std::invalid_argument("XYZ route first move lies inside the active lift interval");
+            break;
+        }
+    }
+
     // From here on, an invariant failure must abort the complete export: the
     // writer state may already have advanced and cannot be rolled back safely.
     // Callers must also discard the accumulated string on exception.
