@@ -704,7 +704,11 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, const bool is_lift, c
     if (config.z_step > SCALING_FACTOR) {
         w.m_gcode_precision_xyz = 6;
     }
-    bool has_z = w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
+    // The cached formatted Z can be invalidated by surrounding travel/retract
+    // operations. The writer position is authoritative: do not emit Z on a pure
+    // XY extrusion when the target Z is unchanged.
+    bool has_z = std::abs(point.z() - previous_z) > 1e-9 &&
+                 w.emit_z(point.z() + this->config.z_offset.value, m_pos_str_z);
     if (!has_x_y && !has_z) {
         //if point too close to the other, no move are needed.
         return "";
@@ -917,6 +921,7 @@ std::string GCodeWriter::extrude_to_xyz(const Vec3d &point, const double dE, con
     assert(std::abs(point.z()) < 120000.);
     assert(dE == dE);
     //assert(point.z() >= m_pos.z() - EPSILON);
+    const double previous_z = m_pos.z();
     m_pos = point;
     m_lifted = 0;
      auto [/*double*/ delta_e, /*double*/ e_to_write]  = this->m_tool->extrude(dE + this->m_de_left);
