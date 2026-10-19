@@ -3626,7 +3626,7 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Enables experimental interval-triggered non-planar deformation of eligible existing perimeter and top-solid paths. ZAA is automatically suppressed while this option is enabled."
                      "\nA separate mesh-derived surface finishing pass is also implemented, but is controlled independently by \"Emit experimental hybrid surface finishing pass\" and is disabled by default."
                      "\nThe configured tool-envelope collision preflight is simplified and cannot guarantee collision-free motion. Measure the mounted tool envelope, inspect generated G-code, and test on a small model under supervision.");
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("hybrid_surface_pass_preflight", coBool);
@@ -3634,7 +3634,7 @@ void PrintConfigDef::init_fff_params()
     def->full_label = L("Hybrid surface-pass collision preflight");
     def->category = OptionCategory::infill;
     def->tooltip = L("Experimental preflight only. At completed H-section boundaries, build candidate surface paths from the transformed model mesh and validate the user-configured simplified tool envelope, live-writer approach/departure and high-Z transitions. This option does NOT emit a finishing pass. Envelope values must be measured for the actual mounted tool; this approximation is not a proof of collision freedom.");
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("hybrid_surface_pass_emit", coBool);
@@ -3642,7 +3642,7 @@ void PrintConfigDef::init_fff_params()
     def->full_label = L("Experimental hybrid surface-pass emission");
     def->category = OptionCategory::infill;
     def->tooltip = L("DANGEROUS EXPERIMENTAL OUTPUT, disabled by default. Runs full candidate generation and the configured simplified-envelope preflight, then emits a separate mesh-derived finishing pass at completed H-section boundaries. Enable only after measuring the actual mounted tool envelope and reviewing the generated G-code; this approximation is not a guarantee of collision freedom. Use a small test model and supervise the first print.");
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionBool(false));
 
     // Explicit machine-envelope inputs for experimental hybrid surface-pass
@@ -3655,7 +3655,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0;
     def->max = 10;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(0.6));
 
     def = this->add("hybrid_tool_nozzle_shaft_radius", coFloat);
@@ -3665,7 +3665,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.1;
     def->max = 30;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(0.4));
 
     def = this->add("hybrid_tool_nozzle_shaft_top", coFloat);
@@ -3675,7 +3675,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.2;
     def->max = 100;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(8.0));
 
     def = this->add("hybrid_toolhead_radius", coFloat);
@@ -3685,7 +3685,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.1;
     def->max = 100;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(8.0));
 
     def = this->add("hybrid_toolhead_start", coFloat);
@@ -3695,7 +3695,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.2;
     def->max = 100;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(8.0));
 
     def = this->add("hybrid_toolhead_top", coFloat);
@@ -3705,7 +3705,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.3;
     def->max = 200;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(25.0));
 
     def = this->add("hybrid_tool_required_clearance", coFloat);
@@ -3715,7 +3715,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0;
     def->max = 20;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(0.2));
 
     def = this->add("hybrid_tool_path_sample_step", coFloat);
@@ -3725,7 +3725,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.05;
     def->max = 2;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(0.2));
 
     def = this->add("hybrid_nonplanar_interval", coFloat);
@@ -3736,7 +3736,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.2;
     def->max = 20;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(2.0));
 
     def = this->add("hybrid_nonplanar_max_slope", coFloat);
@@ -3747,7 +3747,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("deg");
     def->min = 1;
     def->max = 60;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(30.0));
 
     def = this->add("hybrid_nonplanar_max_offset", coFloat);
@@ -3758,7 +3758,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm");
     def->min = 0.05;
     def->max = 2;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(0.4));
 
     def = this->add("hybrid_nonplanar_speed", coFloat);
@@ -3769,7 +3769,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm/s");
     def->min = 1;
     def->max = 100;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(20.0));
 
     def = this->add("hybrid_nonplanar_volumetric_auto_speed", coFloat);
@@ -3780,7 +3780,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm³/s");
     def->min = 0;
     def->max = 100;
-    def->mode = comNone; // Keep experimental controls visible in every UI view mode.
+    def->mode = comExpert | comSuSi; // Show in Expert and SuperSlicer modes.
     def->set_default_value(new ConfigOptionFloat(0.0));
 
     def = this->add("zaa_enabled", coBool);
